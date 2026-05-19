@@ -753,6 +753,8 @@ node --check frontend\static\app.js
 
 GitHub Actions 首轮运行失败在 Python 3.11 语法检查；修复后已在本地重新执行上述命令并通过，随后重新提交触发 CI。
 
+CI 第二轮已通过。GitHub 同时提示 Node 20 action runtime 和 `windows-latest` 即将迁移；为减少公开后的维护噪声，workflow 已固定到 `windows-2025`，并设置 `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true`，Node 版本提升到 24。
+
 `public_readiness_check.py` 当前通过，但会提示：
 
 ~~~text
