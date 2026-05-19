@@ -624,3 +624,67 @@ python scripts\check_text_encoding.py
 python tests\smoke_test.py
 python scripts\public_readiness_check.py
 ~~~
+
+## 19. 本轮修复：2026-05-19 编码防护、包体发现与行动确认
+
+本轮开始前已重新阅读本文档，并按用户要求优先处理两个问题：一是不能再出现乱码任务污染 UI；二是两个 Agent 每一步都要先确认下一步，而不是脚本直接推进。
+
+### 19.1 编码与乱码防护
+
+1. 确认项目维护文件本身是 UTF-8：`python scripts\check_text_encoding.py` 通过；额外扫描 Git 跟踪文本也未发现替换字符、长问号串或常见 mojibake。
+2. 本轮 UI 中出现的连续问号加 `Utopian Journey` 文本不是源码文件乱码，而是一次通过 PowerShell 发送中文 JSON 时输入已经变成问号，后端按原样保存到了内存 job。
+3. `/api/jobs/start-crawler` 已增加输入损坏防护：如果请求内容含替换字符或连续问号，会返回 400，不再创建 Crawler job，避免坏数据进入任务列表、记忆或资料库。
+4. 重启服务后，内存中的乱码 stopped job 已清空；后续启动中文 Crawler 任务必须使用 Web UI 或 UTF-8 客户端。
+
+### 19.2 Crawler 新增整合包包体发现工具
+
+新增 `modpack_download` 工具与脚本 `scripts/fetch_modpack_archive_seed.py`：
+
+1. 先搜索 Modrinth modpack 项目并尝试发现 `.mrpack` 文件。
+2. 再通过公开搜索页发现 `.mrpack` 或 `.zip` 直链。
+3. 若发现可直接公开下载的包体，保存到 `data/manual_research/modpack_archives/<主题>/pack_archive`，后续由 `modpack_internal` 解析 manifest、modlist、任务书、脚本和配置。
+4. 若没有公开直链，生成 Markdown/manifest 报告并写明原因，不绕过登录、付费、网盘会员、验证码或私有下载限制。
+5. Provider Registry、Crawler 工具清单、Planner schema、行动反思 prompt、执行器和超时配置均已接入 `modpack_download`。
+
+### 19.3 两个 Agent 的下一步确认
+
+MCagent 新增 `_agent_confirm_next_step()`：
+
+1. 工具选择后，MCagent LLM 会确认下一步工具路径是否合理。
+2. 执行 `delegate_crawler`、`status`、`local_rag_search`、`final_answer_llm` 前，都会输出 `next_step_confirmed` trace。
+3. 这个确认器只确认下一步工具动作，不回答用户问题，不生成最终答案，不替 Crawler 拆搜索词。
+
+CrawlerAgent 已有的行动循环继续保留：
+
+1. 初始计划只提供候选任务队列。
+2. 每个工具动作前，CrawlerAgent LLM 读取目标、计划、最近结果和待执行任务，再决定执行哪个 pending task、是否加任务、是否重规划或结束。
+3. 本轮乌托邦任务中，CrawlerAgent 没有死跑优先级最高的 `browser_collect`，而是先反思后选择 Playwright 打开 MC百科核心页面，再选择 `modpack_download` 尝试包体发现。
+
+补充修正：
+
+4. Crawler 规划阶段不再因为外层 120 秒计时就切到规则 fallback。只要 LLM 请求仍在进行，就持续显示“正在规划”；只有模型请求自身失败、断链或返回错误时，才进入失败处理。这样避免脚本在模型仍思考时替代 CrawlerAgent 做规划。
+5. Crawler planner / reflection 的 JSON 解析失败时，不再立刻进入规则 fallback；会先把模型原始输出交回 LLM 进行 JSON 修复。只有修复仍失败时，才承认本轮模型结构化输出不可用。
+
+### 19.4 当前乌托邦任务观察
+
+新任务 `1779198250425-1` 已用 UTF-8 正常启动：
+
+- 目标：乌托邦探险之旅 / Utopian Journey 整合包。
+- 交付对象：MCagent/RAG。
+- Crawler 计划包含：Playwright、modpack_download、web_discovery、browser_collect、modpack_internal、Tavily、Firecrawl。
+- 第一步行动前反思：先打开 MC百科页面保存完整 HTML，作为核心页面证据。
+- 第二步行动前反思：尝试寻找并下载公开 `.mrpack/.zip` 包体，若成功再解析内部资料。
+
+当前包体发现工具已能记录“未找到公开包体直链”的客观原因。下一步需要继续观察新任务 `1779198967433-1` 的 collection_summary，并确认它是否通过 web_discovery / Playwright / Tavily 找到足够的玩法、任务线、版本差异和系统资料。
+
+### 19.5 验证
+
+已执行并通过：
+
+~~~powershell
+python -m py_compile mcagent\web_server.py mcagent\crawler_llm_planner.py mcagent\crawler_planner.py mcagent\provider_registry.py scripts\fetch_mcmod_seed.py scripts\fetch_modpack_archive_seed.py
+python scripts\check_text_encoding.py
+python scripts\fetch_modpack_archive_seed.py --query "乌托邦探险之旅" --limit 3 --no-download
+~~~
+
+注意：服务已重启；当前运行中的 Crawler job 是重启后新建的 UTF-8 正常任务。

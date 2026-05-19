@@ -82,6 +82,38 @@ def search_url(query: str) -> str:
     return f"{SEARCH_BASE}/s?key={quote(query, safe='')}"
 
 
+def direct_mcmod_targets(query: str) -> list[dict[str, str]]:
+    value = query.strip()
+    if not value:
+        return []
+    candidates: list[str] = []
+    if value.startswith(("http://", "https://")):
+        candidates.append(value)
+    elif value.startswith("/"):
+        candidates.append(urljoin(BASE_URL + "/", value.lstrip("/")))
+    elif re.match(r"^(?:class|item|post|modpack|course)/", value, flags=re.I):
+        candidates.append(urljoin(BASE_URL + "/", value))
+    else:
+        typed_match = re.fullmatch(r"(class|item|post|modpack|course):?(\d+)", value, flags=re.I)
+        if typed_match:
+            kind, ident = typed_match.groups()
+            candidates.append(f"{BASE_URL}/{kind.lower()}/{ident}.html")
+    output: list[dict[str, str]] = []
+    for url in candidates:
+        parsed = urlparse(url)
+        if parsed.netloc.lower() not in {"www.mcmod.cn", "mcmod.cn"}:
+            continue
+        path = parsed.path
+        if re.match(r"^/(?:class|item|post|modpack|course)/[^/.?#]+$", path, flags=re.I):
+            url = url.rstrip("/") + ".html"
+        if not is_mcmod_content_url(url):
+            continue
+        if any(item["url"] == url for item in output):
+            continue
+        output.append({"title": url, "url": url, "snippet": "direct MC百科 URL", "matched_query": query, "engine": "direct_url"})
+    return output
+
+
 def is_mcmod_content_url(url: str) -> bool:
     parsed = urlparse(url)
     host = parsed.netloc.lower()
@@ -346,26 +378,33 @@ def fetch_mcmod(dest_root: Path, query: str, limit: int, user_agent: str, delay:
     search_status = 0
     final_url = search_url(query)
     searched_queries: list[str] = []
-    for search_query in fallback_queries(query):
-        if len(search_results) >= limit:
-            break
-        searched_queries.append(search_query)
-        try:
-            search_html, _content_type, status, final_url = request_text(search_url(search_query), user_agent, cookie=cookie)
-            if "document.cookie" in search_html and "window.location.href" in search_html:
-                search_html, _content_type, status, final_url = follow_cookie_gate(search_html, final_url, user_agent, cookie)
-            search_status = status
-        except Exception as exc:  # noqa: BLE001
-            errors.append({"stage": "search", "query": search_query, "error": f"{type(exc).__name__}: {exc}"})
-            continue
-        for item in parse_search_results(search_html, limit=limit):
-            if any(existing["url"] == item["url"] for existing in search_results):
-                continue
-            item["matched_query"] = search_query
-            search_results.append(item)
+    direct_results = direct_mcmod_targets(query)
+    if direct_results:
+        search_results.extend(direct_results[:limit])
+        searched_queries.append(query)
+        final_url = direct_results[0]["url"]
+        search_status = 200
+    else:
+        for search_query in fallback_queries(query):
             if len(search_results) >= limit:
                 break
-    if len(search_results) < limit:
+            searched_queries.append(search_query)
+            try:
+                search_html, _content_type, status, final_url = request_text(search_url(search_query), user_agent, cookie=cookie)
+                if "document.cookie" in search_html and "window.location.href" in search_html:
+                    search_html, _content_type, status, final_url = follow_cookie_gate(search_html, final_url, user_agent, cookie)
+                search_status = status
+            except Exception as exc:  # noqa: BLE001
+                errors.append({"stage": "search", "query": search_query, "error": f"{type(exc).__name__}: {exc}"})
+                continue
+            for item in parse_search_results(search_html, limit=limit):
+                if any(existing["url"] == item["url"] for existing in search_results):
+                    continue
+                item["matched_query"] = search_query
+                search_results.append(item)
+                if len(search_results) >= limit:
+                    break
+    if not direct_results and len(search_results) < limit:
         external_search_results, external_errors = external_mcmod_discovery(query, user_agent, limit=max(1, limit - len(search_results)))
         errors.extend(external_errors)
         for item in external_search_results:

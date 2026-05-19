@@ -119,6 +119,22 @@ def _read_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     return json.loads(raw) if raw.strip() else {}
 
 
+def _has_likely_encoding_damage(value: Any) -> bool:
+    if isinstance(value, str):
+        text = value.strip()
+        if "\ufffd" in text:
+            return True
+        compact = re.sub(r"\s+", "", text)
+        if re.search(r"\?{5,}", compact):
+            return True
+        return False
+    if isinstance(value, dict):
+        return any(_has_likely_encoding_damage(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_has_likely_encoding_damage(item) for item in value)
+    return False
+
+
 def _send_json(handler: BaseHTTPRequestHandler, data: Any, status: int = 200) -> None:
     body = json.dumps(data, ensure_ascii=False, default=_json_default).encode("utf-8")
     handler.send_response(status)
@@ -664,6 +680,9 @@ def _source_alias(source: str) -> str:
         "browser_structured": "browser_collect",
         "structured_browser": "browser_collect",
         "product_collect": "browser_collect",
+        "modpack_download": "modpack_download",
+        "pack_download": "modpack_download",
+        "archive_download": "modpack_download",
         "pack_internal": "modpack_internal",
         "modpack_archive": "modpack_internal",
         "modpack_internal": "modpack_internal",
@@ -687,6 +706,7 @@ def _source_label(source: str) -> str:
         "jina": "Jina Reader/Search",
         "playwright": "Playwright 浏览器采集",
         "browser_collect": "浏览器结构化采集",
+        "modpack_download": "整合包包体发现/下载",
         "modpack_internal": "整合包内部解析",
         "topic_discovery": "主题种子发现",
         "planner": "多源补库计划",
@@ -707,13 +727,15 @@ def _save_dir_hint(source: str) -> str:
         "jina": r"D:\magic\MC_Agent\data\crawler_exports\jina\...",
         "playwright": r"D:\magic\MC_Agent\data\crawler_exports\playwright\...",
         "browser_collect": r"用户指定目录，或 D:\magic\MC_Agent\data\crawler_exports\browser_collect\...",
+        "modpack_download": r"D:\magic\MC_Agent\data\crawler_exports\modpack_download\...",
         "modpack_internal": r"D:\magic\MC_Agent\data\crawler_exports\manual_research\...",
         "topic_discovery": r"D:\magic\MC_Agent\data\crawler_exports\topic_discovery\...",
     }.get(_source_alias(source), r"D:\magic\MC_Agent\data\crawler_exports\...")
 
 
 def _modpack_archive_for_query(query: str) -> str:
-    archives = list((PROJECT_ROOT / "data" / "manual_research").glob("**/pack_archive/*.zip"))
+    archive_root = PROJECT_ROOT / "data" / "manual_research"
+    archives = list(archive_root.glob("**/pack_archive/*.zip")) + list(archive_root.glob("**/pack_archive/*.mrpack"))
     if not archives:
         return ""
     query_text = str(query or "")
@@ -876,6 +898,15 @@ def _round_command(source: str, payload: dict[str, Any]) -> list[str]:
             "--max-queries",
             str(int(payload.get("max_queries") or 40)),
         ]
+    if source == "modpack_download":
+        return [
+            sys.executable,
+            str(PROJECT_ROOT / "scripts" / "fetch_modpack_archive_seed.py"),
+            "--query",
+            query,
+            "--limit",
+            str(int(payload.get("search_limit") or payload.get("max_urls") or 8)),
+        ]
     if source == "modpack_internal":
         archive = str(payload.get("zip") or _modpack_archive_for_query(query) or "").strip()
         if not archive:
@@ -914,7 +945,7 @@ def _round_command(source: str, payload: dict[str, Any]) -> list[str]:
 
 def _command_timeout(source: str) -> int:
     source = _source_alias(source)
-    if source in {"followup", "web_discovery", "tavily", "firecrawl", "jina", "playwright", "browser_collect"}:
+    if source in {"followup", "web_discovery", "tavily", "firecrawl", "jina", "playwright", "browser_collect", "modpack_download"}:
         return 360
     if source in {"modrinth", "mcmod"}:
         return 240
@@ -1000,14 +1031,19 @@ def _crawler_manifest_stats(export_dir: str) -> dict[str, Any]:
     records = data.get("records") if isinstance(data.get("records"), list) else []
     skipped = data.get("skipped") if isinstance(data.get("skipped"), list) else []
     errors = data.get("errors") if isinstance(data.get("errors"), list) else []
+    downloads = data.get("downloads") if isinstance(data.get("downloads"), list) else []
+    candidates = data.get("candidates") if isinstance(data.get("candidates"), list) else []
     return {
         "manifest_path": str(manifest_path) if manifest_path.exists() else "",
         "records": len(records),
         "skipped": len(skipped),
         "errors": len(errors),
+        "downloads": len(downloads),
+        "candidates": len(candidates),
         "status": str(data.get("status") or ""),
         "note": str(data.get("note") or ""),
         "failure_reason": str(data.get("failure_reason") or ""),
+        "next_action": str(data.get("next_action") or ""),
     }
 
 
@@ -2089,7 +2125,33 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
                     str(task_payload.get("query") or ""),
                     plan,
                 )
-            if task_source == "browser_collect" and result["returncode"] == 0 and records_loaded > 0:
+            if task_source == "modpack_download" and result["returncode"] == 0:
+                downloads_loaded = int(result["manifest_stats"].get("downloads") or 0)
+                if downloads_loaded > 0:
+                    success_count += 1
+                    result["archive_downloaded"] = True
+                    followup_task = {
+                        "source": "modpack_internal",
+                        "query": str(task_payload.get("query") or question),
+                        "reason": "Crawler downloaded a public modpack archive; parse internal manifest/modlist/quests/scripts next.",
+                        "priority": 146,
+                    }
+                    if _crawler_task_identity(followup_task) not in {_crawler_task_identity(existing) for existing in tasks} and len(tasks) < max_total_tasks:
+                        tasks.insert(index, followup_task)
+                        plan.setdefault("agent_reflections", []).append(
+                            {
+                                "at_index": index,
+                                "action": "add_tasks",
+                                "reason": "公开整合包包体已下载，下一步应解析内部文件，而不是继续只搜网页。",
+                                "planner": "executor objective result",
+                                "tasks": [followup_task],
+                            }
+                        )
+                else:
+                    failure_count += 1
+                    result["archive_not_found"] = True
+                    result["failure_reason"] = result["manifest_stats"].get("failure_reason") or "未发现可公开直接下载的 .mrpack/.zip 整合包包体。"
+            elif task_source == "browser_collect" and result["returncode"] == 0 and records_loaded > 0:
                 success_count += 1
                 delivery_target = str(plan.get("delivery_target") or payload.get("delivery_target") or "").lower()
                 if "rag" in delivery_target or "mcagent" in delivery_target:
@@ -2245,7 +2307,6 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
 
 
 def _plan_crawler_with_job_timeout(job: Job, question: str, config: AppConfig, max_tasks: int, session_summary: dict[str, Any] | None) -> dict[str, Any]:
-    timeout = int(DEFAULT_CRAWLER_PLANNER_TIMEOUT_SECONDS)
     planner_topic = question
     handoff_brief = ""
     if isinstance(session_summary, dict):
@@ -2282,16 +2343,6 @@ def _plan_crawler_with_job_timeout(job: Job, question: str, config: AppConfig, m
                                 {"phase": "verify", "status": "pending"},
                             ],
                         },
-                    )
-                if time.time() - started > timeout:
-                    future.cancel()
-                    executor.shutdown(wait=False, cancel_futures=True)
-                    return plan_crawler_tasks_rule_fallback(
-                        question,
-                        config.paths.source_dir,
-                        max_tasks=max_tasks,
-                        planner_error=f"planner timed out after {timeout}s",
-                        session_summary=session_summary,
                     )
     finally:
         if future.done():
@@ -5059,6 +5110,72 @@ def _agent_tool_decision(
         }
 
 
+def _agent_confirm_next_step(
+    config: AppConfig,
+    payload: dict[str, Any],
+    *,
+    agent: str,
+    model: str,
+    original_question: str,
+    session_summary: dict[str, Any],
+    proposed_tool: str,
+    proposed_goal: str,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Ask the active Agent LLM to confirm the next tool action.
+
+    This is not a final answer and not a hardcoded router. It is a small
+    observable checkpoint so MCagent/Crawler-style flows do not silently jump
+    from one tool to the next without the Agent confirming intent.
+    """
+    if agent == "retriever_only" or bool(payload.get("no_llm")):
+        return {"proceed": True, "tool": proposed_tool, "goal": proposed_goal, "reason": "runtime mode confirmed", "planner": "runtime"}
+    try:
+        client, label = _selected_llm_client(config, model, 0.0)
+        prompt = (
+            "你是当前 Agent 的下一步行动确认器。只确认下一步工具动作，不回答用户问题，不写最终答案。\n"
+            "必须基于用户原话、会话摘要、上一步决策和当前上下文判断：现在是否应该执行 proposed_tool，目标是否说清楚，是否需要改用另一个允许工具。\n"
+            "允许工具：answer, planned_workflow, status, delegate_crawler, local_rag_search, evidence_select, final_answer_llm。\n"
+            "如果 proposed_tool 合理，proceed=true；如果不合理，proceed=false 并给出 suggested_tool。不要拆 Crawler 的搜索词，不要替工具生成最终回答。\n"
+            "只输出 JSON。\n"
+            f"active_agent: {agent}\n"
+            f"original_user_message: {original_question}\n"
+            f"session_summary: {json.dumps(session_summary or {}, ensure_ascii=False)}\n"
+            f"proposed_tool: {proposed_tool}\n"
+            f"proposed_goal: {proposed_goal}\n"
+            f"context: {json.dumps(context or {}, ensure_ascii=False)}\n"
+            "JSON schema: {\"proceed\":true, \"tool\":\"工具名\", \"suggested_tool\":\"可选\", \"goal\":\"确认后的下一步目标\", \"reason\":\"一句理由\", \"concern\":\"可选风险\"}"
+        )
+        raw_text = client.chat(
+            [
+                {"role": "system", "content": "只输出合法 JSON。"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.0,
+            max_tokens=700,
+        )
+        value = _json_object_from_llm_text(raw_text)
+        tool = str(value.get("tool") or proposed_tool).strip() or proposed_tool
+        suggested = str(value.get("suggested_tool") or "").strip()
+        return {
+            "proceed": bool(value.get("proceed", True)),
+            "tool": tool,
+            "suggested_tool": suggested,
+            "goal": str(value.get("goal") or proposed_goal).strip()[:500],
+            "reason": str(value.get("reason") or "Agent confirmed next step.").strip()[:500],
+            "concern": str(value.get("concern") or "").strip()[:500],
+            "planner": label,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "proceed": True,
+            "tool": proposed_tool,
+            "goal": proposed_goal,
+            "reason": f"Next-step confirmation failed; continuing with prior Agent decision: {type(exc).__name__}: {exc}",
+            "planner": "fallback_after_confirmation_error",
+        }
+
+
 def _retrieval_planning_summary(summary: dict[str, Any], original_question: str, contextual_question: str) -> dict[str, Any]:
     merged = dict(summary or {})
     if contextual_question != original_question:
@@ -5179,12 +5296,40 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
         add_trace("plan", "created", {"steps": action_plan})
     if rag_focus:
         add_trace("plan", "rag_focus", {"question": rag_focus})
+    route_confirmation = _agent_confirm_next_step(
+        config,
+        payload,
+        agent=agent,
+        model=model,
+        original_question=original_question,
+        session_summary=session_summary,
+        proposed_tool=route_intent,
+        proposed_goal=str(tool_decision.get("reason") or "确认本轮应执行的工具路径。"),
+        context={"tool_decision": tool_decision, "action_plan": action_plan},
+    )
+    add_trace("decide", "next_step_confirmed", route_confirmation)
+    if not bool(route_confirmation.get("proceed", True)):
+        suggested_tool = str(route_confirmation.get("suggested_tool") or route_confirmation.get("tool") or "").strip()
+        if suggested_tool in {"answer", "planned_workflow", "status", "delegate_crawler"}:
+            route_intent = suggested_tool
     planned_workflow = route_intent == "planned_workflow"
     planned_delegate = planned_workflow and _action_plan_has_tool(action_plan, "delegate_crawler")
     if planned_workflow:
         route_intent = "answer"
     if route_intent == "delegate_crawler":
         collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
+        delegate_confirmation = _agent_confirm_next_step(
+            config,
+            payload,
+            agent=agent,
+            model=model,
+            original_question=original_question,
+            session_summary=session_summary,
+            proposed_tool="delegate_crawler",
+            proposed_goal=f"把采集目标交给 CrawlerAgent：{collection_question}",
+            context={"collection_target": collection_question, "delivery_target": tool_decision.get("delivery_target") or ""},
+        )
+        add_trace("delegate", "next_step_confirmed", delegate_confirmation)
         handoff = _delegation_handoff(payload, original_question, collection_question)
         requested_by = handoff["requested_by"]
         if str(payload.get("delivery_target") or "").strip():
@@ -5234,6 +5379,18 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
             trace,
         )
     if route_intent == "status":
+        status_confirmation = _agent_confirm_next_step(
+            config,
+            payload,
+            agent=agent,
+            model=model,
+            original_question=original_question,
+            session_summary=session_summary,
+            proposed_tool="status",
+            proposed_goal="读取采集、入库和后台任务状态。",
+            context={},
+        )
+        add_trace("status", "next_step_confirmed", status_confirmation)
         return _with_trace(_crawler_monitor_answer(config), trace)
 
     retriever = Retriever(config)
@@ -5242,6 +5399,18 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
     final_k = _adaptive_final_context_k(evidence_question, config, agent)
     retrieval_plan = None
     if agent == "mcagent_rag":
+        retrieval_confirmation = _agent_confirm_next_step(
+            config,
+            payload,
+            agent=agent,
+            model=model,
+            original_question=original_question,
+            session_summary=session_summary,
+            proposed_tool="local_rag_search",
+            proposed_goal=f"检索本地资料库以回答：{evidence_question}",
+            context={"evidence_question": evidence_question, "rough_k": rough_k, "final_context_k": final_k},
+        )
+        add_trace("retrieve", "next_step_confirmed", retrieval_confirmation)
         planning_summary = _retrieval_planning_summary(session_summary, original_question, evidence_question)
         add_trace("retrieve", "planning", {"question": evidence_question, "original": original_question})
         retrieval_plan = plan_retrieval(evidence_question, session_summary=planning_summary, max_queries=10, use_llm=True)
@@ -5363,6 +5532,18 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
     else:
         add_trace("answer", "generating", {"model": model})
         answer_question = _answer_question_for_user(original_question, question, retrieval_note)
+        answer_confirmation = _agent_confirm_next_step(
+            config,
+            payload,
+            agent=agent,
+            model=model,
+            original_question=original_question,
+            session_summary=session_summary,
+            proposed_tool="final_answer_llm",
+            proposed_goal=f"基于已筛选证据组织最终回答：{answer_question}",
+            context={"selected_sources": len(selected), "evidence_question": evidence_question},
+        )
+        add_trace("answer", "next_step_confirmed", answer_confirmation)
         if emit is not None:
             answer, context = _generate_grounded_answer_stream(
                 config,
@@ -5573,6 +5754,16 @@ class MCagentHandler(BaseHTTPRequestHandler):
             return
         if request_path == "/api/jobs/start-crawler":
             crawler_payload = dict(payload)
+            if _has_likely_encoding_damage(crawler_payload):
+                _send_json(
+                    self,
+                    {
+                        "error": "request text appears to be encoding-damaged; please resend as UTF-8 JSON",
+                        "hint": "Do not send Chinese JSON through a misconfigured PowerShell command. Use the web UI or a UTF-8 client.",
+                    },
+                    status=400,
+                )
+                return
             crawler_payload.setdefault("agent", "crawler_agent")
             job, created = _delegate_crawler_for_missing_data(config, crawler_payload, str(crawler_payload.get("question") or crawler_payload.get("query") or ""))
             _send_json(self, {"job": _job_to_dict(job), "created": created}, status=202 if created else 409)

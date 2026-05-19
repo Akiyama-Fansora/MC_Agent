@@ -158,6 +158,14 @@ PROVIDERS: dict[str, ProviderSpec] = {
         timeout_seconds=900,
         notes="通用结构化浏览器采集，按目标字段保存 CSV/JSON/report/raw HTML/截图到指定目录；不会绕过登录、验证码或安全验证。",
     ),
+    "modpack_download": ProviderSpec(
+        id="modpack_download",
+        label="Modpack Archive Discovery/Download",
+        capabilities=ProviderCapability(search=True, extract=True, crawl=True),
+        default_limit=8,
+        timeout_seconds=1200,
+        notes="发现公开 .mrpack/.zip 整合包包体并保存到本地 manual_research，供 modpack_internal 继续解析；不会绕过登录、付费、网盘或验证码限制。",
+    ),
 }
 
 

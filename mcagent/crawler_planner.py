@@ -117,6 +117,13 @@ TOOLSETS: dict[str, Toolset] = {
         default_limit=50,
         timeout_seconds=900,
     ),
+    "modpack_download": Toolset(
+        id="modpack_download",
+        label="Modpack Archive Discovery/Download",
+        purpose="发现并下载公开 .mrpack/.zip 整合包包体，保存到本地 manual_research，供整合包内部解析工具继续抽取 manifest、modlist、任务、脚本和配方；不绕过登录、付费、网盘或验证码。",
+        default_limit=8,
+        timeout_seconds=1200,
+    ),
 }
 
 

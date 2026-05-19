@@ -12,7 +12,7 @@ from .llm import OllamaOpenAIClient, OpenAICompatibleClient
 
 
 AGENTTEST_LLM_ENV = Path(r"D:\magic\AgentTest\config\llm.env")
-ALLOWED_SOURCES = {"topic_discovery", "modpack_internal", "mcmod", "modrinth", "followup", "tavily", "firecrawl", "jina", "web_discovery", "playwright", "browser_collect", "mediawiki", "ftbwiki", "createwiki"}
+ALLOWED_SOURCES = {"topic_discovery", "modpack_internal", "modpack_download", "mcmod", "modrinth", "followup", "tavily", "firecrawl", "jina", "web_discovery", "playwright", "browser_collect", "mediawiki", "ftbwiki", "createwiki"}
 
 SOURCE_DEFAULTS: dict[str, dict[str, Any]] = {
     "modpack_internal": {"priority": 145},
@@ -26,6 +26,7 @@ SOURCE_DEFAULTS: dict[str, dict[str, Any]] = {
     "web_discovery": {"priority": 62, "search_limit": 8, "max_urls": 8},
     "playwright": {"priority": 82, "search_limit": 8, "max_urls": 6},
     "browser_collect": {"priority": 120, "max_items": 50},
+    "modpack_download": {"priority": 130, "search_limit": 8},
     "ftbwiki": {"priority": 80, "search_limit": 8},
     "createwiki": {"priority": 80, "search_limit": 8},
     "mediawiki": {"priority": 50, "search_limit": 8},
@@ -391,16 +392,16 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
     queries = [*coverage_only_queries, *_target_queries(target)]
     queries = list(dict.fromkeys(query for query in queries if query))
     if prefer_external:
-        sources = ["tavily", "firecrawl", "jina", "web_discovery", "playwright", "followup", "mcmod", "modrinth"]
+        sources = ["tavily", "firecrawl", "jina", "web_discovery", "playwright", "modpack_download", "followup", "mcmod", "modrinth"]
     else:
-        sources = ["mcmod", "modrinth", "tavily", "firecrawl", "jina", "web_discovery", "followup", "playwright"]
+        sources = ["mcmod", "modrinth", "modpack_download", "tavily", "firecrawl", "jina", "web_discovery", "followup", "playwright"]
     if any(term in _planner_context_text(question, session_summary) for term in ("完整", "完整资料", "完整数据", "全量", "发现", "未知主题")):
         sources.insert(0, "topic_discovery")
     if any(term.lower() in _planner_context_text(question, session_summary).lower() for term in ("安装包", "内部文件", "ftb", "kubejs", "openloader", "modlist", "manifest", "整合包完整")):
         sources.insert(0, "modpack_internal")
     tasks: list[dict[str, Any]] = []
     for source in sources:
-        if source in {"modrinth", "followup", "modpack_internal"}:
+        if source in {"modrinth", "followup", "modpack_internal", "modpack_download"}:
             source_queries = [target]
         elif source == "playwright":
             source_queries = queries[:2]
@@ -558,6 +559,27 @@ def _json_from_text(text: str) -> dict[str, Any]:
         raise last_error or ValueError("planner did not return parseable JSON")
     if not isinstance(value, dict):
         raise ValueError("planner did not return a JSON object")
+    return value
+
+
+def _repair_planner_json(client: OpenAICompatibleClient, text: str, *, label: str, schema: dict[str, Any]) -> dict[str, Any]:
+    prompt = (
+        "The previous CrawlerAgent planner output was not valid JSON. "
+        "Repair it into one complete valid JSON object that matches the schema. "
+        "Do not add Markdown or prose. If content is truncated, keep only complete useful fields and tasks.\n"
+        f"Schema example: {json.dumps(schema, ensure_ascii=False)}\n"
+        f"Broken output:\n{text[:8000]}"
+    )
+    repaired = client.chat(
+        [
+            {"role": "system", "content": "Output only valid JSON."},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.0,
+        max_tokens=2800,
+    )
+    value = _json_from_text(repaired)
+    value["_planner_model"] = f"{label} json-repair"
     return value
 
 
@@ -724,9 +746,9 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
         raw_sources = []
     sources = [str(source).strip() for source in raw_sources if str(source).strip() in ALLOWED_SOURCES]
     if not sources:
-        sources = ["mcmod", "jina", "web_discovery", "playwright", "tavily", "firecrawl"]
+        sources = ["mcmod", "jina", "web_discovery", "playwright", "modpack_download", "tavily", "firecrawl"]
     if "mcmod" in sources:
-        for source in ("jina", "web_discovery", "playwright", "tavily", "firecrawl"):
+        for source in ("jina", "web_discovery", "playwright", "modpack_download", "tavily", "firecrawl"):
             if source not in sources:
                 sources.append(source)
 
@@ -756,7 +778,7 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
     for source in sources:
         if source == "browser_collect" and any(str(item.get("source") or "") == "browser_collect" for item in tasks):
             continue
-        if source in {"modrinth", "followup", "mediawiki", "ftbwiki", "createwiki"}:
+        if source in {"modrinth", "followup", "mediawiki", "ftbwiki", "createwiki", "modpack_download"}:
             source_queries = [topic or queries[0]]
         elif source == "playwright":
             source_queries = queries[:2]
@@ -833,7 +855,7 @@ def plan_crawler_tasks_with_llm(question: str, source_dir: Path, *, max_tasks: i
             "known issues and useful tutorials",
         ],
         "subqueries": ["short search phrase, not the full user sentence"],
-        "sources": ["modpack_internal", "browser_collect", "mcmod", "modrinth", "tavily", "firecrawl", "jina", "web_discovery", "followup", "playwright"],
+        "sources": ["modpack_internal", "modpack_download", "browser_collect", "mcmod", "modrinth", "tavily", "firecrawl", "jina", "web_discovery", "followup", "playwright"],
         "tasks": [{"source": "browser_collect", "query": "short task/query", "reason": "why this source/query", "priority": 120, "output_dir": "optional user requested folder", "max_items": 50, "fields": ["name", "price", "url"]}],
         "success_criteria": [
             "save markdown plus manifest",
@@ -853,10 +875,12 @@ def plan_crawler_tasks_with_llm(question: str, source_dir: Path, *, max_tasks: i
             "For general data collection tasks that ask for structured fields and a save location, use browser_collect. It can open a browser, collect item rows, and save CSV/JSON/report to output_dir. Keep the user's requested output_dir exactly.\n"
             "For full Minecraft modpack collection, cover: basic info, official/download/community links, mod list, quests/beginner route, key systems, items/recipes/acquisition, bosses, tutorials, known issues.\n"
             "If local archive or manifest exists, use modpack_internal first. It extracts manifest, modlist, FTB Quests, KubeJS, OpenLoader/data, recipes, config, raw text. Then use mcmod/modrinth/public web to fill gaps.\n"
+            "If no local archive exists, first discover official/download/project pages. Use modpack_download to look for public .mrpack/.zip archives and save them locally; after a real archive is downloaded, use modpack_internal. Use Modrinth with modpack contents for .mrpack projects; use Playwright/topic_discovery to find public download pages and preserve their HTML. Do not pretend the pack internals are available until an archive/manifest is actually downloaded or provided.\n"
             "Playwright is a first-class local browser collection tool, not only a last fallback. Use it when API search/extract is empty, quota-limited, blocked, JS-rendered, or when you need to preserve page HTML after normal readers lose tables, tabs, images, or download links.\n"
+            "When recent results are empty/off-topic or Firecrawl/Tavily quota fails, move Playwright or topic_discovery earlier instead of repeating the same API path. Browser-rendered evidence is often better for Chinese modpack pages, tabs, images, and download links.\n"
             "Queries must be short. Do not use the whole user sentence as a query. Component/system queries may omit the parent pack name when context confirms membership; later validation judges relevance.\n"
             "For MCagent/RAG delivery, require Markdown, manifest, stable title, source URL/internal path, metadata, dedupe key, raw_html/raw_text where available.\n"
-            "Available sources: modpack_internal, browser_collect, mcmod, modrinth, followup, tavily, firecrawl, jina, web_discovery, playwright, mediawiki, ftbwiki, createwiki.\n"
+            "Available sources: modpack_internal, modpack_download, browser_collect, mcmod, modrinth, followup, tavily, firecrawl, jina, web_discovery, playwright, mediawiki, ftbwiki, createwiki.\n"
             "Return valid JSON only, no Markdown, no prose.\n"
             f"用户问题: {question}\n"
             f"采集目标提示: {target_hint or '未明确，请从问题和会话摘要判断'}\n"
@@ -870,8 +894,11 @@ def plan_crawler_tasks_with_llm(question: str, source_dir: Path, *, max_tasks: i
         {"role": "system", "content": "只输出合法 JSON。"},
         prompt,
     ], temperature=0.0, max_tokens=5000)
-    raw = _json_from_text(text)
-    raw["_planner_model"] = label
+    try:
+        raw = _json_from_text(text)
+        raw["_planner_model"] = label
+    except Exception:
+        raw = _repair_planner_json(client, text, label=label, schema=schema)
     return _sanitize_plan(raw, question, source_dir, max_tasks, session_summary=session_summary)
 
 
@@ -939,8 +966,10 @@ def reflect_crawler_progress(
             "Do not use the whole user request as a query. Keep queries short and reusable.\n"
             "If the task is for MCagent/RAG, prefer evidence that is citeable and chunkable; raw HTML support is valuable for hard pages.\n"
             "Playwright is a first-class browser tool. Prefer it when Firecrawl/Tavily/Jina fail, when a page needs rendering, or when project tabs/download pages need browser HTML.\n"
+            "For full modpack collection without a local archive, use modpack_download to find and save public .mrpack/.zip archives, and use Playwright/topic_discovery to inspect project/download pages and preserve download-link HTML. Use modpack_internal only after a real local archive/manifest is available.\n"
+            "If several API/search tasks are empty or off-topic, do not keep cycling similar queries; escalate to browser-rendered collection or finish with a clear blocked/missing-download reason.\n"
             "For structured extraction with requested fields/output directory, choose browser_collect and preserve output_dir/max_items/fields.\n"
-            "Available sources: modpack_internal, browser_collect, mcmod, modrinth, followup, tavily, firecrawl, jina, web_discovery, playwright, mediawiki, ftbwiki, createwiki.\n"
+            "Available sources: modpack_internal, modpack_download, browser_collect, mcmod, modrinth, followup, tavily, firecrawl, jina, web_discovery, playwright, mediawiki, ftbwiki, createwiki.\n"
             "Return valid JSON only.\n"
             f"question: {question}\n"
             f"session_summary: {json.dumps(session_summary or {}, ensure_ascii=False)}\n"
@@ -958,7 +987,10 @@ def reflect_crawler_progress(
             temperature=0.0,
             max_tokens=3600,
         )
-        raw = _json_from_text(raw_text)
+        try:
+            raw = _json_from_text(raw_text)
+        except Exception:
+            raw = _repair_planner_json(client, raw_text, label=label, schema=schema)
         action = str(raw.get("action") or "execute_pending").strip().lower()
         if action not in {"execute_pending", "add_tasks", "replan", "finish"}:
             action = "execute_pending"
@@ -1059,7 +1091,7 @@ def review_topic_discovery_candidates(
         "Output ONLY lines in this exact format, no markdown:\n"
         "ACCEPT|source|query|reason\n"
         "REJECT|topic|reason\n"
-        "Allowed source values: mcmod, tavily, firecrawl, jina, web_discovery, playwright.\n"
+        "Allowed source values: mcmod, tavily, firecrawl, jina, web_discovery, playwright, modpack_download.\n"
         "Prefer mcmod for Chinese MC百科/tutorial content; use tavily/web_discovery for video/community indexes. "
         "Do not choose generic homepage queries if specific candidates exist.\n"
         f"Target/question: {question}\n"
@@ -1076,7 +1108,7 @@ def review_topic_discovery_candidates(
     except Exception:
         short_prompt = (
             "Output only ACCEPT/REJECT lines. Format: ACCEPT|source|query|reason. "
-            "Allowed sources: mcmod,tavily,web_discovery. Pick useful Closing Song / 落幕曲 topics. "
+            "Allowed sources: mcmod,tavily,web_discovery,playwright,modpack_download. Pick useful topics for the target. "
             f"Target: {question}\n"
             f"Candidates: {json.dumps(compact_candidates[:12], ensure_ascii=False)}"
         )
@@ -1139,7 +1171,7 @@ def review_topic_discovery_candidates(
         )
         short_prompt = (
             "Output only ACCEPT lines. Format: ACCEPT|source|query|reason. "
-            "Allowed sources: mcmod,tavily,web_discovery. "
+            "Allowed sources: mcmod,tavily,web_discovery,playwright,modpack_download. "
             f"Target: {question}\n"
             f"Candidates: {json.dumps(compact_candidates[:10], ensure_ascii=False)}"
         )
@@ -1155,7 +1187,7 @@ def review_topic_discovery_candidates(
     tasks: list[dict[str, Any]] = []
     accepted_topics: list[str] = []
     rejected_topics: list[dict[str, str]] = []
-    allowed_sources = {"mcmod", "tavily", "firecrawl", "jina", "web_discovery", "playwright"}
+    allowed_sources = {"mcmod", "tavily", "firecrawl", "jina", "web_discovery", "playwright", "modpack_download"}
     for index, line in enumerate(text.splitlines()):
         parts = [part.strip() for part in line.strip().strip("-* ").split("|")]
         if not parts:
