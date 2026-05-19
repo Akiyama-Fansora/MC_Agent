@@ -28,6 +28,15 @@ from .crawler_planner import CONCEPTS, decompose_crawler_queries, plan_crawler_t
 from .evidence_selector import EvidenceSelector
 from .ingest import ingest_exports
 from .llm import OllamaOpenAIClient, OpenAICompatibleClient
+from .llm_profiles import (
+    client_for_agent,
+    client_from_profile,
+    profile_by_id,
+    profiles_payload,
+    resolve_profile_from_model,
+    save_profiles_payload,
+    test_profile_connection,
+)
 from .query_intent import analyze_query
 from .retrieval_planner import plan_retrieval
 from .retriever import Retriever
@@ -1433,27 +1442,7 @@ def _crawler_llm_record_relevance(
             }
         )
     config = load_config()
-    env = _read_llm_env()
-    if env.get("LLM_API_KEY"):
-        client: OpenAICompatibleClient = OpenAICompatibleClient(
-            OllamaConfig(
-                base_url=env.get("LLM_BASE_URL", "https://api.deepseek.com"),
-                model=env.get("LLM_MODEL_ID", "deepseek-v4-pro"),
-                temperature=0.0,
-                timeout_seconds=90,
-            ),
-            api_key=env.get("LLM_API_KEY", ""),
-            provider_label="CrawlerRelevance",
-        )
-    else:
-        client = OllamaOpenAIClient(
-            OllamaConfig(
-                base_url=config.ollama.base_url,
-                model=config.ollama.model,
-                temperature=0.0,
-                timeout_seconds=min(max(config.ollama.timeout_seconds, 45), 120),
-            )
-        )
+    client, _label = client_for_agent(config, "crawler_agent", temperature=0.0, timeout_seconds=90)
     prompt = (
         "You are CrawlerAgent judging crawler evidence for a RAG knowledge base.\n"
         "Important: a modpack can include component mods/items/systems. A useful page does NOT need to mention the modpack name if the task query or context indicates it is a component to collect.\n"
@@ -2476,7 +2465,14 @@ def _read_llm_env() -> dict[str, str]:
     return data
 
 
-def _selected_llm_client(config: AppConfig, model: str, temperature: float) -> tuple[OpenAICompatibleClient, str]:
+def _selected_llm_client(config: AppConfig, model: str, temperature: float, agent: str = "mcagent_rag") -> tuple[OpenAICompatibleClient, str]:
+    profile = resolve_profile_from_model(config, model, agent=agent)
+    if profile:
+        return client_from_profile(
+            profile,
+            temperature=temperature,
+            timeout_seconds=max(config.ollama.timeout_seconds, int(profile.get("timeout_seconds") or 180)),
+        )
     if model.startswith("cloud:deepseek:"):
         env = _read_llm_env()
         model_id = model.split(":", 2)[2] or env.get("LLM_MODEL_ID", "deepseek-v4-pro")
@@ -4482,10 +4478,22 @@ def _status_payload(config: AppConfig) -> dict[str, Any]:
 
 
 def _available_models(config: AppConfig) -> list[dict[str, Any]]:
-    return [
+    profile_models = [
+        {
+            "id": f"profile:{profile['id']}",
+            "value": f"profile:{profile['id']}",
+            "profile_id": profile["id"],
+            "label": str(profile.get("name") or profile.get("model") or profile.get("id")),
+            "provider": str(profile.get("provider") or "openai-compatible"),
+            "key_configured": bool(profile.get("key_configured")),
+        }
+        for profile in profiles_payload(config).get("profiles", [])
+    ]
+    legacy_models = [
         {"id": config.ollama.model, "label": f"Ollama {config.ollama.model}", "provider": "ollama"},
         {"id": "cloud:deepseek:deepseek-v4-pro", "label": "DeepSeek deepseek-v4-pro", "provider": "deepseek"},
     ]
+    return [*profile_models, *legacy_models]
 
 
 def _append_session(payload: dict[str, Any], question: str, answer: str, sources: list[dict[str, Any]]) -> None:
@@ -5255,7 +5263,16 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
     original_question = str(payload.get("question") or payload.get("query") or "").strip()
     question = original_question
     agent = str(payload.get("agent") or "mcagent_rag")
-    model = str(payload.get("model") or config.ollama.model)
+    profile_id = str(payload.get("model_profile_id") or "").strip()
+    if profile_id:
+        model = f"profile:{profile_id}"
+    else:
+        raw_model = str(payload.get("model") or "").strip()
+        if raw_model:
+            model = raw_model
+        else:
+            assigned = profiles_payload(config).get("assignments", {}).get("crawler_agent" if agent == "crawler_agent" else "mcagent_rag", "")
+            model = f"profile:{assigned}" if assigned else config.ollama.model
     temperature = float(payload.get("temperature") if payload.get("temperature") is not None else config.ollama.temperature)
     max_tokens = _answer_max_tokens(payload, question)
     trace: list[dict[str, Any]] = []
@@ -5689,6 +5706,9 @@ class MCagentHandler(BaseHTTPRequestHandler):
         if request_path == "/api/models":
             _send_json(self, {"models": _available_models(self._config())})
             return
+        if request_path == "/api/llm-profiles":
+            _send_json(self, profiles_payload(self._config()))
+            return
         if request_path == "/api/agents":
             _send_json(self, {"agents": AGENTS})
             return
@@ -5744,6 +5764,17 @@ class MCagentHandler(BaseHTTPRequestHandler):
             return
         if request_path == "/api/collaboration/start":
             _send_json(self, _chat(config, payload | {"agent": "mcagent_rag"}))
+            return
+        if request_path == "/api/llm-profiles":
+            _send_json(self, save_profiles_payload(config, payload))
+            return
+        if request_path == "/api/llm-profiles/test":
+            raw_profile = payload.get("profile") if isinstance(payload.get("profile"), dict) else {}
+            existing = profile_by_id(config, str(raw_profile.get("id") or payload.get("id") or "")) if raw_profile else None
+            try:
+                _send_json(self, test_profile_connection(raw_profile, existing=existing))
+            except Exception as exc:  # noqa: BLE001 - surface connection failure to the settings UI.
+                _send_json(self, {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=200)
             return
         if request_path == "/api/ingest":
             result = _ingest_after_crawl(config)

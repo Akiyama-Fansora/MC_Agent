@@ -25,7 +25,45 @@
       <section class="control-block">
         <h2>模型</h2>
         <select id="modelSelect"></select>
-        <button id="refreshModels" class="ghost-button" type="button">刷新模型</button>
+        <div class="model-actions">
+          <button id="testActiveModel" class="ghost-button" type="button">测试连接</button>
+          <button id="refreshModels" class="ghost-button" type="button">刷新</button>
+        </div>
+        <div id="modelStatus" class="source-meta">模型配置保存在本机 data 目录。</div>
+        <details class="llm-settings">
+          <summary>模型设置</summary>
+          <div class="settings-grid">
+            <label>MCagent 使用
+              <select id="mcagentProfileSelect"></select>
+            </label>
+            <label>Crawler 使用
+              <select id="crawlerProfileSelect"></select>
+            </label>
+          </div>
+          <label>配置项
+            <select id="profileEditorSelect"></select>
+          </label>
+          <div class="settings-grid">
+            <label>名称 <input id="profileName" type="text" placeholder="DeepSeek / Ollama / OpenAI"></label>
+            <label>模型名 <input id="profileModel" type="text" placeholder="deepseek-v4-pro"></label>
+          </div>
+          <label>Base URL <input id="profileBaseUrl" type="text" placeholder="https://api.deepseek.com 或 http://localhost:11434/v1"></label>
+          <label>API Key <input id="profileApiKey" type="password" placeholder="留空则保留已保存 key"></label>
+          <div class="settings-grid">
+            <label>类型
+              <select id="profileProvider">
+                <option value="openai-compatible">OpenAI 兼容</option>
+                <option value="ollama">Ollama 本地</option>
+              </select>
+            </label>
+            <label>超时秒 <input id="profileTimeout" type="number" min="15" max="900" value="180"></label>
+          </div>
+          <div class="model-actions">
+            <button id="newProfile" class="ghost-button" type="button">新增</button>
+            <button id="saveProfiles" type="button">保存设置</button>
+            <button id="deleteProfile" class="danger-outline" type="button">删除</button>
+          </div>
+        </details>
       </section>
 
       <section class="control-block compact-controls">

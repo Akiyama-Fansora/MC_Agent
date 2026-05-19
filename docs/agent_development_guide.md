@@ -760,3 +760,53 @@ CI 第二轮已通过。GitHub 同时提示 Node 20 action runtime 和 `windows-
 ~~~text
 LICENSE is missing; choose an open-source license before making the repository public.
 ~~~
+
+## 21. 网页模型配置与连接测试：2026-05-20
+
+本轮开始前已重新阅读本文档。用户要求在网页里增加设置栏，让用户自己配置 URL、KEY、LLM 名称，支持添加多个模型、测试连接、方便切换，并能分别设置 MCagent 与 CrawlerAgent 使用的 LLM。
+
+### 21.1 设计原则
+
+1. API Key 属于本机运行时配置，不进入 Git。后端保存到 `data/llm_profiles.json`，该目录已被 `.gitignore` 排除。
+2. 后端不会把原始 API Key 回显给前端；前端只显示是否已保存 key。需要修改 key 时重新输入。
+3. 模型配置是工具配置，不改变 Agent 原则。MCagent 和 CrawlerAgent 仍由各自 LLM 主导，只是 LLM endpoint 可以在 UI 中切换。
+4. CrawlerAgent 的 planner、反思和相关性判断默认使用分配给 `crawler_agent` 的 profile；MCagent 的工具选择、行动确认和最终回答使用分配给 `mcagent_rag` 的 profile。
+
+### 21.2 代码变更
+
+1. 新增 `mcagent/llm_profiles.py`：
+   - 读取默认 Ollama 配置。
+   - 读取本地 `.env` 或旧 AgentTest `llm.env` 中的云模型配置作为初始 profile。
+   - 保存/读取 `data/llm_profiles.json`。
+   - 根据 Agent 分配生成 OpenAI-compatible client。
+   - 提供连接测试函数。
+2. `web_server.py` 新增接口：
+   - `GET /api/llm-profiles`
+   - `POST /api/llm-profiles`
+   - `POST /api/llm-profiles/test`
+3. `web_server.py` 的 `_selected_llm_client()` 支持 `profile:<id>` 模型值；聊天请求可传 `model_profile_id`。
+4. `crawler_llm_planner.py` 的 Crawler planner 改为读取 CrawlerAgent 分配的 LLM profile，不再只依赖旧 `llm.env`。
+5. 前端 `frontend/index.html` / `frontend/static/app.js` / `frontend/static/app.css` 增加“模型设置”：
+   - 当前 Agent 模型切换。
+   - MCagent/CrawlerAgent 独立分配。
+   - 新增、保存、删除 profile。
+   - Base URL、模型名、API Key、类型、超时秒配置。
+   - 测试连接按钮。
+6. `public_readiness_check.py` 把 `mcagent/llm_profiles.py` 纳入公开必备文件。
+
+### 21.3 验证
+
+已执行并通过：
+
+~~~powershell
+python -m py_compile mcagent\web_server.py mcagent\crawler_llm_planner.py mcagent\llm_profiles.py
+node --check frontend\static\app.js
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+~~~
+
+已重启本地服务并验证：
+
+1. `GET /api/llm-profiles` 返回 `ollama-default` 和 `deepseek-env` 两个 profile。
+2. `POST /api/llm-profiles` 能保存 MCagent/CrawlerAgent 分配。
+3. `POST /api/llm-profiles/test` 测试 DeepSeek profile 成功，返回 `OK`。

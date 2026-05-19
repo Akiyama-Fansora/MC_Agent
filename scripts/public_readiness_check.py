@@ -28,6 +28,7 @@ REQUIRED_FILES = [
     "frontend/index.html",
     "frontend/static/app.js",
     "frontend/static/app.css",
+    "mcagent/llm_profiles.py",
     "mcagent/web_server.py",
     "scripts/check_text_encoding.py",
     "tests/smoke_test.py",

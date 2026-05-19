@@ -9,6 +9,7 @@ from .config import OllamaConfig, load_config
 from .crawler_planner import decompose_crawler_queries, plan_crawler_tasks
 from .agent_memory import read_memory_events
 from .llm import OllamaOpenAIClient, OpenAICompatibleClient
+from .llm_profiles import client_for_agent
 
 
 AGENTTEST_LLM_ENV = Path(r"D:\magic\AgentTest\config\llm.env")
@@ -491,23 +492,7 @@ def _read_env_file(path: Path) -> dict[str, str]:
 
 def _planner_client() -> tuple[OpenAICompatibleClient, str]:
     config = load_config()
-    env = _read_env_file(AGENTTEST_LLM_ENV)
-    if env.get("LLM_API_KEY"):
-        model = env.get("LLM_MODEL_ID", "deepseek-v4-pro")
-        endpoint_config = OllamaConfig(
-            base_url=env.get("LLM_BASE_URL", "https://api.deepseek.com"),
-            model=model,
-            temperature=0.0,
-            timeout_seconds=90,
-        )
-        return OpenAICompatibleClient(endpoint_config, api_key=env.get("LLM_API_KEY", ""), provider_label="CrawlerPlanner"), f"DeepSeek {model}"
-    endpoint_config = OllamaConfig(
-        base_url=config.ollama.base_url,
-        model=config.ollama.model,
-        temperature=0.0,
-        timeout_seconds=75,
-    )
-    return OllamaOpenAIClient(endpoint_config), f"Ollama {endpoint_config.model}"
+    return client_for_agent(config, "crawler_agent", temperature=0.0, timeout_seconds=90)
 
 
 def _first_json_object(text: str) -> str:

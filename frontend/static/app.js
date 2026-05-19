@@ -10,6 +10,9 @@ const state = {
   lastDatabase: null,
   trackedJobs: {},
   expandedSections: {},
+  llmProfiles: [],
+  llmAssignments: {},
+  editingProfileId: "",
 };
 
 const $ = (id) => document.getElementById(id);
@@ -263,8 +266,105 @@ function renderAgents() {
       renderSessions();
       renderMessages();
       renderSources([]);
+      renderLlmSettings();
     });
   });
+}
+
+function activeProfileAgentId() {
+  return state.activeAgent === "crawler_agent" ? "crawler_agent" : "mcagent_rag";
+}
+
+function profileLabel(profile) {
+  const keyText = profile.key_configured ? "已保存 key" : (profile.provider === "ollama" ? "本地" : "无 key");
+  return `${profile.name || profile.model || profile.id} · ${profile.model || "未填模型"} · ${keyText}`;
+}
+
+function profileById(profileId) {
+  return state.llmProfiles.find((profile) => profile.id === profileId) || null;
+}
+
+function selectedProfileId(agentId = activeProfileAgentId()) {
+  return state.llmAssignments[agentId] || state.llmProfiles[0]?.id || "";
+}
+
+function profileOptions(selectedId = "") {
+  return state.llmProfiles.map((profile) => `
+    <option value="${escapeHtml(profile.id)}" ${profile.id === selectedId ? "selected" : ""}>${escapeHtml(profileLabel(profile))}</option>
+  `).join("");
+}
+
+function renderLlmSettings() {
+  const modelSelect = $("modelSelect");
+  if (!modelSelect) return;
+  const activeId = selectedProfileId();
+  modelSelect.innerHTML = profileOptions(activeId);
+  modelSelect.value = activeId;
+  if ($("mcagentProfileSelect")) $("mcagentProfileSelect").innerHTML = profileOptions(selectedProfileId("mcagent_rag"));
+  if ($("crawlerProfileSelect")) $("crawlerProfileSelect").innerHTML = profileOptions(selectedProfileId("crawler_agent"));
+  if ($("profileEditorSelect")) {
+    if (!state.editingProfileId || !profileById(state.editingProfileId)) state.editingProfileId = activeId || state.llmProfiles[0]?.id || "";
+    $("profileEditorSelect").innerHTML = profileOptions(state.editingProfileId);
+    $("profileEditorSelect").value = state.editingProfileId;
+    fillProfileForm(profileById(state.editingProfileId));
+  }
+}
+
+function fillProfileForm(profile) {
+  if (!$("profileName")) return;
+  $("profileName").value = profile?.name || "";
+  $("profileModel").value = profile?.model || "";
+  $("profileBaseUrl").value = profile?.base_url || "";
+  $("profileApiKey").value = "";
+  $("profileApiKey").placeholder = profile?.key_configured ? "已保存 key；留空不修改" : "输入 API Key；本地 Ollama 可留空";
+  $("profileProvider").value = profile?.provider || "openai-compatible";
+  $("profileTimeout").value = profile?.timeout_seconds || 180;
+}
+
+function syncProfileFormToState() {
+  const id = state.editingProfileId;
+  if (!id) return null;
+  let profile = profileById(id);
+  if (!profile) {
+    profile = { id };
+    state.llmProfiles.push(profile);
+  }
+  profile.name = $("profileName").value.trim() || $("profileModel").value.trim() || id;
+  profile.model = $("profileModel").value.trim();
+  profile.base_url = $("profileBaseUrl").value.trim().replace(/\/+$/, "");
+  profile.provider = $("profileProvider").value || "openai-compatible";
+  profile.timeout_seconds = Number($("profileTimeout").value || 180);
+  const apiKey = $("profileApiKey").value.trim();
+  if (apiKey) profile.api_key = apiKey;
+  return profile;
+}
+
+async function saveLlmSettings(statusText = "模型设置已保存。") {
+  syncProfileFormToState();
+  const payload = {
+    profiles: state.llmProfiles,
+    assignments: state.llmAssignments,
+  };
+  const data = await api("/api/llm-profiles", { method: "POST", body: JSON.stringify(payload) });
+  state.llmProfiles = data.profiles || [];
+  state.llmAssignments = data.assignments || {};
+  $("modelStatus").textContent = statusText;
+  renderLlmSettings();
+  await loadModels();
+}
+
+async function testProfile(profile) {
+  if (!profile) return;
+  const testing = { ...profile };
+  const apiKey = $("profileApiKey")?.value.trim();
+  if (apiKey && testing.id === state.editingProfileId) testing.api_key = apiKey;
+  $("modelStatus").textContent = `正在测试 ${testing.name || testing.model}...`;
+  const data = await api("/api/llm-profiles/test", { method: "POST", body: JSON.stringify({ id: testing.id, profile: testing }) });
+  if (data.ok) {
+    $("modelStatus").textContent = `连接成功：${data.label}，${data.elapsed_ms} ms，返回：${data.sample || "OK"}`;
+  } else {
+    $("modelStatus").textContent = `连接失败：${data.error || "未知错误"}`;
+  }
 }
 
 function renderSessions() {
@@ -847,19 +947,11 @@ async function loadAgents() {
 }
 
 async function loadModels() {
-  const data = await api("/api/models");
-  state.models = data.models || [];
-  $("modelSelect").innerHTML = state.models.map((model) => {
-    const value = model.value || model.id;
-    const label = model.label || model.id;
-    const suffix = model.provider === "cloud" && !model.key_configured ? "（未配置 key）" : "";
-    return `<option value="${escapeHtml(value)}">${escapeHtml(label + suffix)}</option>`;
-  }).join("");
-  if ([...$("modelSelect").options].some((option) => option.value === "local:ollama:qwen3-4b-agent-16k:latest")) {
-    $("modelSelect").value = "local:ollama:qwen3-4b-agent-16k:latest";
-  } else if ([...$("modelSelect").options].some((option) => option.value === "qwen3-4b-agent-16k:latest")) {
-    $("modelSelect").value = "qwen3-4b-agent-16k:latest";
-  }
+  const data = await api("/api/llm-profiles");
+  state.llmProfiles = data.profiles || [];
+  state.llmAssignments = data.assignments || {};
+  state.models = state.llmProfiles.map((profile) => ({ id: profile.id, label: profileLabel(profile) }));
+  renderLlmSettings();
 }
 
 async function loadStatus() {
@@ -967,7 +1059,8 @@ async function sendQuestion(event) {
     agent: $("noLlm").checked && state.activeAgent === "mcagent_rag" ? "retriever_only" : state.activeAgent,
     question,
     history: requestHistoryForAgent(session, pendingIndex),
-    model: $("modelSelect").value,
+    model_profile_id: $("modelSelect").value,
+    model: `profile:${$("modelSelect").value}`,
     temperature: Number($("temperature").value || 0.2),
     max_tokens: "auto",
     no_llm: $("noLlm").checked,
@@ -1118,6 +1211,71 @@ function initEvents() {
   });
   $("reloadStatus").addEventListener("click", loadStatus);
   $("refreshModels").addEventListener("click", loadModels);
+  $("testActiveModel").addEventListener("click", () => testProfile(profileById($("modelSelect").value)));
+  $("modelSelect").addEventListener("change", async () => {
+    state.llmAssignments[activeProfileAgentId()] = $("modelSelect").value;
+    try {
+      await saveLlmSettings("当前 Agent 的模型已切换。");
+    } catch (error) {
+      $("modelStatus").textContent = `保存失败：${error.message}`;
+    }
+  });
+  $("mcagentProfileSelect").addEventListener("change", async () => {
+    state.llmAssignments.mcagent_rag = $("mcagentProfileSelect").value;
+    try {
+      await saveLlmSettings("MCagent 模型已保存。");
+    } catch (error) {
+      $("modelStatus").textContent = `保存失败：${error.message}`;
+    }
+  });
+  $("crawlerProfileSelect").addEventListener("change", async () => {
+    state.llmAssignments.crawler_agent = $("crawlerProfileSelect").value;
+    try {
+      await saveLlmSettings("CrawlerAgent 模型已保存。");
+    } catch (error) {
+      $("modelStatus").textContent = `保存失败：${error.message}`;
+    }
+  });
+  $("profileEditorSelect").addEventListener("change", () => {
+    state.editingProfileId = $("profileEditorSelect").value;
+    renderLlmSettings();
+  });
+  $("newProfile").addEventListener("click", () => {
+    const id = `custom-${Date.now()}`;
+    state.llmProfiles.push({
+      id,
+      name: "新模型",
+      provider: "openai-compatible",
+      base_url: "",
+      model: "",
+      timeout_seconds: 180,
+      key_configured: false,
+    });
+    state.editingProfileId = id;
+    renderLlmSettings();
+  });
+  $("saveProfiles").addEventListener("click", async () => {
+    try {
+      await saveLlmSettings();
+    } catch (error) {
+      $("modelStatus").textContent = `保存失败：${error.message}`;
+    }
+  });
+  $("deleteProfile").addEventListener("click", async () => {
+    const profile = profileById(state.editingProfileId);
+    if (!profile) return;
+    if (!window.confirm(`删除模型配置“${profile.name || profile.id}”？`)) return;
+    state.llmProfiles = state.llmProfiles.filter((item) => item.id !== profile.id);
+    for (const agentId of ["mcagent_rag", "crawler_agent"]) {
+      if (state.llmAssignments[agentId] === profile.id) state.llmAssignments[agentId] = state.llmProfiles[0]?.id || "";
+    }
+    state.editingProfileId = state.llmProfiles[0]?.id || "";
+    try {
+      await saveLlmSettings("模型配置已删除。");
+    } catch (error) {
+      $("modelStatus").textContent = `删除失败：${error.message}`;
+    }
+  });
   $("runIngest").addEventListener("click", runIngest);
   $("runCrawler").addEventListener("click", runCrawler);
   $("crawlerRounds").addEventListener("input", () => renderJobs(state.jobs));

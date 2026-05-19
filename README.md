@@ -24,6 +24,7 @@ D:\magic\MC_Agent
 ```text
 data\mcagent.sqlite           # 文档与 chunk
 data\vector_index.npz         # NumPy 向量矩阵
+data\llm_profiles.json        # 本机模型 URL / 模型名 / API Key 配置，不提交 Git
 ```
 
 ## 安装
@@ -158,6 +159,7 @@ http://127.0.0.1:8765
 
 - 多会话标签，多开浏览器窗口时按 session_id 隔离。
 - 切换 `MCagent` 和 `Crawler` 两个真实 Agent；`仅检索` 是 MCagent 的模式，不是第三个 Agent。
+- 在“模型设置”里维护多组 OpenAI-compatible / Ollama 配置，分别指定 MCagent 和 CrawlerAgent 使用的 LLM，并可测试连接。
 - 流式显示 MCagent 思考状态、工具计划、LLM delta 输出和 Crawler 进度。
 - 切换模型、温度、是否仅检索。
 - 查看本地索引统计、crawler_exports 状态、最近 AgentTest run。
