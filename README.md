@@ -190,6 +190,8 @@ python scripts\public_readiness_check.py
 node --check frontend\static\app.js
 ```
 
+仓库已提供 GitHub Actions：`.github/workflows/ci.yml`。每次 push / pull request 会自动执行 Python 语法检查、UTF-8/乱码检查、公开准备检查、基础烟测和前端语法检查。
+
 ## 边界约定
 
 - Agent 必须由 LLM 主导。工具函数只能做检索、抓取、保存、状态查询、入库等客观执行。
@@ -208,3 +210,4 @@ node --check frontend\static\app.js
 5. CrawlerAgent 的公开网页采集、失败原因解释、RAG 入库流程测试通过。
 6. 前端无明显乱码、undefined、自动滚动抢焦点等问题。
 7. 至少有一份开发文档说明 Agent 职责、工具边界、RAG/SSE/Crawler 流程。
+8. 公开前由仓库所有者选择并添加 `LICENSE`。当前检查脚本会把缺少 LICENSE 作为 warning，而不是替用户擅自选择授权协议。

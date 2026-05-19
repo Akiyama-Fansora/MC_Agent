@@ -19,6 +19,7 @@ SECRET_PATTERNS = [
 REQUIRED_FILES = [
     ".gitattributes",
     ".gitignore",
+    ".github/workflows/ci.yml",
     ".env.example",
     "README.md",
     "config.sample.json",
@@ -31,6 +32,8 @@ REQUIRED_FILES = [
     "scripts/check_text_encoding.py",
     "tests/smoke_test.py",
 ]
+
+MAX_TRACKED_FILE_BYTES = 1_000_000
 
 
 def run(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -72,6 +75,36 @@ def check_secret_patterns(files: list[str], errors: list[str]) -> None:
                 break
 
 
+def check_secret_patterns_in_history(errors: list[str]) -> None:
+    commits = run(["git", "rev-list", "--all"])
+    if commits.returncode != 0:
+        errors.append("git history scan failed: " + (commits.stderr.strip() or commits.stdout.strip()))
+        return
+
+    pattern = "|".join(pattern.pattern for pattern in SECRET_PATTERNS)
+    for commit in [line.strip() for line in commits.stdout.splitlines() if line.strip()]:
+        result = run(["git", "grep", "-n", "-I", "-E", pattern, commit, "--"])
+        if result.returncode == 0 and result.stdout.strip():
+            first = result.stdout.splitlines()[0]
+            parts = first.split(":", 2)
+            location = ":".join(parts[:2]) if len(parts) >= 2 else commit[:12]
+            errors.append(f"secret-like token found in git history near {location}")
+            return
+
+
+def check_tracked_file_sizes(files: list[str], errors: list[str]) -> None:
+    large: list[str] = []
+    for rel in files:
+        path = ROOT / rel
+        try:
+            if path.is_file() and path.stat().st_size > MAX_TRACKED_FILE_BYTES:
+                large.append(f"{rel} ({path.stat().st_size / 1024 / 1024:.1f} MB)")
+        except OSError:
+            errors.append(f"cannot inspect tracked path: {rel}")
+    if large:
+        errors.append("large tracked files found: " + ", ".join(large[:20]))
+
+
 def check_gitignore(errors: list[str]) -> None:
     result = run(["git", "check-ignore", ".env", "data/mcagent.sqlite", "data/vector_index.npz", "data/crawler_exports/example.md"])
     ignored = set(result.stdout.splitlines())
@@ -95,14 +128,24 @@ def check_public_docs(errors: list[str]) -> None:
             errors.append(f"README missing public setup phrase: {phrase}")
 
 
+def collect_warnings() -> list[str]:
+    warnings: list[str] = []
+    if not (ROOT / "LICENSE").exists():
+        warnings.append("LICENSE is missing; choose an open-source license before making the repository public.")
+    return warnings
+
+
 def main() -> int:
     errors: list[str] = []
     check_required_files(errors)
     files = git_files()
     check_tracked_runtime_data(files, errors)
     check_secret_patterns(files, errors)
+    check_secret_patterns_in_history(errors)
+    check_tracked_file_sizes(files, errors)
     check_gitignore(errors)
     check_public_docs(errors)
+    warnings = collect_warnings()
 
     if errors:
         print("PUBLIC READINESS CHECK FAILED")
@@ -112,6 +155,10 @@ def main() -> int:
 
     print("PUBLIC READINESS CHECK PASSED")
     print(f"tracked_files={len(files)}")
+    if warnings:
+        print("PUBLIC READINESS WARNINGS")
+        for item in warnings:
+            print(f"- {item}")
     return 0
 
 

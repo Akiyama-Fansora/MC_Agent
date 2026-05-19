@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python dependencies
+        shell: pwsh
+        run: python -m pip install -r requirements.txt
+
+      - name: Python syntax check
+        shell: pwsh
+        run: >
+          python -m py_compile
+          mcagent\web_server.py
+          mcagent\crawler_llm_planner.py
+          mcagent\provider_registry.py
+          mcagent\crawler_planner.py
+          scripts\browser_collect_seed.py
+          scripts\fetch_mcmod_seed.py
+          scripts\fetch_modpack_archive_seed.py
+          scripts\public_readiness_check.py
+          scripts\smoke_agent_flows.py
+
+      - name: Encoding and public readiness checks
+        shell: pwsh
+        run: |
+          python scripts\check_text_encoding.py
+          python scripts\public_readiness_check.py
+
+      - name: Smoke test
+        shell: pwsh
+        run: python tests\smoke_test.py
+
+      - name: Frontend syntax check
+        shell: pwsh
+        run: node --check frontend\static\app.js

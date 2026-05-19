@@ -1,6 +1,6 @@
 ﻿# MCagent / CrawlerAgent 开发文档
 
-最后更新：2026-05-19 01:10
+最后更新：2026-05-19
 
 这份文档是当前项目的主开发文档。以后修改 MCagent、CrawlerAgent、RAG、SSE、前端交互或采集流程前，必须先读本文档；修改完成后，必须把本次决策、变更、验证结果追加到本文档。旧的 crawler_runbook.md 和历史乱码内容只作为历史参考，不再作为实现依据。
 
@@ -688,3 +688,70 @@ python scripts\fetch_modpack_archive_seed.py --query "乌托邦探险之旅" --l
 ~~~
 
 注意：服务已重启；当前运行中的 Crawler job 是重启后新建的 UTF-8 正常任务。
+
+## 20. 公开 GitHub 准备审计：2026-05-19
+
+本轮开始前已重新阅读本文档。用户要求总览项目距离公开 GitHub 还差什么，并继续优化。审计范围包括仓库结构、密钥、大文件、运行时数据、README、CI、公开检查脚本、当前 Crawler 任务状态。
+
+### 20.1 审计结论
+
+当前仓库已经具备 Private 维护条件，距离 Public 公开还差一个需要用户决策的事项：
+
+1. `LICENSE` 尚未选择。授权协议属于仓库所有者的法律/开源策略选择，工具和 Agent 不能替用户擅自决定。公开前建议在 MIT、Apache-2.0、GPL 等协议中选择一种并加入仓库。
+
+已确认通过的项目：
+
+1. 工作区跟踪文件未发现 `sk-`、`tvly-`、`fc-`、GitHub token 或 Bearer token 形式的密钥。
+2. Git 历史当前 4 个 commit 未发现上述密钥模式。
+3. Git 跟踪文件没有超过 1 MB 的大文件。
+4. `data/` 下运行时资料、数据库、向量索引、Crawler 导出、大压缩包仍被 `.gitignore` 排除。
+5. `README.md`、`.env.example`、`config.sample.json`、主开发文档和前端目录都已存在。
+
+### 20.2 本轮代码与仓库变更
+
+1. 新增 `.github/workflows/ci.yml`，push 和 pull request 时自动执行：
+   - Python 语法检查。
+   - UTF-8/乱码检查。
+   - 公开准备检查。
+   - 基础烟测。
+   - 前端 JavaScript 语法检查。
+2. 增强 `scripts/public_readiness_check.py`：
+   - 将 CI workflow 纳入必备文件。
+   - 扫描 Git 历史中的疑似密钥。
+   - 检查跟踪文件大小，防止大数据误提交。
+   - 对缺少 `LICENSE` 给出 warning，不替用户做授权选择。
+3. 更新 `README.md`，说明 CI 已接入，并把 LICENSE 选择列为公开前事项。
+
+### 20.3 当前 Crawler 任务观察
+
+最近的乌托邦任务 `1779199297176-1` 已结束：
+
+- 状态：succeeded。
+- 成功：2。
+- 失败：28。
+- 主要失败原因：公开 `.mrpack/.zip` 包体未找到，多个公开搜索源空结果或跑偏。
+- 可用线索：已复用 MC百科 Utopian Journey 页面等已有证据。
+
+这说明 CrawlerAgent 已能做目标判断、去噪和失败记录，但乌托邦完整内部资料仍没有落幕曲那样的包体级证据。后续若要补齐乌托邦，优先路径应是：
+
+1. 继续从 MC百科页面、教程页、下载页和社区页抓取可公开内容。
+2. 如果用户能提供免费可下载的整合包压缩包，再走 `modpack_internal` 解析内部 manifest、任务书、配置和模组清单。
+3. 若下载源受网盘会员、登录、验证码限制，CrawlerAgent 只能记录限制和证据，不能绕过。
+
+### 20.4 验证命令
+
+已执行并通过：
+
+~~~powershell
+python -m py_compile mcagent\web_server.py mcagent\crawler_llm_planner.py mcagent\provider_registry.py mcagent\crawler_planner.py scripts\browser_collect_seed.py scripts\fetch_mcmod_seed.py scripts\fetch_modpack_archive_seed.py scripts\public_readiness_check.py scripts\smoke_agent_flows.py
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+python tests\smoke_test.py
+node --check frontend\static\app.js
+~~~
+
+`public_readiness_check.py` 当前通过，但会提示：
+
+~~~text
+LICENSE is missing; choose an open-source license before making the repository public.
+~~~
