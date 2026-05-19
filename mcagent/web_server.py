@@ -4232,10 +4232,11 @@ def _collaboration_dialog_for(question: str, job: Job, created: bool, *, request
         maybe_plan = job.result.get("plan")
         crawler_plan = maybe_plan if isinstance(maybe_plan, dict) else {}
         tasks = list(job.result.get("planned_tasks") or [])
+    target_label = delivery_target or "\u7531\u4efb\u52a1\u76ee\u6807\u5224\u65ad"
     if requested_by == "user":
         dialog = [
             {"speaker": "\u7528\u6237", "state": "\u59d4\u6258", "text": f"\u76f4\u63a5\u8981\u6c42 Crawler \u91c7\u96c6\uff1a{question}"},
-            {"speaker": "Crawler", "state": "\u7406\u89e3", "text": f"\u8c03\u7528\u8005\u662f\u7528\u6237\uff1b\u4ea4\u4ed8\u5bf9\u8c61\u662f {delivery_target or '\u7531\u4efb\u52a1\u76ee\u6807\u5224\u65ad'}\u3002\u6211\u4f1a\u81ea\u884c\u89c4\u5212\u91c7\u96c6\u3001\u4fdd\u5b58\u548c\u6e05\u6d17\u65b9\u5f0f\u3002"},
+            {"speaker": "Crawler", "state": "\u7406\u89e3", "text": f"\u8c03\u7528\u8005\u662f\u7528\u6237\uff1b\u4ea4\u4ed8\u5bf9\u8c61\u662f {target_label}\u3002\u6211\u4f1a\u81ea\u884c\u89c4\u5212\u91c7\u96c6\u3001\u4fdd\u5b58\u548c\u6e05\u6d17\u65b9\u5f0f\u3002"},
         ]
     elif requested_by == "user_via_mcagent":
         dialog = [

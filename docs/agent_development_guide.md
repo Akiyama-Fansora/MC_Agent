@@ -721,6 +721,7 @@ python scripts\fetch_modpack_archive_seed.py --query "乌托邦探险之旅" --l
    - 检查跟踪文件大小，防止大数据误提交。
    - 对缺少 `LICENSE` 给出 warning，不替用户做授权选择。
 3. 更新 `README.md`，说明 CI 已接入，并把 LICENSE 选择列为公开前事项。
+4. 修复 GitHub Actions 首轮发现的 Python 3.11 兼容问题：`web_server.py` 中 f-string 表达式不再直接包含反斜杠转义字符串，改为提前计算变量。原则上 CI 使用 Python 3.11，因此本地通过 Python 3.13 不代表公开检查一定通过。
 
 ### 20.3 当前 Crawler 任务观察
 
@@ -749,6 +750,8 @@ python scripts\public_readiness_check.py
 python tests\smoke_test.py
 node --check frontend\static\app.js
 ~~~
+
+GitHub Actions 首轮运行失败在 Python 3.11 语法检查；修复后已在本地重新执行上述命令并通过，随后重新提交触发 CI。
 
 `public_readiness_check.py` 当前通过，但会提示：
 
