@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 import urllib.request
 
 
 BASE = "http://127.0.0.1:8765"
+TEST_MODEL = os.environ.get("MCAGENT_TEST_MODEL", "").strip()
+FULL_SMOKE = os.environ.get("MCAGENT_SMOKE_FULL", "").strip() == "1"
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 
 def post_json(path: str, payload: dict, timeout: int = 90) -> dict:
@@ -21,6 +28,8 @@ def post_json(path: str, payload: dict, timeout: int = 90) -> dict:
 
 
 def read_stream(payload: dict, timeout: int = 90) -> tuple[list[dict], dict | None]:
+    if TEST_MODEL and "model" not in payload:
+        payload = {**payload, "model": TEST_MODEL}
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         BASE + "/api/chat/stream",
@@ -29,24 +38,29 @@ def read_stream(payload: dict, timeout: int = 90) -> tuple[list[dict], dict | No
     )
     events: list[dict] = []
     final: dict | None = None
+    event = "message"
+    data_lines: list[str] = []
     with urllib.request.urlopen(req, timeout=timeout) as response:
-        text = response.read().decode("utf-8")
-    for block in text.split("\n\n"):
-        if not block.strip():
-            continue
-        event = "message"
-        data_lines: list[str] = []
-        for line in block.splitlines():
+        for raw_line in response:
+            line = raw_line.decode("utf-8", "replace").rstrip("\n")
             if line.startswith("event:"):
                 event = line.split(":", 1)[1].strip()
-            elif line.startswith("data:"):
+                continue
+            if line.startswith("data:"):
                 data_lines.append(line.split(":", 1)[1].strip())
-        if not data_lines:
-            continue
-        value = json.loads("\n".join(data_lines))
-        events.append({"event": event, "data": value})
-        if event == "response":
-            final = value
+                continue
+            if line.strip():
+                continue
+            if not data_lines:
+                event = "message"
+                continue
+            value = json.loads("\n".join(data_lines))
+            events.append({"event": event, "data": value})
+            if event == "response":
+                final = value
+                break
+            event = "message"
+            data_lines = []
     return events, final
 
 
@@ -73,9 +87,9 @@ def stop_job(job_id: str) -> None:
 
 def assert_true(name: str, condition: bool, detail: str = "") -> None:
     if condition:
-        print(f"PASS {name}")
+        print(f"PASS {name}", flush=True)
         return
-    print(f"FAIL {name}: {detail}")
+    print(f"FAIL {name}: {detail}", flush=True)
     raise AssertionError(name)
 
 
@@ -118,8 +132,8 @@ def main() -> int:
             "name": "mcagent_delegates_utopia_collection",
             "payload": {"session_id": session_id + "-utopia-collect", "agent": "mcagent_rag", "question": q_utopia_collect},
             "check": lambda events, final: (
-                bool(final and final.get("delegation", {}).get("requested_by") == "mcagent" and "\u4e4c\u6258\u90a6" in final.get("delegation", {}).get("task", "")),
-                "expected MCagent delegation for Utopia collection",
+                bool(final and final.get("delegation", {}).get("requested_by") == "user_via_mcagent" and "\u4e4c\u6258\u90a6" in final.get("delegation", {}).get("task", "")),
+                "expected user-via-MCagent delegation for Utopia collection",
             ),
             "stop_job": True,
         },
@@ -127,14 +141,14 @@ def main() -> int:
             "name": "mcagent_delegates_closing_song_boss_collection",
             "payload": {"session_id": session_id + "-boss-collect", "agent": "mcagent_rag", "question": q_closing_boss_collect},
             "check": lambda events, final: (
-                bool(final and final.get("delegation", {}).get("requested_by") == "mcagent" and "\u843d\u5e55\u66f2" in final.get("delegation", {}).get("task", "")),
-                "expected MCagent delegation for Closing Song Boss collection",
+                bool(final and final.get("delegation", {}).get("requested_by") == "user_via_mcagent" and "\u843d\u5e55\u66f2" in final.get("delegation", {}).get("task", "")),
+                "expected user-via-MCagent delegation for Closing Song Boss collection",
             ),
             "stop_job": True,
         },
         {
             "name": "rag_beginner_guide_has_answer_trace",
-            "payload": {"session_id": session_id + "-rag", "agent": "mcagent_rag", "question": q_beginner, "max_tokens": "auto"},
+            "payload": {"session_id": session_id + "-rag", "agent": "mcagent_rag", "question": q_beginner, "max_tokens": 900},
             "check": lambda events, final: (
                 bool(final and final.get("answer") and any(e["event"] == "trace" and e["data"].get("stage") == "retrieve" for e in events) and any(e["event"] == "delta" for e in events)),
                 "expected answer, retrieve trace, and token delta events",
@@ -151,7 +165,7 @@ def main() -> int:
         },
     ]
     for case in cases:
-        print(f"\nCASE {case['name']}")
+        print(f"\nCASE {case['name']}", flush=True)
         events, final = read_stream(case["payload"], timeout=180)
         ok, detail = case["check"](events, final)
         if not ok and final:
@@ -159,14 +173,40 @@ def main() -> int:
             print("DEBUG final answer:", (final.get("answer") or "")[:800])
         assert_true(case["name"], ok, detail)
         if final:
-            print((final.get("answer") or "")[:500].replace("\n", "\\n"))
+            print((final.get("answer") or "")[:500].replace("\n", "\\n"), flush=True)
             job = final.get("job") if isinstance(final.get("job"), dict) else None
             if case.get("stop_job") and job and job.get("id"):
                 stop_job(str(job["id"]))
 
-    print("\nCASE continuous_context_boss_followups")
+    if not FULL_SMOKE:
+        print("\nCASE rag_utopia_mod_list", flush=True)
+        events, final = chat(
+            session_id + "-rag-utopia",
+            "mcagent_rag",
+            "\u4e4c\u6258\u90a6\u6709\u54ea\u4e9b\u6a21\u7ec4",
+            max_tokens=700,
+            show_context=True,
+        )
+        answer = final.get("answer") or ""
+        main_answer = visible_answer(answer)
+        context = final.get("context") or ""
+        assert_true(
+            "rag_utopia_mod_list",
+            bool(main_answer)
+            and ("423" in main_answer or "\u4e2a\u6a21\u7ec4" in main_answer)
+            and "Immersive Aircraft" in context
+            and "根据本地资料，可以确定相关候选内容如下" not in main_answer,
+            main_answer[:800],
+        )
+        if final.get("job", {}).get("id"):
+            stop_job(str(final["job"]["id"]))
+        print(main_answer[:500].replace("\n", "\\n"), flush=True)
+        print("\nFAST SMOKE PASSED. Set MCAGENT_SMOKE_FULL=1 for the long context matrix.", flush=True)
+        return 0
+
+    print("\nCASE continuous_context_boss_followups", flush=True)
     context_session = session_id + "-context"
-    _events, first = chat(context_session, "mcagent_rag", "\u843d\u5e55\u66f2\u65b0\u624b\u8be5\u600e\u4e48\u73a9", max_tokens="auto")
+    _events, first = chat(context_session, "mcagent_rag", "\u843d\u5e55\u66f2\u65b0\u624b\u8be5\u600e\u4e48\u73a9", max_tokens=900)
     turns = [
         "\u6709\u54ea\u4e9bBOSS",
         "\u8fd9\u4e9bBOSS\u600e\u4e48\u6253",
@@ -174,7 +214,7 @@ def main() -> int:
     ]
     bad_fragments = ["\u662f\u6700\u65b9\u4fbf", "\u8bb8\u591a\\n-", "\u8bcd\u6761\\n-", "\u5de6\u53f3\\n-", "\u6750\u6599\\n-", "\u5305\u4f5c"]
     for turn in turns:
-        events, final = chat(context_session, "mcagent_rag", turn, max_tokens="auto")
+        events, final = chat(context_session, "mcagent_rag", turn, max_tokens=900)
         answer = final.get("answer") or ""
         main_answer = visible_answer(answer)
         if turn == "\u6389\u843d\u4ec0\u4e48":
@@ -192,9 +232,9 @@ def main() -> int:
         )
         if final.get("job", {}).get("id"):
             stop_job(str(final["job"]["id"]))
-        print(main_answer[:500].replace("\n", "\\n"))
+        print(main_answer[:500].replace("\n", "\\n"), flush=True)
 
-    print("\nCASE rag_answer_matrix")
+    print("\nCASE rag_answer_matrix", flush=True)
     rag_queries = [
         "\u843d\u5e55\u66f2\u91cc\u7684\u5854\u7f57\u724c\u662f\u4ec0\u4e48",
         "\u62d4\u5200\u5251\u600e\u4e48\u73a9",
@@ -202,11 +242,12 @@ def main() -> int:
         "\u4e4c\u6258\u90a6\u6709\u54ea\u4e9b\u6a21\u7ec4",
     ]
     for query in rag_queries:
-        events, final = chat(session_id + "-rag-matrix", "mcagent_rag", query, max_tokens="auto")
+        events, final = chat(session_id + "-rag-matrix", "mcagent_rag", query, max_tokens=900, show_context=True)
         answer = final.get("answer") or ""
         main_answer = visible_answer(answer)
         if query == "\u4e4c\u6258\u90a6\u6709\u54ea\u4e9b\u6a21\u7ec4":
-            expected = "\u4e2a\u6a21\u7ec4/\u6587\u4ef6" in main_answer and "AppleSkin" in main_answer
+            context = final.get("context") or ""
+            expected = ("423" in main_answer or "\u4e2a\u6a21\u7ec4" in main_answer) and "Immersive Aircraft" in context
         else:
             expected = True
         assert_true(
@@ -216,7 +257,7 @@ def main() -> int:
         )
         if final.get("job", {}).get("id"):
             stop_job(str(final["job"]["id"]))
-        print(main_answer[:500].replace("\n", "\\n"))
+        print(main_answer[:500].replace("\n", "\\n"), flush=True)
     return 0
 
 

@@ -33,9 +33,10 @@ cd D:\magic\MC_Agent
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+python -m playwright install chromium
 ```
 
-如果你不想建虚拟环境，也可以直接用当前 Python，只需要确保有 NumPy。
+如果你不想建虚拟环境，也可以直接用当前 Python。核心 RAG 只需要 NumPy；CrawlerAgent 的浏览器采集工具需要 Playwright 和 Chromium。
 
 ## 配置
 
@@ -43,6 +44,7 @@ pip install -r requirements.txt
 
 ```powershell
 copy config.sample.json config.json
+copy .env.example .env
 ```
 
 默认模型与接口：
@@ -57,6 +59,15 @@ base_url: http://localhost:11434/v1
 ```powershell
 $env:MCAGENT_OLLAMA_BASE_URL="http://localhost:11434/v1"
 $env:MCAGENT_OLLAMA_MODEL="qwen3-4b-agent-16k:latest"
+```
+
+`.env` 只放本地密钥，不提交 Git。常用项：
+
+```dotenv
+LLM_API_KEY=
+TAVILY_API_KEY=
+FIRECRAWL_API_KEY=
+FIRECRAWL_API_URL=
 ```
 
 ## 导入本地资料
@@ -153,6 +164,12 @@ http://127.0.0.1:8765
 - 后台重新导入本地采集资料。
 - 让 CrawlerAgent 自主规划多源采集、保存 raw HTML/Markdown/manifest，并按 MCagent/RAG 可读格式入库。
 
+默认前端静态文件来自仓库内的 `frontend/`。如果你想使用外部前端目录，可以设置：
+
+```powershell
+$env:AGENT_CONSOLE_DIR="D:\magic\AgentConsole"
+```
+
 ## 烟测
 
 烟测使用临时目录创建一份小样本文档，不读取也不写入 `data\crawler_exports`，不需要 Ollama：
@@ -163,6 +180,15 @@ python tests\smoke_test.py
 ```
 
 看到 `SMOKE TEST PASSED` 即代表导入、索引、检索和无 LLM 回答路径可运行。
+
+公开前检查：
+
+```powershell
+python -m py_compile mcagent\web_server.py mcagent\crawler_llm_planner.py mcagent\provider_registry.py mcagent\crawler_planner.py scripts\browser_collect_seed.py
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+node --check frontend\static\app.js
+```
 
 ## 边界约定
 

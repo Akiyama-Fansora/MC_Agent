@@ -510,11 +510,74 @@ python scripts\check_text_encoding.py
 6. 前端无明显乱码、undefined、自动滚动抢焦点等体验问题。
 7. 开发文档清楚说明两个 Agent 的职责、工具边界、RAG/SSE/Crawler 工作流。
 
-### 16.3 用户需要做什么
+### 16.3 GitHub 当前状态
 
-当前本机有 `git`，但没有 `gh` CLI，也没有可用的 GitHub remote。用户有两种选择：
+用户已完成 GitHub CLI 登录，账号为 `Akiyama-Fansora`。GitHub CLI 安装在 `D:\magic\GitHubCLI\bin\gh.exe`。
 
-1. 在 GitHub 网页手动创建空仓库 `MC_Agent`，保持 Private，不勾选 README/.gitignore/License，然后把远端地址发给 Codex。
-2. 安装 GitHub CLI 并登录：`winget install --id GitHub.cli`，然后 `gh auth login`。登录后 Codex 可以用 `gh repo create` 创建远端仓库。
+当前远端仓库：
 
-在远端准备好之前，Codex 只能完成本地仓库初始化、提交和 remote 预配置，不能直接推送。
+- 仓库：`Akiyama-Fansora/MC_Agent`
+- 地址：`https://github.com/Akiyama-Fansora/MC_Agent`
+- 可见性：Private
+- 分支：`main`
+
+以后每轮较大修改后，应执行公开检查、提交并推送。公开前仍需人工确认 Git 历史中没有密钥、大数据文件、Cookie、浏览器 profile 或个人隐私资料。
+
+## 17. 本轮公开标准优化：2026-05-19
+
+本轮开始前已重新阅读本文档。用户要求“继续优化整个项目，做到所有公开标准”。本轮目标不是增加新特性，而是让项目更接近可公开维护状态：仓库结构清晰、测试可跑、Agent 行为可验证、文档同步。
+
+### 17.1 代码与仓库变更
+
+1. 前端已纳入主仓库：`frontend/index.html`、`frontend/static/app.js`、`frontend/static/app.css`。后端默认从 `PROJECT_ROOT / "frontend"` 读取前端文件，同时保留 `AGENT_CONSOLE_DIR` 覆盖能力。
+2. 增加 `.env.example`，只放空占位，不放真实 key。
+3. 增加 `data/README.md` 和 `data/.gitkeep`，说明真实数据库、向量索引、crawler_exports 等只保存在本机，不进入 Git。
+4. 扩展 `.gitignore`，忽略 `.env`、密钥文件、logs、runtime、数据库、索引、归档包、crawler_exports 等。
+5. 新增 `scripts/public_readiness_check.py`，检查公开仓库必备文件、误提交数据目录、疑似密钥和 README 关键说明。
+6. `README.md` 补充两 Agent 架构、前端目录、环境变量、Playwright 安装、公开前检查命令和公开仓库标准。
+7. `requirements.txt` 补充 `playwright>=1.40`。
+
+### 17.2 Agent/RAG 修复
+
+1. 修复 CrawlerAgent 直连角色判断：当 active agent 是 `crawler_agent` 且用户直接下采集/保存/补库任务时，LLM 工具选择应进入 `delegate_crawler`，并标记为用户直接委托，而不是误当 MCagent 派单。
+2. 修复 Utopia / Utopian Journey 模组清单证据链：
+   - 识别“模组列表、模组清单、included mods、mod list、包含模组”等通用表达，不只认“有哪些模组”。
+   - 本地 MC百科整合包页面中解析出的“包含模组 (N)”会转换成客观证据块，交给 MCagent LLM 组织最终回答。
+   - 证据块说明“上下文节选前 180 个，完整清单仍保留在来源页面”，避免模型误以为本地只保存了前 180 个。
+   - 在最终证据选择后再次确保整合包清单证据进入上下文，避免被其他补充证据挤掉。
+3. 修复 smoke 脚本的 SSE 读取方式：不再 `response.read()` 等连接关闭，而是按 SSE 块读取，收到 final `response` 即结束。
+4. smoke 脚本拆成默认快速 smoke 与可选全量 smoke：
+   - 默认快速 smoke 覆盖 status 路由、MCagent 转交 Crawler、CrawlerAgent 直连委托、RAG delta 流式、Utopia 模组清单证据。
+   - `MCAGENT_SMOKE_FULL=1` 时再跑长上下文矩阵，适合人工验收，不适合作为每次快速回归。
+
+### 17.3 验证结果
+
+已执行并通过：
+
+~~~powershell
+python -m py_compile mcagent\web_server.py mcagent\crawler_llm_planner.py mcagent\provider_registry.py mcagent\crawler_planner.py scripts\browser_collect_seed.py scripts\public_readiness_check.py scripts\smoke_agent_flows.py
+python scripts\check_text_encoding.py
+python tests\smoke_test.py
+node --check frontend\static\app.js
+python scripts\public_readiness_check.py
+$env:MCAGENT_TEST_MODEL='cloud:deepseek:deepseek-v4-pro'; python scripts\smoke_agent_flows.py
+~~~
+
+快速 Agent smoke 结果：
+
+- `status_routes_to_tool` 通过。
+- `progress_routes_to_tool` 通过。
+- `mcagent_delegates_utopia_collection` 通过。
+- `mcagent_delegates_closing_song_boss_collection` 通过。
+- `rag_beginner_guide_has_answer_trace` 通过，确认有 retrieve trace 和 delta 流式事件。
+- `crawler_direct_user_delegation` 通过。
+- `rag_utopia_mod_list` 通过，确认模型回答引用了 Utopian Journey 模组数量，证据上下文包含 `Immersive Aircraft` 等解析出的模组名。
+
+本轮还确认 `/api/agents` 只返回两个真实 Agent：`MCagent` 和 `Crawler`；“仅检索”继续作为 MCagent 模式，不作为第三 Agent。
+
+### 17.4 剩余公开前事项
+
+1. 公开前仍需检查 Git 历史，确认历史 commit 中没有真实 API key。当前工作树通过 `public_readiness_check.py`，但公开仓库应额外做历史扫描。
+2. 全量 `MCAGENT_SMOKE_FULL=1` 依赖云模型速度，适合人工验收，不建议作为默认 CI。
+3. 右侧历史批量采集进度仍容易误解为当前运行任务；后续前端应把 finished batch progress 标成“历史批量任务”，并弱化旧 PID/命令字段。
+4. Utopia 已能回答模组清单节选，但若用户要完整 423 条，应增加“导出完整清单到文件/表格”的交互，而不是把全部塞进一次聊天回复。

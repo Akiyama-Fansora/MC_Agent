@@ -35,7 +35,7 @@ from .schema import SearchResult
 from .storage import connect, count_rows
 
 
-AGENT_CONSOLE_DIR = PROJECT_ROOT.parent / "AgentConsole"
+AGENT_CONSOLE_DIR = PROJECT_ROOT / "frontend"
 WEB_DIR = Path(os.environ.get("AGENT_CONSOLE_DIR", AGENT_CONSOLE_DIR)).resolve()
 STATIC_DIR = WEB_DIR / "static"
 AGENTTEST_LLM_ENV = Path(r"D:\magic\AgentTest\config\llm.env")
@@ -3289,7 +3289,12 @@ def _local_extractive_answer(question: str, results: list[SearchResult], *, fast
 
 
 def _is_modpack_mod_list_question(question: str) -> bool:
-    return bool(re.search(r"有哪些.*(?:模组|mods?|MOD)|(?:模组|mods?|MOD).*有哪些", question, flags=re.I))
+    return bool(
+        re.search(r"有哪些.*(?:模组|mods?|MOD)|(?:模组|mods?|MOD).*有哪些", question, flags=re.I)
+        or re.search(r"(?:包含|内置|自带|整合包|modpack).{0,18}(?:模组|mods?|MOD).{0,18}(?:列表|清单|数量|总览|明细)", question, flags=re.I)
+        or re.search(r"(?:模组|mods?|MOD).{0,18}(?:列表|清单|数量|总览|明细|included)", question, flags=re.I)
+        or re.search(r"included\s+mods?|mod\s+list", question, flags=re.I)
+    )
 
 
 def _compose_guide_fallback_answer(question: str, snippets: list[str], results: list[SearchResult]) -> str:
@@ -3340,7 +3345,7 @@ def _local_modpack_mod_list_answer(question: str, results: list[SearchResult]) -
         return ""
     source_rank = best_result.rank if best_result else (results[0].rank if results else 1)
     total = len(best_names)
-    shown = best_names[:80]
+    shown = best_names[:180]
     lines = [f"本地整合包清单里解析到 {total} 个模组/文件，先列前 {len(shown)} 个："]
     lines.extend(f"- {name}" for name in shown)
     if total > len(shown):
@@ -3352,8 +3357,8 @@ def _local_modpack_mod_list_answer(question: str, results: list[SearchResult]) -
 def _extract_included_mod_names(text: str) -> list[str]:
     names: list[str] = []
     in_section = False
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
+    lines = [raw_line.strip() for raw_line in text.splitlines()]
+    for line in lines:
         if re.match(r"#{2,4}\s+Included Mods / Files", line, flags=re.I):
             in_section = True
             continue
@@ -3367,6 +3372,46 @@ def _extract_included_mod_names(text: str) -> list[str]:
         name = re.sub(r"\s+\([^)]*\)\s*$", "", match.group(1)).strip()
         if name and name not in names:
             names.append(name)
+    contains_index = next((index for index, line in enumerate(lines) if re.match(r"包含模组\s*[（(]\d+[）)]", line)), -1)
+    if contains_index >= 0:
+        stop_markers = ("整合包介绍", "更新日志", "最近参与编辑", "相关链接", "编辑整合包")
+        ignored_names = {
+            "前言",
+            "主站",
+            "整合包",
+            "常用地址",
+            "版本检索",
+            "元素检索",
+            "社群",
+            "实用工具",
+            "特性",
+            "词典",
+        }
+        section_lines = lines[contains_index + 1 :]
+        for index, line in enumerate(section_lines):
+            if index > 20 and any(marker == line for marker in stop_markers):
+                break
+            if not re.match(r"v?\d[\w.+-]{0,40}$", line):
+                continue
+            if index == 0:
+                continue
+            name = ""
+            for previous in range(index - 1, max(-1, index - 6), -1):
+                candidate = section_lines[previous].strip()
+                if candidate:
+                    name = candidate
+                    break
+            if not name or name in ignored_names:
+                continue
+            if re.match(r"v?\d[\w.+-]{0,40}$", name):
+                continue
+            if len(name) > 120 or len(name) < 2:
+                continue
+            if any(token in name for token in ("今日", "登录", "浏览", "编辑", "红票", "黑票", "Image:")):
+                continue
+            name = re.sub(r"\s+", " ", name).strip()
+            if name and name not in names:
+                names.append(name)
     return names
 
 
@@ -3551,6 +3596,21 @@ def _format_context_with_deep_evidence(question: str, results: list[SearchResult
 
 def _compact_source_text(text: str, focus_terms: list[str], budget: int) -> str:
     text = text.strip()
+    if "从本地整合包页面解析到" in text and "包含模组/文件" in text:
+        lines: list[str] = []
+        used = 0
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            prefix = "" if line.startswith(("#", "- ")) else "- "
+            entry = f"{prefix}{line}"
+            if used + len(entry) + 1 > budget:
+                break
+            lines.append(entry)
+            used += len(entry) + 1
+        if lines:
+            return "\n".join(lines)
     lines = _evidence_lines_from_text(text, focus_terms, limit=10)
     compact = "\n".join(f"- {line[:260]}" for line in lines)
     if compact:
@@ -3807,6 +3867,20 @@ def _search_result_for_markdown_path(config: AppConfig, markdown_path: Path, que
         rows,
         key=lambda row: sum(1 for term in terms if term.lower() in str(row["text"]).lower()),
     )
+    evidence_text = str(best["text"])
+    if _is_modpack_mod_list_question(question):
+        try:
+            full_text = markdown_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            full_text = ""
+        names = _extract_included_mod_names(full_text)
+        if names:
+            shown = names[:180]
+            evidence_text = (
+                f"# {doc['title']}\n\n"
+                f"从本地整合包页面解析到 {len(names)} 个包含模组/文件。以下是给模型上下文节选的前 {len(shown)} 个，完整清单仍保留在来源页面：\n"
+                + "\n".join(f"- {name}" for name in shown)
+            )
     metadata: dict[str, Any] = {}
     for raw in (doc["metadata_json"], best["metadata_json"]):
         if raw:
@@ -3828,7 +3902,7 @@ def _search_result_for_markdown_path(config: AppConfig, markdown_path: Path, que
         title=str(doc["title"]),
         source_path=str(doc["source_path"]),
         url=str(doc["url"]) if doc["url"] else None,
-        text=str(best["text"]),
+        text=evidence_text,
         metadata=metadata,
     )
 
@@ -3892,7 +3966,27 @@ def _modpack_manifest_results(question: str, rough_results: list[SearchResult], 
             score += 500
         if "modpack_" in item.source_path.lower().replace("\\", "/"):
             score += 100
-        scored.append((score, item))
+        shown = names[:180]
+        evidence_text = (
+            f"# {item.title}\n\n"
+            f"从本地整合包页面解析到 {len(names)} 个包含模组/文件。以下是给模型上下文节选的前 {len(shown)} 个，完整清单仍保留在来源页面：\n"
+            + "\n".join(f"- {name}" for name in shown)
+        )
+        scored.append((
+            score,
+            SearchResult(
+                rank=item.rank,
+                score=item.score,
+                chunk_id=item.chunk_id,
+                document_id=item.document_id,
+                chunk_index=item.chunk_index,
+                title=item.title,
+                source_path=item.source_path,
+                url=item.url,
+                text=evidence_text,
+                metadata=item.metadata,
+            ),
+        ))
     scored.sort(key=lambda pair: (pair[0], pair[1].score), reverse=True)
     return _dedupe_results([item for _score, item in scored], limit=limit)
 
@@ -3900,12 +3994,16 @@ def _modpack_manifest_results(question: str, rough_results: list[SearchResult], 
 def _supplement_local_modpack_manifest_results(config: AppConfig, question: str, limit: int) -> list[SearchResult]:
     if not _is_modpack_mod_list_question(question):
         return []
-    root = config.paths.source_dir / "modrinth_agent"
+    root = config.paths.source_dir
     if not root.exists():
         return []
     question_terms = _focus_terms_for_question(question)
     candidates: list[tuple[int, Path]] = []
-    for markdown_path in root.rglob("modpack_*.md"):
+    parent_terms = _parent_topic_terms(question)
+    for markdown_path in root.rglob("*.md"):
+        lowered_path = markdown_path.as_posix().lower()
+        if not any(marker in lowered_path for marker in ("modpack", "mcmod", "modrinth")):
+            continue
         try:
             text = markdown_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -3915,6 +4013,9 @@ def _supplement_local_modpack_manifest_results(config: AppConfig, question: str,
             continue
         haystack = f"{markdown_path.name}\n{text[:1200]}".lower()
         score = len(names)
+        for term in parent_terms:
+            if term.lower() in haystack:
+                score += 800
         for term in question_terms:
             term_lower = term.lower()
             if term_lower in {"模组", "mods", "mod"}:
@@ -3933,6 +4034,23 @@ def _supplement_local_modpack_manifest_results(config: AppConfig, question: str,
         if len(results) >= limit:
             break
     return _dedupe_results(results, limit=limit)
+
+
+def _ensure_modpack_mod_list_context(
+    config: AppConfig,
+    question: str,
+    selected: list[SearchResult],
+    rough_results: list[SearchResult],
+    limit: int,
+) -> list[SearchResult]:
+    if not _is_modpack_mod_list_question(question):
+        return selected
+    parsed = _modpack_manifest_results(question, [*selected, *rough_results], limit)
+    if not parsed:
+        parsed = _supplement_local_modpack_manifest_results(config, question, limit)
+    if not parsed:
+        return selected
+    return _dedupe_results([*parsed, *selected], limit=limit)
 
 
 def _supplement_project_keyword_results(config: AppConfig, question: str, results: list[SearchResult], limit: int) -> list[SearchResult]:
@@ -4737,6 +4855,7 @@ def _agent_tool_decision(
             "2. planned_workflow：先列计划，再按计划执行多个工具步骤。适用于用户同时要求“本地有什么/缺什么/让 Crawler 去找”等复合任务。典型步骤是 local_rag_search -> summarize_gaps -> delegate_crawler。\n"
             "3. status：仅当用户只想看当前采集、入库、后台任务或系统进度，而不是询问某个主题的本地资料内容时选择它。\n"
             "4. delegate_crawler：用户只是在委托 CrawlerAgent 去收集/爬取/补充资料，且不需要 MCagent 先总结本地证据时选择它。选择它时不要拆成搜索词，只把用户采集目标转交给 CrawlerAgent，让 CrawlerAgent 自己规划。\n"
+            "角色约束：如果 active_agent 是 crawler_agent，CrawlerAgent 不是问答 RAG 助手。用户直接给 CrawlerAgent 的资料采集、网页抓取、保存文件、补库、给 MCagent/RAG 准备数据等目标，应选择 delegate_crawler。只有用户明确询问 CrawlerAgent 能力、已有任务状态、或不是采集目标的闲聊说明时，才选择 answer 或 status。\n"
             "交付对象判断：如果用户是在 MCagent 对话里要求转达给 CrawlerAgent 收集资料，通常是为了补充 MCagent/RAG 的本地资料库，delivery_target 应选 MCagent/RAG；只有用户明确表示只是要给自己看的摘要或临时结果时才选 human。CrawlerAgent 直接收到用户委托时，也要根据用户是否提到 MCagent/RAG/入库来判断交付对象。\n"
             "重要原则：不要用关键词触发。必须按语义判断。不要把游戏内“获取某物/如何获得”误判成 Crawler 采集任务。\n"
             "当前系统主要服务 Minecraft 资料库。若实体名有泛义但当前对话没有给出其他领域，rag_focus 不能只写裸实体，必须带上 Minecraft/整合包/模组等领域限定；若存在同名歧义，后续回答可说明歧义。\n"
@@ -5010,6 +5129,7 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
             evidence_report.selected_count = len(selected)
         selected = _supplement_project_keyword_results(config, evidence_question, selected, final_k)
         selected = _supplement_raw_html_results(config, evidence_question, selected, limit=final_k)
+        selected = _ensure_modpack_mod_list_context(config, evidence_question, selected, rough_results, final_k)
         fallback_selected = _fallback_theme_results(evidence_question, rough_results, final_k)
         if fallback_selected and len(selected) < min(4, final_k):
             selected = _dedupe_results([*fallback_selected, *selected], limit=final_k)
