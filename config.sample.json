@@ -1,0 +1,30 @@
+{
+  "paths": {
+    "source_dir": "data/crawler_exports",
+    "db_path": "data/mcagent.sqlite",
+    "index_path": "data/vector_index.npz"
+  },
+  "embedding": {
+    "provider": "hashing_char_ngram",
+    "dimension": 2048,
+    "ngram_min": 1,
+    "ngram_max": 4,
+    "lowercase": true,
+    "ollama_embed_model": "bge-m3",
+    "ollama_embed_url": "http://localhost:11434"
+  },
+  "chunking": {
+    "max_chars": 1500,
+    "overlap_chars": 400
+  },
+  "retrieval": {
+    "top_k": 6,
+    "min_score": 0.0
+  },
+  "ollama": {
+    "base_url": "http://localhost:11434/v1",
+    "model": "qwen3-4b-agent-16k:latest",
+    "temperature": 0.2,
+    "timeout_seconds": 120
+  }
+}

@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MCagent Console</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">MC</div>
+        <div>
+          <h1>MCagent</h1>
+          <p>本地离线资料助手</p>
+        </div>
+      </div>
+
+      <section class="control-block">
+        <h2>Agent</h2>
+        <div id="agentList" class="agent-list"></div>
+      </section>
+
+      <section class="control-block">
+        <h2>模型</h2>
+        <select id="modelSelect"></select>
+        <button id="refreshModels" class="ghost-button" type="button">刷新模型</button>
+      </section>
+
+      <section class="control-block compact-controls">
+        <h2>参数</h2>
+        <label>温度 <input id="temperature" type="number" min="0" max="1.5" step="0.1" value="0.2"></label>
+        <label class="toggle"><input id="noLlm" type="checkbox"> 仅检索</label>
+        <label class="toggle"><input id="showContext" type="checkbox"> 显示上下文</label>
+      </section>
+
+      <section class="control-block">
+        <h2>索引</h2>
+        <div id="indexStats" class="stats-list"></div>
+        <div class="crawler-plan-controls">
+          <label>数据源
+            <select id="crawlerSource">
+              <option value="planner">智能规划</option>
+              <option value="mediawiki">Minecraft Wiki</option>
+              <option value="modrinth">Modrinth</option>
+              <option value="createwiki">Create Wiki</option>
+              <option value="ftbwiki">FTB Wiki</option>
+              <option value="followup">深度跟进文档</option>
+            </select>
+          </label>
+          <label>补库主题 <input id="crawlerQuery" type="text" placeholder="如：机械动力玩法"></label>
+          <label>补库轮数 <input id="crawlerRounds" type="number" min="1" max="100" value="1"></label>
+          <label>轮间隔秒 <input id="crawlerInterval" type="number" min="0" max="3600" value="30"></label>
+        </div>
+        <button id="runIngest" type="button">后台导入</button>
+        <button id="runCrawler" class="ghost-button" type="button">启动补库</button>
+      </section>
+
+      <section class="control-block">
+        <h2>后台任务</h2>
+        <div id="jobList" class="job-list"></div>
+      </section>
+
+      <section class="control-block">
+        <h2>采集账本</h2>
+        <div id="ledgerStats" class="stats-list"></div>
+      </section>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="session-tabs" id="sessionTabs"></div>
+        <div class="topbar-actions">
+          <button id="newSession" class="ghost-button" type="button">新会话</button>
+          <button id="reloadStatus" class="ghost-button" type="button">刷新状态</button>
+        </div>
+      </header>
+
+      <section class="chat-panel">
+        <div id="messages" class="messages"></div>
+        <form id="chatForm" class="composer">
+          <div id="agentActivity" class="agent-activity idle">就绪：等待问题</div>
+          <textarea id="question" rows="3" placeholder="问一个 MC 百科资料问题；资料不够时切到爬虫agent输入采集需求或查看状态"></textarea>
+          <button id="sendButton" type="submit">发送</button>
+        </form>
+      </section>
+    </main>
+
+    <aside class="details">
+      <section>
+        <div class="section-title">
+          <h2>检索来源</h2>
+          <span id="sourceCount">0</span>
+        </div>
+        <div id="sources" class="source-list"></div>
+      </section>
+
+      <section>
+        <div class="section-title">
+          <h2>采集状态</h2>
+          <span id="crawlerState">待刷新</span>
+        </div>
+        <div id="crawlerInfo" class="crawler-info"></div>
+      </section>
+
+      <section>
+        <div class="section-title">
+          <h2>AgentTest Runs</h2>
+          <span id="runCount">0</span>
+        </div>
+        <div id="agenttestRuns" class="run-list"></div>
+      </section>
+
+      <section>
+        <div class="section-title">
+          <h2>运行命令</h2>
+        </div>
+        <pre class="command-box">cd D:\magic\MC_Agent
+python scripts\fetch_mediawiki_seed.py --query "现在的MC有哪些玩法？"
+python scripts\fetch_modrinth_seed.py --query optimization
+python ingest.py</pre>
+      </section>
+    </aside>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
