@@ -581,3 +581,46 @@ $env:MCAGENT_TEST_MODEL='cloud:deepseek:deepseek-v4-pro'; python scripts\smoke_a
 2. 全量 `MCAGENT_SMOKE_FULL=1` 依赖云模型速度，适合人工验收，不建议作为默认 CI。
 3. 右侧历史批量采集进度仍容易误解为当前运行任务；后续前端应把 finished batch progress 标成“历史批量任务”，并弱化旧 PID/命令字段。
 4. Utopia 已能回答模组清单节选，但若用户要完整 423 条，应增加“导出完整清单到文件/表格”的交互，而不是把全部塞进一次聊天回复。
+
+## 18. MCagent 到 CrawlerAgent 的上下文交接：2026-05-19
+
+本轮开始前已重新阅读本文档。用户指出：“让 Crawler 补全你缺的资料”这类委托不是搜索词，也不应该用固定指代词规则处理；正确做法是让 MCagent 保持上下文记忆，并在转交 CrawlerAgent 时完整说明自身或用户转达的需求。
+
+### 18.1 修正原则
+
+1. 不再用“缺的/上述/刚才/这些”等固定词表来决定是否改写委托目标。
+2. MCagent 的委托目标不是搜索词，而是给 CrawlerAgent 的自然语言任务目标。
+3. 每次 MCagent 委托 CrawlerAgent 时，都生成 `handoff_brief`，包含调用关系、用户原话、转达目标、相关会话背景、已知资料缺口、交付对象和交付要求。
+4. `handoff_brief` 由 MCagent LLM 根据用户原话、会话摘要和本轮回答/缺口生成；工具只负责传递这个交接摘要，不替 Agent 决定搜索策略。
+5. CrawlerAgent 收到任务后应阅读 `handoff_brief`、`mcagent_gap_summary`、`current_topic`、`missing_evidence` 等上下文，再自行规划搜索词、来源和清洗方式。
+
+### 18.2 代码变更
+
+1. 会话摘要新增 `gaps` 字段，从 MCagent 历史回答中的“缺口/不足/未找到/需要补充”等资料缺口段落中抽取客观缺口句，供下一轮上下文理解使用。
+2. 新增 `_build_delegate_handoff_brief()`：让 MCagent LLM 生成完整交接摘要，替代旧的指代词补丁。
+3. `delegate_crawler` 分支和 `planned_workflow` 分支都会把 `handoff_brief` 写入 `session_summary`，随任务交给 CrawlerAgent。
+4. 修复 planned_workflow 的早退问题：如果本地证据筛选不足，以前会绕过计划式交接并用原句派单；现在也会生成 `handoff_brief` 后再交给 CrawlerAgent。
+5. Crawler planner 的上下文读取增加 `handoff_brief`、`mcagent_gap_summary` 和 `gaps`，fallback 规划也优先参考 `current_topic`，减少“补全你缺的资料”这种原句被当成主题。
+
+### 18.3 验证
+
+针对复现场景进行了验证：
+
+1. 历史上一轮用户问“介绍一下乌托邦之旅有哪些玩法”，MCagent 回答里包含玩法教程、版本差异、具体系统介绍等资料缺口。
+2. 下一轮用户输入“让Crawler补全你缺的资料”。
+3. MCagent 选择 `planned_workflow`，先理解会话缺口，再委托 CrawlerAgent。
+4. trace 中出现 `delegate.handoff_brief`，内容明确包含：
+   - 用户原话。
+   - 当前主题“乌托邦之旅/乌托邦探险之旅”。
+   - 玩法教程、任务线、阶段攻略缺口。
+   - 3.2/3.5 与 3.0 版本玩法差异缺口。
+   - 多维度、交易、烹饪等系统介绍缺口。
+   - 交付对象为 MCagent/RAG。
+5. 已执行并通过：
+
+~~~powershell
+python -m py_compile mcagent\web_server.py mcagent\crawler_llm_planner.py
+python scripts\check_text_encoding.py
+python tests\smoke_test.py
+python scripts\public_readiness_check.py
+~~~

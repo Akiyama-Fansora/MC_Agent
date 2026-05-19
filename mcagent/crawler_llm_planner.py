@@ -105,7 +105,7 @@ def _collection_target_hint(question: str) -> str:
 def _session_target_hint(session_summary: dict[str, Any] | None = None) -> str:
     if not isinstance(session_summary, dict):
         return ""
-    for key in ("collection_target", "current_topic", "target", "goal"):
+    for key in ("current_topic", "target", "goal", "collection_target"):
         value = str(session_summary.get(key) or "").strip()
         if not value:
             continue
@@ -210,10 +210,23 @@ def _target_queries(target: str) -> list[str]:
 def _planner_context_text(question: str, session_summary: dict[str, Any] | None = None) -> str:
     parts = [question]
     if isinstance(session_summary, dict):
-        for key in ("known_context", "current_topic", "missing_evidence", "delivery_target", "goal", "last_result", "next_actions"):
+        for key in (
+            "handoff_brief",
+            "known_context",
+            "current_topic",
+            "missing_evidence",
+            "mcagent_gap_summary",
+            "delivery_target",
+            "goal",
+            "last_result",
+            "next_actions",
+        ):
             value = session_summary.get(key)
             if value:
                 parts.append(str(value))
+        gaps = session_summary.get("gaps")
+        if isinstance(gaps, list):
+            parts.extend(str(item) for item in gaps if str(item).strip())
         goals = session_summary.get("coverage_goals")
         if isinstance(goals, list):
             parts.extend(str(item) for item in goals if str(item).strip())

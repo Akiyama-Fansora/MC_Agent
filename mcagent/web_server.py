@@ -2246,6 +2246,11 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
 
 def _plan_crawler_with_job_timeout(job: Job, question: str, config: AppConfig, max_tasks: int, session_summary: dict[str, Any] | None) -> dict[str, Any]:
     timeout = int(DEFAULT_CRAWLER_PLANNER_TIMEOUT_SECONDS)
+    planner_topic = question
+    handoff_brief = ""
+    if isinstance(session_summary, dict):
+        handoff_brief = str(session_summary.get("handoff_brief") or "").strip()
+        planner_topic = str(session_summary.get("current_topic") or session_summary.get("target") or question).strip() or question
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     future = executor.submit(plan_crawler_tasks_resilient, question, config.paths.source_dir, max_tasks=max_tasks, session_summary=session_summary)
     started = time.time()
@@ -2255,7 +2260,7 @@ def _plan_crawler_with_job_timeout(job: Job, question: str, config: AppConfig, m
             if job.stop_requested:
                 future.cancel()
                 executor.shutdown(wait=False, cancel_futures=True)
-                return {"strategy": "stopped_before_planner_finished", "topic": question, "tasks": [], "stopped": True}
+                return {"strategy": "stopped_before_planner_finished", "topic": planner_topic, "handoff_brief": handoff_brief, "tasks": [], "stopped": True}
             try:
                 return future.result(timeout=0.5)
             except concurrent.futures.TimeoutError:
@@ -2264,10 +2269,10 @@ def _plan_crawler_with_job_timeout(job: Job, question: str, config: AppConfig, m
                     last_notice = elapsed
                     _update_job(
                         job,
-                        summary=f"CrawlerAgent 正在理解任务并规划采集动作，已思考 {int(elapsed)} 秒。目标：{question[:80]}",
+                        summary=f"CrawlerAgent 正在理解任务并规划采集动作，已思考 {int(elapsed)} 秒。目标：{planner_topic[:80]}",
                         result={
                             "source": "planner",
-                            "plan": {"topic": question, "delivery_target": (session_summary or {}).get("delivery_target") if isinstance(session_summary, dict) else ""},
+                            "plan": {"topic": planner_topic, "handoff_brief": handoff_brief, "delivery_target": (session_summary or {}).get("delivery_target") if isinstance(session_summary, dict) else ""},
                             "planned_tasks": [],
                             "tasks": [],
                             "loop": [
@@ -4260,6 +4265,84 @@ def _delegate_crawler_for_missing_data(config: AppConfig, payload: dict[str, Any
     return job, created
 
 
+def _fallback_delegate_handoff_brief(
+    *,
+    original_question: str,
+    collection_target: str,
+    session_summary: dict[str, Any],
+    requested_by: str,
+    delivery_target: str,
+) -> str:
+    topics = [str(item) for item in (session_summary.get("topics") or [])[:6] if str(item).strip()]
+    names = [str(item) for item in (session_summary.get("names") or [])[:8] if str(item).strip()]
+    gaps = [str(item) for item in (session_summary.get("gaps") or [])[:8] if str(item).strip()]
+    lines = [
+        f"调用关系：{requested_by or 'unknown'} -> CrawlerAgent。",
+        f"用户原话：{original_question}",
+        f"转达目标：{collection_target or original_question}",
+        f"交付对象：{delivery_target or '由 CrawlerAgent 根据任务目标判断'}。",
+    ]
+    if topics:
+        lines.append(f"当前会话主题：{'、'.join(topics[:6])}。")
+    if names:
+        lines.append(f"近期出现的实体/名称：{'、'.join(names[:8])}。")
+    if gaps:
+        lines.append(f"MCagent 近期回答暴露的资料缺口：{'；'.join(gaps[:8])}。")
+    lines.append("请 CrawlerAgent 自行理解目标、规划采集来源和搜索策略；如果交付给 MCagent/RAG，应清洗成可检索、可引用、带来源的资料。")
+    return "\n".join(lines)
+
+
+def _build_delegate_handoff_brief(
+    config: AppConfig,
+    *,
+    model: str,
+    original_question: str,
+    collection_target: str,
+    session_summary: dict[str, Any],
+    requested_by: str,
+    delivery_target: str,
+    mcagent_gap_summary: str = "",
+) -> tuple[str, str]:
+    fallback = _fallback_delegate_handoff_brief(
+        original_question=original_question,
+        collection_target=collection_target,
+        session_summary=session_summary,
+        requested_by=requested_by,
+        delivery_target=delivery_target,
+    )
+    try:
+        client, label = _selected_llm_client(config, model, 0.0)
+        prompt = (
+            "你是 MCagent 写给 CrawlerAgent 的交接摘要生成器。\n"
+            "你的任务不是搜索、不是回答用户、不是拆关键词，而是把这次委托完整说明给 CrawlerAgent。\n"
+            "交接摘要必须包含：调用关系、用户原话、转达目标、相关会话背景、已知资料缺口、交付对象、交付要求。\n"
+            "如果用户原话依赖上下文，就用 session_summary 和 mcagent_gap_summary 补充背景；如果不依赖上下文，也要保留原始目标。\n"
+            "输出 JSON：{\"handoff_brief\":\"给 CrawlerAgent 的完整交接摘要\", \"reason\":\"一句简短理由\"}\n"
+            f"original_user_message: {original_question}\n"
+            f"router_collection_target: {collection_target}\n"
+            f"requested_by: {requested_by}\n"
+            f"delivery_target: {delivery_target}\n"
+            f"session_summary: {json.dumps(session_summary or {}, ensure_ascii=False)}\n"
+            f"mcagent_gap_summary: {mcagent_gap_summary[:4000]}"
+        )
+        raw_text = client.chat(
+            [
+                {"role": "system", "content": "只输出合法 JSON。"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.0,
+            max_tokens=700,
+        )
+        value = _json_object_from_llm_text(raw_text)
+        resolved = str(value.get("handoff_brief") or "").strip()
+        reason = str(value.get("reason") or label).strip()
+        if resolved:
+            return resolved[:900], reason[:300]
+    except Exception:
+        pass
+    return fallback[:900], "使用会话摘要生成通用委托交接说明。"
+
+
 def _delegation_handoff(payload: dict[str, Any], original_question: str, cleaned_question: str) -> dict[str, str]:
     agent = str(payload.get("agent") or "mcagent_rag")
     explicit = str(payload.get("requested_by") or "").strip()
@@ -4441,18 +4524,20 @@ def _payload_history(payload: dict[str, Any], limit: int = 10) -> list[dict[str,
 def _summary_from_history(history: list[dict[str, Any]]) -> dict[str, Any]:
     if not history:
         return {}
-    summary: dict[str, Any] = {"topics": [], "entities": [], "names": [], "turn_count": 0}
+    summary: dict[str, Any] = {"topics": [], "entities": [], "names": [], "gaps": [], "turn_count": 0}
     for turn in history[-20:]:
         summary["turn_count"] = int(summary.get("turn_count") or 0) + 1
         question = str(turn.get("question") or "")
         answer = _strip_answer_metadata(str(turn.get("answer") or ""))
         topics = _fallback_focus_terms(question)
         names = _extract_context_names(answer, limit=24)
+        gaps = _extract_context_gaps(answer, limit=12)
         for source in turn.get("sources") or []:
             if isinstance(source, dict):
                 topics.extend(_fallback_focus_terms(str(source.get("title") or "")))
         summary["topics"] = _merge_limited(summary.get("topics") or [], topics, limit=24)
         summary["names"] = _merge_limited(summary.get("names") or [], names, limit=40)
+        summary["gaps"] = _merge_limited(summary.get("gaps") or [], gaps, limit=24)
         summary["entities"] = _merge_limited(summary.get("entities") or [], [*topics[:8], *names[:16]], limit=48)
     return summary
 
@@ -4468,17 +4553,19 @@ def _delete_session(session_id: str) -> dict[str, Any]:
 
 
 def _update_session_summary_locked(session_id: str, turn: dict[str, Any]) -> None:
-    summary = SESSION_SUMMARIES.setdefault(session_id, {"topics": [], "entities": [], "names": [], "turn_count": 0})
+    summary = SESSION_SUMMARIES.setdefault(session_id, {"topics": [], "entities": [], "names": [], "gaps": [], "turn_count": 0})
     summary["turn_count"] = int(summary.get("turn_count") or 0) + 1
     question = str(turn.get("question") or "")
     answer = _strip_answer_metadata(str(turn.get("answer") or ""))
     topics = _fallback_focus_terms(question)
     names = _extract_context_names(answer, limit=24)
+    gaps = _extract_context_gaps(answer, limit=12)
     for source in turn.get("sources") or []:
         if isinstance(source, dict):
             topics.extend(_fallback_focus_terms(str(source.get("title") or "")))
     summary["topics"] = _merge_limited(summary.get("topics") or [], topics, limit=24)
     summary["names"] = _merge_limited(summary.get("names") or [], names, limit=40)
+    summary["gaps"] = _merge_limited(summary.get("gaps") or [], gaps, limit=24)
     summary["entities"] = _merge_limited(summary.get("entities") or [], [*topics[:8], *names[:16]], limit=48)
 
 
@@ -4593,16 +4680,55 @@ def _extract_context_names(text: str, limit: int = 12) -> list[str]:
     return names
 
 
+def _extract_context_gaps(text: str, limit: int = 12) -> list[str]:
+    gaps: list[str] = []
+    in_gap_section = False
+    gap_heading = re.compile(r"(缺口|缺漏|不足|仍缺|还缺|未找到|没有找到|需要进一步|需要补充)")
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            if in_gap_section and gaps:
+                break
+            continue
+        clean = re.sub(r"\[[Ss]\d+\]", "", line)
+        clean = re.sub(r"^\s*(?:#{1,6}\s*)?(?:[-*•]\s*)?(?:\d+[.)、]\s*)?", "", clean).strip()
+        clean = clean.strip(" -*•\t\r\n>?:：")
+        clean = clean.replace("**", "").replace("__", "")
+        if not clean:
+            continue
+        is_heading = raw_line.lstrip().startswith("#")
+        if is_heading and gap_heading.search(clean):
+            in_gap_section = True
+            continue
+        if in_gap_section and raw_line.lstrip().startswith("#") and not gap_heading.search(clean):
+            break
+        is_candidate = in_gap_section or bool(gap_heading.search(clean))
+        if not is_candidate:
+            continue
+        if clean.startswith(("模型：", "来源：", "补库动作：")):
+            continue
+        if len(clean) > 220:
+            clean = clean[:220].rstrip() + "..."
+        if clean and clean not in gaps:
+            gaps.append(clean)
+            if len(gaps) >= limit:
+                break
+    return gaps
+
+
 def _conversation_note(payload: dict[str, Any], history: list[dict[str, Any]]) -> str:
     summary = _session_summary(payload)
     lines = ["以下是当前会话摘要，供 MCagent 理解追问、省略指代和交付目标；不要覆盖用户原始问题。"]
     if summary:
         topics = ", ".join((summary.get("topics") or [])[:12])
         names = ", ".join((summary.get("names") or [])[:20])
+        gaps = "；".join((summary.get("gaps") or [])[:8])
         if topics:
             lines.append(f"- 已讨论主题：{topics}")
         if names:
             lines.append(f"- 已出现实体/名称：{names}")
+        if gaps:
+            lines.append(f"- 上轮/近期回答暴露的资料缺口：{gaps}")
     for item in history[-5:]:
         question = str(item.get("question") or "").strip()
         answer = _strip_answer_metadata(str(item.get("answer") or "").strip())
@@ -4859,6 +4985,7 @@ def _agent_tool_decision(
             "交付对象判断：如果用户是在 MCagent 对话里要求转达给 CrawlerAgent 收集资料，通常是为了补充 MCagent/RAG 的本地资料库，delivery_target 应选 MCagent/RAG；只有用户明确表示只是要给自己看的摘要或临时结果时才选 human。CrawlerAgent 直接收到用户委托时，也要根据用户是否提到 MCagent/RAG/入库来判断交付对象。\n"
             "重要原则：不要用关键词触发。必须按语义判断。不要把游戏内“获取某物/如何获得”误判成 Crawler 采集任务。\n"
             "当前系统主要服务 Minecraft 资料库。若实体名有泛义但当前对话没有给出其他领域，rag_focus 不能只写裸实体，必须带上 Minecraft/整合包/模组等领域限定；若存在同名歧义，后续回答可说明歧义。\n"
+            "委托交接原则：collection_target 不是搜索词，也不是给工具的死规则，而是给 CrawlerAgent 的自然语言任务目标。若任务目标依赖上下文，要把相关背景自然写进目标；不要拆成关键词，也不要丢掉用户原话。\n"
             "如果是复合问答，优先 answer；如果复合任务包含“先查本地资料/总结缺口/再让 Crawler 补”，选择 planned_workflow，并给出 action_plan。\n"
             "如果需要本地 RAG 检索，rag_focus 要写成真正要查的主题问题，去掉“本地资料、缺什么、让 Crawler 去找、状态”等元指令。\n"
             "只输出 JSON，不要 Markdown，不要解释隐藏思考。\n"
@@ -4869,7 +4996,7 @@ def _agent_tool_decision(
             "JSON schema: {\"tool\":\"answer|planned_workflow|status|delegate_crawler\", "
             "\"reason\":\"一句面向开发日志的理由\", "
             "\"rag_focus\":\"需要本地检索时的主题化检索问题\", "
-            "\"collection_target\":\"若选择 delegate_crawler，原样保留用户采集目标，不要拆搜索词\", "
+            "\"collection_target\":\"若选择 delegate_crawler，写成完整自然语言采集目标；不要拆搜索词，也不要丢掉用户原话和必要上下文\", "
             "\"delivery_target\":\"human|MCagent/RAG|\", "
             "\"action_plan\":[{\"step\":1,\"tool\":\"local_rag_search|summarize_gaps|delegate_crawler|crawler_status\",\"goal\":\"这一步要完成什么\"}]}"
         )
@@ -5068,12 +5195,30 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
             delivery_target = "MCagent/RAG"
         else:
             delivery_target = _infer_delivery_target(original_question, session_summary)
+        handoff_brief, brief_reason = _build_delegate_handoff_brief(
+            config,
+            model=model,
+            original_question=original_question,
+            collection_target=collection_question,
+            session_summary=session_summary,
+            requested_by=requested_by,
+            delivery_target=delivery_target,
+        )
+        add_trace("delegate", "handoff_brief", {"brief": handoff_brief, "reason": brief_reason})
+        delegate_summary = dict(session_summary or {})
+        delegate_summary["handoff_brief"] = handoff_brief
+        delegate_summary["handoff_brief_reason"] = brief_reason
+        if not delegate_summary.get("current_topic") and (delegate_summary.get("topics") or []):
+            delegate_summary["current_topic"] = str((delegate_summary.get("topics") or [""])[0])
+        if not delegate_summary.get("missing_evidence") and (delegate_summary.get("gaps") or []):
+            delegate_summary["missing_evidence"] = "；".join(str(item) for item in (delegate_summary.get("gaps") or [])[:8])
         delegate_payload = payload | {
             "requested_by": requested_by,
             "handoff_from": handoff["handoff_from"],
             "original_user_request": handoff["original_user_request"],
             "delivery_target": delivery_target,
             "preserve_crawler_request": True,
+            "session_summary": delegate_summary,
         }
         job, created = _delegate_crawler_for_missing_data(config, delegate_payload, collection_question)
         answer = "Crawler 多源采集任务已启动。" if created else "Crawler 已有任务在运行。"
@@ -5139,6 +5284,66 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
                 evidence_report.selected_count = len(selected)
         add_trace("decide", "evidence_selected", evidence_report.to_dict())
         if evidence_report.verdict != "ok":
+            if planned_delegate:
+                collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
+                handoff = _delegation_handoff(payload, original_question, collection_question)
+                requested_by = handoff["requested_by"]
+                delivery_target = str(tool_decision.get("delivery_target") or payload.get("delivery_target") or "").strip()
+                if not delivery_target:
+                    delivery_target = "MCagent/RAG" if requested_by in {"mcagent", "user_via_mcagent"} else _infer_delivery_target(original_question, session_summary)
+                planner_summary = dict(session_summary or {})
+                planner_summary["collection_target"] = collection_question
+                planner_summary["mcagent_gap_summary"] = (
+                    "MCagent 按计划检索本地资料，但证据筛选仍不足。\n"
+                    + "\n".join(f"- {reason}" for reason in evidence_report.reasons)
+                )
+                planner_summary["planning_instruction"] = (
+                    "MCagent 已先尝试本地检索，但证据不足；CrawlerAgent 应阅读 handoff_brief、mcagent_gap_summary "
+                    "和会话摘要，自行判断真正缺口、规划来源，采集后按 MCagent/RAG 可检索格式入库。"
+                )
+                handoff_brief, brief_reason = _build_delegate_handoff_brief(
+                    config,
+                    model=model,
+                    original_question=original_question,
+                    collection_target=collection_question,
+                    session_summary=planner_summary,
+                    requested_by=requested_by,
+                    delivery_target=delivery_target,
+                    mcagent_gap_summary=planner_summary["mcagent_gap_summary"],
+                )
+                planner_summary["handoff_brief"] = handoff_brief
+                planner_summary["handoff_brief_reason"] = brief_reason
+                if not planner_summary.get("current_topic") and (planner_summary.get("topics") or []):
+                    planner_summary["current_topic"] = str((planner_summary.get("topics") or [""])[0])
+                if not planner_summary.get("missing_evidence") and (planner_summary.get("gaps") or []):
+                    planner_summary["missing_evidence"] = "；".join(str(item) for item in (planner_summary.get("gaps") or [])[:8])
+                add_trace("delegate", "handoff_brief", {"brief": handoff_brief, "reason": brief_reason})
+                delegate_payload = payload | {
+                    "requested_by": requested_by,
+                    "handoff_from": handoff["handoff_from"],
+                    "original_user_request": handoff["original_user_request"],
+                    "delivery_target": delivery_target,
+                    "preserve_crawler_request": True,
+                    "session_summary": planner_summary,
+                }
+                job, created = _delegate_crawler_for_missing_data(config, delegate_payload, collection_question)
+                answer = _insufficient_evidence_answer(question)
+                answer += "\n\nMCagent 已按计划把完整上下文交接给 CrawlerAgent。"
+                answer += _crawler_delegation_note_for(job, collection_question, created, requested_by=requested_by, delivery_target=delivery_target)
+                add_trace("delegate", "planned_workflow", {"job_id": job.id, "status": job.status, "task": collection_question})
+                return _with_trace(
+                    {
+                        "answer": answer,
+                        "sources": [_result_to_dict(item) for item in selected],
+                        "context": "",
+                        "agent": agent,
+                        "job": _job_to_dict(job),
+                        "evidence": evidence_report.to_dict(),
+                        "collaboration": _collaboration_dialog_for(collection_question, job, created, requested_by=requested_by, delivery_target=delivery_target),
+                        "delegation": {"requested_by": requested_by, "delivery_target": delivery_target, "task": collection_question, "handoff_brief": handoff_brief},
+                    },
+                    trace,
+                )
             job, created = _delegate_crawler_for_missing_data(config, payload, question)
             answer = _insufficient_evidence_answer(question)
             answer += "\n\n证据判断：\n" + "\n".join(f"- {reason}" for reason in evidence_report.reasons)
@@ -5149,6 +5354,10 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
     context = format_context(selected)
     delegated_job = None
     created = False
+    delegated_requested_by = ""
+    delegated_delivery_target = ""
+    delegated_task = ""
+    delegated_handoff_brief = ""
     if agent == "retriever_only" or bool(payload.get("no_llm")):
         answer = "本地检索结果如下，未调用模型：\n\n" + context
     else:
@@ -5194,6 +5403,23 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
                     "自行判断真正缺口、规划来源，采集后按 MCagent/RAG 可检索格式入库。"
                 )
             planner_summary["collection_target"] = collection_question
+            handoff_brief, brief_reason = _build_delegate_handoff_brief(
+                config,
+                model=model,
+                original_question=original_question,
+                collection_target=collection_question,
+                session_summary=planner_summary,
+                requested_by=requested_by,
+                delivery_target=delivery_target,
+                mcagent_gap_summary=answer,
+            )
+            planner_summary["handoff_brief"] = handoff_brief
+            planner_summary["handoff_brief_reason"] = brief_reason
+            if not planner_summary.get("current_topic") and (planner_summary.get("topics") or []):
+                planner_summary["current_topic"] = str((planner_summary.get("topics") or [""])[0])
+            if not planner_summary.get("missing_evidence") and (planner_summary.get("gaps") or []):
+                planner_summary["missing_evidence"] = "；".join(str(item) for item in (planner_summary.get("gaps") or [])[:8])
+            add_trace("delegate", "handoff_brief", {"brief": handoff_brief, "reason": brief_reason})
             delegate_payload = payload | {
                 "requested_by": requested_by,
                 "handoff_from": handoff["handoff_from"],
@@ -5203,6 +5429,10 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
                 "session_summary": planner_summary,
             }
             delegated_job, created = _delegate_crawler_for_missing_data(config, delegate_payload, collection_question)
+            delegated_requested_by = requested_by
+            delegated_delivery_target = delivery_target
+            delegated_task = collection_question
+            delegated_handoff_brief = handoff_brief
             answer = answer.rstrip() + _crawler_delegation_note_for(delegated_job, collection_question, created, requested_by=requested_by, delivery_target=delivery_target)
             add_trace("delegate", "planned_workflow", {"job_id": delegated_job.id, "status": delegated_job.status, "task": collection_question})
         elif _answer_indicates_missing_data(answer):
@@ -5220,6 +5450,13 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
     if delegated_job is not None:
         response["job"] = _job_to_dict(delegated_job)
         response["collaboration"] = _collaboration_dialog(question, delegated_job, created, reason="模型回答暴露资料缺口，MCagent 追加多源补库。")
+        if delegated_requested_by or delegated_delivery_target or delegated_task or delegated_handoff_brief:
+            response["delegation"] = {
+                "requested_by": delegated_requested_by or "mcagent",
+                "delivery_target": delegated_delivery_target or "MCagent/RAG",
+                "task": delegated_task or question,
+                "handoff_brief": delegated_handoff_brief,
+            }
     add_trace("done", "response_ready", {"sources": len(source_dicts)})
     return _with_trace(response, trace)
 
