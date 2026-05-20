@@ -16,8 +16,7 @@ from mcagent.agent_runtime import (  # noqa: E402
     normalize_agent_tool_decision,
     tool_catalog_prompt,
 )
-from mcagent.evidence_selector import EvidenceReport  # noqa: E402
-from mcagent.web_server import _answer_requires_auto_delegate, _job_readable_summary  # noqa: E402
+from mcagent.web_server import _job_readable_summary  # noqa: E402
 
 
 def assert_equal(name: str, actual: object, expected: object) -> None:
@@ -168,22 +167,13 @@ def test_job_readable_summary_surfaces_observations() -> None:
     assert_equal("latest_status", readable["latest_observation"].get("status"), "quota_limited")
 
 
-def test_answer_gap_caveat_does_not_auto_delegate_when_evidence_ok() -> None:
-    report = EvidenceReport(
-        verdict="ok",
-        topic_detected="project",
-        confidence=0.9,
-        selected_count=10,
-        candidate_count=20,
-    )
-    answer = (
-        "乌托邦探险之旅是一个以休闲探索、种田、烹饪、旅行和多维度探索为特色的整合包。\n\n"
-        "本地资料仍缺少完整任务线和部分模组列表，因此这些细节可能不完整。"
-    )
-    assert_equal("gap_caveat_no_delegate", _answer_requires_auto_delegate(answer, report), False)
-
-    no_report_answer = "本地资料库未找到可靠答案。"
-    assert_equal("no_report_missing_delegates", _answer_requires_auto_delegate(no_report_answer, None), True)
+def test_crawler_delegation_requires_explicit_agent_route() -> None:
+    source = (ROOT / "mcagent" / "web_server.py").read_text(encoding="utf-8")
+    assert_true("no_answer_post_scan_helper", "_answer_requires_auto_delegate" not in source)
+    assert_true("no_answer_gap_regex_helper", "_answer_indicates_missing_data" not in source)
+    assert_true("no_post_answer_delegate_trace", "answer_marked_missing" not in source)
+    assert_true("planned_delegate_branch_exists", "if planned_delegate:" in source)
+    assert_true("insufficient_evidence_no_auto_delegate", '"delegated": False' in source)
 
 
 def main() -> int:
@@ -193,7 +183,7 @@ def main() -> int:
     test_handoff_contract_preserves_context()
     test_tool_catalog_exposes_agent_capabilities()
     test_job_readable_summary_surfaces_observations()
-    test_answer_gap_caveat_does_not_auto_delegate_when_evidence_ok()
+    test_crawler_delegation_requires_explicit_agent_route()
     print("AGENT RUNTIME SCENARIOS PASSED")
     return 0
 

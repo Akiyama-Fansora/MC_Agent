@@ -1370,3 +1370,73 @@ python tests\agent_runtime_scenarios.py
 1. 新增 `_answer_requires_auto_delegate(answer, evidence_report)`。
 2. 当证据报告为 `ok` 时，不再因为答案里出现“缺少/未找到/不完整”等普通 caveat 自动启动 Crawler。
 3. 保留无证据场景下的缺资料补库行为。
+
+> 2026-05-20 追加修正：第 30 章的“保留无证据场景下自动补库”和 `_answer_requires_auto_delegate()` 仍然不符合用户最新确认的 Agent 原则，已废弃。后续以第 31 章为准。
+
+## 31. Crawler 委托必须来自 Agent 明确工具选择（2026-05-20）
+
+本轮开始前已重新阅读本文档，并对照本地三个成熟 Agent 项目源码：
+
+- Hermes Agent：`run_agent.py` 以模型返回的 `tool_calls` 为唯一工具执行入口，运行时执行工具后把 `tool` 消息回填给模型；并有 pre/post tool hooks、guardrails、并发工具执行和上下文压缩。
+- OpenClaw：运行时把模型流拆成 text/thinking/toolCall/toolResult 等事件，工具执行有 `toolCallId` 生命周期，UI 只展示过程，不替模型决定下一步。
+- Claude Code 插件体系：PreToolUse/PostToolUse/Stop hooks 可以拦截、修改、补充上下文，但不会在模型回答后靠文本扫描擅自启动新工具。
+
+### 31.1 新原则
+
+1. Crawler 任务只能由 Agent 的工具选择结果触发：
+   - `tool=delegate_crawler`
+   - 或 `tool=planned_workflow` 且 action plan 中明确包含 `delegate_crawler`
+2. RAG 无结果、证据不足、最终回答提到资料缺口时，后端只能把这些事实返回给 Agent/用户，不能自动创建 Crawler job。
+3. 工具层可以做：
+   - 检索、排序、证据筛选；
+   - 运行 Crawler；
+   - 记录 observation；
+   - 阻止危险动作；
+   - 把工具结果回填给模型。
+4. 工具层不可以做：
+   - 根据最终回答里的关键词自动派单；
+   - 用本地抽取文本代替 LLM 最终回答；
+   - 用后台规则替 Agent 判断用户意图。
+
+### 31.2 本轮测试方案
+
+目标行为：
+
+- 删除答案后自动委托 Crawler 的 helper 和调用点；
+- 无检索结果时返回“证据不足且未自动委托”，不创建 job；
+- 证据筛选失败时，只有 planned workflow 明确委托才创建 job；
+- planned workflow 明确委托仍保持可用。
+
+风险点：
+
+- 误删显式委托路径，导致“让 Crawler 去找”不生效；
+- 无证据路径漏掉 return，继续往后执行；
+- 文档继续误导后续优化；
+- 历史乱码再次污染源码。
+
+离线测试：
+
+- `tests/agent_runtime_scenarios.py` 增加源码级原则守卫：
+  - `web_server.py` 不允许出现 `_answer_requires_auto_delegate`；
+  - 不允许出现 `_answer_indicates_missing_data`；
+  - 不允许出现 `answer_marked_missing`；
+  - 必须保留 `planned_delegate` 分支；
+  - 必须有 `delegated=False` 的证据不足路径。
+
+集成测试：
+
+- 正常 RAG 问答：`介绍一下乌托邦整合包` 不应启动 Crawler；
+- 无证据问题：不应启动 Crawler，只说明本地证据不足；
+- 显式委托：`让Crawler去收集某主题资料` 应启动 Crawler；
+- UI 中 Crawler 任务只来自明确委托，而不是最终回答文字扫描。
+
+通过标准：
+
+~~~powershell
+python -m py_compile mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py tests\agent_runtime_scenarios.py
+node --check frontend\static\app.js
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+python tests\smoke_test.py
+python tests\agent_runtime_scenarios.py
+~~~

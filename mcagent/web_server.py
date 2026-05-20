@@ -3823,75 +3823,6 @@ def _is_boss_focus(focus_terms: list[str]) -> bool:
     return any(term.lower() in {"boss", "首领", "头目"} or term in {"BOSS", "Boss"} for term in focus_terms)
 
 
-def _answer_indicates_missing_data(answer: str) -> bool:
-    lowered = answer.lower()
-    if "本地整合包清单里解析到" in answer:
-        return False
-    if "本地资料里能明确点名的 Boss/类 Boss 目标有" in answer:
-        return False
-    if "本地证据抽取兜底" in answer and "本地资料中找到" in answer:
-        return False
-    if _answer_missing_recipe_details(answer):
-        return True
-    if _answer_has_partial_list(answer):
-        return False
-    markers = (
-        "本地资料库未找到可靠答案",
-        "未找到可靠答案",
-        "资料不足",
-        "证据不足",
-        "无法回答",
-        "无法获取",
-        "无法确定",
-        "未给出",
-        "未列出",
-        "并未给出",
-        "并未列出",
-        "没有给出",
-        "没有列出",
-        "仅列出",
-        "endpoint returned",
-        "timeout",
-        "not enough information",
-        "no reliable answer",
-        "not found in the local",
-    )
-    return any(marker.lower() in lowered for marker in markers)
-
-
-def _answer_requires_auto_delegate(answer: str, evidence_report: Any | None = None) -> bool:
-    """Decide whether a finished answer exposes a data gap that should trigger Crawler.
-
-    This is deliberately conservative. Once the evidence selector has accepted
-    the local context, a normal answer may still mention limitations or missing
-    sub-details. That is not the same as "no answer"; tools must not turn those
-    caveats into an automatic Crawler job.
-    """
-
-    if evidence_report is not None and getattr(evidence_report, "verdict", "") == "ok":
-        return False
-    return _answer_indicates_missing_data(answer)
-
-
-def _answer_missing_recipe_details(answer: str) -> bool:
-    recipe_markers = ("合成表", "合成配方", "合成配方表", "具体合成", "具体的合成", "详细配方", "具体配方", "摆放方式", "九宫格", "JEI")
-    missing_markers = ("未提供", "未找到", "没有", "并未", "无法提供", "缺少", "未列出")
-    return any(recipe in answer for recipe in recipe_markers) and any(marker in answer for marker in missing_markers)
-
-
-def _answer_has_partial_list(answer: str) -> bool:
-    if "模型调用失败" in answer or "endpoint returned" in answer.lower() or "timeout" in answer.lower():
-        return False
-    if any(name in answer for name in ("幻魔", "雪鸦", "冻樱", "明兽", "天元刀", "天星刀", "梦想一心")):
-        return True
-    if not any(marker in answer for marker in ("部分", "不完整", "并非", "仅列出", "只覆盖")):
-        return False
-    names = re.findall(r"[\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z0-9：:·'’_-]{1,24}", answer)
-    stop = {"本地资料库", "可靠答案", "来源", "模型", "DeepSeek", "Ollama", "补库动作", "当前回答"}
-    useful = [name for name in names if name not in stop and not name.startswith("本地")]
-    return len(useful) >= 4
-
-
 def _dedupe_results(results: list[SearchResult], limit: int = 8) -> list[SearchResult]:
     seen_docs: set[int] = set()
     seen_titles: set[str] = set()
@@ -5585,10 +5516,12 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
         rough_results = _supplement_raw_html_results(config, evidence_question, rough_results, limit=24)
     add_trace("retrieve", "done", {"results": len(rough_results), "top": rough_results[0].title if rough_results else ""})
     if not rough_results:
-        job, created = _delegate_crawler_for_missing_data(config, payload, question)
-        answer = "本地资料库未找到可靠答案。"
-        answer += _crawler_delegation_note(job, question, created)
-        return _with_trace({"answer": answer, "sources": [], "context": "", "agent": agent, "job": _job_to_dict(job), "collaboration": _collaboration_dialog(question, job, created)}, trace)
+        add_trace("done", "insufficient_evidence", {"reason": "no_retrieval_results", "delegated": False})
+        answer = (
+            "本地资料库没有检索到可用证据。本轮不会自动通知 Crawler。\n\n"
+            "如果需要补库，请明确让 MCagent 转达给 CrawlerAgent，或切换到 CrawlerAgent 直接委托采集。"
+        )
+        return _with_trace({"answer": answer, "sources": [], "context": "", "agent": agent}, trace)
 
     selected = _dedupe_results(rough_results, limit=final_k)
     evidence_report = None
@@ -5676,11 +5609,13 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
                     },
                     trace,
                 )
-            job, created = _delegate_crawler_for_missing_data(config, payload, question)
             answer = _insufficient_evidence_answer(question)
             answer += "\n\n证据判断：\n" + "\n".join(f"- {reason}" for reason in evidence_report.reasons)
-            answer += _crawler_delegation_note(job, question, created)
-            return _with_trace({"answer": answer, "sources": [_result_to_dict(item) for item in selected], "context": "", "agent": agent, "job": _job_to_dict(job), "evidence": evidence_report.to_dict(), "collaboration": _collaboration_dialog(question, job, created)}, trace)
+            answer += (
+                "\n\n本轮不会自动通知 Crawler。只有当 Agent 在工具选择或 planned workflow 阶段明确选择 Crawler 委托时，"
+                "才会启动采集任务。"
+            )
+            return _with_trace({"answer": answer, "sources": [_result_to_dict(item) for item in selected], "context": "", "agent": agent, "evidence": evidence_report.to_dict()}, trace)
 
     source_dicts = [_result_to_dict(item) for item in selected]
     context = format_context(selected)
@@ -5779,10 +5714,6 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
             delegated_handoff_brief = handoff_brief
             answer = answer.rstrip() + _crawler_delegation_note_for(delegated_job, collection_question, created, requested_by=requested_by, delivery_target=delivery_target)
             add_trace("delegate", "planned_workflow", {"job_id": delegated_job.id, "status": delegated_job.status, "task": collection_question})
-        elif _answer_requires_auto_delegate(answer, evidence_report):
-            delegated_job, created = _delegate_crawler_for_missing_data(config, payload, question)
-            answer = answer.rstrip() + _crawler_delegation_note(delegated_job, question, created)
-            add_trace("delegate", "answer_marked_missing", {"job_id": delegated_job.id, "status": delegated_job.status})
     plan_text = _format_action_plan_for_user(action_plan) if planned_workflow else ""
     if plan_text and not answer.lstrip().startswith("执行计划："):
         answer = plan_text + "\n\n" + answer
