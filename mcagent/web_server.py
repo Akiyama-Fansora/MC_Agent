@@ -20,7 +20,13 @@ from typing import Any
 import sqlite3
 
 from .agent_memory import append_memory_event, memory_summary
-from .agent_runtime import build_handoff_contract, tool_catalog_prompt, tool_names_for_agent, validate_tool_name
+from .agent_runtime import (
+    build_handoff_contract,
+    classify_crawler_tool_result,
+    tool_catalog_prompt,
+    tool_names_for_agent,
+    validate_tool_name,
+)
 from .chat import SYSTEM_PROMPT, format_context, format_sources
 from .cleaners import _HTMLTextExtractor, normalize_text
 from .config import AppConfig, OllamaConfig, PROJECT_ROOT, load_config
@@ -1175,10 +1181,29 @@ def _crawler_result_summary(task_results: list[dict[str, Any]], plan: dict[str, 
     total_records = 0
     total_skipped = 0
     total_errors = 0
+    observation_counts: dict[str, int] = {}
     for result in task_results:
         source = _source_alias(str(result.get("source") or ""))
-        entry = by_source.setdefault(source, {"source": source, "tasks": 0, "records": 0, "skipped": 0, "errors": 0, "empty": 0, "off_topic": 0, "uncertain": 0, "failed": 0})
+        observation = classify_crawler_tool_result(result)
+        result.setdefault("observation", observation.to_dict())
+        observation_counts[observation.status] = observation_counts.get(observation.status, 0) + 1
+        entry = by_source.setdefault(
+            source,
+            {
+                "source": source,
+                "tasks": 0,
+                "records": 0,
+                "skipped": 0,
+                "errors": 0,
+                "empty": 0,
+                "off_topic": 0,
+                "uncertain": 0,
+                "failed": 0,
+                "status_counts": {},
+            },
+        )
         entry["tasks"] += 1
+        entry["status_counts"][observation.status] = entry["status_counts"].get(observation.status, 0) + 1
         stats = result.get("manifest_stats") if isinstance(result.get("manifest_stats"), dict) else {}
         records = int(stats.get("records") or 0)
         skipped = int(stats.get("skipped") or 0)
@@ -1199,6 +1224,10 @@ def _crawler_result_summary(task_results: list[dict[str, Any]], plan: dict[str, 
             "export_dir": result.get("export_dir"),
             "status": stats.get("status"),
             "failure_reason": stats.get("failure_reason") or stats.get("note"),
+            "observation_status": observation.status,
+            "observation_summary": observation.summary,
+            "retryable": observation.retryable,
+            "suggested_next": observation.suggested_next,
         }
         if result.get("empty_result"):
             entry["empty"] += 1
@@ -1247,23 +1276,23 @@ def _crawler_result_summary(task_results: list[dict[str, Any]], plan: dict[str, 
         if str(item.get("failure_reason") or "").strip()
     ]
     if failure_reasons:
-        next_actions.append("Crawler 判断失败原因：" + failure_reasons[0])
+        next_actions.append("Crawler observed a provider/tool failure reason: " + failure_reasons[0])
     if total_records == 0:
-        next_actions.append("本轮没有产生可入库 records，应换更短的实体词、直达 URL 或浏览器兜底。")
+        next_actions.append("No ingestible records were produced; CrawlerAgent should choose a different source, direct URL, browser path, or narrower entity query.")
     if empty_tasks:
-        next_actions.append("存在空结果源，下一轮应减少整句查询，改用实体名、别名、英文名和单项关键词。")
+        next_actions.append("Some tools returned empty results; CrawlerAgent should reflect on aliases, source choice, and whether browser/manual discovery is needed.")
     if off_topic_tasks:
-        next_actions.append("存在跑偏结果，下一轮应加强标题/URL/正文主题校验，必要时限定站点。")
+        next_actions.append("Some results were off-topic; CrawlerAgent should inspect examples and adjust source/query/URL strategy.")
     if uncertain_tasks:
-        next_actions.append("存在相关性不确定结果，下一轮应交给 Crawler LLM 复判或补抓更明确的组件/上下文证据。")
+        next_actions.append("Some relevance judgments are uncertain; CrawlerAgent should re-read samples before keeping, expanding, or discarding them.")
     if duplicate_count:
-        next_actions.append("发现重复内容较多，后续应优先抓新教程页、表格页、配方页，而不是重复项目首页。")
+        next_actions.append("Many duplicate records were skipped; prefer new tutorials, tables, recipe pages, internal files, or unexplored URLs.")
     if low_relevance_count:
-        next_actions.append("公开搜索低相关结果较多，建议用站点限定或 MC 专门来源优先。")
+        next_actions.append("Public search produced low-relevance results; consider source-specific discovery, direct browser search, or project archive analysis.")
     if total_errors:
-        next_actions.append("部分源返回错误，检查 API key、额度或该源可用性。")
+        next_actions.append("Some tools returned errors; check observation status for quota, auth, captcha, network, timeout, or parse blockers.")
     if not next_actions:
-        next_actions.append("本轮有可用新增资料，可让 MCagent 重新检索验证回答质量。")
+        next_actions.append("New useful data exists; MCagent can re-query the local index to verify answer quality.")
     return {
         "topic": (plan or {}).get("topic") or (plan or {}).get("target_hint"),
         "delivery_target": (plan or {}).get("delivery_target"),
@@ -1279,6 +1308,7 @@ def _crawler_result_summary(task_results: list[dict[str, Any]], plan: dict[str, 
             "duplicate_skipped": duplicate_count,
             "low_relevance_skipped": low_relevance_count,
             "raw_html_records": raw_html_count,
+            "observation_statuses": observation_counts,
         },
         "by_source": list(by_source.values()),
         "useful_records": useful_records,
@@ -1692,12 +1722,9 @@ def _crawler_task_identity(task: dict[str, Any]) -> tuple[str, str]:
 
 
 def _crawler_bad_result(result: dict[str, Any]) -> bool:
-    return (
-        int(result.get("returncode") or 0) != 0
-        or bool(result.get("empty_result"))
-        or bool(result.get("off_topic_result"))
-        or bool(result.get("uncertain_result"))
-    )
+    observation = classify_crawler_tool_result(result)
+    result.setdefault("observation", observation.to_dict())
+    return observation.bad
 
 
 def _crawler_failure_summary(task_results: list[dict[str, Any]], limit: int = 6) -> list[dict[str, Any]]:
@@ -1705,20 +1732,16 @@ def _crawler_failure_summary(task_results: list[dict[str, Any]], limit: int = 6)
     for result in task_results[-limit:]:
         manifest_stats = result.get("manifest_stats") if isinstance(result.get("manifest_stats"), dict) else {}
         topic_validation = result.get("topic_validation") if isinstance(result.get("topic_validation"), dict) else {}
-        reason = "failed"
-        if result.get("empty_result"):
-            reason = "empty_result"
-        elif result.get("off_topic_result"):
-            reason = "off_topic_result"
-        elif result.get("uncertain_result"):
-            reason = "uncertain_result"
-        elif int(result.get("returncode") or 0) != 0:
-            reason = "command_failed"
+        observation = classify_crawler_tool_result(result)
+        result.setdefault("observation", observation.to_dict())
         summary.append(
             {
                 "source": result.get("source"),
                 "query": result.get("query"),
-                "reason": reason,
+                "reason": observation.status,
+                "observation_summary": observation.summary,
+                "retryable": observation.retryable,
+                "suggested_next": observation.suggested_next,
                 "returncode": result.get("returncode"),
                 "records": manifest_stats.get("records", 0),
                 "skipped": manifest_stats.get("skipped", 0),
@@ -2037,6 +2060,7 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
                     "empty_query_result": True,
                     "empty_result": True,
                 }
+                result["observation"] = classify_crawler_tool_result(result).to_dict()
                 task_results.append(result)
                 failure_count += 1
                 bad_streak += 1
@@ -2171,6 +2195,7 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
                 failure_count += 1
             else:
                 failure_count += 1
+            result["observation"] = classify_crawler_tool_result(result).to_dict()
             task_results.append(result)
             if task_source == "topic_discovery" and result["returncode"] == 0:
                 remaining_slots = max(0, max_total_tasks - len(tasks))

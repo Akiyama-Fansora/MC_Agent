@@ -1070,3 +1070,83 @@ python scripts\check_text_encoding.py
 python scripts\public_readiness_check.py
 python tests\smoke_test.py
 ~~~
+
+## 26. ToolObservation：工具结果结构化回灌（2026-05-20）
+
+本轮开始前已重新阅读本文档。用户反复强调：工具不能替代 Agent LLM 做最终判断，但工具必须把客观结果讲清楚，尤其是 Crawler 失败时要能说清楚到底是空结果、跑偏、登录、验证码、额度、网络、解析还是超时。
+
+### 26.1 改造目标
+
+1. 不再让 CrawlerAgent 面对零散的 `empty_result/off_topic_result/returncode` 自己猜含义。
+2. 每次工具执行后生成统一的 `ToolObservation`，作为客观观察回灌给 CrawlerAgent。
+3. `ToolObservation` 只描述工具结果，不生成用户最终答案，不替代 LLM 做主观选择。
+4. 失败类型必须通用，不针对“落幕曲”“乌托邦”或任何测试句写特例。
+
+### 26.2 新增结构
+
+`mcagent/agent_runtime.py` 新增：
+
+- `TOOL_RESULT_STATUSES`
+- `ToolObservation`
+- `classify_crawler_tool_result(result)`
+
+当前状态分类包括：
+
+- `ok`
+- `empty`
+- `off_topic`
+- `duplicate_reused`
+- `auth_required`
+- `quota_limited`
+- `captcha_required`
+- `login_required`
+- `network_error`
+- `timeout`
+- `parse_error`
+- `execution_error`
+- `uncertain`
+- `blocked`
+- `stopped`
+
+每个 observation 包含：
+
+- `tool_name`
+- `status`
+- `summary`
+- `detail`
+- `retryable`
+- `suggested_next`
+
+### 26.3 接入位置
+
+1. `_crawler_bad_result()` 改为读取 `ToolObservation.bad`，不再散落判断多个布尔字段。
+2. `_crawler_failure_summary()` 给 Crawler 反思阶段提供 `observation_status/summary/retryable/suggested_next`。
+3. `_crawler_result_summary()` 聚合 `observation_statuses`，让 UI 和状态摘要能显示“为什么失败”。
+4. `_run_crawler_job()` 每次工具执行后把 observation 写入 `result["observation"]`。
+5. `crawler_llm_planner._compact_result_for_reflection()` 把 observation 传给 CrawlerAgent LLM，用于下一步反思。
+
+### 26.4 设计边界
+
+`ToolObservation` 不允许写用户最终回答，也不允许判断“这个问题该怎么回答”。它只能说：
+
+- 工具执行发生了什么；
+- 结果是否客观可用；
+- 是否可重试；
+- 如果要继续，下一步可以考虑什么类型的路径。
+
+真正是否继续、换源、用浏览器、下载包体、停止并汇报，仍交给 CrawlerAgent LLM 在反思循环里判断。
+
+### 26.5 验证
+
+本轮新增 smoke 断言覆盖：
+
+- timeout 分类；
+- provider quota/rate limit 分类；
+- empty result 分类；
+- records > 0 的 ok 分类。
+
+后续继续做：
+
+1. 把 MCagent 的 `_chat_impl()` 继续拆向统一 `AgentRuntime.run_turn()`。
+2. 把 Crawler 的任务队列升级成更完整的 observe/reflect/action loop。
+3. 前端把 observation status 展示成直观中文状态，而不是只显示 raw JSON。

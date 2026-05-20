@@ -8,7 +8,7 @@ from typing import Any
 from .config import OllamaConfig, load_config
 from .crawler_planner import decompose_crawler_queries, plan_crawler_tasks
 from .agent_memory import read_memory_events
-from .agent_runtime import crawler_collection_catalog_prompt
+from .agent_runtime import classify_crawler_tool_result, crawler_collection_catalog_prompt
 from .llm import OllamaOpenAIClient, OpenAICompatibleClient
 from .llm_profiles import client_for_agent
 
@@ -1015,10 +1015,15 @@ def _compact_result_for_reflection(result: dict[str, Any]) -> dict[str, Any]:
     manifest = result.get("manifest_stats") if isinstance(result.get("manifest_stats"), dict) else {}
     validation = result.get("topic_validation") if isinstance(result.get("topic_validation"), dict) else {}
     reusable = result.get("existing_evidence_reused") if isinstance(result.get("existing_evidence_reused"), dict) else {}
+    observation = result.get("observation") if isinstance(result.get("observation"), dict) else classify_crawler_tool_result(result).to_dict()
     return {
         "source": result.get("source"),
         "query": result.get("query"),
         "returncode": result.get("returncode"),
+        "observation_status": observation.get("status"),
+        "observation_summary": observation.get("summary"),
+        "retryable": observation.get("retryable"),
+        "suggested_next": observation.get("suggested_next"),
         "records": manifest.get("records"),
         "skipped": manifest.get("skipped"),
         "errors": manifest.get("errors"),

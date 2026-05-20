@@ -75,6 +75,55 @@ class AgentAction:
         }
 
 
+TOOL_RESULT_STATUSES = frozenset(
+    {
+        "ok",
+        "empty",
+        "off_topic",
+        "duplicate_reused",
+        "auth_required",
+        "quota_limited",
+        "captcha_required",
+        "login_required",
+        "network_error",
+        "timeout",
+        "parse_error",
+        "execution_error",
+        "uncertain",
+        "blocked",
+        "stopped",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ToolObservation:
+    tool_name: str
+    status: str
+    summary: str = ""
+    detail: dict[str, Any] = field(default_factory=dict)
+    retryable: bool = False
+    suggested_next: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.status in {"ok", "duplicate_reused"}
+
+    @property
+    def bad(self) -> bool:
+        return not self.ok
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tool_name": self.tool_name,
+            "status": self.status if self.status in TOOL_RESULT_STATUSES else "execution_error",
+            "summary": self.summary,
+            "detail": self.detail,
+            "retryable": self.retryable,
+            "suggested_next": self.suggested_next,
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class HandoffContract:
     requested_by: str
@@ -113,6 +162,96 @@ class HandoffContract:
             "acceptance_criteria": self.acceptance_criteria,
             "failure_report": self.failure_report,
         }
+
+
+def _result_text_for_classification(result: dict[str, Any]) -> str:
+    manifest = result.get("manifest_stats") if isinstance(result.get("manifest_stats"), dict) else {}
+    parts = [
+        result.get("output"),
+        result.get("failure_reason"),
+        result.get("error"),
+        result.get("reason"),
+        manifest.get("failure_reason"),
+        manifest.get("note"),
+        manifest.get("status"),
+    ]
+    return " ".join(str(item) for item in parts if item).lower()
+
+
+def _manifest_count(result: dict[str, Any], key: str) -> int:
+    manifest = result.get("manifest_stats") if isinstance(result.get("manifest_stats"), dict) else {}
+    try:
+        return int(manifest.get(key) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def classify_crawler_tool_result(result: dict[str, Any]) -> ToolObservation:
+    """Classify an objective crawler tool result for Agent reflection.
+
+    This does not decide the user-facing answer. It only normalizes observable
+    tool outcomes so CrawlerAgent can reflect and choose the next action.
+    """
+
+    source = str(result.get("source") or "unknown")
+    records = _manifest_count(result, "records")
+    skipped = _manifest_count(result, "skipped")
+    errors = _manifest_count(result, "errors")
+    returncode = int(result.get("returncode") or 0)
+    text = _result_text_for_classification(result)
+    detail = {
+        "source": source,
+        "query": result.get("query"),
+        "returncode": returncode,
+        "records": records,
+        "skipped": skipped,
+        "errors": errors,
+    }
+
+    def observation(status: str, summary: str, *, retryable: bool = False, suggested_next: str = "") -> ToolObservation:
+        return ToolObservation(
+            tool_name=source,
+            status=status,
+            summary=summary,
+            detail=detail,
+            retryable=retryable,
+            suggested_next=suggested_next,
+        )
+
+    if result.get("stop_requested") or returncode == 130:
+        return observation("stopped", "Tool execution was stopped before completion.", retryable=True, suggested_next="Ask whether to resume or choose a smaller next action.")
+    if result.get("empty_query_result"):
+        return observation("blocked", "Tool refused to run because the query or target was empty.", retryable=True, suggested_next="Reflect on the goal and choose a concrete query, URL, or file target.")
+    if result.get("timed_out") or returncode == 124 or "timed out" in text or "timeout" in text:
+        return observation("timeout", "Tool timed out before returning usable data.", retryable=True, suggested_next="Retry with a narrower target, browser path, or lower page/file limit.")
+    if bool(result.get("existing_evidence_reused", {}).get("matched")):
+        return observation("duplicate_reused", "New fetch was duplicate, but matching existing evidence was found and reused.")
+    if result.get("off_topic_result"):
+        return observation("off_topic", "Tool returned content, but CrawlerAgent/evidence validation judged it off-topic.", retryable=True, suggested_next="Change source, query, URL, or validation context before retrying.")
+    if result.get("uncertain_result"):
+        return observation("uncertain", "Tool returned content whose relevance is uncertain.", retryable=True, suggested_next="Ask CrawlerAgent to inspect examples and decide whether to expand, keep, or discard.")
+    if result.get("empty_result") or result.get("archive_not_found"):
+        return observation("empty", "Tool produced no usable records for this target.", retryable=True, suggested_next="Try a different source, alias, broader/narrower query, browser search, or direct URL.")
+
+    if returncode != 0:
+        if any(token in text for token in ("quota", "429", "rate limit", "insufficient credit", "billing", "credit")):
+            return observation("quota_limited", "Provider quota or rate limit blocked this tool call.", retryable=False, suggested_next="Switch providers or use browser/Jina/local sources.")
+        if any(token in text for token in ("captcha", "verify you are human", "verification")):
+            return observation("captcha_required", "Target appears to require captcha or human verification.", retryable=False, suggested_next="Report the blocker or use an accessible mirror/source.")
+        if any(token in text for token in ("login", "sign in", "401", "403", "auth", "permission", "unauthorized", "forbidden")):
+            status = "login_required" if "login" in text or "sign in" in text else "auth_required"
+            return observation(status, "Target or provider requires authentication.", retryable=False, suggested_next="Use configured credentials, a public source, or report the access limit.")
+        if any(token in text for token in ("failed to fetch", "connection", "dns", "ssl", "network", "reset by peer", "proxy")):
+            return observation("network_error", "Network or transport error prevented collection.", retryable=True, suggested_next="Retry later or switch to another provider/browser path.")
+        if any(token in text for token in ("jsondecode", "parse", "parser", "invalid json", "html parse")):
+            return observation("parse_error", "Tool fetched data but failed while parsing it.", retryable=True, suggested_next="Save raw HTML/text and use a more tolerant parser or browser extraction.")
+        return observation("execution_error", "Tool command failed.", retryable=True, suggested_next="Inspect output_tail, then retry with adjusted parameters or a different tool.")
+
+    if records > 0:
+        return observation("ok", "Tool produced usable records.")
+    if skipped > 0:
+        return observation("empty", "Tool produced no new records; output was skipped or already filtered.", retryable=True, suggested_next="Inspect skipped reasons and decide whether existing evidence is enough or a new source is needed.")
+    return observation("empty", "Tool completed but produced no records.", retryable=True, suggested_next="Try a different source, alias, broader/narrower query, browser search, or direct URL.")
 
 
 AGENT_ROLES = {
