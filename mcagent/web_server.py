@@ -23,6 +23,7 @@ from .agent_memory import append_memory_event, memory_summary
 from .agent_runtime import (
     build_handoff_contract,
     classify_crawler_tool_result,
+    make_agent_loop_event,
     tool_catalog_prompt,
     tool_names_for_agent,
     validate_tool_name,
@@ -5319,7 +5320,7 @@ def _with_trace(payload: dict[str, Any], trace: list[dict[str, Any]]) -> dict[st
 
 
 def _trace_step(stage: str, status: str, detail: Any = None) -> dict[str, Any]:
-    return {"time": time.time(), "stage": stage, "status": status, "detail": detail}
+    return make_agent_loop_event(stage, status, detail).to_trace_dict()
 
 
 def _action_plan_has_tool(action_plan: list[dict[str, Any]], tool: str) -> bool:

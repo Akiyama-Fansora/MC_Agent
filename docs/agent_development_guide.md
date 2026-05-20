@@ -1229,3 +1229,43 @@ python tests\agent_runtime_scenarios.py
    - `python tests\smoke_test.py`
    - `python tests\agent_runtime_scenarios.py`
 3. `public_readiness_check.py` 已把 `tests/agent_runtime_scenarios.py` 列为公开必备文件。
+
+## 28. AgentLoopEvent：统一过程事件格式（2026-05-20）
+
+本轮开始前已重新阅读本文档，并先制定测试方案。
+
+### 28.1 本轮测试方案
+
+目标行为：
+
+- 让 MCagent / CrawlerAgent 的过程事件逐步从散落 dict 收敛到统一 `AgentLoopEvent`；
+- 保持 SSE 和前端已依赖的 `{time, stage, status, detail}` 字段不破坏；
+- 为后续 `AgentRuntime.run_turn()` 做铺垫。
+
+风险点：
+
+- trace 字段名变化导致前端过程详情不显示；
+- 时间戳缺失或不是数字；
+- 新结构又变成只在某个测试语句上生效的局部补丁。
+
+离线测试：
+
+- `tests/agent_runtime_scenarios.py` 增加 `AgentLoopEvent` 断言：
+  - 能生成旧 trace 兼容 dict；
+  - `stage/status/detail/time` 字段完整；
+  - `time` 为正数。
+
+集成测试：
+
+- 继续运行 smoke、公开检查、编码检查和前端语法检查。
+
+通过标准：
+
+~~~powershell
+python -m py_compile mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py tests\agent_runtime_scenarios.py
+node --check frontend\static\app.js
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+python tests\smoke_test.py
+python tests\agent_runtime_scenarios.py
+~~~

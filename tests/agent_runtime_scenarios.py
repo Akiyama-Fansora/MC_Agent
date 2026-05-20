@@ -12,6 +12,7 @@ from mcagent.agent_runtime import (  # noqa: E402
     build_handoff_contract,
     classify_crawler_tool_result,
     crawler_collection_catalog_prompt,
+    make_agent_loop_event,
     tool_catalog_prompt,
 )
 from mcagent.web_server import _job_readable_summary  # noqa: E402
@@ -50,6 +51,15 @@ def test_tool_observation_matrix() -> None:
         assert_true(f"known_status_{expected}", observation.status in TOOL_RESULT_STATUSES)
         assert_equal(f"classify_{expected}", observation.status, expected)
         assert_true(f"summary_{expected}", bool(observation.summary))
+
+
+def test_agent_loop_event_keeps_trace_shape() -> None:
+    event = make_agent_loop_event("observe", "received", {"question": "你好"})
+    trace = event.to_trace_dict()
+    assert_equal("trace_stage", trace["stage"], "observe")
+    assert_equal("trace_status", trace["status"], "received")
+    assert_equal("trace_detail", trace["detail"], {"question": "你好"})
+    assert_true("trace_time", isinstance(trace["time"], float) and trace["time"] > 0)
 
 
 def test_handoff_contract_preserves_context() -> None:
@@ -122,6 +132,7 @@ def test_job_readable_summary_surfaces_observations() -> None:
 
 def main() -> int:
     test_tool_observation_matrix()
+    test_agent_loop_event_keeps_trace_shape()
     test_handoff_contract_preserves_context()
     test_tool_catalog_exposes_agent_capabilities()
     test_job_readable_summary_surfaces_observations()

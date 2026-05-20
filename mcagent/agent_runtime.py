@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import time
 from typing import Any, Iterable
 
 
@@ -73,6 +74,26 @@ class AgentAction:
             "reason": self.reason,
             "next_step_risk": self.next_step_risk,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class AgentLoopEvent:
+    stage: str
+    status: str
+    detail: Any = None
+    timestamp: float = field(default_factory=time.time)
+
+    def to_trace_dict(self) -> dict[str, Any]:
+        return {
+            "time": self.timestamp,
+            "stage": self.stage,
+            "status": self.status,
+            "detail": self.detail,
+        }
+
+
+def make_agent_loop_event(stage: str, status: str, detail: Any = None) -> AgentLoopEvent:
+    return AgentLoopEvent(stage=str(stage), status=str(status), detail=detail)
 
 
 TOOL_RESULT_STATUSES = frozenset(
