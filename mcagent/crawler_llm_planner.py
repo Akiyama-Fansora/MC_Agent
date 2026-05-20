@@ -107,7 +107,7 @@ def _collection_target_hint(question: str) -> str:
 def _session_target_hint(session_summary: dict[str, Any] | None = None) -> str:
     if not isinstance(session_summary, dict):
         return ""
-    for key in ("current_topic", "target", "goal", "collection_target"):
+    for key in ("authoritative_task_goal", "task_goal", "collection_target", "goal", "target", "current_topic"):
         value = str(session_summary.get(key) or "").strip()
         if not value:
             continue
@@ -213,6 +213,9 @@ def _planner_context_text(question: str, session_summary: dict[str, Any] | None 
     parts = [question]
     if isinstance(session_summary, dict):
         for key in (
+            "authoritative_task_goal",
+            "task_goal",
+            "collection_target",
             "handoff_brief",
             "known_context",
             "current_topic",
@@ -848,6 +851,7 @@ def plan_crawler_tasks_with_llm(question: str, source_dir: Path, *, max_tasks: i
             "Use this shared Agent Runtime tool catalog as capability context, not as keyword triggers:\n"
             f"{tool_catalog}\n"
             "Decide target entity, coverage goals, short source-specific queries, and ordered tasks. Tools execute after your JSON plan.\n"
+            "The authoritative collection target is the current handoff/task goal. Prior current_topic/topics are background memory only; never let old session topics override collection_target/task_goal.\n"
             "For general data collection tasks that ask for structured fields and a save location, use browser_collect. It can open a browser, collect item rows, and save CSV/JSON/report to output_dir. Keep the user's requested output_dir exactly.\n"
             "For full Minecraft modpack collection, cover: basic info, official/download/community links, mod list, quests/beginner route, key systems, items/recipes/acquisition, bosses, tutorials, known issues.\n"
             "If local archive or manifest exists, use modpack_internal first. It extracts manifest, modlist, FTB Quests, KubeJS, OpenLoader/data, recipes, config, raw text. Then use mcmod/modrinth/public web to fill gaps.\n"

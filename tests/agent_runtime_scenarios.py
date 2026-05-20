@@ -16,6 +16,7 @@ from mcagent.agent_runtime import (  # noqa: E402
     normalize_agent_tool_decision,
     tool_catalog_prompt,
 )
+from mcagent.crawler_llm_planner import plan_crawler_tasks_rule_fallback  # noqa: E402
 from mcagent.web_server import _job_readable_summary  # noqa: E402
 
 
@@ -176,6 +177,31 @@ def test_crawler_delegation_requires_explicit_agent_route() -> None:
     assert_true("insufficient_evidence_no_auto_delegate", '"delegated": False' in source)
 
 
+def test_crawler_handoff_target_overrides_old_session_topic() -> None:
+    new_target = "请收集关于 Minecraft 整合包 XYZABC 的详细资料，包括模组列表和玩法指南"
+    stale_topic = "介绍一下乌托邦整合包"
+    summary = {
+        "current_topic": stale_topic,
+        "topics": [stale_topic],
+        "collection_target": new_target,
+        "task_goal": new_target,
+        "authoritative_task_goal": new_target,
+        "delivery_target": "MCagent/RAG",
+        "known_context": "上一轮用户在聊乌托邦，但这一轮已经明确委托新的采集目标。",
+    }
+    plan = plan_crawler_tasks_rule_fallback(
+        new_target,
+        ROOT / "data" / "crawler_exports",
+        max_tasks=8,
+        planner_error="unit test",
+        session_summary=summary,
+    )
+    queries = " ".join(str(task.get("query") or "") for task in plan.get("tasks", []))
+    assert_true("new_target_topic", "XYZABC" in str(plan.get("topic") or ""))
+    assert_true("new_target_queries", "XYZABC" in queries)
+    assert_true("stale_topic_not_authoritative", not str(plan.get("topic") or "").startswith("介绍一下乌托邦"))
+
+
 def main() -> int:
     test_tool_observation_matrix()
     test_agent_loop_event_keeps_trace_shape()
@@ -184,6 +210,7 @@ def main() -> int:
     test_tool_catalog_exposes_agent_capabilities()
     test_job_readable_summary_surfaces_observations()
     test_crawler_delegation_requires_explicit_agent_route()
+    test_crawler_handoff_target_overrides_old_session_topic()
     print("AGENT RUNTIME SCENARIOS PASSED")
     return 0
 

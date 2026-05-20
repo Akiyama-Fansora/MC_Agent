@@ -2338,7 +2338,11 @@ def _plan_crawler_with_job_timeout(job: Job, question: str, config: AppConfig, m
     handoff_brief = ""
     if isinstance(session_summary, dict):
         handoff_brief = str(session_summary.get("handoff_brief") or "").strip()
-        planner_topic = str(session_summary.get("current_topic") or session_summary.get("target") or question).strip() or question
+        for key in ("authoritative_task_goal", "task_goal", "collection_target", "goal", "target", "current_topic"):
+            planner_topic = str(session_summary.get(key) or "").strip()
+            if planner_topic:
+                break
+        planner_topic = planner_topic or question
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     future = executor.submit(plan_crawler_tasks_resilient, question, config.paths.source_dir, max_tasks=max_tasks, session_summary=session_summary)
     started = time.time()
@@ -4326,6 +4330,9 @@ def _delegate_crawler_for_missing_data(config: AppConfig, payload: dict[str, Any
             "original_user_request": crawler_payload["original_user_request"],
             "delivery_target": crawler_payload["delivery_target"],
             "collection_target": planner_collection_target,
+            "task_goal": planner_collection_target,
+            "authoritative_task_goal": planner_collection_target,
+            "current_topic": planner_collection_target,
         }
     )
     crawler_payload["session_summary"] = planner_summary

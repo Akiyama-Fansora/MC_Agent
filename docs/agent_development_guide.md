@@ -1440,3 +1440,85 @@ python scripts\public_readiness_check.py
 python tests\smoke_test.py
 python tests\agent_runtime_scenarios.py
 ~~~
+
+## 32. 每轮优化必须进入测试闭环（2026-05-21）
+
+本轮开始前已重新阅读本文档。用户再次强调：不能只改代码，也不能只跑单一 happy path。每次修改或优化之后，都必须制定完整、多样化的测试方案，执行测试，根据暴露的问题继续修正，再更新文档与测试。
+
+### 32.1 流程原则
+
+1. 修改前先读本文档，确认本轮不违反既有 Agent 原则。
+2. 每轮改动必须写清楚：
+   - 目标行为；
+   - 风险点；
+   - 离线单元/源码守卫测试；
+   - 集成或接口测试；
+   - 前端交互或人工验证点；
+   - 失败后的修正策略。
+3. 测试失败时不能把失败解释掉，必须回到代码/提示词/文档继续修。
+4. 文档不是事后总结，而是下一轮行动约束；任何新原则必须追加到本文档。
+5. Agent 行为相关改动尤其要覆盖：
+   - 普通问候/闲聊；
+   - RAG 问答；
+   - 多问题组合；
+   - 显式委托 Crawler；
+   - 旧上下文与新目标冲突；
+   - 模型失败、工具失败、空结果、跑偏结果。
+
+### 32.2 本轮问题
+
+显式委托 Crawler 时，任务本身已经有明确采集目标，但 Crawler 规划器可能优先读取旧会话里的 `current_topic`。例如上一轮聊“乌托邦”，下一轮明确委托收集另一个主题时，旧主题不应覆盖新任务目标。
+
+这不是关键词特例问题，而是 Agent handoff 的上下文优先级问题：
+
+- `collection_target`、`task_goal`、`authoritative_task_goal` 是本轮任务目标；
+- `current_topic`、`topics` 是历史背景；
+- CrawlerAgent 可以参考历史背景，但不能让历史背景替代本轮目标。
+
+### 32.3 本轮改造
+
+1. Crawler 规划器 `_session_target_hint()` 优先读取 `authoritative_task_goal`、`task_goal`、`collection_target`，最后才读取 `current_topic`。
+2. Crawler 规划 prompt 明确说明：本轮 handoff/task goal 是权威采集目标，旧 `current_topic/topics` 只能作为背景记忆。
+3. 后台 job 等待规划时显示的主题也按同一优先级选择，避免 UI 上继续显示旧主题。
+4. MCagent 委托 Crawler 时，将本轮采集目标写入 `collection_target`、`task_goal`、`authoritative_task_goal`，并把 Crawler 规划用的 `current_topic` 同步为本轮目标。
+
+### 32.4 本轮测试方案
+
+目标行为：
+
+- 显式委托 Crawler 时，新采集目标必须覆盖旧会话主题；
+- Crawler fallback 规划、LLM 规划提示、后台 job 主题显示使用同一目标优先级；
+- 不新增任何针对“乌托邦”“落幕曲”或某句测试语的硬编码；
+- 第 31 章的原则仍成立：Crawler 只能由 Agent 明确工具选择触发。
+
+风险点：
+
+- 过度覆盖 `current_topic`，让 Crawler 失去历史背景；
+- fallback 与 LLM planner 行为不一致；
+- 显式委托路径修好了，但 planned workflow 路径仍被旧主题污染；
+- 文档或源码出现编码乱码。
+
+离线测试：
+
+- `tests/agent_runtime_scenarios.py` 新增 `test_crawler_handoff_target_overrides_old_session_topic()`：
+  - 构造旧 `current_topic=介绍一下乌托邦整合包`；
+  - 构造新 `collection_target/task_goal=XYZABC 整合包资料`；
+  - 验证 Crawler fallback plan 的 topic 和 queries 都包含新目标，不再以旧主题开头。
+
+集成测试：
+
+~~~powershell
+python -m py_compile mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py tests\agent_runtime_scenarios.py
+node --check frontend\static\app.js
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+python tests\smoke_test.py
+python tests\agent_runtime_scenarios.py
+~~~
+
+人工验证建议：
+
+- 先问一个主题介绍，再显式委托 Crawler 采集另一个虚构主题，确认 UI 和 job 摘要显示的是新主题；
+- 再问“你好”，确认不会触发 RAG/Crawler；
+- 再问正常 RAG 问题，确认不会因为回答中提到资料缺口而自动补库；
+- 再显式说“让 Crawler 去收集……”，确认 Crawler 才启动。
