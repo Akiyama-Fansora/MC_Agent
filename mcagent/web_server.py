@@ -3144,6 +3144,68 @@ def _build_grounded_messages(
     return messages, context
 
 
+def _build_direct_answer_messages(
+    original_question: str,
+    contextual_question: str,
+    session_summary: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
+    summary_text = json.dumps(session_summary or {}, ensure_ascii=False)
+    user_text = (
+        f"用户原话：{original_question}\n"
+        f"当前会话理解：{contextual_question}\n"
+        f"会话摘要：{summary_text}\n\n"
+        "请直接自然回复用户。不要声称查过本地资料库，不要编造来源，不要调用 Crawler。"
+    )
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是 MCagent，一个可以自然对话、也可以在需要时使用工具的资料助手。"
+                "本轮已经由 Agent 判断为不需要工具；请简洁、友好、按上下文直接回答。"
+            ),
+        },
+        {"role": "user", "content": user_text},
+    ]
+
+
+def _generate_direct_answer(
+    config: AppConfig,
+    original_question: str,
+    contextual_question: str,
+    session_summary: dict[str, Any],
+    model: str,
+    temperature: float,
+    max_tokens: int | None,
+) -> str:
+    messages = _build_direct_answer_messages(original_question, contextual_question, session_summary)
+    client, model_label = _selected_llm_client(config, model, temperature)
+    answer = client.chat(messages, temperature=temperature, max_tokens=max_tokens)
+    answer = answer.strip()
+    return f"{answer}\n\n模型：{model_label}" if answer else "我在。"
+
+
+def _generate_direct_answer_stream(
+    config: AppConfig,
+    original_question: str,
+    contextual_question: str,
+    session_summary: dict[str, Any],
+    model: str,
+    temperature: float,
+    max_tokens: int | None,
+    emit_delta: Any,
+    emit_thinking: Any | None = None,
+) -> str:
+    messages = _build_direct_answer_messages(original_question, contextual_question, session_summary)
+    client, model_label = _selected_llm_client(config, model, temperature)
+    chunks = _collect_streaming_answer(client, messages, temperature, max_tokens, emit_delta, emit_thinking)
+    answer = "".join(chunks).strip()
+    if not answer:
+        retry_tokens = min(max((max_tokens or 0) * 4, 1000), 4000)
+        chunks = _collect_streaming_answer(client, messages, temperature, retry_tokens, emit_delta, emit_thinking)
+        answer = "".join(chunks).strip()
+    return f"{answer}\n\n模型：{model_label}" if answer else "我在。"
+
+
 def _generate_grounded_answer_stream(
     config: AppConfig,
     question: str,
@@ -5041,11 +5103,12 @@ def _agent_tool_decision(
             "如果是复合问答，优先 answer；如果复合任务包含“先查本地资料/总结缺口/再让 Crawler 补”，选择 planned_workflow，并给出 action_plan。\n"
             "如果需要本地 RAG 检索，rag_focus 要写成真正要查的主题问题，去掉“本地资料、缺什么、让 Crawler 去找、状态”等元指令。\n"
             "只输出 JSON，不要 Markdown，不要解释隐藏思考。\n"
+            "额外工具 direct_answer：当用户只是问候、闲聊、询问系统能力、要求解释当前行为，或任何不需要本地资料/状态/Crawler 的问题时选择 direct_answer；选择它就不要触发 local_rag_search。\n"
             f"active_agent: {agent}\n"
             f"original_user_message: {original_question}\n"
             f"contextualized_for_retrieval: {contextual_question}\n"
             f"session_summary: {json.dumps(session_summary or {}, ensure_ascii=False)}\n"
-            "JSON schema: {\"tool\":\"answer|planned_workflow|status|delegate_crawler\", "
+            "JSON schema: {\"tool\":\"direct_answer|answer|planned_workflow|status|delegate_crawler\", "
             "\"reason\":\"一句面向开发日志的理由\", "
             "\"rag_focus\":\"需要本地检索时的主题化检索问题\", "
             "\"collection_target\":\"若选择 delegate_crawler，写成完整自然语言采集目标；不要拆搜索词，也不要丢掉用户原话和必要上下文\", "
@@ -5066,6 +5129,9 @@ def _agent_tool_decision(
             "local_rag_search": "answer",
             "answer_from_evidence": "answer",
             "rag": "answer",
+            "chat": "direct_answer",
+            "smalltalk": "direct_answer",
+            "direct": "direct_answer",
             "answer_and_delegate": "planned_workflow",
             "answer_then_crawler": "planned_workflow",
             "answer_then_delegate": "planned_workflow",
@@ -5076,7 +5142,7 @@ def _agent_tool_decision(
             "crawler": "delegate_crawler",
         }
         tool = tool_aliases.get(raw_tool, raw_tool)
-        if tool not in {"answer", "planned_workflow", "status", "delegate_crawler"}:
+        if tool not in {"direct_answer", "answer", "planned_workflow", "status", "delegate_crawler"}:
             tool = "answer"
         raw_plan = value.get("action_plan")
         action_plan: list[dict[str, Any]] = []
@@ -5139,6 +5205,7 @@ def _agent_confirm_next_step(
             "允许工具：answer, planned_workflow, status, delegate_crawler, local_rag_search, evidence_select, final_answer_llm。\n"
             "如果 proposed_tool 合理，proceed=true；如果不合理，proceed=false 并给出 suggested_tool。不要拆 Crawler 的搜索词，不要替工具生成最终回答。\n"
             "只输出 JSON。\n"
+            "额外工具 direct_answer：当用户只是问候、闲聊、询问系统能力、要求解释当前行为，或任何不需要本地资料/状态/Crawler 的问题时选择 direct_answer；选择它就不要触发 local_rag_search。\n"
             f"active_agent: {agent}\n"
             f"original_user_message: {original_question}\n"
             f"session_summary: {json.dumps(session_summary or {}, ensure_ascii=False)}\n"
@@ -5320,12 +5387,40 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
     add_trace("decide", "next_step_confirmed", route_confirmation)
     if not bool(route_confirmation.get("proceed", True)):
         suggested_tool = str(route_confirmation.get("suggested_tool") or route_confirmation.get("tool") or "").strip()
-        if suggested_tool in {"answer", "planned_workflow", "status", "delegate_crawler"}:
+        if suggested_tool in {"direct_answer", "answer", "planned_workflow", "status", "delegate_crawler"}:
             route_intent = suggested_tool
     planned_workflow = route_intent == "planned_workflow"
     planned_delegate = planned_workflow and _action_plan_has_tool(action_plan, "delegate_crawler")
     if planned_workflow:
         route_intent = "answer"
+    if route_intent == "direct_answer":
+        add_trace("answer", "generating", {"model": model, "mode": "direct"})
+        try:
+            if emit is not None:
+                answer = _generate_direct_answer_stream(
+                    config,
+                    original_question,
+                    question,
+                    session_summary,
+                    model,
+                    temperature,
+                    max_tokens,
+                    lambda chunk: emit("delta", {"text": chunk}),
+                    emit_thinking=lambda detail: add_trace("answer", "thinking", detail),
+                )
+            else:
+                answer = _generate_direct_answer(
+                    config,
+                    original_question,
+                    question,
+                    session_summary,
+                    model,
+                    temperature,
+                    max_tokens,
+                )
+        except Exception as exc:  # noqa: BLE001
+            answer = f"模型调用失败：{exc}"
+        return _with_trace({"answer": answer, "sources": [], "context": "", "agent": agent}, trace)
     if route_intent == "delegate_crawler":
         collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
         delegate_confirmation = _agent_confirm_next_step(
@@ -5421,6 +5516,36 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
             context={"evidence_question": evidence_question, "rough_k": rough_k, "final_context_k": final_k},
         )
         add_trace("retrieve", "next_step_confirmed", retrieval_confirmation)
+        if not bool(retrieval_confirmation.get("proceed", True)):
+            suggested_tool = str(retrieval_confirmation.get("suggested_tool") or retrieval_confirmation.get("tool") or "").strip()
+            if suggested_tool in {"answer", "direct_answer", "final_answer_llm"}:
+                add_trace("answer", "generating", {"model": model, "mode": "direct_after_retrieval_cancelled"})
+                try:
+                    if emit is not None:
+                        answer = _generate_direct_answer_stream(
+                            config,
+                            original_question,
+                            question,
+                            session_summary,
+                            model,
+                            temperature,
+                            max_tokens,
+                            lambda chunk: emit("delta", {"text": chunk}),
+                            emit_thinking=lambda detail: add_trace("answer", "thinking", detail),
+                        )
+                    else:
+                        answer = _generate_direct_answer(
+                            config,
+                            original_question,
+                            question,
+                            session_summary,
+                            model,
+                            temperature,
+                            max_tokens,
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    answer = f"模型调用失败：{exc}"
+                return _with_trace({"answer": answer, "sources": [], "context": "", "agent": agent}, trace)
         planning_summary = _retrieval_planning_summary(session_summary, original_question, evidence_question)
         add_trace("retrieve", "planning", {"question": evidence_question, "original": original_question})
         retrieval_plan = plan_retrieval(evidence_question, session_summary=planning_summary, max_queries=10, use_llm=True)

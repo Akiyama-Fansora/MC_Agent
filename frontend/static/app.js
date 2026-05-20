@@ -153,6 +153,7 @@ function progressTextForTrace(step) {
   if (stage === "observe:received") return "我先理解你的问题，判断是问答、状态查询，还是要交给 Crawler 采集。";
   if (stage === "observe:contextualized") return "这像是在接着前面的内容追问，我会把当前会话主题一起带上。";
   if (stage === "decide:tool_selected") {
+    if (detail.tool === "direct_answer") return "MCagent 判断这轮不需要查资料，直接组织回复。";
     if (detail.tool === "status") return "你在问进度或状态，我直接查看后台采集和入库情况。";
     if (detail.tool === "delegate_crawler") return "这是采集任务，我会把目标交给 Crawler，由它自己规划搜索和清洗方式。";
     return "我先查本地资料库，看现有证据能不能稳定回答。";
@@ -169,6 +170,7 @@ function progressTextForTrace(step) {
     if (detail.verdict && detail.verdict !== "ok") return "这些资料还不够稳，我准备把缺口交给 Crawler 继续补齐。";
     return "证据够用了，我来整理成能直接看的回答。";
   }
+  if (stage === "answer:generating" && String(detail.mode || "").startsWith("direct")) return "模型正在直接组织回复。";
   if (stage === "answer:generating") return "证据已经选好，模型开始思考并组织回答。";
   if (stage === "answer:thinking") {
     const count = Number(detail.reasoning_events || 0);

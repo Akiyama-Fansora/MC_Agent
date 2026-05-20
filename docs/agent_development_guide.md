@@ -928,3 +928,35 @@ python tests\smoke_test.py
 2. `deepseek-template`：`key_configured=false`
 
 当前 MCagent 与 CrawlerAgent 都默认分配到 `ollama-default`。如果需要 DeepSeek，由用户在 `/settings.html` 中填入 Key 并保存。
+
+## 24. 尊重 MCagent 的“无需工具”判断（2026-05-20）
+
+本轮开始前已重新阅读本文档。用户发现：输入“你好”时，MCagent 已经判断“简单问候，无需其他工具”，并且下一步确认也否决了 `local_rag_search`，但执行层仍继续进入 RAG 检索。这违反了“LLM 主导、工具辅助”的原则。
+
+### 24.1 原则
+
+1. MCagent 不是只能走“本地检索、状态、委托 Crawler”三条路。它也可以在 LLM 判断无需工具时直接自然回复。
+2. 工具确认步骤如果返回 `proceed=false`，执行层必须尊重该判断，不能继续强行执行原工具。
+3. 这不是给某个测试语句写特例；修复对象是通用执行链路：任何无需工具的问题都应跳过 RAG。
+4. `direct_answer` 只表示“本轮无需外部工具”，最终回复仍由 LLM 生成。
+
+### 24.2 代码变更
+
+1. MCagent 工具选择器新增 `direct_answer` 路径，用于问候、闲聊、系统能力说明、解释当前行为等无需工具的问题。
+2. `_chat_impl()` 在路由阶段识别 `direct_answer`，直接进入 LLM 回复，不创建 Retriever，不触发 local RAG。
+3. RAG 执行前的确认步骤如果返回 `proceed=false` 且建议 `answer/direct_answer/final_answer_llm`，会直接进入 LLM 回复，不再继续检索。
+4. 前端进度文案增加 direct 模式提示，避免显示“正在查本地资料库”。
+
+### 24.3 验证
+
+已执行并通过：
+
+~~~powershell
+python -m py_compile mcagent\web_server.py scripts\public_readiness_check.py
+node --check frontend\static\app.js
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+python tests\smoke_test.py
+~~~
+
+补充了一个执行链路级验证：模拟 MCagent 选择 `answer`，但在 `local_rag_search` 前确认 `proceed=false/suggested_tool=answer`；测试确认没有调用 Retriever，直接返回 LLM 回复。
