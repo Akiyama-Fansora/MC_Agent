@@ -3859,6 +3859,20 @@ def _answer_indicates_missing_data(answer: str) -> bool:
     return any(marker.lower() in lowered for marker in markers)
 
 
+def _answer_requires_auto_delegate(answer: str, evidence_report: Any | None = None) -> bool:
+    """Decide whether a finished answer exposes a data gap that should trigger Crawler.
+
+    This is deliberately conservative. Once the evidence selector has accepted
+    the local context, a normal answer may still mention limitations or missing
+    sub-details. That is not the same as "no answer"; tools must not turn those
+    caveats into an automatic Crawler job.
+    """
+
+    if evidence_report is not None and getattr(evidence_report, "verdict", "") == "ok":
+        return False
+    return _answer_indicates_missing_data(answer)
+
+
 def _answer_missing_recipe_details(answer: str) -> bool:
     recipe_markers = ("合成表", "合成配方", "合成配方表", "具体合成", "具体的合成", "详细配方", "具体配方", "摆放方式", "九宫格", "JEI")
     missing_markers = ("未提供", "未找到", "没有", "并未", "无法提供", "缺少", "未列出")
@@ -5765,7 +5779,7 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
             delegated_handoff_brief = handoff_brief
             answer = answer.rstrip() + _crawler_delegation_note_for(delegated_job, collection_question, created, requested_by=requested_by, delivery_target=delivery_target)
             add_trace("delegate", "planned_workflow", {"job_id": delegated_job.id, "status": delegated_job.status, "task": collection_question})
-        elif _answer_indicates_missing_data(answer):
+        elif _answer_requires_auto_delegate(answer, evidence_report):
             delegated_job, created = _delegate_crawler_for_missing_data(config, payload, question)
             answer = answer.rstrip() + _crawler_delegation_note(delegated_job, question, created)
             add_trace("delegate", "answer_marked_missing", {"job_id": delegated_job.id, "status": delegated_job.status})

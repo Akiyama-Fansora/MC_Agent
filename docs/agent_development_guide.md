@@ -1316,3 +1316,57 @@ python tests\agent_runtime_scenarios.py
 1. 新增 `AgentToolDecision` 和 `normalize_agent_tool_decision()`。
 2. `_agent_tool_decision()` 不再手写别名表和 action_plan 清洗，改用 runtime 层统一归一化。
 3. 这仍然不是最终答案决策；它只把 LLM 的工具选择结果规范化，执行和最终回答仍在后续 Agent loop 中处理。
+
+## 30. 修复“证据已足够但答案缺口说明触发 Crawler”（2026-05-20）
+
+本轮开始前已重新阅读本文档，并先制定测试方案。
+
+### 30.1 现象
+
+用户问“介绍一下乌托邦整合包”时，本地 RAG 已经找到多条相关资料，`EvidenceSelector` 也给出 `verdict=ok`，模型开始生成最终回答。但最终回答如果提到“本地资料还缺少某些细节”，旧逻辑会把它误判成“无法回答”，自动启动 Crawler。
+
+这违反两个原则：
+
+1. 工具不能替代 LLM 做最终判断；
+2. 证据已足够时，普通资料缺口说明不等于需要自动补库。
+
+### 30.2 本轮测试方案
+
+目标行为：
+
+- 如果 `evidence_report.verdict == "ok"`，最终回答里的普通缺口说明不能自动触发 Crawler；
+- 如果没有合格证据且答案明确“本地资料库未找到可靠答案”，仍允许按原有缺资料流程补库；
+- 不针对“乌托邦”写特例。
+
+风险点：
+
+- 过度禁止补库，导致真正没有资料时不再触发 Crawler；
+- 只修某个测试句，其他整合包/模组介绍仍误触发；
+- final answer 阶段再次被工具层覆盖。
+
+离线测试：
+
+- `tests/agent_runtime_scenarios.py` 新增：
+  - evidence ok + 答案含“缺少完整任务线/模组列表” => 不自动 delegate；
+  - 没有 evidence_report + “本地资料库未找到可靠答案” => 仍可 delegate。
+
+集成测试：
+
+- 继续运行 py_compile、前端 syntax、编码检查、公开检查、smoke、scenario。
+
+通过标准：
+
+~~~powershell
+python -m py_compile mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py tests\agent_runtime_scenarios.py
+node --check frontend\static\app.js
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+python tests\smoke_test.py
+python tests\agent_runtime_scenarios.py
+~~~
+
+### 30.3 代码改造
+
+1. 新增 `_answer_requires_auto_delegate(answer, evidence_report)`。
+2. 当证据报告为 `ok` 时，不再因为答案里出现“缺少/未找到/不完整”等普通 caveat 自动启动 Crawler。
+3. 保留无证据场景下的缺资料补库行为。
