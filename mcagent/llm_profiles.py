@@ -15,27 +15,6 @@ PROFILE_PATH = PROJECT_ROOT / "data" / "llm_profiles.json"
 AGENT_IDS = {"mcagent_rag", "crawler_agent"}
 
 
-def _read_llm_env_file() -> dict[str, str]:
-    candidates = [
-        PROJECT_ROOT / ".env",
-        Path(r"D:\magic\AgentTest\config\llm.env"),
-    ]
-    data: dict[str, str] = {}
-    for path in candidates:
-        if not path.exists():
-            continue
-        try:
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
-            continue
-        for line in lines:
-            if "=" not in line or line.strip().startswith("#"):
-                continue
-            key, value = line.split("=", 1)
-            data.setdefault(key.strip().lstrip("\ufeff"), value.strip().strip('"').strip("'"))
-    return data
-
-
 def _profile_id(value: str = "") -> str:
     value = str(value or "").strip()
     if value:
@@ -51,7 +30,6 @@ def _normalize_base_url(value: str) -> str:
 
 
 def _default_profiles(config: AppConfig) -> dict[str, Any]:
-    env = _read_llm_env_file()
     profiles: list[dict[str, Any]] = [
         {
             "id": "ollama-default",
@@ -62,27 +40,23 @@ def _default_profiles(config: AppConfig) -> dict[str, Any]:
             "api_key": "",
             "timeout_seconds": config.ollama.timeout_seconds,
             "builtin": True,
-        }
+        },
+        {
+            "id": "deepseek-template",
+            "name": "DeepSeek deepseek-v4-pro",
+            "provider": "openai-compatible",
+            "base_url": "https://api.deepseek.com",
+            "model": "deepseek-v4-pro",
+            "api_key": "",
+            "timeout_seconds": 180,
+            "builtin": True,
+        },
     ]
-    if env.get("LLM_API_KEY"):
-        model = env.get("LLM_MODEL_ID", "deepseek-v4-pro")
-        profiles.append(
-            {
-                "id": "deepseek-env",
-                "name": f"DeepSeek {model}",
-                "provider": "openai-compatible",
-                "base_url": env.get("LLM_BASE_URL", "https://api.deepseek.com"),
-                "model": model,
-                "api_key": env.get("LLM_API_KEY", ""),
-                "timeout_seconds": 180,
-                "builtin": True,
-            }
-        )
     return {
         "profiles": profiles,
         "assignments": {
-            "mcagent_rag": profiles[-1]["id"] if len(profiles) > 1 else "ollama-default",
-            "crawler_agent": profiles[-1]["id"] if len(profiles) > 1 else "ollama-default",
+            "mcagent_rag": "ollama-default",
+            "crawler_agent": "ollama-default",
         },
     }
 

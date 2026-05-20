@@ -776,7 +776,7 @@ LICENSE is missing; choose an open-source license before making the repository p
 
 1. 新增 `mcagent/llm_profiles.py`：
    - 读取默认 Ollama 配置。
-   - 读取本地 `.env` 或旧 AgentTest `llm.env` 中的云模型配置作为初始 profile。
+   - 提供默认 Ollama profile 和无 key 的 DeepSeek 模板；模型 API Key 只由用户在设置页填写，不再从 `.env` 或旧 AgentTest `llm.env` 自动搬运。
    - 保存/读取 `data/llm_profiles.json`。
    - 根据 Agent 分配生成 OpenAI-compatible client。
    - 提供连接测试函数。
@@ -807,7 +807,7 @@ python scripts\public_readiness_check.py
 
 已重启本地服务并验证：
 
-1. `GET /api/llm-profiles` 返回 `ollama-default` 和 `deepseek-env` 两个 profile。
+1. `GET /api/llm-profiles` 返回 `ollama-default` 和由用户保存的模型 profile。
 2. `POST /api/llm-profiles` 能保存 MCagent/CrawlerAgent 分配。
 3. `POST /api/llm-profiles/test` 测试 DeepSeek profile 成功，返回 `OK`。
 
@@ -868,6 +868,63 @@ python tests\smoke_test.py
 已重启 `http://127.0.0.1:8765` 并验证：
 
 1. `GET /settings.html` 返回 200。
-2. `GET /api/llm-profiles` 返回 `ollama-default` 与 `deepseek-env`，并显示 MCagent/CrawlerAgent 当前分配。
+2. `GET /api/llm-profiles` 返回 `ollama-default` 与模型配置，且不回显原始 API Key。
 
 公开检查当前通过；缺少 LICENSE 仅作为 warning，不阻止公开仓库。
+
+## 23. 移除自动导入 DeepSeek Key（2026-05-20）
+
+本轮开始前已重新阅读本文档。用户要求：本地保存的 DeepSeek key 不要直接带进项目，后续由用户自己在设置页填写。
+
+### 23.1 原则
+
+1. 模型 API Key 只属于用户在 `/settings.html` 中显式保存的运行时配置。
+2. 项目启动时不得从旧 AgentTest `llm.env`、仓库 `.env` 或其他外部文件自动搬运 DeepSeek key。
+3. 可以保留无 key 的 DeepSeek 模板，方便用户在设置页填写；默认分配仍使用 Ollama，避免无 key 云模型导致默认失败。
+4. `data/llm_profiles.json` 是本机运行时文件，不进入 Git；本轮已清理本机文件中的 DeepSeek key。
+
+### 23.2 代码变更
+
+1. `llm_profiles.py` 删除自动读取 `.env` / AgentTest `llm.env` 生成 `deepseek-env` 的逻辑，改为提供 `deepseek-template` 空 key 模板。
+2. `retrieval_planner.py` 改为使用分配给 MCagent 的 LLM profile，不再直接读取 AgentTest `llm.env`。
+3. `web_server.py` 的旧 `cloud:deepseek:*` 路径不再读取 AgentTest `llm.env`，只会使用设置页保存过的 `deepseek-template` profile 或空 key 模板。
+4. `crawler_llm_planner.py` 移除未使用的 AgentTest env 读取代码。
+5. `.env.example` 与 `README.md` 移除 `LLM_API_KEY` 示例，明确模型 API Key 在 `/settings.html` 配置。
+
+### 23.3 验证要求
+
+完成本轮后必须执行：
+
+~~~powershell
+python -m py_compile mcagent\web_server.py mcagent\crawler_llm_planner.py mcagent\retrieval_planner.py mcagent\llm_profiles.py scripts\public_readiness_check.py
+node --check frontend\static\app.js
+node --check frontend\static\settings.js
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+python tests\smoke_test.py
+~~~
+
+还要确认：
+
+1. 本机 `data/llm_profiles.json` 不含 `sk-`、`fc-`、`tvly-` 等密钥形态。
+2. `GET /api/llm-profiles` 只显示 `key_configured`，不回显原始 key。
+
+### 23.4 本轮实际验证
+
+已执行并通过：
+
+~~~powershell
+python -m py_compile mcagent\web_server.py mcagent\crawler_llm_planner.py mcagent\retrieval_planner.py mcagent\llm_profiles.py scripts\public_readiness_check.py
+node --check frontend\static\app.js
+node --check frontend\static\settings.js
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+python tests\smoke_test.py
+~~~
+
+已清理本机 `data/llm_profiles.json`，并验证不含 `sk-`、`fc-`、`tvly-`、GitHub token 形态。重启 `http://127.0.0.1:8765` 后，`GET /api/llm-profiles` 返回：
+
+1. `ollama-default`：`key_configured=false`
+2. `deepseek-template`：`key_configured=false`
+
+当前 MCagent 与 CrawlerAgent 都默认分配到 `ollama-default`。如果需要 DeepSeek，由用户在 `/settings.html` 中填入 Key 并保存。

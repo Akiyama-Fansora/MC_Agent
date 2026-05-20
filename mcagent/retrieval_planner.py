@@ -3,16 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 import re
-from pathlib import Path
 from typing import Any
 
-from .config import OllamaConfig, PROJECT_ROOT, load_config
-from .llm import OllamaOpenAIClient, OpenAICompatibleClient
+from .config import load_config
+from .llm import OpenAICompatibleClient
+from .llm_profiles import client_for_agent
 from .query_intent import analyze_query
 from .crawler_planner import CONCEPTS
-
-
-AGENTTEST_LLM_ENV = Path(r"D:\magic\AgentTest\config\llm.env")
 
 
 @dataclass(slots=True)
@@ -83,37 +80,9 @@ def plan_retrieval(
     return _plan_fallback(question, session_summary=session_summary, max_queries=max_queries)
 
 
-def _read_env_file(path: Path) -> dict[str, str]:
-    data: dict[str, str] = {}
-    if not path.exists():
-        return data
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        if "=" not in line or line.strip().startswith("#"):
-            continue
-        key, value = line.split("=", 1)
-        data[key.strip().lstrip("\ufeff")] = value.strip().strip('"').strip("'")
-    return data
-
-
 def _planner_client() -> tuple[OpenAICompatibleClient, str]:
     config = load_config()
-    env = _read_env_file(AGENTTEST_LLM_ENV)
-    if env.get("LLM_API_KEY"):
-        model = env.get("LLM_MODEL_ID", "deepseek-v4-pro")
-        endpoint_config = OllamaConfig(
-            base_url=env.get("LLM_BASE_URL", "https://api.deepseek.com"),
-            model=model,
-            temperature=0.0,
-            timeout_seconds=60,
-        )
-        return OpenAICompatibleClient(endpoint_config, api_key=env.get("LLM_API_KEY", ""), provider_label="RetrievalPlanner"), f"DeepSeek {model}"
-    endpoint_config = OllamaConfig(
-        base_url=config.ollama.base_url,
-        model=config.ollama.model,
-        temperature=0.0,
-        timeout_seconds=60,
-    )
-    return OllamaOpenAIClient(endpoint_config), f"Ollama {endpoint_config.model}"
+    return client_for_agent(config, "mcagent_rag", temperature=0.0, timeout_seconds=60)
 
 
 def _json_from_text(text: str) -> dict[str, Any]:

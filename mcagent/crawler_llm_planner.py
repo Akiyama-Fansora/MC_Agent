@@ -12,7 +12,6 @@ from .llm import OllamaOpenAIClient, OpenAICompatibleClient
 from .llm_profiles import client_for_agent
 
 
-AGENTTEST_LLM_ENV = Path(r"D:\magic\AgentTest\config\llm.env")
 ALLOWED_SOURCES = {"topic_discovery", "modpack_internal", "modpack_download", "mcmod", "modrinth", "followup", "tavily", "firecrawl", "jina", "web_discovery", "playwright", "browser_collect", "mediawiki", "ftbwiki", "createwiki"}
 
 SOURCE_DEFAULTS: dict[str, dict[str, Any]] = {
@@ -476,18 +475,6 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
         "reason": plan_reason,
         "tasks": _select_diverse_tasks(tasks, max(1, max_tasks)),
     }
-
-
-def _read_env_file(path: Path) -> dict[str, str]:
-    data: dict[str, str] = {}
-    if not path.exists():
-        return data
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        if "=" not in line or line.strip().startswith("#"):
-            continue
-        key, value = line.split("=", 1)
-        data[key.strip().lstrip("\ufeff")] = value.strip().strip('"').strip("'")
-    return data
 
 
 def _planner_client() -> tuple[OpenAICompatibleClient, str]:

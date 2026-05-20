@@ -62,10 +62,9 @@ $env:MCAGENT_OLLAMA_BASE_URL="http://localhost:11434/v1"
 $env:MCAGENT_OLLAMA_MODEL="qwen3-4b-agent-16k:latest"
 ```
 
-`.env` 只放本地密钥，不提交 Git。常用项：
+`.env` 只放搜索/抓取 provider 的本地密钥，不提交 Git。模型 API Key 请在网页 `/settings.html` 里配置。常用项：
 
 ```dotenv
-LLM_API_KEY=
 TAVILY_API_KEY=
 FIRECRAWL_API_KEY=
 FIRECRAWL_API_URL=

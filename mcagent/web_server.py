@@ -47,7 +47,6 @@ from .storage import connect, count_rows
 AGENT_CONSOLE_DIR = PROJECT_ROOT / "frontend"
 WEB_DIR = Path(os.environ.get("AGENT_CONSOLE_DIR", AGENT_CONSOLE_DIR)).resolve()
 STATIC_DIR = WEB_DIR / "static"
-AGENTTEST_LLM_ENV = Path(r"D:\magic\AgentTest\config\llm.env")
 MAX_ROUGH_TOP_K = 200
 MAX_FINAL_CONTEXT_K = 12
 MIN_FINAL_CONTEXT_K = 4
@@ -2453,18 +2452,6 @@ def _should_use_llm_retrieval_planner(original_question: str, contextual_questio
     return bool(intent and intent.question_type in {"recipe"} and len(intent.keywords) >= 5)
 
 
-def _read_llm_env() -> dict[str, str]:
-    data: dict[str, str] = {}
-    if not AGENTTEST_LLM_ENV.exists():
-        return data
-    for line in AGENTTEST_LLM_ENV.read_text(encoding="utf-8", errors="replace").splitlines():
-        if "=" not in line or line.strip().startswith("#"):
-            continue
-        key, value = line.split("=", 1)
-        data[key.strip().lstrip("\ufeff")] = value.strip().strip('"').strip("'")
-    return data
-
-
 def _selected_llm_client(config: AppConfig, model: str, temperature: float, agent: str = "mcagent_rag") -> tuple[OpenAICompatibleClient, str]:
     profile = resolve_profile_from_model(config, model, agent=agent)
     if profile:
@@ -2474,15 +2461,20 @@ def _selected_llm_client(config: AppConfig, model: str, temperature: float, agen
             timeout_seconds=max(config.ollama.timeout_seconds, int(profile.get("timeout_seconds") or 180)),
         )
     if model.startswith("cloud:deepseek:"):
-        env = _read_llm_env()
-        model_id = model.split(":", 2)[2] or env.get("LLM_MODEL_ID", "deepseek-v4-pro")
-        endpoint_config = OllamaConfig(
-            base_url=env.get("LLM_BASE_URL", "https://api.deepseek.com"),
-            model=model_id,
+        template = profile_by_id(config, "deepseek-template") or {
+            "id": "deepseek-template",
+            "name": "DeepSeek deepseek-v4-pro",
+            "provider": "openai-compatible",
+            "base_url": "https://api.deepseek.com",
+            "model": model.split(":", 2)[2] or "deepseek-v4-pro",
+            "api_key": "",
+            "timeout_seconds": 180,
+        }
+        return client_from_profile(
+            template,
             temperature=temperature,
-            timeout_seconds=max(config.ollama.timeout_seconds, 180),
+            timeout_seconds=max(config.ollama.timeout_seconds, int(template.get("timeout_seconds") or 180)),
         )
-        return OpenAICompatibleClient(endpoint_config, api_key=env.get("LLM_API_KEY", ""), provider_label="DeepSeek"), f"DeepSeek {model_id}"
     endpoint_config = OllamaConfig(
         base_url=config.ollama.base_url,
         model=model or config.ollama.model,
