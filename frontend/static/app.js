@@ -483,6 +483,46 @@ function renderAssistantContent(message, sessionId, index) {
   `;
 }
 
+function observationLabel(status) {
+  const labels = {
+    ok: "拿到可用资料",
+    empty: "空结果",
+    off_topic: "跑偏",
+    duplicate_reused: "复用已有资料",
+    auth_required: "需要授权",
+    quota_limited: "额度不足",
+    captcha_required: "需要验证",
+    login_required: "需要登录",
+    network_error: "网络错误",
+    timeout: "超时",
+    parse_error: "解析失败",
+    execution_error: "执行失败",
+    uncertain: "相关性待确认",
+    blocked: "被工具层拦截",
+    stopped: "已停止",
+  };
+  return labels[status] || status || "未知";
+}
+
+function renderObservationStatus(readable) {
+  const counts = readable?.observation_statuses || {};
+  const entries = Object.entries(counts).filter(([, count]) => Number(count || 0) > 0);
+  if (!entries.length) return "";
+  return `
+    <div class="job-readable-statuses">
+      ${entries.map(([status, count]) => `<span class="observation-pill ${escapeHtml(status)}">${escapeHtml(observationLabel(status))} ${escapeHtml(count)}</span>`).join("")}
+    </div>
+  `;
+}
+
+function renderLatestObservation(readable) {
+  const observation = readable?.latest_observation || {};
+  if (!observation.status) return "";
+  const retryText = observation.retryable ? "可换策略重试" : "不建议原路重试";
+  const next = observation.suggested_next ? `；建议：${observation.suggested_next}` : "";
+  return `<div class="source-meta">最近工具结果：${escapeHtml(observationLabel(observation.status))}，${escapeHtml(observation.summary || retryText)}${escapeHtml(next)}</div>`;
+}
+
 function renderJobReadable(readable, key = "") {
   if (!readable) return "";
   const total = Number(readable.total_tasks || 0);
@@ -515,6 +555,8 @@ function renderJobReadable(readable, key = "") {
         ${statRow("空结果", String(readable.empty_count || 0))}
         ${statRow("跑偏", String(readable.off_topic_count || 0))}
       </div>
+      ${renderObservationStatus(readable)}
+      ${renderLatestObservation(readable)}
       ${readable.current_reason ? `<div class="source-meta">当前动作理由：${escapeHtml(readable.current_reason)}</div>` : ""}
       ${reflection.reason ? `<div class="source-meta">CrawlerAgent 判断：${escapeHtml(reflection.reason)}</div>` : ""}
       ${goals.length ? `<div class="job-readable-goals">${goals.map((goal) => `<span>${escapeHtml(goal)}</span>`).join("")}</div>` : ""}
@@ -643,6 +685,9 @@ function crawlerProgressText(job) {
   ];
   if (readable.current_source || readable.current_query) {
     lines.push(`当前：${[readable.current_source, readable.current_query].filter(Boolean).join(" · ")}`);
+  }
+  if (readable.latest_observation?.status) {
+    lines.push(`最近结果：${observationLabel(readable.latest_observation.status)}${readable.latest_observation.summary ? `，${readable.latest_observation.summary}` : ""}`);
   }
   if (readable.agent_reflection?.reason) {
     lines.push(`判断：${readable.agent_reflection.reason}`);
@@ -799,6 +844,9 @@ function renderActiveCrawlerOverview(jobs) {
   const current = readable.current_query ? `当前：${readable.current_query}` : (latest.status === "running" ? "正在等待 CrawlerAgent 规划可执行查询" : "");
   const target = readable.target || latest.title || latest.kind;
   const reflection = readable.agent_reflection?.reason ? `<div class="source-meta">CrawlerAgent 判断：${escapeHtml(readable.agent_reflection.reason).slice(0, 220)}</div>` : "";
+  const latestObservation = readable.latest_observation?.status
+    ? `<div class="source-meta">最近工具结果：${escapeHtml(observationLabel(readable.latest_observation.status))}${readable.latest_observation.summary ? ` · ${escapeHtml(readable.latest_observation.summary)}` : ""}</div>`
+    : "";
   const counts = [
     `成功 ${readable.success_count || 0}`,
     `空结果 ${readable.empty_count || 0}`,
@@ -813,6 +861,8 @@ function renderActiveCrawlerOverview(jobs) {
       <div class="source-meta">目标：${escapeHtml(target)}</div>
       ${current ? `<div class="source-meta">${escapeHtml(current)}</div>` : ""}
       <div class="source-meta">${escapeHtml(counts)}</div>
+      ${renderObservationStatus(readable)}
+      ${latestObservation}
       ${reflection}
       ${latest.stop_requested && latest.status === "running" ? `<div class="source-meta stop-note">已请求提前结束，等待当前动作退出。</div>` : ""}
     </div>
@@ -856,6 +906,9 @@ function renderJobs(jobs) {
     const reflectionLine = readable.agent_reflection?.reason
       ? `<div class="source-meta">Agent 判断：${escapeHtml(readable.agent_reflection.reason).slice(0, 180)}</div>`
       : "";
+    const observationLine = readable.latest_observation?.status
+      ? `<div class="source-meta">最近结果：${escapeHtml(observationLabel(readable.latest_observation.status))}${readable.latest_observation.summary ? ` · ${escapeHtml(readable.latest_observation.summary).slice(0, 180)}` : ""}</div>`
+      : "";
     const roundInfo = job.result && job.result.rounds_total
       ? `<div class="source-meta">轮次：${escapeHtml(job.result.rounds_completed || (job.result.rounds || []).length || 0)} / ${escapeHtml(job.result.rounds_total)}</div>`
       : "";
@@ -865,6 +918,7 @@ function renderJobs(jobs) {
         <span class="job-status ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span>
         <div class="source-meta">${fmtDateTime(job.started_at || job.created_at)}${job.ended_at ? ` - ${fmtDateTime(job.ended_at)}` : ""}</div>
         ${readableLine}
+        ${observationLine}
         ${reflectionLine}
         ${roundInfo}
         ${job.stop_requested && isActiveCrawler ? `<div class="source-meta stop-note">已收到提前结束请求，当前轮完成后停止。</div>` : ""}

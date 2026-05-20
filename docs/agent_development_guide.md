@@ -1150,3 +1150,12 @@ python tests\smoke_test.py
 1. 把 MCagent 的 `_chat_impl()` 继续拆向统一 `AgentRuntime.run_turn()`。
 2. 把 Crawler 的任务队列升级成更完整的 observe/reflect/action loop。
 3. 前端把 observation status 展示成直观中文状态，而不是只显示 raw JSON。
+
+### 26.6 前端进度可读性补充
+
+继续按本文档执行后，已把 observation 接到前端：
+
+1. `job.readable` 现在包含 `observation_statuses` 和 `latest_observation`。
+2. 会话里的 Crawler 任务卡、右侧当前任务概览、后台任务列表都会显示最近工具结果。
+3. 前端新增状态标签，把 `empty/off_topic/quota_limited/login_required/timeout` 等状态翻译成可读中文。
+4. 这些标签仍然只展示客观工具观察，不替 Agent LLM 做最终判断。

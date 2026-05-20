@@ -197,6 +197,16 @@ def _job_readable_summary(job: dict[str, Any]) -> dict[str, Any]:
     planned = result.get("planned_tasks") if isinstance(result.get("planned_tasks"), list) else []
     reflections = plan.get("agent_reflections") if isinstance(plan.get("agent_reflections"), list) else []
     last_reflection = next((item for item in reversed(reflections) if isinstance(item, dict)), {})
+    observations = [
+        (item.get("observation") if isinstance(item.get("observation"), dict) else classify_crawler_tool_result(item).to_dict())
+        for item in tasks
+        if isinstance(item, dict)
+    ]
+    observation_statuses: dict[str, int] = {}
+    for observation in observations:
+        status_key = str(observation.get("status") or "unknown")
+        observation_statuses[status_key] = observation_statuses.get(status_key, 0) + 1
+    latest_observation = observations[-1] if observations else {}
     current_index = min(len(tasks) + 1, len(planned)) if planned else len(tasks)
     if str(job.get("status") or "") in {"stopped", "succeeded", "failed"} and planned and tasks:
         current_index = min(len(tasks), len(planned))
@@ -245,6 +255,8 @@ def _job_readable_summary(job: dict[str, Any]) -> dict[str, Any]:
         "failure_count": failure_count,
         "off_topic_count": off_topic,
         "empty_count": empty,
+        "observation_statuses": observation_statuses,
+        "latest_observation": latest_observation,
         "replan_count": int(result.get("replan_count") or 0),
         "summary": str(job.get("summary") or ""),
         "next_action": next_action,
