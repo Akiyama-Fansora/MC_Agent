@@ -159,7 +159,8 @@ http://127.0.0.1:8765
 
 - 多会话标签，多开浏览器窗口时按 session_id 隔离。
 - 切换 `MCagent` 和 `Crawler` 两个真实 Agent；`仅检索` 是 MCagent 的模式，不是第三个 Agent。
-- 在“模型设置”里维护多组 OpenAI-compatible / Ollama 配置，分别指定 MCagent 和 CrawlerAgent 使用的 LLM，并可测试连接。
+- 主界面只保留当前模型选择、连接测试和设置入口；完整模型管理在 `/settings.html`。
+- 在模型设置页维护多组 OpenAI-compatible / Ollama 配置，分别指定 MCagent 和 CrawlerAgent 使用的 LLM，并可测试连接。
 - 流式显示 MCagent 思考状态、工具计划、LLM delta 输出和 Crawler 进度。
 - 切换模型、温度、是否仅检索。
 - 查看本地索引统计、crawler_exports 状态、最近 AgentTest run。
@@ -190,6 +191,7 @@ python -m py_compile mcagent\web_server.py mcagent\crawler_llm_planner.py mcagen
 python scripts\check_text_encoding.py
 python scripts\public_readiness_check.py
 node --check frontend\static\app.js
+node --check frontend\static\settings.js
 ```
 
 仓库已提供 GitHub Actions：`.github/workflows/ci.yml`。每次 push / pull request 会自动执行 Python 语法检查、UTF-8/乱码检查、公开准备检查、基础烟测和前端语法检查。
@@ -212,4 +214,4 @@ node --check frontend\static\app.js
 5. CrawlerAgent 的公开网页采集、失败原因解释、RAG 入库流程测试通过。
 6. 前端无明显乱码、undefined、自动滚动抢焦点等问题。
 7. 至少有一份开发文档说明 Agent 职责、工具边界、RAG/SSE/Crawler 流程。
-8. 公开前由仓库所有者选择并添加 `LICENSE`。当前检查脚本会把缺少 LICENSE 作为 warning，而不是替用户擅自选择授权协议。
+8. `LICENSE` 不是 GitHub 公开仓库的硬性要求；没有 LICENSE 时，法律默认更接近“保留所有权利”，别人不能明确复用。若希望别人可复用或二次开发，再由仓库所有者选择 MIT、Apache-2.0 等协议。

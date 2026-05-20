@@ -26,8 +26,10 @@ REQUIRED_FILES = [
     "requirements.txt",
     "docs/agent_development_guide.md",
     "frontend/index.html",
+    "frontend/settings.html",
     "frontend/static/app.js",
     "frontend/static/app.css",
+    "frontend/static/settings.js",
     "mcagent/llm_profiles.py",
     "mcagent/web_server.py",
     "scripts/check_text_encoding.py",
@@ -123,6 +125,7 @@ def check_public_docs(errors: list[str]) -> None:
         "python web.py",
         "playwright install chromium",
         ".env.example",
+        "/settings.html",
     ]
     for phrase in required_phrases:
         if phrase not in readme:
@@ -132,7 +135,7 @@ def check_public_docs(errors: list[str]) -> None:
 def collect_warnings() -> list[str]:
     warnings: list[str] = []
     if not (ROOT / "LICENSE").exists():
-        warnings.append("LICENSE is missing; choose an open-source license before making the repository public.")
+        warnings.append("LICENSE is missing; GitHub can still publish the repository, but reuse rights remain all-rights-reserved until an owner chooses a license.")
     return warnings
 
 

@@ -5688,6 +5688,9 @@ class MCagentHandler(BaseHTTPRequestHandler):
         if request_path in {"/", "/index.html"}:
             _send_text(self, (WEB_DIR / "index.html").read_text(encoding="utf-8"), "text/html; charset=utf-8")
             return
+        if request_path in {"/settings", "/settings.html"}:
+            _send_text(self, (WEB_DIR / "settings.html").read_text(encoding="utf-8"), "text/html; charset=utf-8")
+            return
         if request_path.startswith("/static/"):
             name = request_path.removeprefix("/static/")
             path = (STATIC_DIR / name).resolve()

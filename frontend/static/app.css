@@ -63,6 +63,19 @@ button:disabled {
   border-color: var(--line);
 }
 
+.ghost-link {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--accent-2);
+  text-decoration: none;
+}
+
 .mini-button {
   min-height: 28px;
   padding: 0 9px;
@@ -841,6 +854,87 @@ textarea {
   color: #334;
 }
 
+.settings-page {
+  min-height: 100dvh;
+  height: auto;
+  overflow: auto;
+}
+
+.settings-shell {
+  width: min(920px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 28px 0 44px;
+}
+
+.settings-header,
+.settings-card,
+.settings-note {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px;
+}
+
+.settings-header h1,
+.settings-card h2 {
+  margin: 0;
+  letter-spacing: 0;
+}
+
+.settings-header h1 {
+  font-size: 22px;
+}
+
+.settings-header p,
+.settings-note p {
+  margin: 4px 0 0;
+  color: var(--muted);
+}
+
+.settings-card,
+.settings-note {
+  margin-top: 14px;
+  padding: 18px;
+}
+
+.settings-card {
+  display: grid;
+  gap: 14px;
+}
+
+.settings-card label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.settings-card-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.inline-actions {
+  width: min(360px, 100%);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+}
+
+.settings-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
 @media (max-width: 1100px) {
   .app-shell {
     grid-template-columns: 250px 1fr;
@@ -870,6 +964,17 @@ textarea {
   }
 
   .composer {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-header,
+  .settings-card-title {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .settings-grid,
+  .inline-actions {
     grid-template-columns: 1fr;
   }
 }

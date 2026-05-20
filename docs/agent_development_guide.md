@@ -810,3 +810,64 @@ python scripts\public_readiness_check.py
 1. `GET /api/llm-profiles` 返回 `ollama-default` 和 `deepseek-env` 两个 profile。
 2. `POST /api/llm-profiles` 能保存 MCagent/CrawlerAgent 分配。
 3. `POST /api/llm-profiles/test` 测试 DeepSeek profile 成功，返回 `OK`。
+
+## 22. 模型设置独立页面与 LICENSE 说明（2026-05-20）
+
+本轮开始前已重新阅读本文档。用户确认：`LICENSE` 好像不是必须的，GitHub 仓库可以直接公开；同时用户认为主页面组件过多，希望把 Key、URL、模型名等配置从聊天页挪到专门的设置页面。
+
+### 22.1 设计原则
+
+1. `LICENSE` 不是 GitHub 公开仓库的技术硬性要求；仓库可以没有 LICENSE 直接公开。
+2. 但没有 LICENSE 时，法律默认更接近“保留所有权利”，别人没有明确的复制、修改、分发许可。公开检查只给 warning，不阻止发布，也不替用户选择协议。
+3. 主聊天页应专注会话、Agent 选择、模型快速切换和状态观察，不再塞入完整 Key/URL 表单。
+4. `/settings.html` 承担完整模型管理：新增、保存、删除、测试连接，以及分别分配 MCagent/CrawlerAgent 的 LLM。
+5. API Key 仍只保存在本机 `data/llm_profiles.json`；后端不把原始 Key 回显给前端。
+
+### 22.2 代码变更
+
+1. 新增 `frontend/settings.html` 与 `frontend/static/settings.js`，形成独立模型设置页。
+2. `frontend/index.html` 的侧栏模型区改为：当前模型下拉框、测试连接按钮、设置页入口。
+3. `frontend/static/app.js` 删除主页面对旧设置表单 DOM 的事件依赖；主页面只保存当前 Agent 的模型分配。
+4. `frontend/static/app.css` 新增设置页布局、设置卡片、链接按钮样式。
+5. `web_server.py` 新增 `/settings` 与 `/settings.html` 路由。
+6. `public_readiness_check.py` 把设置页文件纳入必备文件，并把 LICENSE 提示改为 warning：可公开，但缺少复用授权。
+7. `README.md` 更新模型设置入口和 LICENSE 公开说明。
+
+### 22.3 验证要求
+
+完成本轮后必须执行：
+
+~~~powershell
+python -m py_compile mcagent\web_server.py mcagent\crawler_llm_planner.py mcagent\llm_profiles.py scripts\public_readiness_check.py
+node --check frontend\static\app.js
+node --check frontend\static\settings.js
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+python tests\smoke_test.py
+~~~
+
+还要重启本地服务并确认：
+
+1. `http://127.0.0.1:8765/settings.html` 可以打开。
+2. `GET /api/llm-profiles` 正常返回 profile 列表。
+3. 主聊天页切换当前模型不会依赖已移除的设置表单。
+
+### 22.4 本轮实际验证
+
+已执行并通过：
+
+~~~powershell
+python -m py_compile mcagent\web_server.py mcagent\crawler_llm_planner.py mcagent\llm_profiles.py scripts\public_readiness_check.py
+node --check frontend\static\app.js
+node --check frontend\static\settings.js
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+python tests\smoke_test.py
+~~~
+
+已重启 `http://127.0.0.1:8765` 并验证：
+
+1. `GET /settings.html` 返回 200。
+2. `GET /api/llm-profiles` 返回 `ollama-default` 与 `deepseek-env`，并显示 MCagent/CrawlerAgent 当前分配。
+
+公开检查当前通过；缺少 LICENSE 仅作为 warning，不阻止公开仓库。

@@ -340,7 +340,7 @@ function syncProfileFormToState() {
 }
 
 async function saveLlmSettings(statusText = "模型设置已保存。") {
-  syncProfileFormToState();
+  if ($("profileName")) syncProfileFormToState();
   const payload = {
     profiles: state.llmProfiles,
     assignments: state.llmAssignments,
@@ -1210,7 +1210,7 @@ function initEvents() {
     renderSources([]);
   });
   $("reloadStatus").addEventListener("click", loadStatus);
-  $("refreshModels").addEventListener("click", loadModels);
+  $("refreshModels")?.addEventListener("click", loadModels);
   $("testActiveModel").addEventListener("click", () => testProfile(profileById($("modelSelect").value)));
   $("modelSelect").addEventListener("change", async () => {
     state.llmAssignments[activeProfileAgentId()] = $("modelSelect").value;
@@ -1218,62 +1218,6 @@ function initEvents() {
       await saveLlmSettings("当前 Agent 的模型已切换。");
     } catch (error) {
       $("modelStatus").textContent = `保存失败：${error.message}`;
-    }
-  });
-  $("mcagentProfileSelect").addEventListener("change", async () => {
-    state.llmAssignments.mcagent_rag = $("mcagentProfileSelect").value;
-    try {
-      await saveLlmSettings("MCagent 模型已保存。");
-    } catch (error) {
-      $("modelStatus").textContent = `保存失败：${error.message}`;
-    }
-  });
-  $("crawlerProfileSelect").addEventListener("change", async () => {
-    state.llmAssignments.crawler_agent = $("crawlerProfileSelect").value;
-    try {
-      await saveLlmSettings("CrawlerAgent 模型已保存。");
-    } catch (error) {
-      $("modelStatus").textContent = `保存失败：${error.message}`;
-    }
-  });
-  $("profileEditorSelect").addEventListener("change", () => {
-    state.editingProfileId = $("profileEditorSelect").value;
-    renderLlmSettings();
-  });
-  $("newProfile").addEventListener("click", () => {
-    const id = `custom-${Date.now()}`;
-    state.llmProfiles.push({
-      id,
-      name: "新模型",
-      provider: "openai-compatible",
-      base_url: "",
-      model: "",
-      timeout_seconds: 180,
-      key_configured: false,
-    });
-    state.editingProfileId = id;
-    renderLlmSettings();
-  });
-  $("saveProfiles").addEventListener("click", async () => {
-    try {
-      await saveLlmSettings();
-    } catch (error) {
-      $("modelStatus").textContent = `保存失败：${error.message}`;
-    }
-  });
-  $("deleteProfile").addEventListener("click", async () => {
-    const profile = profileById(state.editingProfileId);
-    if (!profile) return;
-    if (!window.confirm(`删除模型配置“${profile.name || profile.id}”？`)) return;
-    state.llmProfiles = state.llmProfiles.filter((item) => item.id !== profile.id);
-    for (const agentId of ["mcagent_rag", "crawler_agent"]) {
-      if (state.llmAssignments[agentId] === profile.id) state.llmAssignments[agentId] = state.llmProfiles[0]?.id || "";
-    }
-    state.editingProfileId = state.llmProfiles[0]?.id || "";
-    try {
-      await saveLlmSettings("模型配置已删除。");
-    } catch (error) {
-      $("modelStatus").textContent = `删除失败：${error.message}`;
     }
   });
   $("runIngest").addEventListener("click", runIngest);

@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>模型设置 - MCagent</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="settings-page">
+  <main class="settings-shell">
+    <header class="settings-header">
+      <div>
+        <h1>模型设置</h1>
+        <p>配置本机 LLM endpoint、API Key，并分别分配给 MCagent 与 CrawlerAgent。</p>
+      </div>
+      <a class="ghost-link" href="/">返回聊天</a>
+    </header>
+
+    <section class="settings-card">
+      <h2>Agent 使用哪个模型</h2>
+      <div class="settings-grid">
+        <label>MCagent
+          <select id="mcagentProfileSelect"></select>
+        </label>
+        <label>CrawlerAgent
+          <select id="crawlerProfileSelect"></select>
+        </label>
+      </div>
+      <div id="settingsStatus" class="source-meta">配置只保存在本机 data/llm_profiles.json，不提交 Git。</div>
+    </section>
+
+    <section class="settings-card">
+      <div class="settings-card-title">
+        <h2>模型配置</h2>
+        <div class="model-actions inline-actions">
+          <button id="newProfile" class="ghost-button" type="button">新增</button>
+          <button id="saveProfiles" type="button">保存</button>
+          <button id="deleteProfile" class="danger-outline" type="button">删除</button>
+        </div>
+      </div>
+
+      <label>正在编辑
+        <select id="profileEditorSelect"></select>
+      </label>
+
+      <div class="settings-grid">
+        <label>显示名称
+          <input id="profileName" type="text" placeholder="DeepSeek / Ollama / OpenAI">
+        </label>
+        <label>模型名
+          <input id="profileModel" type="text" placeholder="deepseek-v4-pro">
+        </label>
+      </div>
+
+      <label>Base URL
+        <input id="profileBaseUrl" type="text" placeholder="https://api.deepseek.com 或 http://localhost:11434/v1">
+      </label>
+
+      <label>API Key
+        <input id="profileApiKey" type="password" placeholder="留空则保留已保存 key">
+      </label>
+
+      <div class="settings-grid">
+        <label>类型
+          <select id="profileProvider">
+            <option value="openai-compatible">OpenAI 兼容</option>
+            <option value="ollama">Ollama 本地</option>
+          </select>
+        </label>
+        <label>超时秒
+          <input id="profileTimeout" type="number" min="15" max="900" value="180">
+        </label>
+      </div>
+
+      <div class="settings-actions">
+        <button id="testProfile" class="ghost-button" type="button">测试当前配置</button>
+      </div>
+    </section>
+
+    <section class="settings-note">
+      <strong>Key 安全说明</strong>
+      <p>后端不会把原始 API Key 回显给页面；页面只显示是否已保存。要更换 Key 时，在这里重新输入并保存。</p>
+    </section>
+  </main>
+  <script src="/static/settings.js"></script>
+</body>
+</html>
