@@ -13,6 +13,7 @@ from mcagent.agent_runtime import (  # noqa: E402
     classify_crawler_tool_result,
     crawler_collection_catalog_prompt,
     make_agent_loop_event,
+    normalize_agent_tool_decision,
     tool_catalog_prompt,
 )
 from mcagent.web_server import _job_readable_summary  # noqa: E402
@@ -60,6 +61,42 @@ def test_agent_loop_event_keeps_trace_shape() -> None:
     assert_equal("trace_status", trace["status"], "received")
     assert_equal("trace_detail", trace["detail"], {"question": "你好"})
     assert_true("trace_time", isinstance(trace["time"], float) and trace["time"] > 0)
+
+
+def test_agent_tool_decision_normalization() -> None:
+    rag_decision = normalize_agent_tool_decision(
+        {"tool": "local_rag_search", "reason": "needs local evidence", "rag_focus": "乌托邦探险之旅玩法"},
+        agent_id="mcagent_rag",
+        original_question="介绍乌托邦玩法",
+        planner="test",
+    )
+    assert_equal("rag_alias", rag_decision.tool, "answer")
+    assert_equal("rag_focus", rag_decision.rag_focus, "乌托邦探险之旅玩法")
+
+    crawler_answer = normalize_agent_tool_decision(
+        {"tool": "answer", "reason": "explain crawler capability"},
+        agent_id="crawler_agent",
+        original_question="你能做什么",
+        planner="test",
+    )
+    assert_equal("crawler_answer_alias", crawler_answer.tool, "direct_answer")
+
+    unknown = normalize_agent_tool_decision(
+        {"tool": "made_up_tool", "collection_target": "采集资料"},
+        agent_id="mcagent_rag",
+        original_question="随便问问",
+        planner="test",
+    )
+    assert_equal("unknown_tool_fallback", unknown.tool, "answer")
+
+    planned = normalize_agent_tool_decision(
+        {"tool": "answer_then_crawler", "action_plan": [{"tool": "local_rag_search", "goal": "先查本地"}, {"tool": "delegate_crawler", "goal": "再补缺口"}]},
+        agent_id="mcagent_rag",
+        original_question="本地有什么，缺什么让 Crawler 去找",
+        planner="test",
+    )
+    assert_equal("planned_alias", planned.tool, "planned_workflow")
+    assert_equal("planned_steps", len(planned.action_plan), 2)
 
 
 def test_handoff_contract_preserves_context() -> None:
@@ -133,6 +170,7 @@ def test_job_readable_summary_surfaces_observations() -> None:
 def main() -> int:
     test_tool_observation_matrix()
     test_agent_loop_event_keeps_trace_shape()
+    test_agent_tool_decision_normalization()
     test_handoff_contract_preserves_context()
     test_tool_catalog_exposes_agent_capabilities()
     test_job_readable_summary_surfaces_observations()

@@ -1269,3 +1269,50 @@ python scripts\public_readiness_check.py
 python tests\smoke_test.py
 python tests\agent_runtime_scenarios.py
 ~~~
+
+## 29. AgentToolDecision：统一工具选择结果（2026-05-20）
+
+本轮开始前已重新阅读本文档，并先制定测试方案。
+
+### 29.1 本轮测试方案
+
+目标行为：
+
+- 把 `_agent_tool_decision()` 里的工具别名、fallback、action_plan 归一化迁移到 `agent_runtime.py`；
+- 避免 `validate_tool_name()` 对内部 route `answer` 的不稳定处理；
+- 为后续完整 `AgentRuntime.run_turn()` 减少 web_server 中的路由散落逻辑。
+
+风险点：
+
+- `local_rag_search` 被误归成 `direct_answer`，导致该 RAG 的问题不查库；
+- CrawlerAgent 的普通说明被误判成采集任务，或采集任务被误判成闲聊；
+- planned workflow 的 action_plan 丢失。
+
+离线测试：
+
+- `tests/agent_runtime_scenarios.py` 增加 `normalize_agent_tool_decision()` 断言：
+  - `local_rag_search` 归一成内部 RAG route `answer`；
+  - CrawlerAgent 的 `answer` 归一成 `direct_answer`；
+  - 未知工具在 MCagent 下回退为 `answer`；
+  - `answer_then_crawler` 归一成 `planned_workflow`，并保留步骤。
+
+集成测试：
+
+- 继续运行 py_compile、编码检查、公开检查、smoke、scenario、前端 syntax。
+
+通过标准：
+
+~~~powershell
+python -m py_compile mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py tests\agent_runtime_scenarios.py
+node --check frontend\static\app.js
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+python tests\smoke_test.py
+python tests\agent_runtime_scenarios.py
+~~~
+
+### 29.2 代码改造
+
+1. 新增 `AgentToolDecision` 和 `normalize_agent_tool_decision()`。
+2. `_agent_tool_decision()` 不再手写别名表和 action_plan 清洗，改用 runtime 层统一归一化。
+3. 这仍然不是最终答案决策；它只把 LLM 的工具选择结果规范化，执行和最终回答仍在后续 Agent loop 中处理。

@@ -24,9 +24,9 @@ from .agent_runtime import (
     build_handoff_contract,
     classify_crawler_tool_result,
     make_agent_loop_event,
+    normalize_agent_tool_decision,
     tool_catalog_prompt,
     tool_names_for_agent,
-    validate_tool_name,
 )
 from .chat import SYSTEM_PROMPT, format_context, format_sources
 from .cleaners import _HTMLTextExtractor, normalize_text
@@ -5171,49 +5171,12 @@ def _agent_tool_decision(
             max_tokens=900,
         )
         value = _json_object_from_llm_text(raw_text)
-        raw_tool = str(value.get("tool") or "answer").strip().lower()
-        tool_aliases = {
-            "local_rag_search": "answer",
-            "answer_from_evidence": "answer",
-            "rag": "answer",
-            "chat": "direct_answer",
-            "smalltalk": "direct_answer",
-            "direct": "direct_answer",
-            "answer_and_delegate": "planned_workflow",
-            "answer_then_crawler": "planned_workflow",
-            "answer_then_delegate": "planned_workflow",
-            "plan": "planned_workflow",
-            "workflow": "planned_workflow",
-            "crawler_status": "status",
-            "delegate": "delegate_crawler",
-            "crawler": "delegate_crawler",
-        }
-        tool = tool_aliases.get(raw_tool, raw_tool)
-        if agent == "crawler_agent" and tool == "answer":
-            tool = "direct_answer"
-        tool = validate_tool_name(agent, tool, fallback="answer" if agent != "crawler_agent" else "delegate_crawler")
-        raw_plan = value.get("action_plan")
-        action_plan: list[dict[str, Any]] = []
-        if isinstance(raw_plan, list):
-            for index, step in enumerate(raw_plan[:8], start=1):
-                if not isinstance(step, dict):
-                    continue
-                action_plan.append(
-                    {
-                        "step": int(step.get("step") or index),
-                        "tool": str(step.get("tool") or "").strip(),
-                        "goal": str(step.get("goal") or step.get("description") or "").strip()[:300],
-                    }
-                )
-        return {
-            "tool": tool,
-            "reason": str(value.get("reason") or "Agent LLM selected tool.").strip()[:500],
-            "rag_focus": str(value.get("rag_focus") or "").strip()[:500],
-            "collection_target": str(value.get("collection_target") or original_question).strip(),
-            "delivery_target": str(value.get("delivery_target") or "").strip(),
-            "action_plan": action_plan,
-            "planner": label,
-        }
+        return normalize_agent_tool_decision(
+            value,
+            agent_id=agent,
+            original_question=original_question,
+            planner=label,
+        ).to_dict()
     except Exception as exc:  # noqa: BLE001 - keep chat usable if the router model fails.
         fallback_tool = "delegate_crawler" if agent == "crawler_agent" else "answer"
         return {

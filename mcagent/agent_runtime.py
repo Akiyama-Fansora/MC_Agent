@@ -77,6 +77,87 @@ class AgentAction:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentToolDecision:
+    tool: str
+    reason: str = ""
+    rag_focus: str = ""
+    collection_target: str = ""
+    delivery_target: str = ""
+    action_plan: list[dict[str, Any]] = field(default_factory=list)
+    planner: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tool": self.tool,
+            "reason": self.reason,
+            "rag_focus": self.rag_focus,
+            "collection_target": self.collection_target,
+            "delivery_target": self.delivery_target,
+            "action_plan": self.action_plan,
+            "planner": self.planner,
+        }
+
+
+TOOL_DECISION_ALIASES = {
+    "local_rag_search": "answer",
+    "answer_from_evidence": "answer",
+    "rag": "answer",
+    "chat": "direct_answer",
+    "smalltalk": "direct_answer",
+    "direct": "direct_answer",
+    "answer_and_delegate": "planned_workflow",
+    "answer_then_crawler": "planned_workflow",
+    "answer_then_delegate": "planned_workflow",
+    "plan": "planned_workflow",
+    "workflow": "planned_workflow",
+    "crawler_status": "status",
+    "delegate": "delegate_crawler",
+    "crawler": "delegate_crawler",
+}
+
+
+def normalize_agent_tool_decision(
+    value: dict[str, Any],
+    *,
+    agent_id: str,
+    original_question: str,
+    planner: str,
+) -> AgentToolDecision:
+    raw_tool = str(value.get("tool") or "answer").strip().lower()
+    tool = TOOL_DECISION_ALIASES.get(raw_tool, raw_tool)
+    allowed_routes = {"answer", "direct_answer", "planned_workflow", "status", "delegate_crawler"}
+    allowed_routes.update(tool_names_for_agent(agent_id))
+    if agent_id == "crawler_agent" and tool == "answer":
+        tool = "direct_answer"
+    if tool not in allowed_routes:
+        tool = "delegate_crawler" if agent_id == "crawler_agent" else "answer"
+
+    action_plan: list[dict[str, Any]] = []
+    raw_plan = value.get("action_plan")
+    if isinstance(raw_plan, list):
+        for index, step in enumerate(raw_plan[:8], start=1):
+            if not isinstance(step, dict):
+                continue
+            action_plan.append(
+                {
+                    "step": int(step.get("step") or index),
+                    "tool": str(step.get("tool") or "").strip(),
+                    "goal": str(step.get("goal") or step.get("description") or "").strip()[:300],
+                }
+            )
+
+    return AgentToolDecision(
+        tool=tool,
+        reason=str(value.get("reason") or "Agent LLM selected tool.").strip()[:500],
+        rag_focus=str(value.get("rag_focus") or "").strip()[:500],
+        collection_target=str(value.get("collection_target") or original_question).strip(),
+        delivery_target=str(value.get("delivery_target") or "").strip(),
+        action_plan=action_plan,
+        planner=planner,
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class AgentLoopEvent:
     stage: str
     status: str
