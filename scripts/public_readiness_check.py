@@ -30,6 +30,7 @@ REQUIRED_FILES = [
     "frontend/static/app.js",
     "frontend/static/app.css",
     "frontend/static/settings.js",
+    "mcagent/agent_runtime.py",
     "mcagent/llm_profiles.py",
     "mcagent/web_server.py",
     "scripts/check_text_encoding.py",

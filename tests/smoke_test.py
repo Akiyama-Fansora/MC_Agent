@@ -16,6 +16,13 @@ from mcagent.config import (  # noqa: E402
     PathsConfig,
     RetrievalConfig,
 )
+from mcagent.agent_runtime import (  # noqa: E402
+    build_handoff_contract,
+    crawler_collection_catalog_prompt,
+    tool_catalog_prompt,
+    tool_names_for_agent,
+    validate_tool_name,
+)
 from mcagent.ingest import ingest_exports  # noqa: E402
 from mcagent.retriever import Retriever  # noqa: E402
 
@@ -36,6 +43,25 @@ def build_test_config(root: Path, source_dir: Path) -> AppConfig:
 
 
 def main() -> int:
+    mc_tools = set(tool_names_for_agent("mcagent_rag"))
+    assert {"direct_answer", "local_rag_search", "delegate_crawler", "status"} <= mc_tools, mc_tools
+    crawler_route_tools = set(tool_names_for_agent("crawler_agent"))
+    assert {"direct_answer", "delegate_crawler", "status"} <= crawler_route_tools, crawler_route_tools
+    assert "browser_collect" in crawler_collection_catalog_prompt(), "Crawler collection catalog missing browser tool"
+    assert validate_tool_name("crawler_agent", "answer", fallback="delegate_crawler") == "delegate_crawler"
+    assert "LLM owns interpretation" in tool_catalog_prompt("mcagent_rag")
+    contract = build_handoff_contract(
+        requested_by="user_via_mcagent",
+        from_agent="MCagent",
+        to_agent="CrawlerAgent",
+        user_request="让 Crawler 补资料",
+        task_goal="补齐整合包 Boss 清单",
+        delivery_target="MCagent/RAG",
+        acceptance_criteria=["保存可引用资料", "说明失败原因"],
+    )
+    assert "Original user request" in contract.to_prompt_text()
+    assert "补齐整合包 Boss 清单" in contract.to_prompt_text()
+
     with tempfile.TemporaryDirectory(prefix="mcagent-smoke-") as tmp:
         root = Path(tmp)
         empty_root = root / "empty_case"

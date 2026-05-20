@@ -20,6 +20,7 @@ from typing import Any
 import sqlite3
 
 from .agent_memory import append_memory_event, memory_summary
+from .agent_runtime import build_handoff_contract, tool_catalog_prompt, tool_names_for_agent, validate_tool_name
 from .chat import SYSTEM_PROMPT, format_context, format_sources
 from .cleaners import _HTMLTextExtractor, normalize_text
 from .config import AppConfig, OllamaConfig, PROJECT_ROOT, load_config
@@ -4378,20 +4379,29 @@ def _fallback_delegate_handoff_brief(
     topics = [str(item) for item in (session_summary.get("topics") or [])[:6] if str(item).strip()]
     names = [str(item) for item in (session_summary.get("names") or [])[:8] if str(item).strip()]
     gaps = [str(item) for item in (session_summary.get("gaps") or [])[:8] if str(item).strip()]
-    lines = [
-        f"调用关系：{requested_by or 'unknown'} -> CrawlerAgent。",
-        f"用户原话：{original_question}",
-        f"转达目标：{collection_target or original_question}",
-        f"交付对象：{delivery_target or '由 CrawlerAgent 根据任务目标判断'}。",
+    acceptance = [
+        "CrawlerAgent 自行理解目标、规划采集来源和搜索策略。",
+        "如果交付给 MCagent/RAG，资料应清洗成可检索、可引用、带来源的 Markdown/manifest/raw HTML 或 raw text。",
+        "如果遇到登录、验证码、配额、空结果、跑偏或重复，应说明客观失败原因和下一条可行路径。",
     ]
-    if topics:
-        lines.append(f"当前会话主题：{'、'.join(topics[:6])}。")
-    if names:
-        lines.append(f"近期出现的实体/名称：{'、'.join(names[:8])}。")
     if gaps:
-        lines.append(f"MCagent 近期回答暴露的资料缺口：{'；'.join(gaps[:8])}。")
-    lines.append("请 CrawlerAgent 自行理解目标、规划采集来源和搜索策略；如果交付给 MCagent/RAG，应清洗成可检索、可引用、带来源的资料。")
-    return "\n".join(lines)
+        acceptance.append(f"优先补齐 MCagent 近期暴露的资料缺口：{'；'.join(gaps[:8])}。")
+    known_context = []
+    if topics:
+        known_context.append(f"当前会话主题：{'、'.join(topics[:6])}")
+    if names:
+        known_context.append(f"近期出现的实体/名称：{'、'.join(names[:8])}")
+    contract = build_handoff_contract(
+        requested_by=requested_by or "unknown",
+        from_agent="MCagent" if requested_by in {"mcagent", "user_via_mcagent"} else "user",
+        to_agent="CrawlerAgent",
+        user_request=original_question,
+        task_goal=collection_target or original_question,
+        delivery_target=delivery_target or "由 CrawlerAgent 根据任务目标判断",
+        known_context="；".join(known_context),
+        acceptance_criteria=acceptance,
+    )
+    return contract.to_prompt_text()
 
 
 def _build_delegate_handoff_brief(
@@ -5087,15 +5097,14 @@ def _agent_tool_decision(
         }
     try:
         client, label = _selected_llm_client(config, model, 0.0)
+        catalog = tool_catalog_prompt(agent)
+        allowed_tools = "|".join(tool_names_for_agent(agent))
         prompt = (
             "你是当前对话里的 Agent 工具选择器，只决定下一步使用哪个工具，不回答用户问题。\n"
             "参与者：用户、MCagent、CrawlerAgent。\n"
-            "可选工具：\n"
-            "1. answer：MCagent 先拆解用户原始问题，使用 local_rag_search 检索本地资料，再由 LLM 根据证据回答。普通问答、多子问题、游戏内物品如何获得/如何制作/有什么用都应选择它。\n"
-            "2. planned_workflow：先列计划，再按计划执行多个工具步骤。适用于用户同时要求“本地有什么/缺什么/让 Crawler 去找”等复合任务。典型步骤是 local_rag_search -> summarize_gaps -> delegate_crawler。\n"
-            "3. status：仅当用户只想看当前采集、入库、后台任务或系统进度，而不是询问某个主题的本地资料内容时选择它。\n"
-            "4. delegate_crawler：用户只是在委托 CrawlerAgent 去收集/爬取/补充资料，且不需要 MCagent 先总结本地证据时选择它。选择它时不要拆成搜索词，只把用户采集目标转交给 CrawlerAgent，让 CrawlerAgent 自己规划。\n"
-            "角色约束：如果 active_agent 是 crawler_agent，CrawlerAgent 不是问答 RAG 助手。用户直接给 CrawlerAgent 的资料采集、网页抓取、保存文件、补库、给 MCagent/RAG 准备数据等目标，应选择 delegate_crawler。只有用户明确询问 CrawlerAgent 能力、已有任务状态、或不是采集目标的闲聊说明时，才选择 answer 或 status。\n"
+            "下面是本项目统一 Agent Runtime 暴露给当前 Agent 的工具目录。工具目录是能力说明，不是关键词触发规则。\n"
+            f"{catalog}\n"
+            "角色约束：如果 active_agent 是 crawler_agent，CrawlerAgent 不是问答 RAG 助手。用户直接给 CrawlerAgent 的资料采集、网页抓取、保存文件、补库、给 MCagent/RAG 准备数据等目标，应选择 delegate_crawler。只有用户明确询问 CrawlerAgent 能力、已有任务状态、或不是采集目标的闲聊说明时，才选择 direct_answer 或 status。\n"
             "交付对象判断：如果用户是在 MCagent 对话里要求转达给 CrawlerAgent 收集资料，通常是为了补充 MCagent/RAG 的本地资料库，delivery_target 应选 MCagent/RAG；只有用户明确表示只是要给自己看的摘要或临时结果时才选 human。CrawlerAgent 直接收到用户委托时，也要根据用户是否提到 MCagent/RAG/入库来判断交付对象。\n"
             "重要原则：不要用关键词触发。必须按语义判断。不要把游戏内“获取某物/如何获得”误判成 Crawler 采集任务。\n"
             "当前系统主要服务 Minecraft 资料库。若实体名有泛义但当前对话没有给出其他领域，rag_focus 不能只写裸实体，必须带上 Minecraft/整合包/模组等领域限定；若存在同名歧义，后续回答可说明歧义。\n"
@@ -5108,7 +5117,7 @@ def _agent_tool_decision(
             f"original_user_message: {original_question}\n"
             f"contextualized_for_retrieval: {contextual_question}\n"
             f"session_summary: {json.dumps(session_summary or {}, ensure_ascii=False)}\n"
-            "JSON schema: {\"tool\":\"direct_answer|answer|planned_workflow|status|delegate_crawler\", "
+            f"JSON schema: {{\"tool\":\"{allowed_tools}\", "
             "\"reason\":\"一句面向开发日志的理由\", "
             "\"rag_focus\":\"需要本地检索时的主题化检索问题\", "
             "\"collection_target\":\"若选择 delegate_crawler，写成完整自然语言采集目标；不要拆搜索词，也不要丢掉用户原话和必要上下文\", "
@@ -5142,8 +5151,9 @@ def _agent_tool_decision(
             "crawler": "delegate_crawler",
         }
         tool = tool_aliases.get(raw_tool, raw_tool)
-        if tool not in {"direct_answer", "answer", "planned_workflow", "status", "delegate_crawler"}:
-            tool = "answer"
+        if agent == "crawler_agent" and tool == "answer":
+            tool = "direct_answer"
+        tool = validate_tool_name(agent, tool, fallback="answer" if agent != "crawler_agent" else "delegate_crawler")
         raw_plan = value.get("action_plan")
         action_plan: list[dict[str, Any]] = []
         if isinstance(raw_plan, list):
@@ -5199,10 +5209,13 @@ def _agent_confirm_next_step(
         return {"proceed": True, "tool": proposed_tool, "goal": proposed_goal, "reason": "runtime mode confirmed", "planner": "runtime"}
     try:
         client, label = _selected_llm_client(config, model, 0.0)
+        catalog = tool_catalog_prompt(agent, include_principles=True)
+        allowed_tools = ", ".join(tool_names_for_agent(agent))
         prompt = (
             "你是当前 Agent 的下一步行动确认器。只确认下一步工具动作，不回答用户问题，不写最终答案。\n"
             "必须基于用户原话、会话摘要、上一步决策和当前上下文判断：现在是否应该执行 proposed_tool，目标是否说清楚，是否需要改用另一个允许工具。\n"
-            "允许工具：answer, planned_workflow, status, delegate_crawler, local_rag_search, evidence_select, final_answer_llm。\n"
+            f"当前 Agent 工具目录：\n{catalog}\n"
+            f"允许工具名：{allowed_tools}, answer, evidence_select, final_answer_llm。\n"
             "如果 proposed_tool 合理，proceed=true；如果不合理，proceed=false 并给出 suggested_tool。不要拆 Crawler 的搜索词，不要替工具生成最终回答。\n"
             "只输出 JSON。\n"
             "额外工具 direct_answer：当用户只是问候、闲聊、询问系统能力、要求解释当前行为，或任何不需要本地资料/状态/Crawler 的问题时选择 direct_answer；选择它就不要触发 local_rag_search。\n"

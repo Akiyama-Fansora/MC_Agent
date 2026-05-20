@@ -846,6 +846,19 @@ python scripts\public_readiness_check.py
 python tests\smoke_test.py
 ~~~
 
+### 25.7 本轮实际验证
+
+已执行并通过：
+
+~~~powershell
+python -m py_compile mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+python tests\smoke_test.py
+~~~
+
+`public_readiness_check.py` 当前通过；缺少 `LICENSE` 仍仅作为 warning，不阻止 GitHub 公开。
+
 还要重启本地服务并确认：
 
 1. `http://127.0.0.1:8765/settings.html` 可以打开。
@@ -960,3 +973,100 @@ python tests\smoke_test.py
 ~~~
 
 补充了一个执行链路级验证：模拟 MCagent 选择 `answer`，但在 `local_rag_search` 前确认 `proceed=false/suggested_tool=answer`；测试确认没有调用 Retriever，直接返回 LLM 回复。
+
+## 25. 对标 Hermes / OpenClaw / Claude Code 后的 Agent Runtime 改造方向（2026-05-20）
+
+本轮开始前已重新阅读本文档。用户要求继续查看 `D:\magic` 下 Hermes、OpenClaw、Claude Code 的源码，分析它们的 Agent 思考逻辑与当前 MCagent / CrawlerAgent 的真实差距，并把结论写入开发文档后开始改进。
+
+### 25.1 源码观察结论
+
+1. 本地 `claude-code-main` 不是 Claude Code 闭源运行时本体，而是公开插件、commands、hooks、skills 示例；可参考其工程组织方式，不能把它当完整 Agent loop 源码。
+2. Claude Code 插件示例强调：
+   - command 明确声明允许工具、角色假设和执行步骤；
+   - 复杂任务会拆成多个子 Agent 并行评审，再用验证子 Agent 过滤假阳性；
+   - hook 支持 `PreToolUse`、`PostToolUse`、`Stop`、`SessionStart`，用于安全检查、测试 enforcement、上下文加载和日志审计。
+3. Hermes 有更完整的 Agent runtime：
+   - `run_conversation()` 是真正的工具循环：模型输出、解析 `tool_calls`、校验、执行、把 tool result 加回 messages，再继续让模型判断下一步；
+   - 工具由中央 registry 声明 schema、handler、toolset、availability check；
+   - 有 tool-loop guardrail，能识别重复失败、无进展、幂等工具反复调用等；
+   - 有 context compression、memory provider、reasoning/provider metadata 归一化。
+4. OpenClaw 更偏产品化的本地个人助理：
+   - local-first gateway 负责多渠道、多 Agent routing、工具和事件；
+   - 把 channel、provider、memory、browser、canvas 等能力做成插件/SDK；
+   - 强调安全默认值、sandbox、DM pairing、provider profile、active memory。
+
+### 25.2 当前项目真实差距
+
+1. MCagent / CrawlerAgent 已经不是纯脚本，但仍是“LLM 辅助的固定流水线”，不是完整“LLM 原生工具循环”。
+2. `_chat_impl()` 仍承载大量分支：direct / status / delegate / RAG / evidence / final answer；模型只是在几个阶段提供 JSON 决策，执行权仍被后端固定流程主导。
+3. CrawlerAgent 已有 LLM planning 和 reflection，但执行器仍按任务队列调用固定脚本；模型不能像 Codex/Hermes 那样在统一 loop 中自由连续调用 browser/search/read/save/reflect。
+4. 工具能力散落在 prompt、source alias、脚本名、UI 文案和执行器分支里，缺少统一 `ToolSpec`，导致模型有时并不知道工具边界、输入输出、失败含义。
+5. 交接仍偏 job/handoff 字符串，缺少标准 `HandoffContract`：调用者、来源 Agent、目标 Agent、用户原话、任务目标、交付对象、已知上下文、验收标准、失败汇报格式。
+6. 记忆仍偏 JSONL 事件摘要，没有形成模型可依赖的长期工作记忆、偏好记忆、任务状态记忆和压缩策略。
+7. 失败恢复仍偏经验规则，例如 empty/off-topic/duplicate/replan；应逐步改成结构化失败分类，并把失败观察反馈给 Agent LLM 重新决策。
+8. UI trace 已有过程，但仍不是完整“Agent 时间线”：用户看不到清晰的计划、当前假设、工具调用、结果判断、下一步理由和验收状态。
+
+### 25.3 新原则
+
+1. 所有 Agent 都必须以 LLM 为主，工具函数为辅。工具只负责客观观察和执行，不替 LLM 做最终主观判断。
+2. 不再为单句测试语句写硬性特例；每次修复都要抽象到通用运行时、工具协议、记忆协议或测试场景。
+3. MCagent 与 CrawlerAgent 是两个真实 Agent；`retriever_only` 是模式，不是第三个 Agent。
+4. Agent 行动循环的目标形态：
+   - `observe`
+   - `deliberate`
+   - `choose_action`
+   - `preflight`
+   - `execute_tool`
+   - `observe_result`
+   - `reflect`
+   - `continue_or_finish`
+5. CrawlerAgent 必须能服务两类对象：
+   - 用户直接委托的数据采集；
+   - MCagent/RAG 委托的可入库、可检索、可引用资料采集。
+6. 浏览器是 CrawlerAgent 的一等工具，不是最后兜底；当 API 额度、JS 页面、表格、图片、下载页、中文页面抓取不稳定时，应允许 CrawlerAgent 主动选择浏览器路径。
+
+### 25.4 本轮第一批代码改造
+
+1. 新增 `mcagent/agent_runtime.py`，集中定义：
+   - `ToolSpec`
+   - `AgentRole`
+   - `AgentAction`
+   - `HandoffContract`
+   - `LLM_OWNERSHIP_PRINCIPLES`
+   - MCagent route tool catalog
+   - CrawlerAgent route tool catalog
+   - CrawlerAgent collection tool catalog
+2. `web_server.py` 的工具选择 prompt 改为读取统一 Agent Runtime 工具目录，减少散落硬编码。
+3. `web_server.py` 的下一步确认 prompt 改为读取统一 Agent Runtime 工具目录，让“确认下一步”从同一份工具能力描述出发。
+4. `_fallback_delegate_handoff_brief()` 改为使用 `HandoffContract` 生成通用交接摘要，包含调用关系、用户原话、任务目标、交付对象、上下文、验收标准和失败汇报要求。
+5. `crawler_llm_planner.py` 的 CrawlerAgent 规划 prompt 引入 collection tool catalog，让 Crawler 的规划 LLM 明确知道浏览器、包体下载、包体内部解析、MC百科、Modrinth、Tavily、Firecrawl、Jina 等工具的边界。
+6. `tests/smoke_test.py` 增加 Agent Runtime 基础断言，保证：
+   - MCagent 工具目录包含 direct answer、RAG、委托和状态；
+   - CrawlerAgent route 工具目录包含 direct answer、委托和状态；
+   - Crawler collection 工具目录包含 browser_collect；
+   - handoff contract 能保留用户原话和任务目标。
+7. `public_readiness_check.py` 把 `mcagent/agent_runtime.py` 纳入公开必备文件。
+
+### 25.5 下一阶段计划
+
+1. 把 `_chat_impl()` 中的分支继续收敛为 `AgentRuntime.run_turn()`，让 MCagent 真正以统一 loop 执行。
+2. 把 Crawler 的 `_run_crawler_job()` 从“任务队列 + 反思”升级为“CrawlerRuntime loop”，每个工具结果都作为 observation 回灌给 CrawlerAgent。
+3. 建立 `ToolResult` 结构化结果：`ok/empty/off_topic/duplicate/auth_required/quota_limited/captcha/login_required/network_error/parse_error`。
+4. 建立 scenario tests：
+   - 问候必须 direct answer，不触发 RAG；
+   - “状态”必须走 status；
+   - “本地有什么、缺什么、让 Crawler 去找”必须 planned workflow；
+   - Crawler 直接用户委托不能伪装成 MCagent 派单；
+   - Crawler 遇到空结果/配额/登录限制必须说明失败原因并换策略；
+   - RAG 证据不足时不能由工具伪造最终答案。
+
+### 25.6 验证要求
+
+完成本轮后必须执行：
+
+~~~powershell
+python -m py_compile mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+python tests\smoke_test.py
+~~~

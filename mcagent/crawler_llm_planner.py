@@ -8,6 +8,7 @@ from typing import Any
 from .config import OllamaConfig, load_config
 from .crawler_planner import decompose_crawler_queries, plan_crawler_tasks
 from .agent_memory import read_memory_events
+from .agent_runtime import crawler_collection_catalog_prompt
 from .llm import OllamaOpenAIClient, OpenAICompatibleClient
 from .llm_profiles import client_for_agent
 
@@ -838,11 +839,14 @@ def plan_crawler_tasks_with_llm(question: str, source_dir: Path, *, max_tasks: i
         "cleaning_policy": "RAG-oriented markdown chunks with source URL, title, metadata, raw_html path, dedupe fingerprint",
         "reason": "planning rationale",
     }
+    tool_catalog = crawler_collection_catalog_prompt()
     prompt = {
         "role": "user",
         "content": (
             "You are CrawlerAgent. Plan crawler tool actions only; do not answer the user.\n"
             "Participants: human user, MCagent, CrawlerAgent. Preserve caller and delivery target, but do not treat MCagent/RAG/ingest as search topics.\n"
+            "Use this shared Agent Runtime tool catalog as capability context, not as keyword triggers:\n"
+            f"{tool_catalog}\n"
             "Decide target entity, coverage goals, short source-specific queries, and ordered tasks. Tools execute after your JSON plan.\n"
             "For general data collection tasks that ask for structured fields and a save location, use browser_collect. It can open a browser, collect item rows, and save CSV/JSON/report to output_dir. Keep the user's requested output_dir exactly.\n"
             "For full Minecraft modpack collection, cover: basic info, official/download/community links, mod list, quests/beginner route, key systems, items/recipes/acquisition, bosses, tutorials, known issues.\n"
