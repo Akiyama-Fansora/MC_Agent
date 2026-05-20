@@ -1159,3 +1159,73 @@ python tests\smoke_test.py
 2. 会话里的 Crawler 任务卡、右侧当前任务概览、后台任务列表都会显示最近工具结果。
 3. 前端新增状态标签，把 `empty/off_topic/quota_limited/login_required/timeout` 等状态翻译成可读中文。
 4. 这些标签仍然只展示客观工具观察，不替 Agent LLM 做最终判断。
+
+## 27. 每轮优化必须配套测试方案（2026-05-20）
+
+本轮开始前已重新阅读本文档。用户要求：不要只顾优化，每次优化都要制定完备测试方案并执行。这个要求升级为项目流程，不再只靠口头承诺。
+
+### 27.1 固定测试方案模板
+
+每轮优化开始前，必须写清：
+
+1. **目标行为**：本轮希望改变或保护的 Agent 行为是什么。
+2. **风险点**：可能破坏哪些链路，例如路由、RAG、委托、Crawler 规划、SSE、前端显示、密钥安全。
+3. **离线测试**：不依赖外网和真实 LLM 的确定性测试，必须能进 CI。
+4. **集成测试**：需要本地服务或 SSE 的测试，能本地跑，必要时用环境变量控制长耗时。
+5. **人工验收点**：UI、交互、长任务可读性这类自动测试难覆盖的点。
+6. **通过标准**：不是“跑了就算”，而是明确断言。
+
+### 27.2 本轮测试计划
+
+目标行为：
+
+- 工具结果结构化 observation 必须稳定；
+- Crawler 失败原因必须能被 Agent 和 UI 读懂；
+- handoff 不丢用户原话、任务目标和交付对象；
+- Agent 工具目录必须暴露直接回答、RAG、状态、委托、浏览器和包体解析能力。
+
+风险点：
+
+- observation 分类误判，导致 Crawler 反思收到错误失败类型；
+- UI 显示状态但后端没有提供字段；
+- handoff 又退化成只传一句短目标；
+- CI 没覆盖 Agent runtime 新文件。
+
+离线测试：
+
+- 新增 `tests/agent_runtime_scenarios.py`；
+- 覆盖 `ok/empty/off_topic/uncertain/duplicate_reused/blocked/stopped/timeout/quota_limited/captcha_required/login_required/auth_required/network_error/parse_error/execution_error`；
+- 覆盖 `HandoffContract` 保留原始请求、目标、交付对象、验收标准；
+- 覆盖工具目录包含 MCagent 和 CrawlerAgent 的关键工具；
+- 覆盖 `_job_readable_summary()` 能输出 observation 统计和最近 observation。
+
+集成测试：
+
+- CI 中继续运行 `tests/smoke_test.py`；
+- `scripts/smoke_agent_flows.py` 保留为本地 live SSE 场景测试，长耗时矩阵用 `MCAGENT_SMOKE_FULL=1` 控制。
+
+人工验收点：
+
+- 打开 `http://127.0.0.1:8765/`；
+- 启动或查看一个 Crawler 任务；
+- 确认会话任务卡、右侧当前任务、后台任务列表能显示最近工具结果；
+- 确认展开面板不会因为刷新自动收起。
+
+通过标准：
+
+~~~powershell
+python -m py_compile mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py tests\agent_runtime_scenarios.py
+node --check frontend\static\app.js
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+python tests\smoke_test.py
+python tests\agent_runtime_scenarios.py
+~~~
+
+### 27.3 CI 更新
+
+1. `.github/workflows/ci.yml` 已把 `mcagent/agent_runtime.py` 和 `tests/agent_runtime_scenarios.py` 加入语法检查。
+2. CI 的 Smoke test 阶段会同时运行：
+   - `python tests\smoke_test.py`
+   - `python tests\agent_runtime_scenarios.py`
+3. `public_readiness_check.py` 已把 `tests/agent_runtime_scenarios.py` 列为公开必备文件。

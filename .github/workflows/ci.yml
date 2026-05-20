@@ -35,6 +35,7 @@ jobs:
         run: >
           python -m py_compile
           mcagent\web_server.py
+          mcagent\agent_runtime.py
           mcagent\crawler_llm_planner.py
           mcagent\provider_registry.py
           mcagent\crawler_planner.py
@@ -43,6 +44,7 @@ jobs:
           scripts\fetch_modpack_archive_seed.py
           scripts\public_readiness_check.py
           scripts\smoke_agent_flows.py
+          tests\agent_runtime_scenarios.py
 
       - name: Encoding and public readiness checks
         shell: pwsh
@@ -52,7 +54,9 @@ jobs:
 
       - name: Smoke test
         shell: pwsh
-        run: python tests\smoke_test.py
+        run: |
+          python tests\smoke_test.py
+          python tests\agent_runtime_scenarios.py
 
       - name: Frontend syntax check
         shell: pwsh

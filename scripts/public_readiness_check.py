@@ -34,6 +34,7 @@ REQUIRED_FILES = [
     "mcagent/llm_profiles.py",
     "mcagent/web_server.py",
     "scripts/check_text_encoding.py",
+    "tests/agent_runtime_scenarios.py",
     "tests/smoke_test.py",
 ]
 
