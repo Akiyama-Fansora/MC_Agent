@@ -1,6 +1,6 @@
 ﻿# MCagent / CrawlerAgent 开发文档
 
-最后更新：2026-05-19
+最后更新：2026-05-21
 
 这份文档是当前项目的主开发文档。以后修改 MCagent、CrawlerAgent、RAG、SSE、前端交互或采集流程前，必须先读本文档；修改完成后，必须把本次决策、变更、验证结果追加到本文档。旧的 crawler_runbook.md 和历史乱码内容只作为历史参考，不再作为实现依据。
 
@@ -30,7 +30,7 @@ MCagent 是面向用户的问答 Agent。职责：
 - 自己判断下一步是回答、查状态、仅检索，还是委托 CrawlerAgent。
 - 普通问答必须先使用本地 RAG 工具找证据，再让 LLM 基于证据组织最终回答。
 - 连续追问要回顾当前会话。例如先问“落幕曲新手怎么玩”，再问“有哪些 BOSS”，应理解为“落幕曲有哪些 BOSS”。
-- 发现证据不足时，说明缺口，并把资料缺口交给 CrawlerAgent。
+- 发现证据不足时，先向用户说明缺口；只有当 MCagent 在工具选择或 planned workflow 中明确选择 `delegate_crawler` 时，才把资料缺口交给 CrawlerAgent。
 
 MCagent 可用工具：
 
@@ -70,7 +70,7 @@ CrawlerAgent 可用工具：
 4. 若选择 status，直接走状态工具，不做 RAG。
 5. 若选择 answer，MCagent LLM 规划本地 RAG 子查询；工具执行检索并筛证据；最终回答由 LLM 生成。
 6. 若选择 delegate_crawler，保留用户的采集目标和身份链，不替 CrawlerAgent 拆搜索词。
-7. 若最终回答中 LLM 判断证据不足，才把缺口交给 CrawlerAgent。
+7. 若最终回答中 LLM 判断证据不足，只说明缺口和可补充方向；不能由回答文本扫描或工具层自动把缺口交给 CrawlerAgent。只有本轮工具选择/planned workflow 明确委托时才启动 Crawler。
 
 注意：普通游戏问答里的“如何获取某物品”“怎么合成”“哪里打”不是 Crawler 采集任务，应先走本地 RAG 回答。
 
@@ -1522,3 +1522,57 @@ python tests\agent_runtime_scenarios.py
 - 再问“你好”，确认不会触发 RAG/Crawler；
 - 再问正常 RAG 问题，确认不会因为回答中提到资料缺口而自动补库；
 - 再显式说“让 Crawler 去收集……”，确认 Crawler 才启动。
+
+## 33. 修正旧文档与回答提示中的自动补库残留（2026-05-21）
+
+本轮开始前已重新阅读本文档。阅读时发现前文旧章节仍保留“证据不足就交给 Crawler”的表述，这会和第 31 章“Crawler 委托必须来自 Agent 明确工具选择”冲突，也会误导后续开发。
+
+### 33.1 本轮问题
+
+旧文档和 `_build_answer_prompt()` 中存在两类残留：
+
+1. 文档前半段仍保留“证据不足即可自动交给 Crawler”的旧含义。
+2. 最终回答 prompt 的工具说明仍暗示“资料不足即可使用委托工具”。
+
+这些句子不是代码里的自动 job 创建逻辑，但会给 Agent/开发者错误暗示：最终回答阶段也可以靠资料不足自动补库。
+
+### 33.2 修正原则
+
+- 资料不足时，最终回答可以说明缺口、建议下一步；
+- 后端不能扫描最终回答来启动 Crawler；
+- 最终回答 prompt 不能告诉模型“资料不足时应使用工具”，因为该阶段已经不是工具选择阶段；
+- Crawler 只能由工具选择/planned workflow 明确委托启动。
+
+### 33.3 本轮测试方案
+
+目标行为：
+
+- 文档前半段与第 31 章保持一致；
+- 回答生成 prompt 不再暗示“本地证据不足就使用 delegate_crawler”；
+- 现有显式委托、planned workflow 委托仍可用；
+- 第 32 章的测试闭环要求继续执行。
+
+风险点：
+
+- 删除旧表述后，Agent 不知道可以建议用户补库；
+- 误删显式委托能力说明；
+- 文档里仍残留互相矛盾的旧句子；
+- 编码或语法检查回退。
+
+离线测试：
+
+- `tests/agent_runtime_scenarios.py` 增加源码/文档守卫：
+  - `web_server.py` 不允许保留回答阶段“资料不足就使用委托工具”的旧句；
+  - 开发文档不允许保留“证据不足就自动交给 Crawler”的旧句；
+  - 开发文档不允许保留“最终回答判断不足后自动移交 Crawler”的旧句。
+
+集成测试：
+
+~~~powershell
+python -m py_compile mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py tests\agent_runtime_scenarios.py
+node --check frontend\static\app.js
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+python tests\smoke_test.py
+python tests\agent_runtime_scenarios.py
+~~~

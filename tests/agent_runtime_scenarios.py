@@ -170,9 +170,13 @@ def test_job_readable_summary_surfaces_observations() -> None:
 
 def test_crawler_delegation_requires_explicit_agent_route() -> None:
     source = (ROOT / "mcagent" / "web_server.py").read_text(encoding="utf-8")
+    doc = (ROOT / "docs" / "agent_development_guide.md").read_text(encoding="utf-8")
     assert_true("no_answer_post_scan_helper", "_answer_requires_auto_delegate" not in source)
     assert_true("no_answer_gap_regex_helper", "_answer_indicates_missing_data" not in source)
     assert_true("no_post_answer_delegate_trace", "answer_marked_missing" not in source)
+    assert_true("no_answer_prompt_auto_delegate", "或本地证据不足时，应使用这个能力" not in source)
+    assert_true("no_doc_auto_delegate_gap", "发现证据不足时，说明缺口，并把资料缺口交给 CrawlerAgent" not in doc)
+    assert_true("no_doc_final_answer_auto_delegate", "若最终回答中 LLM 判断证据不足，才把缺口交给 CrawlerAgent" not in doc)
     assert_true("planned_delegate_branch_exists", "if planned_delegate:" in source)
     assert_true("insufficient_evidence_no_auto_delegate", '"delegated": False' in source)
 

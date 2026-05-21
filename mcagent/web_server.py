@@ -2534,7 +2534,7 @@ def _build_answer_prompt(question: str, context: str, retrieval_note: str = "") 
 MCagent 可用工具与能力：
 - local_rag_search：检索本地资料库，适合回答 Minecraft、模组、整合包、教程、物品、Boss、配方等问题。
 - crawler_status：查看 Crawler 采集/入库/任务进度。用户问“状态、进度、监控、入库怎么样”等，应使用这个能力。
-- delegate_crawler：把资料缺口交给 CrawlerAgent。用户明确说“叫/让 Crawler 收集/获取/爬取/补库某资料”，或本地证据不足时，应使用这个能力。
+- delegate_crawler：把资料缺口交给 CrawlerAgent。只有本轮工具选择或 planned workflow 已明确委托时才会启动；最终回答阶段不能因为资料不足自行启动 Crawler。
 - answer_from_evidence：根据检索证据组织最终回答，并标注 [S1]、[S2] 来源。
 
 工具使用原则：
