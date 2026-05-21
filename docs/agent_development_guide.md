@@ -1780,6 +1780,7 @@ python tests\agent_runtime_scenarios.py
    - 旧标准库后端仍可回退运行；
    - FastAPI 后端先作为推荐入口，不强行切断旧服务。
 4. `requirements.txt` 增加 `fastapi` 与 `uvicorn[standard]`。
+   - CI 中 FastAPI `TestClient` 依赖 `httpx`，因此同步把 `httpx` 写入 requirements，避免本地已有依赖而 CI 缺依赖。
 5. README 改为推荐 `python api.py` 启动，并说明 `/docs` 自动接口文档；旧 `python web.py` 仍作为回退。
 6. CI 与公开检查加入 FastAPI 文件和测试。
 
