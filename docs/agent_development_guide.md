@@ -1748,3 +1748,82 @@ python scripts\public_readiness_check.py
 python tests\smoke_test.py
 python tests\agent_runtime_scenarios.py
 ~~~
+
+## 37. FastAPI 后端第一阶段：框架化 HTTP/SSE 与上下文接口（2026-05-21）
+
+本轮开始前已重新阅读本文档。用户指出当前两个 Agent 的测试效果不符合预期，怀疑后端基础能力不足，要求认真做 FastAPI 后端，并重点考虑上下文、Agent 链路和测试。
+
+### 37.1 本轮定位
+
+现有后端是 `BaseHTTPRequestHandler + ThreadingHTTPServer`，优点是依赖少，但问题也明显：
+
+- 路由、请求体解析、响应格式和 SSE 都散在一个大类里；
+- 没有 OpenAPI 文档，不方便调试接口；
+- 后续要做上下文、Agent 状态、工具调用记录、任务事件流时，继续堆在旧 handler 里会更难维护；
+- 前端依赖的接口已经比较多，直接重写风险大。
+
+因此本轮不删除旧 `web.py`，而是新增并行 FastAPI 后端，先完整复用现有 Agent/RAG/Crawler 业务函数，让框架层和业务层分离。
+
+### 37.2 本轮改造
+
+1. 新增 `mcagent/fastapi_app.py`：
+   - `create_app(config)` 构造 FastAPI app；
+   - 提供 `/`、`/settings.html`、`/static/*`；
+   - 镜像现有 `/api/status`、`/api/jobs`、`/api/models`、`/api/agents`、`/api/llm-profiles`；
+   - 镜像 `/api/chat` 与 `/api/chat/stream`，SSE 通过队列把 `_chat_impl()` 的 trace/delta/response/done 事件转成 FastAPI `StreamingResponse`；
+   - 镜像 Crawler plan、summary、job start/stop、session get/delete、ingest 等接口；
+   - 新增 `/api/session/context`，返回指定 session 的 history、summary、turn_count、last_turn，给前端和测试直接观察会话上下文；
+   - 新增 `/api/health`，便于健康检查与部署探活。
+2. 新增 `api.py` 作为 FastAPI 后端入口：
+   - `python api.py --host 127.0.0.1 --port 8765`
+3. 保留旧 `web.py`：
+   - 旧标准库后端仍可回退运行；
+   - FastAPI 后端先作为推荐入口，不强行切断旧服务。
+4. `requirements.txt` 增加 `fastapi` 与 `uvicorn[standard]`。
+5. README 改为推荐 `python api.py` 启动，并说明 `/docs` 自动接口文档；旧 `python web.py` 仍作为回退。
+6. CI 与公开检查加入 FastAPI 文件和测试。
+
+### 37.3 本轮测试方案
+
+目标行为：
+
+- FastAPI 后端能启动并服务同一套前端；
+- 核心 API 返回结构与旧后端兼容；
+- SSE 能发出 `response` 和 `done` 事件；
+- session/context 基础接口可用；
+- 旧后端仍可通过语法检查；
+- 不改 Agent 决策逻辑，不把 FastAPI 做成新的脚本路由层。
+
+风险点：
+
+- FastAPI import 导致公开环境缺依赖；
+- SSE 队列线程吞异常或不结束；
+- 静态文件路径暴露；
+- `/api/session`、`/api/jobs/start-crawler` 等 POST 接口行为和旧后端不一致；
+- CI 没覆盖 FastAPI，导致公开后才坏。
+
+离线测试：
+
+- `tests/fastapi_backend_scenarios.py`：
+  - `GET /api/health`；
+  - `GET /api/agents`；
+  - `GET /api/status`；
+  - `POST /api/session`、`/api/session/context` 与 `/api/session/delete`；
+  - `POST /api/chat/stream` 空问题，验证 SSE 形状包含 `response` 与 `done`。
+
+集成测试：
+
+~~~powershell
+python -m py_compile api.py mcagent\fastapi_app.py mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py tests\agent_runtime_scenarios.py tests\fastapi_backend_scenarios.py
+node --check frontend\static\app.js
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+python tests\smoke_test.py
+python tests\agent_runtime_scenarios.py
+python tests\fastapi_backend_scenarios.py
+~~~
+
+后续计划：
+
+- 第二阶段再把上下文、Agent 工具事件、job timeline 抽成清晰的 service 层；
+- 第三阶段把 FastAPI 设为唯一默认后端，旧 `web.py` 只保留一段迁移期。

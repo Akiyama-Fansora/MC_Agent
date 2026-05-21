@@ -34,6 +34,8 @@ jobs:
         shell: pwsh
         run: >
           python -m py_compile
+          api.py
+          mcagent\fastapi_app.py
           mcagent\web_server.py
           mcagent\agent_runtime.py
           mcagent\crawler_llm_planner.py
@@ -45,6 +47,7 @@ jobs:
           scripts\public_readiness_check.py
           scripts\smoke_agent_flows.py
           tests\agent_runtime_scenarios.py
+          tests\fastapi_backend_scenarios.py
 
       - name: Encoding and public readiness checks
         shell: pwsh
@@ -57,6 +60,7 @@ jobs:
         run: |
           python tests\smoke_test.py
           python tests\agent_runtime_scenarios.py
+          python tests\fastapi_backend_scenarios.py
 
       - name: Frontend syntax check
         shell: pwsh

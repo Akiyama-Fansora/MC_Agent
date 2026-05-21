@@ -22,6 +22,7 @@ REQUIRED_FILES = [
     ".github/workflows/ci.yml",
     ".env.example",
     "README.md",
+    "api.py",
     "config.sample.json",
     "requirements.txt",
     "docs/agent_development_guide.md",
@@ -31,10 +32,12 @@ REQUIRED_FILES = [
     "frontend/static/app.css",
     "frontend/static/settings.js",
     "mcagent/agent_runtime.py",
+    "mcagent/fastapi_app.py",
     "mcagent/llm_profiles.py",
     "mcagent/web_server.py",
     "scripts/check_text_encoding.py",
     "tests/agent_runtime_scenarios.py",
+    "tests/fastapi_backend_scenarios.py",
     "tests/smoke_test.py",
 ]
 
@@ -150,9 +153,11 @@ def check_public_docs(errors: list[str]) -> None:
     required_phrases = [
         "python ingest.py",
         "python web.py",
+        "python api.py",
         "playwright install chromium",
         ".env.example",
         "/settings.html",
+        "/docs",
         "本地质量检查",
     ]
     for phrase in required_phrases:

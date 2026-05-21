@@ -141,7 +141,14 @@ python chat.py "工业时代2 的橡胶怎么获得？" --no-llm --show-context
 
 ## 本地网页
 
-启动本地 HTTP 控制台：
+推荐启动 FastAPI 后端：
+
+```powershell
+cd D:\magic\MC_Agent
+python api.py --host 127.0.0.1 --port 8765
+```
+
+如果需要使用旧的标准库 HTTP 后端，也可以运行：
 
 ```powershell
 cd D:\magic\MC_Agent
@@ -166,6 +173,12 @@ http://127.0.0.1:8765
 - 后台重新导入本地采集资料。
 - 让 CrawlerAgent 自主规划多源采集、保存 raw HTML/Markdown/manifest，并按 MCagent/RAG 可读格式入库。
 
+FastAPI 后端还提供自动接口文档：
+
+```text
+http://127.0.0.1:8765/docs
+```
+
 默认前端静态文件来自仓库内的 `frontend/`。如果你想使用外部前端目录，可以设置：
 
 ```powershell
@@ -186,9 +199,10 @@ python tests\smoke_test.py
 本地质量检查：
 
 ```powershell
-python -m py_compile mcagent\web_server.py mcagent\crawler_llm_planner.py mcagent\provider_registry.py mcagent\crawler_planner.py scripts\browser_collect_seed.py
+python -m py_compile api.py mcagent\fastapi_app.py mcagent\web_server.py mcagent\crawler_llm_planner.py mcagent\provider_registry.py mcagent\crawler_planner.py scripts\browser_collect_seed.py
 python scripts\check_text_encoding.py
 python scripts\public_readiness_check.py
+python tests\fastapi_backend_scenarios.py
 node --check frontend\static\app.js
 node --check frontend\static\settings.js
 ```
