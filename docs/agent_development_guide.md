@@ -1634,3 +1634,54 @@ python scripts\public_readiness_check.py
 python tests\smoke_test.py
 python tests\agent_runtime_scenarios.py
 ~~~
+
+## 35. 删除未使用的关键词路由死代码（2026-05-21）
+
+本轮开始前已重新阅读本文档。继续检查路由链路时发现，`web_server.py` 中仍保留三段旧关键词路由函数：
+
+- `_is_crawler_status_request()`
+- `_is_crawler_start_request()`
+- `_mcagent_route_intent()`
+
+这些函数当前已经没有调用点，但它们通过“状态、进度、补库、采集”等词去推断路由，属于早期规则路由思路。即使是死代码，保留它们也会增加后续误接回来的风险。
+
+### 35.1 修正原则
+
+- 未使用的关键词路由代码应删除，而不是留作“备用”；
+- 状态、委托、RAG、直接回答仍由 Agent 工具选择 LLM 判断；
+- `retriever_only/no_llm` 等显式模式可以保留模式逻辑，但不能复活关键词路由；
+- 测试中增加源码守卫，防止旧函数回流。
+
+### 35.2 本轮测试方案
+
+目标行为：
+
+- 删除旧关键词路由死代码；
+- 不影响现有 `_agent_tool_decision()` 和工具目录；
+- 不影响显式委托、状态、RAG、direct answer 的正常路径；
+- 文档继续保持 UTF-8 且章节顺序正确。
+
+风险点：
+
+- 误删仍被使用的函数导致运行时 NameError；
+- 测试只查删除，未覆盖语法；
+- 后续有人重新加入同名关键词路由；
+- 文档插入位置错误。
+
+离线测试：
+
+- `tests/agent_runtime_scenarios.py` 增加源码守卫：
+  - 不允许出现 `def _is_crawler_status_request`；
+  - 不允许出现 `def _is_crawler_start_request`；
+  - 不允许出现 `def _mcagent_route_intent`。
+
+集成测试：
+
+~~~powershell
+python -m py_compile mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py tests\agent_runtime_scenarios.py
+node --check frontend\static\app.js
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+python tests\smoke_test.py
+python tests\agent_runtime_scenarios.py
+~~~

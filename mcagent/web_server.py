@@ -5004,52 +5004,6 @@ def _crawler_monitor_answer(config: AppConfig) -> dict[str, Any]:
     return {"answer": "\n".join(lines), "sources": [], "status": status}
 
 
-def _is_crawler_status_request(question: str) -> bool:
-    normalized = question.strip().lower()
-    if _is_crawler_start_request(question):
-        return False
-    tokens = (
-        "状态",
-        "进度",
-        "监控",
-        "入库",
-        "status",
-        "progress",
-    )
-    if normalized in {"crawler", "crawleragent"}:
-        return True
-    return any(token in normalized for token in tokens)
-
-
-def _is_crawler_start_request(question: str) -> bool:
-    lowered = question.lower()
-    target_markers = ("crawler", "crawleragent", "爬虫", "爬虫agent", "补库", "资料库")
-    explicit_data_markers = ("全网", "联网", "网上", "网络", "网页", "资料", "数据", "文档", "页面", "html", "raw html")
-    collection_actions = ("采集", "收集", "抓取", "爬取", "补充", "补库", "更新资料", "crawl", "fetch", "scrape")
-    if any(target in lowered for target in target_markers):
-        return any(action in lowered for action in ("叫", "让", "派", "去", "帮", *collection_actions)) or any(target in lowered for target in ("补库", "资料库"))
-    if any(action in lowered for action in collection_actions) and any(marker in lowered for marker in explicit_data_markers):
-        return True
-    return False
-
-
-def _mcagent_route_intent(question: str, agent: str) -> str:
-    if agent == "crawler_agent":
-        lowered = question.strip().lower()
-        if not question.strip() or lowered in {"crawler", "crawleragent"}:
-            return "status"
-        if _is_crawler_start_request(question):
-            return "delegate_crawler"
-        if _is_crawler_status_request(question):
-            return "status"
-        return "delegate_crawler"
-    if _is_crawler_start_request(question):
-        return "delegate_crawler"
-    if _is_crawler_status_request(question):
-        return "status"
-    return "answer"
-
-
 def _json_object_from_llm_text(text: str) -> dict[str, Any]:
     stripped = str(text or "").strip()
     if stripped.startswith("```"):
