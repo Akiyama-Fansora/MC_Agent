@@ -5130,13 +5130,13 @@ def _agent_tool_decision(
             planner=label,
         ).to_dict()
     except Exception as exc:  # noqa: BLE001 - keep chat usable if the router model fails.
-        fallback_tool = "delegate_crawler" if agent == "crawler_agent" else "answer"
         return {
-            "tool": fallback_tool,
-            "reason": f"Agent tool selector failed; conservative fallback to {fallback_tool}: {type(exc).__name__}: {exc}",
+            "tool": "router_error",
+            "reason": f"Agent tool selector failed; no tool executed without an Agent decision: {type(exc).__name__}: {exc}",
             "collection_target": original_question,
             "delivery_target": "",
             "planner": "fallback_after_llm_error",
+            "error": f"{type(exc).__name__}: {exc}",
         }
 
 
@@ -5359,6 +5359,18 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
     planned_delegate = planned_workflow and _action_plan_has_tool(action_plan, "delegate_crawler")
     if planned_workflow:
         route_intent = "answer"
+    if route_intent == "router_error":
+        error_text = str(tool_decision.get("error") or tool_decision.get("reason") or "unknown error")
+        add_trace("done", "router_error", {"error": error_text, "delegated": False})
+        return _with_trace(
+            {
+                "answer": f"Agent 工具选择模型调用失败：{error_text}\n\n本次没有执行本地检索，也没有启动 Crawler。请检查当前模型配置或稍后重试。",
+                "sources": [],
+                "context": "",
+                "agent": agent,
+            },
+            trace,
+        )
     if route_intent == "direct_answer":
         add_trace("answer", "generating", {"model": model, "mode": "direct"})
         try:

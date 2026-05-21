@@ -1576,3 +1576,61 @@ python scripts\public_readiness_check.py
 python tests\smoke_test.py
 python tests\agent_runtime_scenarios.py
 ~~~
+
+## 34. 工具选择失败不能由后端代替 Agent 选路（2026-05-21）
+
+本轮开始前已重新阅读本文档。检查 `_agent_tool_decision()` 时发现：当工具选择 LLM 调用失败时，旧逻辑会把 MCagent fallback 到 `answer`，把 CrawlerAgent fallback 到 `delegate_crawler`。这会造成两个问题：
+
+1. MCagent 没有真正完成工具选择，却可能继续 RAG；
+2. CrawlerAgent 没有真正判断任务，却可能直接启动采集 job。
+
+这违反“Agent 必须由 LLM 主导，工具不能替 Agent 做主观判断”的原则。
+
+### 34.1 修正原则
+
+- 工具选择 LLM 失败时，后端不能猜测 answer/RAG/Crawler；
+- 失败应显式进入 `router_error`；
+- `router_error` 只向用户说明“工具选择模型失败”，不执行检索、不创建 Crawler job；
+- `retriever_only/no_llm` 模式仍可按模式定义走本地检索，因为那是用户显式选择的模式，不是 Agent 失败后的猜测。
+
+### 34.2 本轮改造
+
+1. `_agent_tool_decision()` 的异常分支不再设置 `fallback_tool = answer/delegate_crawler`。
+2. 异常分支返回 `tool=router_error` 和错误信息。
+3. `_chat_impl()` 增加 `router_error` route，直接返回失败说明，并在 trace 中标注 `delegated=false`。
+4. 场景测试增加源码守卫，防止以后把 `fallback_tool = "delegate_crawler"` 或 `fallback_tool = "answer"` 加回来。
+
+### 34.3 本轮测试方案
+
+目标行为：
+
+- 工具选择 LLM 异常时，不检索、不派单；
+- 用户能看到明确失败原因；
+- CrawlerAgent 路由失败时不会创建 job；
+- 正常显式委托路径不受影响；
+- 第 31、32、33 章的原则继续成立。
+
+风险点：
+
+- 正常工具选择结果被误判为 `router_error`；
+- `router_error` 没有被 `_chat_impl()` 处理，落入默认 RAG；
+- 仅检索模式被误伤；
+- 文档或测试守卫误伤合法文字。
+
+离线测试：
+
+- `tests/agent_runtime_scenarios.py` 增加源码守卫：
+  - 不允许出现 `fallback_tool = "delegate_crawler"`；
+  - 不允许出现 `fallback_tool = "answer"`；
+  - 必须存在 `tool=router_error` 和 `_chat_impl()` 的 `route_intent == "router_error"` 分支。
+
+集成测试：
+
+~~~powershell
+python -m py_compile mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py tests\agent_runtime_scenarios.py
+node --check frontend\static\app.js
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+python tests\smoke_test.py
+python tests\agent_runtime_scenarios.py
+~~~
