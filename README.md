@@ -2,7 +2,7 @@
 
 这是一个本地双 Agent 项目：`MCagent` 负责面向用户问答和本地 RAG，`CrawlerAgent` 负责资料采集、清洗、保存和入库。两个 Agent 都由 LLM 主导，工具只负责客观执行。
 
-当前仓库准备以 Private GitHub 仓库维护。运行时数据、密钥、本地数据库、向量索引、爬虫导出文件和大安装包不会提交到仓库。
+运行时数据、密钥、本地数据库、向量索引、爬虫导出文件和大安装包不会提交到仓库。仓库只保存可复现的源码、配置样例、测试和文档。
 
 ## 目录
 
@@ -183,7 +183,7 @@ python tests\smoke_test.py
 
 看到 `SMOKE TEST PASSED` 即代表导入、索引、检索和无 LLM 回答路径可运行。
 
-公开前检查：
+本地质量检查：
 
 ```powershell
 python -m py_compile mcagent\web_server.py mcagent\crawler_llm_planner.py mcagent\provider_registry.py mcagent\crawler_planner.py scripts\browser_collect_seed.py
@@ -201,16 +201,3 @@ node --check frontend\static\settings.js
 - 不覆盖 `data\crawler_exports` 中已有文件。
 - 本项目的导入器读取本地采集资料并写入可再生索引。
 - SQLite 与 `.npz` 索引是可再生运行时产物，可以删除后重新导入。
-
-## GitHub 公开标准
-
-仓库先保持 Private。满足以下条件后再考虑公开：
-
-1. `.env`、API key、Cookie、浏览器登录态、数据库、向量索引、爬虫导出数据和整合包安装包都被确认排除。
-2. `README.md` 能让新机器完成安装、配置、启动、导入和测试。
-3. `config.sample.json` 足够完整，真实配置只放本地。
-4. MCagent 的基础问答、计划式工作流、状态查询和 Crawler 委托测试通过。
-5. CrawlerAgent 的公开网页采集、失败原因解释、RAG 入库流程测试通过。
-6. 前端无明显乱码、undefined、自动滚动抢焦点等问题。
-7. 至少有一份开发文档说明 Agent 职责、工具边界、RAG/SSE/Crawler 流程。
-8. `LICENSE` 不是 GitHub 公开仓库的硬性要求；没有 LICENSE 时，法律默认更接近“保留所有权利”，别人不能明确复用。若希望别人可复用或二次开发，再由仓库所有者选择 MIT、Apache-2.0 等协议。

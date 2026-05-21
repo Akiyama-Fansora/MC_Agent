@@ -111,9 +111,35 @@ def check_tracked_file_sizes(files: list[str], errors: list[str]) -> None:
 
 
 def check_gitignore(errors: list[str]) -> None:
-    result = run(["git", "check-ignore", ".env", "data/mcagent.sqlite", "data/vector_index.npz", "data/crawler_exports/example.md"])
+    result = run(
+        [
+            "git",
+            "check-ignore",
+            ".env",
+            "config.json",
+            "data/llm_profiles.json",
+            "data/mcagent.sqlite",
+            "data/vector_index.npz",
+            "data/crawler_exports/example.md",
+            "storage_state.json",
+            ".auth/session.json",
+            "browser_profiles/default/Preferences",
+            "pack.zip",
+        ]
+    )
     ignored = set(result.stdout.splitlines())
-    expected = {".env", "data/mcagent.sqlite", "data/vector_index.npz", "data/crawler_exports/example.md"}
+    expected = {
+        ".env",
+        "config.json",
+        "data/llm_profiles.json",
+        "data/mcagent.sqlite",
+        "data/vector_index.npz",
+        "data/crawler_exports/example.md",
+        "storage_state.json",
+        ".auth/session.json",
+        "browser_profiles/default/Preferences",
+        "pack.zip",
+    }
     missing = expected - ignored
     if missing:
         errors.append("gitignore does not ignore: " + ", ".join(sorted(missing)))
@@ -122,16 +148,25 @@ def check_gitignore(errors: list[str]) -> None:
 def check_public_docs(errors: list[str]) -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     required_phrases = [
-        "GitHub 公开标准",
         "python ingest.py",
         "python web.py",
         "playwright install chromium",
         ".env.example",
         "/settings.html",
+        "本地质量检查",
     ]
     for phrase in required_phrases:
         if phrase not in readme:
             errors.append(f"README missing public setup phrase: {phrase}")
+    forbidden_phrases = [
+        "GitHub 公开标准",
+        "仓库先保持 Private",
+        "满足以下条件后再考虑公开",
+        "公开前检查",
+    ]
+    for phrase in forbidden_phrases:
+        if phrase in readme:
+            errors.append(f"README contains internal publication checklist phrase: {phrase}")
 
 
 def collect_warnings() -> list[str]:

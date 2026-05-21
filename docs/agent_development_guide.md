@@ -534,7 +534,7 @@ python scripts\check_text_encoding.py
 3. 增加 `data/README.md` 和 `data/.gitkeep`，说明真实数据库、向量索引、crawler_exports 等只保存在本机，不进入 Git。
 4. 扩展 `.gitignore`，忽略 `.env`、密钥文件、logs、runtime、数据库、索引、归档包、crawler_exports 等。
 5. 新增 `scripts/public_readiness_check.py`，检查公开仓库必备文件、误提交数据目录、疑似密钥和 README 关键说明。
-6. `README.md` 补充两 Agent 架构、前端目录、环境变量、Playwright 安装、公开前检查命令和公开仓库标准。
+6. `README.md` 当时补充两 Agent 架构、前端目录、环境变量、Playwright 安装、公开前检查命令和公开仓库标准。后续第 36 章已修正：README 只面向使用者，公开标准不再放入 README。
 7. `requirements.txt` 补充 `playwright>=1.40`。
 
 ### 17.2 Agent/RAG 修复
@@ -1674,6 +1674,69 @@ python tests\agent_runtime_scenarios.py
   - 不允许出现 `def _is_crawler_status_request`；
   - 不允许出现 `def _is_crawler_start_request`；
   - 不允许出现 `def _mcagent_route_intent`。
+
+集成测试：
+
+~~~powershell
+python -m py_compile mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py tests\agent_runtime_scenarios.py
+node --check frontend\static\app.js
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+python tests\smoke_test.py
+python tests\agent_runtime_scenarios.py
+~~~
+
+## 36. README 面向公开使用者，公开标准留在内部检查（2026-05-21）
+
+本轮开始前已重新阅读本文档。用户明确要求：以公开仓库为目标继续优化；如果仓库公开，README 中不应写“GitHub 公开标准”这类内部验收清单。
+
+### 36.1 本轮问题
+
+`README.md` 仍包含两类不适合公开后展示的内容：
+
+1. 开头说明仓库准备以 Private 维护；
+2. 末尾写出“GitHub 公开标准”完整清单。
+
+同时 `scripts/public_readiness_check.py` 还把“GitHub 公开标准”作为 README 必须包含的短语。这会强迫 README 保留内部 checklist，和公开使用文档的定位冲突。
+
+### 36.2 修正原则
+
+- README 面向使用者：说明项目、安装、配置、启动、导入、测试和边界；
+- 公开验收标准留在开发文档、CI 和 `public_readiness_check.py` 中，不放在 README；
+- 检查脚本应验证 README 有安装/启动/测试关键步骤，同时禁止内部公开清单短语出现在 README；
+- `.gitignore` 必须覆盖 `.env`、真实 `config.json`、LLM profile、数据库、向量索引、爬虫导出、浏览器登录态和整合包压缩包。
+
+### 36.3 本轮改造
+
+1. README 删除 Private 维护说明，改成“仓库只保存可复现源码、配置样例、测试和文档”。
+2. README 的“公开前检查”改为“本地质量检查”。
+3. README 删除“GitHub 公开标准”整段。
+4. `.gitignore` 增加 `config.json`、`data/llm_profiles.json`、Cookie/storage state、浏览器 profile、`.auth/` 等本地敏感/登录态路径。
+5. `public_readiness_check.py` 不再要求 README 包含“GitHub 公开标准”；改为要求“本地质量检查”，并禁止 README 出现内部发布清单短语。
+6. `public_readiness_check.py` 增加 gitignore 验证：真实配置、LLM profile、浏览器登录态、整合包 zip 都必须被忽略。
+
+### 36.4 本轮测试方案
+
+目标行为：
+
+- README 公开后可直接面向普通使用者，不出现内部公开 checklist；
+- 新机器仍能通过 README 完成安装、配置、启动、导入和测试；
+- `public_readiness_check.py` 能阻止 README 重新加入内部公开标准；
+- `.gitignore` 对敏感配置、登录态和大包体的排除更完整；
+- 现有 Agent 行为测试不受影响。
+
+风险点：
+
+- 删除 README 清单后公开检查误报缺少文档；
+- `.gitignore` 规则误伤需要跟踪的样例文件；
+- 检查脚本没有覆盖浏览器登录态；
+- 文档插入位置错误或 UTF-8 回退。
+
+离线测试：
+
+- `python scripts\public_readiness_check.py` 验证 README required/forbidden phrases 与 gitignore 覆盖；
+- `git check-ignore` 间接由公开检查覆盖；
+- `python scripts\check_text_encoding.py` 确认 README、文档、脚本无乱码。
 
 集成测试：
 
