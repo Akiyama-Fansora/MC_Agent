@@ -5048,6 +5048,9 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
     executor = AgentToolExecutor(
         generate_direct_answer=_generate_direct_answer,
         generate_direct_answer_stream=_generate_direct_answer_stream,
+        generate_grounded_answer=_generate_grounded_answer,
+        generate_grounded_answer_stream=_generate_grounded_answer_stream,
+        repair_answer=_repair_list_answer,
         status_answer=_crawler_monitor_answer,
     )
     route = router.route(run, session_summary=session_summary)
@@ -5281,9 +5284,8 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
     delegated_task = ""
     delegated_handoff_brief = ""
     if agent == "retriever_only" or bool(payload.get("no_llm")):
-        answer = "本地检索结果如下，未调用模型：\n\n" + context
+        answer, context = executor.retriever_only_answer(context)
     else:
-        add_trace("answer", "generating", {"model": model})
         answer_question = _answer_question_for_user(original_question, question, retrieval_note)
         answer_confirmation = router.confirm_next_step(
             config,
@@ -5297,31 +5299,14 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
             context={"selected_sources": len(selected), "evidence_question": evidence_question},
         )
         add_trace("answer", "next_step_confirmed", answer_confirmation)
-        if emit is not None:
-            answer, context = _generate_grounded_answer_stream(
-                config,
-                answer_question,
-                selected,
-                model,
-                temperature,
-                max_tokens,
-                lambda chunk: emit("delta", {"text": chunk}),
-                emit_thinking=lambda detail: add_trace("answer", "thinking", detail),
-                retrieval_note=retrieval_note,
-                evidence_question=evidence_question,
-            )
-        else:
-            answer, context = _generate_grounded_answer(
-                config,
-                answer_question,
-                selected,
-                model,
-                temperature,
-                max_tokens,
-                retrieval_note=retrieval_note,
-                evidence_question=evidence_question,
-            )
-        answer = _repair_list_answer(question, answer, selected)
+        answer, context = executor.grounded_answer(
+            run,
+            answer_question=answer_question,
+            selected=selected,
+            retrieval_note=retrieval_note,
+            evidence_question=evidence_question,
+            repair_question=question,
+        )
         if planned_delegate:
             collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
             handoff = _delegation_handoff(payload, original_question, collection_question)

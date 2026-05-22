@@ -2226,3 +2226,63 @@ python tests\fastapi_backend_scenarios.py
 
 - 第 43 阶段抽 RAG 检索、证据筛选与 final answer 执行器；
 - 第 44 阶段抽 Crawler 委托执行器和 job timeline 服务。
+
+## 43. Agent 工具执行第二阶段：RAG 最终回答执行器（2026-05-22）
+
+本轮开始前已重新阅读本文档。第 42 阶段已经抽出 direct/status/router_error 的客观执行器，本轮继续拆 RAG 后半段，把“仅检索回答包装”和“基于已筛选证据调用最终回答模型”也纳入执行器。
+
+### 43.1 本轮定位
+
+本轮不改变检索规划、候选召回、证据筛选和证据是否足够的判断。那些仍属于 RAG 工具链和 Agent/LLM 判断链路。
+
+本轮只抽出已到达 `final_answer_llm` 阶段后的客观执行：
+
+- 仅检索模式：把已生成的 context 包装成“未调用模型”的结果；
+- 最终回答模式：在 Agent 已确认可进入 `final_answer_llm` 后调用 grounded answer 模型；
+- streaming：继续把 delta 和 thinking trace 通过 run 上下文转发；
+- 模型失败：只显示模型失败，不调用 repair 逻辑伪装成正常回答。
+
+### 43.2 本轮改造
+
+1. `mcagent/agent_executor.py`：
+   - 增加 `grounded_answer()`；
+   - 增加 `retriever_only_answer()`；
+   - 失败时跳过 answer repair，确保“模型调用失败”不会被工具修饰成最终答案。
+2. `web_server.py`：
+   - RAG 后半段改用 `executor.grounded_answer()`；
+   - `retriever_only/no_llm` 路径改用 `executor.retriever_only_answer()`；
+   - `answer/generating` trace 从 web 分支移动到执行器内部，保持“先确认下一步，再执行模型调用”的顺序。
+3. `tests/agent_executor_scenarios.py`：
+   - 增加 grounded answer 非流式、流式、失败和仅检索测试；
+   - 验证 streaming delta 与 thinking trace；
+   - 验证模型失败不会被 repair。
+
+### 43.3 本轮测试方案
+
+目标行为：
+
+- final_answer_llm 的模型调用仍由 LLM 生成最终回答；
+- executor 不决定证据够不够，也不决定是否委托 Crawler；
+- 仅检索模式明确说明未调用模型；
+- streaming grounded answer 能发出 delta；
+- 模型失败保持原样可见；
+- 旧 direct/status/router_error 测试继续通过。
+
+风险点：
+
+- trace 顺序改变导致前端展示异常；
+- 模型失败被 repair 函数改写；
+- no_llm 路径误调用模型；
+- grounded stream 漏掉 thinking trace；
+- RAG 最终回答路径与 planned delegate 后续逻辑耦合过紧。
+
+离线测试：
+
+- `tests/agent_executor_scenarios.py`：direct/status/router_error/grounded/no_llm 全覆盖。
+- 完整集成测试沿用第 42 阶段命令，并重点观察 `tests/fastapi_backend_scenarios.py` 与 `tests/smoke_test.py`。
+
+后续计划：
+
+- 第 44 阶段抽检索规划与候选召回服务；
+- 第 45 阶段抽证据筛选服务；
+- 第 46 阶段抽 Crawler 委托执行器与 job timeline 服务。
