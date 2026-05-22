@@ -67,6 +67,15 @@ class JobReadableViewService:
         )
         progress_percent = round((current_index / len(planned)) * 100, 1) if planned else 0.0
         health_text = self._health_text(success_count=success_count, empty=empty, off_topic=off_topic, failure_count=failure_count, latest_observation=latest_observation)
+        timeline = self._timeline(
+            plan=plan,
+            tasks=tasks,
+            planned=planned,
+            observations=observations,
+            reflections=reflections,
+            result=result,
+            status=status,
+        )
 
         return {
             "title": str(job.get("title") or ""),
@@ -99,6 +108,7 @@ class JobReadableViewService:
             "headline": self._headline(status, target, str(job.get("title") or "")),
             "health_text": health_text,
             "next_action": next_action,
+            "timeline": timeline,
         }
 
     def _current_index(self, job: dict[str, Any], tasks: list[Any], planned: list[Any]) -> int:
@@ -159,3 +169,90 @@ class JobReadableViewService:
         if empty or off_topic or failure_count:
             return f"暂未拿到稳定候选：空结果 {empty}，跑偏 {off_topic}，失败 {failure_count}。"
         return "Crawler 正在规划或刚开始执行。"
+
+    def _timeline(
+        self,
+        *,
+        plan: dict[str, Any],
+        tasks: list[Any],
+        planned: list[Any],
+        observations: list[dict[str, Any]],
+        reflections: list[Any],
+        result: dict[str, Any],
+        status: str,
+    ) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        topic = str(plan.get("topic") or plan.get("target_hint") or plan.get("question") or "").strip()
+        if topic or planned:
+            events.append(
+                {
+                    "type": "plan",
+                    "label": "规划",
+                    "status": "ok" if planned else "pending",
+                    "title": topic or "CrawlerAgent 正在规划任务",
+                    "text": f"已规划 {len(planned)} 个采集动作。" if planned else "等待 CrawlerAgent 规划可执行采集动作。",
+                }
+            )
+
+        for index, item in enumerate(planned, start=1):
+            if not isinstance(item, dict):
+                continue
+            executed = tasks[index - 1] if index - 1 < len(tasks) and isinstance(tasks[index - 1], dict) else {}
+            observation = observations[index - 1] if index - 1 < len(observations) else {}
+            source = self.source_label(str(item.get("source") or executed.get("source") or ""))
+            query = str(item.get("query") or executed.get("query") or "").strip()
+            reason = str(item.get("reason") or "").strip()
+            status_text = str(observation.get("status") or ("running" if status == "running" and index == len(tasks) + 1 else "pending"))
+            text_parts = []
+            if query:
+                text_parts.append(query)
+            if reason:
+                text_parts.append(reason)
+            summary = str(observation.get("summary") or "").strip()
+            if summary:
+                text_parts.append(summary)
+            events.append(
+                {
+                    "type": "task",
+                    "label": f"采集 {index}",
+                    "status": status_text,
+                    "title": source or f"采集动作 {index}",
+                    "text": "；".join(text_parts),
+                }
+            )
+
+        for index, item in enumerate(reflections, start=1):
+            if not isinstance(item, dict):
+                continue
+            reason = str(item.get("reason") or "").strip()
+            action = str(item.get("action") or "").strip()
+            if not reason and not action:
+                continue
+            events.append(
+                {
+                    "type": "reflection",
+                    "label": f"反思 {index}",
+                    "status": action or "reflection",
+                    "title": "CrawlerAgent 判断",
+                    "text": reason or action,
+                }
+            )
+
+        replan_count = int(result.get("replan_count") or 0)
+        if replan_count:
+            events.append(
+                {
+                    "type": "replan",
+                    "label": "重规划",
+                    "status": "retry",
+                    "title": f"已重规划 {replan_count} 次",
+                    "text": "CrawlerAgent 根据空结果、跑偏、失败或重复情况调整采集策略。",
+                }
+            )
+        if result.get("ingest_background"):
+            events.append({"type": "ingest", "label": "入库", "status": "running", "title": "后台入库处理中", "text": "采集结果已交给后台导入。"})
+        if result.get("ingest"):
+            events.append({"type": "ingest", "label": "入库", "status": "ok", "title": "后台入库已完成", "text": "新资料已写入本地库或完成处理。"})
+        if result.get("ingest_error"):
+            events.append({"type": "ingest", "label": "入库", "status": "failed", "title": "后台入库失败", "text": str(result.get("ingest_error") or "")})
+        return events[:80]

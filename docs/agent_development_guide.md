@@ -2529,3 +2529,68 @@ python api.py --host 127.0.0.1 --port 8766
 ### 47.5 下一步
 
 继续做 Crawler job timeline 第二阶段：把 job readable view 扩展为时间线数组，让 UI 能显示“规划、执行、观察、反思、重规划、入库”的顺序事件，而不是只看当前任务快照。
+
+## 48. Crawler Job Timeline：任务过程事件化（2026-05-22）
+
+本轮开始前已重新阅读本文档。第 47 阶段已经把 job readable view 服务化，本轮继续在这个服务中增加 timeline，但仍然只展示事实过程，不替 CrawlerAgent 判断下一步采集策略。
+
+### 48.1 本轮目标
+
+让 UI 能看到 Crawler 任务从规划到执行的顺序过程，而不是只看到当前任务快照。timeline 事件包括：
+
+- 规划：CrawlerAgent 是否已经产生计划，以及计划动作数；
+- 采集动作：每个 planned task 的来源、查询、理由、工具观察状态；
+- 反思：CrawlerAgent 的 agent_reflections；
+- 重规划：replan_count；
+- 入库：ingest_background、ingest、ingest_error。
+
+### 48.2 代码变更
+
+1. `mcagent/job_view_service.py`：
+   - 新增 `timeline` 字段；
+   - 新增 `_timeline()` 方法，将 plan/tasks/observations/reflections/ingest 状态整理为事件数组；
+   - 事件保留 `type/label/status/title/text`，方便前端统一展示。
+2. `frontend/static/app.js`：
+   - 新增 `renderJobTimeline()`；
+   - Crawler 任务详情卡片显示最近 10 条 timeline；
+   - timeline 与已有 health_text、next_action 共存，不替代 Agent 的判断。
+3. `frontend/static/app.css`：
+   - 新增 `.job-timeline`、`.job-timeline-row`、`.job-timeline-label` 样式。
+4. `tests/job_view_service_scenarios.py`：
+   - 增加 timeline 断言，覆盖 plan/task/reflection/replan/ingest。
+
+### 48.3 边界说明
+
+timeline 是观察层。它反映 CrawlerAgent 与工具已经发生的事情，不决定任务是否成功，不决定下一步搜索什么，也不自动触发补库。它的目的只是让用户更直观看到“现在到底发生了什么”。
+
+### 48.4 本轮测试方案与结果
+
+已执行并通过：
+
+~~~powershell
+python -m py_compile mcagent\job_view_service.py mcagent\web_server.py tests\job_view_service_scenarios.py
+python tests\job_view_service_scenarios.py
+python tests\agent_runtime_scenarios.py
+node --check frontend\static\app.js
+node --check frontend\static\settings.js
+python -m py_compile api.py mcagent\agent_execution.py mcagent\agent_executor.py mcagent\agent_router.py mcagent\crawler_delegation_service.py mcagent\evidence_service.py mcagent\event_stream.py mcagent\fastapi_app.py mcagent\job_view_service.py mcagent\rag_service.py mcagent\session_state.py mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py tests\crawler_delegation_service_scenarios.py tests\agent_execution_scenarios.py tests\agent_executor_scenarios.py tests\agent_router_scenarios.py tests\evidence_service_scenarios.py tests\job_view_service_scenarios.py tests\rag_service_scenarios.py tests\agent_runtime_scenarios.py tests\backend_services_scenarios.py tests\fastapi_backend_scenarios.py
+python tests\crawler_delegation_service_scenarios.py
+python tests\agent_executor_scenarios.py
+python tests\agent_router_scenarios.py
+python tests\evidence_service_scenarios.py
+python tests\rag_service_scenarios.py
+python tests\backend_services_scenarios.py
+python tests\fastapi_backend_scenarios.py
+python tests\smoke_test.py
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+git diff --check
+python api.py --host 127.0.0.1 --port 8766
+# 探针结果：/api/health=200，/api/jobs=200，/api/session/context=200，/api/agents/mcagent_rag/tools=200
+~~~
+
+公开检查仍只有 LICENSE 非阻断警告。`frontend/static/app.js` 仍有 Git 的 CRLF/LF 工作区提示；不影响测试，后续可单独统一换行。
+
+### 48.5 下一步
+
+继续优化 CrawlerAgent 的任务执行可观测性：把 reflection、tool observation、失败原因和 replan 输入输出进一步统一成结构化对象，方便后续让 CrawlerAgent 复盘“为什么空结果/跑偏/失败，以及下一步怎么改”。

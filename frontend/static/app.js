@@ -523,6 +523,25 @@ function renderLatestObservation(readable) {
   return `<div class="source-meta">最近工具结果：${escapeHtml(observationLabel(observation.status))}，${escapeHtml(observation.summary || retryText)}${escapeHtml(next)}</div>`;
 }
 
+function renderJobTimeline(readable) {
+  const timeline = readable?.timeline || [];
+  if (!timeline.length) return "";
+  return `
+    <div class="job-timeline">
+      ${timeline.slice(-10).map((item) => `
+        <div class="job-timeline-row ${escapeHtml(item.type || "")}">
+          <span class="job-timeline-label">${escapeHtml(item.label || item.type || "")}</span>
+          <div>
+            <strong>${escapeHtml(item.title || "")}</strong>
+            ${item.status ? `<span class="source-meta"> · ${escapeHtml(observationLabel(item.status))}</span>` : ""}
+            ${item.text ? `<div class="source-meta">${escapeHtml(item.text)}</div>` : ""}
+          </div>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
 function renderJobReadable(readable, key = "") {
   if (!readable) return "";
   const total = Number(readable.total_tasks || 0);
@@ -567,6 +586,7 @@ function renderJobReadable(readable, key = "") {
       ${reflection.reason ? `<div class="source-meta">CrawlerAgent 判断：${escapeHtml(reflection.reason)}</div>` : ""}
       ${goals.length ? `<div class="job-readable-goals">${goals.map((goal) => `<span>${escapeHtml(goal)}</span>`).join("")}</div>` : ""}
       <div class="source-meta">${escapeHtml(readable.next_action || readable.summary || "")}</div>
+      ${renderJobTimeline(readable)}
     </details>
   `;
 }

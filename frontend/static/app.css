@@ -620,6 +620,36 @@ textarea {
   margin: 8px 0 2px;
 }
 
+.job-timeline {
+  display: grid;
+  gap: 7px;
+  margin-top: 10px;
+  border-top: 1px solid #dbe7df;
+  padding-top: 10px;
+}
+
+.job-timeline-row {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.job-timeline-label {
+  border: 1px solid #d5e4db;
+  background: #fff;
+  border-radius: 999px;
+  padding: 3px 7px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.job-timeline-row strong {
+  font-size: 12px;
+}
+
 .observation-pill {
   border: 1px solid #d4dde4;
   background: #fff;

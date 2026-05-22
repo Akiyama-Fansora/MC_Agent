@@ -44,6 +44,8 @@ def test_running_job_view_explains_current_action_and_counts() -> None:
                 {"source": "mcmod", "query": "乌托邦探险之旅", "returncode": 0, "ingest_deferred": True, "manifest_stats": {"records": 2}},
                 {"source": "firecrawl", "query": "乌托邦探险之旅 玩法", "returncode": 1, "output": "HTTP 429 quota exceeded"},
             ],
+            "replan_count": 1,
+            "ingest_background": True,
         },
     }
 
@@ -59,6 +61,11 @@ def test_running_job_view_explains_current_action_and_counts() -> None:
     assert_equal("observation_quota", view["observation_statuses"].get("quota_limited"), 1)
     assert_true("health_quota", "额度不足" in view["health_text"])
     assert_true("next_action", "Firecrawl" in view["next_action"])
+    assert_equal("timeline_first", view["timeline"][0]["type"], "plan")
+    assert_true("timeline_task", any(item["type"] == "task" and item["status"] == "quota_limited" for item in view["timeline"]))
+    assert_true("timeline_reflection", any(item["type"] == "reflection" for item in view["timeline"]))
+    assert_true("timeline_replan", any(item["type"] == "replan" for item in view["timeline"]))
+    assert_true("timeline_ingest", any(item["type"] == "ingest" and item["status"] == "running" for item in view["timeline"]))
 
 
 def test_waiting_job_view_is_plain_language() -> None:
@@ -67,6 +74,7 @@ def test_waiting_job_view_is_plain_language() -> None:
     assert_equal("progress_text", view["progress_text"], "等待 Crawler 规划任务")
     assert_equal("health_text", view["health_text"], "Crawler 正在规划或刚开始执行。")
     assert_equal("next_action", view["next_action"], "等待 Crawler 规划任务。")
+    assert_equal("timeline", view["timeline"], [])
 
 
 if __name__ == "__main__":
