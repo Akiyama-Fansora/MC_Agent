@@ -527,7 +527,9 @@ function renderJobReadable(readable, key = "") {
   if (!readable) return "";
   const total = Number(readable.total_tasks || 0);
   const current = Number(readable.current_index || 0);
-  const percent = total ? Math.max(0, Math.min(100, (current / total) * 100)) : 0;
+  const percent = readable.progress_percent != null
+    ? Math.max(0, Math.min(100, Number(readable.progress_percent || 0)))
+    : total ? Math.max(0, Math.min(100, (current / total) * 100)) : 0;
   const goals = readable.coverage_goals || [];
   const reflection = readable.agent_reflection || {};
   const statusText = readable.status === "running" ? "运行中"
@@ -536,17 +538,20 @@ function renderJobReadable(readable, key = "") {
     : readable.status === "failed" ? "失败"
     : readable.status === "stopped" ? "已停止"
     : readable.status || "";
+  const displayStatus = readable.status_label || statusText;
+  const headline = readable.headline || readable.target || readable.title || "Crawler 采集任务";
+  const progressText = readable.progress_text || `第 ${current || 0} / ${total} 个采集动作`;
   return `
     <details class="message-section job-readable" ${detailsAttrs(key || "job", true)}>
       <summary>
-        <span>${escapeHtml(readable.target || readable.title || "Crawler 采集任务")}</span>
-        <span>${escapeHtml(statusText)}</span>
+        <span>${escapeHtml(headline)}</span>
+        <span>${escapeHtml(displayStatus)}</span>
       </summary>
       <div class="job-readable-head">
-        <strong>${escapeHtml(readable.target || readable.title || "Crawler 采集任务")}</strong>
-        <span>${escapeHtml(statusText)}</span>
+        <strong>${escapeHtml(headline)}</strong>
+        <span>${escapeHtml(displayStatus)}</span>
       </div>
-      ${total ? progressBar("当前任务", percent, `第 ${current || 0} / ${total} 个采集动作`) : ""}
+      ${total ? progressBar("当前任务", percent, progressText) : `<div class="source-meta">${escapeHtml(progressText)}</div>`}
       <div class="job-readable-grid">
         ${readable.delivery_target ? statRow("交付对象", readable.delivery_target) : ""}
         ${readable.current_source ? statRow("当前来源", readable.current_source) : ""}
@@ -557,6 +562,7 @@ function renderJobReadable(readable, key = "") {
       </div>
       ${renderObservationStatus(readable)}
       ${renderLatestObservation(readable)}
+      ${readable.health_text ? `<div class="source-meta">状态判断：${escapeHtml(readable.health_text)}</div>` : ""}
       ${readable.current_reason ? `<div class="source-meta">当前动作理由：${escapeHtml(readable.current_reason)}</div>` : ""}
       ${reflection.reason ? `<div class="source-meta">CrawlerAgent 判断：${escapeHtml(reflection.reason)}</div>` : ""}
       ${goals.length ? `<div class="job-readable-goals">${goals.map((goal) => `<span>${escapeHtml(goal)}</span>`).join("")}</div>` : ""}
@@ -842,7 +848,7 @@ function renderActiveCrawlerOverview(jobs) {
   }
   const readable = latest.readable || {};
   const current = readable.current_query ? `当前：${readable.current_query}` : (latest.status === "running" ? "正在等待 CrawlerAgent 规划可执行查询" : "");
-  const target = readable.target || latest.title || latest.kind;
+  const target = readable.headline || readable.target || latest.title || latest.kind;
   const reflection = readable.agent_reflection?.reason ? `<div class="source-meta">CrawlerAgent 判断：${escapeHtml(readable.agent_reflection.reason).slice(0, 220)}</div>` : "";
   const latestObservation = readable.latest_observation?.status
     ? `<div class="source-meta">最近工具结果：${escapeHtml(observationLabel(readable.latest_observation.status))}${readable.latest_observation.summary ? ` · ${escapeHtml(readable.latest_observation.summary)}` : ""}</div>`
@@ -861,6 +867,8 @@ function renderActiveCrawlerOverview(jobs) {
       <div class="source-meta">目标：${escapeHtml(target)}</div>
       ${current ? `<div class="source-meta">${escapeHtml(current)}</div>` : ""}
       <div class="source-meta">${escapeHtml(counts)}</div>
+      ${readable.progress_text ? `<div class="source-meta">${escapeHtml(readable.progress_text)}</div>` : ""}
+      ${readable.health_text ? `<div class="source-meta">${escapeHtml(readable.health_text)}</div>` : ""}
       ${renderObservationStatus(readable)}
       ${latestObservation}
       ${reflection}
@@ -900,8 +908,8 @@ function renderJobs(jobs) {
     const isActiveCrawler = job.kind === "crawler" && (job.status === "queued" || job.status === "running");
     const canStop = isActiveCrawler && !job.stop_requested;
     const readable = job.readable || {};
-    const readableLine = readable.target
-      ? `<div class="source-meta">目标：${escapeHtml(readable.target)}${readable.current_query ? ` · 当前：${escapeHtml(readable.current_query)}` : ""}</div>`
+    const readableLine = readable.headline || readable.target
+      ? `<div class="source-meta">目标：${escapeHtml(readable.headline || readable.target)}${readable.current_query ? ` · 当前：${escapeHtml(readable.current_query)}` : ""}</div>`
       : "";
     const reflectionLine = readable.agent_reflection?.reason
       ? `<div class="source-meta">Agent 判断：${escapeHtml(readable.agent_reflection.reason).slice(0, 180)}</div>`
@@ -920,6 +928,8 @@ function renderJobs(jobs) {
         ${readableLine}
         ${observationLine}
         ${reflectionLine}
+        ${readable.progress_text ? `<div class="source-meta">${escapeHtml(readable.progress_text)}</div>` : ""}
+        ${readable.health_text ? `<div class="source-meta">${escapeHtml(readable.health_text)}</div>` : ""}
         ${roundInfo}
         ${job.stop_requested && isActiveCrawler ? `<div class="source-meta stop-note">已收到提前结束请求，当前轮完成后停止。</div>` : ""}
         ${job.summary ? `<div class="source-meta">${escapeHtml(job.summary).slice(0, 220)}</div>` : ""}

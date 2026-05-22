@@ -36,6 +36,7 @@ from .crawler_delegation_service import CrawlerDelegationService
 from .crawler_planner import CONCEPTS, decompose_crawler_queries, plan_crawler_tasks, toolsets_payload
 from .evidence_service import EvidenceWorkflowService
 from .ingest import ingest_exports
+from .job_view_service import JobReadableViewService
 from .llm import OllamaOpenAIClient, OpenAICompatibleClient
 from .llm_profiles import (
     client_for_agent,
@@ -192,76 +193,7 @@ def _job_to_dict(job: Job) -> dict[str, Any]:
 
 
 def _job_readable_summary(job: dict[str, Any]) -> dict[str, Any]:
-    result = job.get("result") if isinstance(job.get("result"), dict) else {}
-    plan = result.get("plan") if isinstance(result.get("plan"), dict) else {}
-    tasks = result.get("tasks") if isinstance(result.get("tasks"), list) else []
-    planned = result.get("planned_tasks") if isinstance(result.get("planned_tasks"), list) else []
-    reflections = plan.get("agent_reflections") if isinstance(plan.get("agent_reflections"), list) else []
-    last_reflection = next((item for item in reversed(reflections) if isinstance(item, dict)), {})
-    observations = [
-        (item.get("observation") if isinstance(item.get("observation"), dict) else classify_crawler_tool_result(item).to_dict())
-        for item in tasks
-        if isinstance(item, dict)
-    ]
-    observation_statuses: dict[str, int] = {}
-    for observation in observations:
-        status_key = str(observation.get("status") or "unknown")
-        observation_statuses[status_key] = observation_statuses.get(status_key, 0) + 1
-    latest_observation = observations[-1] if observations else {}
-    current_index = min(len(tasks) + 1, len(planned)) if planned else len(tasks)
-    if str(job.get("status") or "") in {"stopped", "succeeded", "failed"} and planned and tasks:
-        current_index = min(len(tasks), len(planned))
-    current_task = planned[current_index - 1] if planned and current_index > 0 else {}
-    if not isinstance(current_task, dict):
-        current_task = {}
-    success_count = int(result.get("success_count") or sum(1 for item in tasks if isinstance(item, dict) and item.get("ingest_deferred")))
-    failure_count = int(result.get("failure_count") or sum(1 for item in tasks if isinstance(item, dict) and (item.get("empty_result") or item.get("off_topic_result") or int(item.get("returncode") or 0) != 0)))
-    off_topic = sum(1 for item in tasks if isinstance(item, dict) and item.get("off_topic_result"))
-    empty = sum(1 for item in tasks if isinstance(item, dict) and item.get("empty_result"))
-    target = str(plan.get("topic") or plan.get("target_hint") or plan.get("question") or "")
-    goals = [str(item) for item in (plan.get("coverage_goals") or []) if str(item).strip()]
-    next_action = "等待 Crawler 规划任务。"
-    status = str(job.get("status") or "")
-    current_query = str(current_task.get("query") or "") if current_task else ""
-    if status in {"queued", "running"} and current_task:
-        query_label = current_query or "等待 CrawlerAgent 给出可执行查询"
-        next_action = f"正在执行第 {current_index}/{len(planned)} 个采集任务：{_source_label(str(current_task.get('source') or ''))} · {query_label}"
-    elif status == "succeeded":
-        next_action = "采集已完成；如有新资料，后台会继续入库或已完成入库。"
-    elif status == "failed":
-        next_action = "本轮采集失败或没有找到可入库资料，需要 Crawler 重新规划更短、更准的查询词。"
-    elif status == "stopped":
-        next_action = "任务已停止。"
-    if result.get("ingest_background"):
-        next_action += " 后台入库正在处理。"
-    if result.get("ingest"):
-        next_action += " 后台入库已完成。"
-    return {
-        "title": str(job.get("title") or ""),
-        "status": status,
-        "target": target,
-        "delivery_target": str(plan.get("delivery_target") or ""),
-        "coverage_goals": goals[:5],
-        "current_index": current_index,
-        "total_tasks": len(planned),
-        "current_source": _source_label(str(current_task.get("source") or "")) if current_task else "",
-        "current_query": current_query,
-        "current_reason": str(current_task.get("reason") or "") if current_task else "",
-        "agent_reflection": {
-            "action": str(last_reflection.get("action") or ""),
-            "reason": str(last_reflection.get("reason") or ""),
-            "planner": str(last_reflection.get("planner") or ""),
-        } if last_reflection else {},
-        "success_count": success_count,
-        "failure_count": failure_count,
-        "off_topic_count": off_topic,
-        "empty_count": empty,
-        "observation_statuses": observation_statuses,
-        "latest_observation": latest_observation,
-        "replan_count": int(result.get("replan_count") or 0),
-        "summary": str(job.get("summary") or ""),
-        "next_action": next_action,
-    }
+    return JobReadableViewService(source_label=_source_label).build(job)
 
 
 def _refresh_job_ingest_state(job: Job) -> None:

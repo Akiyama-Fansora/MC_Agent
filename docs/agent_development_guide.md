@@ -2466,3 +2466,66 @@ python api.py --host 127.0.0.1 --port 8766
 ### 46.5 下一步
 
 继续把 Crawler job timeline/status card 从 `web_server.py` 拆出来，目标是让 UI 看到的“当前动作、成功/空结果/跑偏、CrawlerAgent 判断、下一步”来自统一的任务视图服务，而不是多个地方各自拼字段。
+
+## 47. JobReadableViewService 第一阶段：Crawler 任务视图服务化（2026-05-22）
+
+本轮开始前已重新阅读本文档。本阶段继续拆后端结构，但不改变 Agent 决策逻辑：Crawler 任务是否存在、Crawler 下一步怎么采集，仍由 MCagent/CrawlerAgent 的 LLM 链路决定；本服务只把已有 job/result/plan/tasks 转换成人能读懂的状态视图。
+
+### 47.1 本轮目标
+
+此前 `_job_readable_summary()` 在 `web_server.py` 内部直接拼任务状态、观察计数、当前动作、下一步说明。前端又二次推断状态，导致 UI 有时看起来像一堆后台字段。本轮把任务可读视图抽成服务，并给前端增加直接可用的字段。
+
+### 47.2 代码变更
+
+1. 新增 `mcagent/job_view_service.py`：
+   - `JobReadableViewService.build()` 从 job dict 构造统一 readable view；
+   - 输出 `headline`、`status_label`、`progress_percent`、`progress_text`、`health_text`、`next_action` 等字段；
+   - 仍保留 observation_statuses、latest_observation、agent_reflection 等原字段，保证前端兼容。
+2. 修改 `mcagent/web_server.py`：
+   - `_job_readable_summary()` 改为调用 `JobReadableViewService`；
+   - 原 API 响应结构不变，`job.readable` 继续存在。
+3. 修改 `frontend/static/app.js`：
+   - Crawler 任务卡片优先使用后端给出的 `headline/status_label/progress_text/health_text`；
+   - 右侧 active crawler overview 和后台任务列表也显示新的健康说明；
+   - 前端不再重复猜测主要状态含义，只做展示。
+4. 新增 `tests/job_view_service_scenarios.py`：
+   - 验证运行中任务会显示当前动作、进度、观察状态和额度不足健康说明；
+   - 验证等待规划任务用自然语言表达，而不是空字段堆叠。
+5. 更新 `.github/workflows/ci.yml`、`README.md`、`scripts/public_readiness_check.py`。
+
+### 47.3 边界说明
+
+`JobReadableViewService` 是 UI/API 视图服务，不是 Agent。它不会决定下一步采集策略，也不会修正 CrawlerAgent 的判断。它只把 Crawler 已产生的 plan/tasks/observations 变成稳定、可解释的展示结构。
+
+### 47.4 本轮测试方案与结果
+
+已执行并通过：
+
+~~~powershell
+python -m py_compile mcagent\job_view_service.py mcagent\web_server.py tests\job_view_service_scenarios.py
+python tests\job_view_service_scenarios.py
+python tests\agent_runtime_scenarios.py
+node --check frontend\static\app.js
+python -m py_compile api.py mcagent\agent_execution.py mcagent\agent_executor.py mcagent\agent_router.py mcagent\crawler_delegation_service.py mcagent\evidence_service.py mcagent\event_stream.py mcagent\fastapi_app.py mcagent\job_view_service.py mcagent\rag_service.py mcagent\session_state.py mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py tests\crawler_delegation_service_scenarios.py tests\agent_execution_scenarios.py tests\agent_executor_scenarios.py tests\agent_router_scenarios.py tests\evidence_service_scenarios.py tests\job_view_service_scenarios.py tests\rag_service_scenarios.py tests\agent_runtime_scenarios.py tests\backend_services_scenarios.py tests\fastapi_backend_scenarios.py
+python tests\crawler_delegation_service_scenarios.py
+python tests\agent_executor_scenarios.py
+python tests\agent_router_scenarios.py
+python tests\evidence_service_scenarios.py
+python tests\job_view_service_scenarios.py
+python tests\rag_service_scenarios.py
+python tests\backend_services_scenarios.py
+python tests\fastapi_backend_scenarios.py
+python tests\smoke_test.py
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+node --check frontend\static\settings.js
+git diff --check
+python api.py --host 127.0.0.1 --port 8766
+# 探针结果：/api/health=200，/api/jobs=200，/api/session/context=200，/api/agents/mcagent_rag/tools=200
+~~~
+
+公开检查仍只有 LICENSE 非阻断警告。`frontend/static/app.js` 出现 Git 的 CRLF/LF 工作区提示，不影响语法和测试；后续若需要统一换行，可单独做格式化提交。
+
+### 47.5 下一步
+
+继续做 Crawler job timeline 第二阶段：把 job readable view 扩展为时间线数组，让 UI 能显示“规划、执行、观察、反思、重规划、入库”的顺序事件，而不是只看当前任务快照。
