@@ -7,6 +7,7 @@ from typing import Any
 
 from .config import OllamaConfig, load_config
 from .crawler_planner import decompose_crawler_queries, plan_crawler_tasks
+from .crawler_reflection_service import CrawlerReflectionSnapshotService
 from .agent_memory import read_memory_events
 from .agent_runtime import classify_crawler_tool_result, crawler_collection_catalog_prompt
 from .llm import OllamaOpenAIClient, OpenAICompatibleClient
@@ -914,18 +915,10 @@ def reflect_crawler_progress(
     anything itself; tools remain outside the LLM and run only after this
     decision is made.
     """
-    compact_results = [_compact_result_for_reflection(item) for item in task_results[-8:]]
+    snapshot = CrawlerReflectionSnapshotService().build(plan=plan, task_results=task_results, pending_tasks=pending_tasks)
+    compact_results = list(snapshot["recent_results"])
     learned_memory = _crawler_memory_digest(limit=8)
-    compact_pending = [
-        {
-            "index": index,
-            "source": str(task.get("source") or ""),
-            "query": str(task.get("query") or ""),
-            "reason": str(task.get("reason") or "")[:240],
-        }
-        for index, task in enumerate(pending_tasks[:12])
-        if isinstance(task, dict)
-    ]
+    compact_pending = list(snapshot["pending_tasks"])
     try:
         client, label = _planner_client()
         schema = {
@@ -954,7 +947,8 @@ def reflect_crawler_progress(
             f"question: {question}\n"
             f"session_summary: {json.dumps(session_summary or {}, ensure_ascii=False)}\n"
             f"crawler_memory: {json.dumps(learned_memory, ensure_ascii=False)}\n"
-            f"plan: {json.dumps(_compact_plan_for_reflection(plan), ensure_ascii=False)}\n"
+            f"plan: {json.dumps(snapshot['plan'], ensure_ascii=False)}\n"
+            f"loop_snapshot: {json.dumps({key: snapshot[key] for key in ('observation_statuses', 'retryable_recent_results', 'pressure')}, ensure_ascii=False)}\n"
             f"recent_results: {json.dumps(compact_results, ensure_ascii=False)}\n"
             f"pending_tasks: {json.dumps(compact_pending, ensure_ascii=False)}\n"
             f"JSON schema: {json.dumps(schema, ensure_ascii=False)}"

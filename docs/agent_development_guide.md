@@ -2594,3 +2594,73 @@ python api.py --host 127.0.0.1 --port 8766
 ### 48.5 下一步
 
 继续优化 CrawlerAgent 的任务执行可观测性：把 reflection、tool observation、失败原因和 replan 输入输出进一步统一成结构化对象，方便后续让 CrawlerAgent 复盘“为什么空结果/跑偏/失败，以及下一步怎么改”。
+
+## 49. CrawlerReflectionSnapshotService：反思输入结构化（2026-05-22）
+
+本轮开始前已重新阅读本文档。第 48 阶段让用户能看到 timeline，本轮面向 CrawlerAgent 自身：把 reflection 阶段喂给 LLM 的最近结果、待执行任务、观察状态和压力信号整理成一个结构化 snapshot。它仍然只提供事实输入，不决定 CrawlerAgent 的下一步。
+
+### 49.1 本轮目标
+
+让 `reflect_crawler_progress()` 不再自己散拼 recent_results/pending_tasks/plan，而是使用统一服务生成：
+
+- compact plan；
+- recent tool results；
+- pending task list；
+- observation_statuses；
+- retryable_recent_results；
+- pressure，例如 quota_limited、poor_yield、no_pending、has_usable_evidence。
+
+这些信息进入 CrawlerAgent 的 prompt，帮助它判断是否继续执行、换来源、重规划或结束。
+
+### 49.2 代码变更
+
+1. 新增 `mcagent/crawler_reflection_service.py`：
+   - `CrawlerReflectionSnapshotService.build()`；
+   - `compact_plan()`、`compact_pending()`、`compact_result()`；
+   - `_pressure()` 给出客观压力信号。
+2. 修改 `mcagent/crawler_llm_planner.py`：
+   - `reflect_crawler_progress()` 改为使用 snapshot；
+   - prompt 中新增 `loop_snapshot`，包含 observation_statuses、retryable_recent_results、pressure。
+3. 新增 `tests/crawler_reflection_service_scenarios.py`：
+   - 覆盖 quota_limited pressure；
+   - 覆盖空结果/跑偏过多时的 poor_yield pressure；
+   - 验证 pending task、recent result、观察计数结构稳定。
+4. 更新 `.github/workflows/ci.yml`、`README.md`、`scripts/public_readiness_check.py`。
+
+### 49.3 边界说明
+
+`CrawlerReflectionSnapshotService` 是 CrawlerAgent 的观察整理器，不是决策器。它不会选择工具、不会新增任务、不会判断采集是否完成；这些仍由 `reflect_crawler_progress()` 调用的 CrawlerAgent LLM 根据 snapshot 做决定。
+
+### 49.4 本轮测试方案与结果
+
+已执行并通过：
+
+~~~powershell
+python -m py_compile mcagent\crawler_reflection_service.py mcagent\crawler_llm_planner.py tests\crawler_reflection_service_scenarios.py
+python tests\crawler_reflection_service_scenarios.py
+python tests\agent_runtime_scenarios.py
+python tests\job_view_service_scenarios.py
+python -m py_compile api.py mcagent\agent_execution.py mcagent\agent_executor.py mcagent\agent_router.py mcagent\crawler_delegation_service.py mcagent\crawler_reflection_service.py mcagent\evidence_service.py mcagent\event_stream.py mcagent\fastapi_app.py mcagent\job_view_service.py mcagent\rag_service.py mcagent\session_state.py mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py tests\crawler_delegation_service_scenarios.py tests\crawler_reflection_service_scenarios.py tests\agent_execution_scenarios.py tests\agent_executor_scenarios.py tests\agent_router_scenarios.py tests\evidence_service_scenarios.py tests\job_view_service_scenarios.py tests\rag_service_scenarios.py tests\agent_runtime_scenarios.py tests\backend_services_scenarios.py tests\fastapi_backend_scenarios.py
+python tests\crawler_delegation_service_scenarios.py
+python tests\crawler_reflection_service_scenarios.py
+python tests\agent_executor_scenarios.py
+python tests\agent_router_scenarios.py
+python tests\evidence_service_scenarios.py
+python tests\rag_service_scenarios.py
+python tests\backend_services_scenarios.py
+python tests\fastapi_backend_scenarios.py
+python tests\smoke_test.py
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+node --check frontend\static\app.js
+node --check frontend\static\settings.js
+git diff --check
+python api.py --host 127.0.0.1 --port 8766
+# 探针结果：/api/health=200，/api/jobs=200，/api/session/context=200，/api/agents/crawler_agent/tools=200
+~~~
+
+第一次 `py_compile` 遇到 Windows `__pycache__` 写入权限抖动，清理 `mcagent\__pycache__` 后重跑通过。公开检查仍只有 LICENSE 非阻断警告。`mcagent/crawler_llm_planner.py` 出现 Git 的 CRLF/LF 工作区提示，不影响测试。
+
+### 49.5 下一步
+
+继续优化 CrawlerAgent 的复盘闭环：把 reflection 返回结果也规范成更明确的 action contract，避免 LLM 返回“想重规划但没给任务”时由执行器补救过多。
