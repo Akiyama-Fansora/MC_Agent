@@ -38,6 +38,7 @@ jobs:
           mcagent\agent_execution.py
           mcagent\agent_executor.py
           mcagent\agent_router.py
+          mcagent\evidence_service.py
           mcagent\event_stream.py
           mcagent\fastapi_app.py
           mcagent\rag_service.py
@@ -55,6 +56,7 @@ jobs:
           tests\agent_execution_scenarios.py
           tests\agent_executor_scenarios.py
           tests\agent_router_scenarios.py
+          tests\evidence_service_scenarios.py
           tests\rag_service_scenarios.py
           tests\agent_runtime_scenarios.py
           tests\backend_services_scenarios.py
@@ -73,6 +75,7 @@ jobs:
           python tests\agent_execution_scenarios.py
           python tests\agent_executor_scenarios.py
           python tests\agent_router_scenarios.py
+          python tests\evidence_service_scenarios.py
           python tests\rag_service_scenarios.py
           python tests\agent_runtime_scenarios.py
           python tests\backend_services_scenarios.py

@@ -33,7 +33,7 @@ from .cleaners import _HTMLTextExtractor, normalize_text
 from .config import AppConfig, OllamaConfig, PROJECT_ROOT, load_config
 from .crawler_llm_planner import plan_crawler_tasks_resilient, plan_crawler_tasks_rule_fallback, reflect_crawler_progress, review_topic_discovery_candidates
 from .crawler_planner import CONCEPTS, decompose_crawler_queries, plan_crawler_tasks, toolsets_payload
-from .evidence_selector import EvidenceSelector
+from .evidence_service import EvidenceWorkflowService
 from .ingest import ingest_exports
 from .llm import OllamaOpenAIClient, OpenAICompatibleClient
 from .llm_profiles import (
@@ -5196,28 +5196,25 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
 
     evidence_report = None
     if agent == "mcagent_rag" and not bool(payload.get("no_llm")):
-        add_trace("decide", "selecting_evidence", {"candidates": len(rough_results)})
-        selected, evidence_report = EvidenceSelector(final_context_k=final_k).select(evidence_question, rough_results, plan=retrieval_plan)
-        selected = _prefer_parent_topic_results(evidence_question, selected, rough_results, final_k)
-        modpack_list_selected = _modpack_manifest_results(evidence_question, rough_results, final_k)
-        if agent == "mcagent_rag" and not modpack_list_selected:
-            modpack_list_selected = _supplement_local_modpack_manifest_results(config, evidence_question, final_k)
-        if modpack_list_selected:
-            selected = _dedupe_results([*modpack_list_selected, *selected], limit=final_k)
-            evidence_report.verdict = "ok"
-            evidence_report.reasons = []
-            evidence_report.selected_count = len(selected)
-        selected = _supplement_project_keyword_results(config, evidence_question, selected, final_k)
-        selected = _supplement_raw_html_results(config, evidence_question, selected, limit=final_k)
-        selected = _ensure_modpack_mod_list_context(config, evidence_question, selected, rough_results, final_k)
-        fallback_selected = _fallback_theme_results(evidence_question, rough_results, final_k)
-        if fallback_selected and len(selected) < min(4, final_k):
-            selected = _dedupe_results([*fallback_selected, *selected], limit=final_k)
-            if evidence_report.verdict != "ok":
-                evidence_report.verdict = "ok"
-                evidence_report.reasons = []
-                evidence_report.selected_count = len(selected)
-        add_trace("decide", "evidence_selected", evidence_report.to_dict())
+        evidence_result = EvidenceWorkflowService(
+            prefer_parent_topic_results=_prefer_parent_topic_results,
+            modpack_manifest_results=_modpack_manifest_results,
+            supplement_local_modpack_manifest_results=_supplement_local_modpack_manifest_results,
+            supplement_project_keyword_results=_supplement_project_keyword_results,
+            supplement_raw_html_results=lambda cfg, query, results, limit: _supplement_raw_html_results(cfg, query, results, limit=limit),
+            ensure_modpack_mod_list_context=_ensure_modpack_mod_list_context,
+            fallback_theme_results=_fallback_theme_results,
+            dedupe_results=_dedupe_results,
+        ).select(
+            config,
+            evidence_question=evidence_question,
+            rough_results=rough_results,
+            retrieval_plan=retrieval_plan,
+            final_k=final_k,
+            add_trace=add_trace,
+        )
+        selected = evidence_result.selected
+        evidence_report = evidence_result.report
         if evidence_report.verdict != "ok":
             if planned_delegate:
                 collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()

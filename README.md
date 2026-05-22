@@ -137,13 +137,14 @@ python chat.py "拔刀剑怎么玩？" --no-llm --show-context
 
 ```powershell
 cd D:\magic\MC_Agent
-python -m py_compile api.py mcagent\agent_execution.py mcagent\agent_executor.py mcagent\agent_router.py mcagent\event_stream.py mcagent\fastapi_app.py mcagent\rag_service.py mcagent\session_state.py mcagent\web_server.py mcagent\crawler_llm_planner.py mcagent\provider_registry.py mcagent\crawler_planner.py scripts\browser_collect_seed.py scripts\public_readiness_check.py tests\agent_execution_scenarios.py tests\agent_executor_scenarios.py tests\agent_router_scenarios.py tests\rag_service_scenarios.py tests\agent_runtime_scenarios.py tests\backend_services_scenarios.py tests\fastapi_backend_scenarios.py
+python -m py_compile api.py mcagent\agent_execution.py mcagent\agent_executor.py mcagent\agent_router.py mcagent\evidence_service.py mcagent\event_stream.py mcagent\fastapi_app.py mcagent\rag_service.py mcagent\session_state.py mcagent\web_server.py mcagent\crawler_llm_planner.py mcagent\provider_registry.py mcagent\crawler_planner.py scripts\browser_collect_seed.py scripts\public_readiness_check.py tests\agent_execution_scenarios.py tests\agent_executor_scenarios.py tests\agent_router_scenarios.py tests\evidence_service_scenarios.py tests\rag_service_scenarios.py tests\agent_runtime_scenarios.py tests\backend_services_scenarios.py tests\fastapi_backend_scenarios.py
 python scripts\check_text_encoding.py
 python scripts\public_readiness_check.py
 python tests\smoke_test.py
 python tests\agent_execution_scenarios.py
 python tests\agent_executor_scenarios.py
 python tests\agent_router_scenarios.py
+python tests\evidence_service_scenarios.py
 python tests\rag_service_scenarios.py
 python tests\agent_runtime_scenarios.py
 python tests\backend_services_scenarios.py

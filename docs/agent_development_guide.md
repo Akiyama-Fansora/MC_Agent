@@ -2350,3 +2350,61 @@ python api.py --host 127.0.0.1 --port 8766
 ### 44.5 下一步
 
 继续拆 `EvidenceWorkflowService`：把证据选择、同主题补充、modpack manifest 补充、raw HTML 二次补充等客观证据工作迁出 `web_server.py`，但保持最终“证据是否能回答”和“是否需要 Crawler”的判断由 Agent/LLM 链路控制。
+
+## 45. EvidenceWorkflowService 第一阶段：证据筛选与上下文补充服务化（2026-05-22）
+
+本轮继续第十七、十八两个方向。开始前再次阅读本文档，确认本阶段只抽“证据工具执行”，不把 Crawler 委托或最终回答决策放进工具服务。
+
+### 45.1 本轮目标
+
+把 `web_server.py` 里一长段证据处理逻辑迁出为 `EvidenceWorkflowService`。这段逻辑包括候选证据筛选、父主题优先、整合包 manifest 补充、本地 manifest 补充、项目关键词补充、raw HTML 补充、modlist 上下文补充和主题 fallback。它们都属于客观证据加工，不应混在聊天编排函数里。
+
+### 45.2 代码变更
+
+1. 新增 `mcagent/evidence_service.py`：
+   - `EvidenceWorkflowResult`：返回 selected 和 EvidenceReport；
+   - `EvidenceWorkflowService`：执行证据筛选与客观补充；
+   - 服务只返回证据结果，不生成最终回答，不委托 Crawler。
+2. 修改 `mcagent/web_server.py`：
+   - RAG 候选召回后，调用 `EvidenceWorkflowService.select()` 获取 selected/report；
+   - 证据不足后的用户说明、planned delegate、handoff brief、Crawler job 创建仍留在主 Agent 编排层。
+3. 新增 `tests/evidence_service_scenarios.py`：
+   - 验证 selector 调用、trace 顺序和补充函数顺序；
+   - 验证 modpack manifest 可把客观证据报告升级为 ok；
+   - 验证 fallback theme 可恢复稀疏选择；
+   - 验证服务只返回 evidence result，不触碰 Crawler 委托或最终回答。
+4. 更新 `.github/workflows/ci.yml`、`README.md`、`scripts/public_readiness_check.py`，纳入新服务和新测试。
+
+### 45.3 边界说明
+
+`EvidenceWorkflowService` 仍不是 Agent。它可以根据客观补充结果调整 `EvidenceReport`，但它不能决定“现在该不该通知 Crawler”，也不能组织用户最终回答。这个边界继续由 MCagent 的工具选择、planned workflow 和最终回答 LLM 控制。
+
+### 45.4 本轮测试方案与结果
+
+已执行并通过：
+
+~~~powershell
+python -m py_compile mcagent\evidence_service.py mcagent\web_server.py tests\evidence_service_scenarios.py
+python tests\evidence_service_scenarios.py
+python tests\rag_service_scenarios.py
+python tests\agent_executor_scenarios.py
+python tests\agent_router_scenarios.py
+python -m py_compile api.py mcagent\agent_execution.py mcagent\agent_executor.py mcagent\agent_router.py mcagent\evidence_service.py mcagent\rag_service.py mcagent\event_stream.py mcagent\fastapi_app.py mcagent\session_state.py mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py tests\agent_execution_scenarios.py tests\agent_executor_scenarios.py tests\agent_router_scenarios.py tests\evidence_service_scenarios.py tests\rag_service_scenarios.py tests\agent_runtime_scenarios.py tests\backend_services_scenarios.py tests\fastapi_backend_scenarios.py
+python tests\agent_runtime_scenarios.py
+python tests\backend_services_scenarios.py
+python tests\fastapi_backend_scenarios.py
+python tests\smoke_test.py
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+node --check frontend\static\app.js
+node --check frontend\static\settings.js
+git diff --check
+python api.py --host 127.0.0.1 --port 8766
+# 探针结果：/api/health=200，/docs=200，/api/session/context=200，/api/agents/mcagent_rag/tools=200
+~~~
+
+公开检查继续只提示 LICENSE 缺失；这仍是已知非阻断警告。
+
+### 45.5 下一步
+
+继续拆 Crawler 委托执行器和 job timeline 服务，让 MCagent 与 CrawlerAgent 的交接内容、用户经 MCagent 转达、MCagent 自主补库、用户直连 Crawler 的几种关系在后端结构上更清楚。
