@@ -32,6 +32,7 @@ from .chat import SYSTEM_PROMPT, format_context, format_sources
 from .cleaners import _HTMLTextExtractor, normalize_text
 from .config import AppConfig, OllamaConfig, PROJECT_ROOT, load_config
 from .crawler_llm_planner import plan_crawler_tasks_resilient, plan_crawler_tasks_rule_fallback, reflect_crawler_progress, review_topic_discovery_candidates
+from .crawler_delegation_service import CrawlerDelegationService
 from .crawler_planner import CONCEPTS, decompose_crawler_queries, plan_crawler_tasks, toolsets_payload
 from .evidence_service import EvidenceWorkflowService
 from .ingest import ingest_exports
@@ -5218,51 +5219,42 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
         if evidence_report.verdict != "ok":
             if planned_delegate:
                 collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
-                handoff = _delegation_handoff(payload, original_question, collection_question)
-                requested_by = handoff["requested_by"]
-                delivery_target = str(tool_decision.get("delivery_target") or payload.get("delivery_target") or "").strip()
-                if not delivery_target:
-                    delivery_target = "MCagent/RAG" if requested_by in {"mcagent", "user_via_mcagent"} else _infer_delivery_target(original_question, session_summary)
-                planner_summary = dict(session_summary or {})
-                planner_summary["collection_target"] = collection_question
-                planner_summary["mcagent_gap_summary"] = (
+                gap_summary = (
                     "MCagent 按计划检索本地资料，但证据筛选仍不足。\n"
                     + "\n".join(f"- {reason}" for reason in evidence_report.reasons)
                 )
-                planner_summary["planning_instruction"] = (
+                planning_instruction = (
                     "MCagent 已先尝试本地检索，但证据不足；CrawlerAgent 应阅读 handoff_brief、mcagent_gap_summary "
                     "和会话摘要，自行判断真正缺口、规划来源，采集后按 MCagent/RAG 可检索格式入库。"
                 )
-                handoff_brief, brief_reason = _build_delegate_handoff_brief(
+                delegation_plan = CrawlerDelegationService(
+                    delegation_handoff=_delegation_handoff,
+                    infer_delivery_target=_infer_delivery_target,
+                    build_handoff_brief=_build_delegate_handoff_brief,
+                ).prepare(
                     config,
+                    payload,
                     model=model,
                     original_question=original_question,
+                    current_question=question,
                     collection_target=collection_question,
-                    session_summary=planner_summary,
-                    requested_by=requested_by,
-                    delivery_target=delivery_target,
-                    mcagent_gap_summary=planner_summary["mcagent_gap_summary"],
+                    session_summary=session_summary,
+                    gap_summary=gap_summary,
+                    planning_instruction=planning_instruction,
+                    delivery_target=str(tool_decision.get("delivery_target") or payload.get("delivery_target") or "").strip(),
                 )
-                planner_summary["handoff_brief"] = handoff_brief
-                planner_summary["handoff_brief_reason"] = brief_reason
-                if not planner_summary.get("current_topic") and (planner_summary.get("topics") or []):
-                    planner_summary["current_topic"] = str((planner_summary.get("topics") or [""])[0])
-                if not planner_summary.get("missing_evidence") and (planner_summary.get("gaps") or []):
-                    planner_summary["missing_evidence"] = "；".join(str(item) for item in (planner_summary.get("gaps") or [])[:8])
-                add_trace("delegate", "handoff_brief", {"brief": handoff_brief, "reason": brief_reason})
-                delegate_payload = payload | {
-                    "requested_by": requested_by,
-                    "handoff_from": handoff["handoff_from"],
-                    "original_user_request": handoff["original_user_request"],
-                    "delivery_target": delivery_target,
-                    "preserve_crawler_request": True,
-                    "session_summary": planner_summary,
-                }
-                job, created = _delegate_crawler_for_missing_data(config, delegate_payload, collection_question)
+                add_trace("delegate", "handoff_brief", {"brief": delegation_plan.handoff_brief, "reason": delegation_plan.brief_reason})
+                job, created = _delegate_crawler_for_missing_data(config, delegation_plan.delegate_payload, delegation_plan.collection_question)
                 answer = _insufficient_evidence_answer(question)
                 answer += "\n\nMCagent 已按计划把完整上下文交接给 CrawlerAgent。"
-                answer += _crawler_delegation_note_for(job, collection_question, created, requested_by=requested_by, delivery_target=delivery_target)
-                add_trace("delegate", "planned_workflow", {"job_id": job.id, "status": job.status, "task": collection_question})
+                answer += _crawler_delegation_note_for(
+                    job,
+                    delegation_plan.collection_question,
+                    created,
+                    requested_by=delegation_plan.requested_by,
+                    delivery_target=delegation_plan.delivery_target,
+                )
+                add_trace("delegate", "planned_workflow", {"job_id": job.id, "status": job.status, "task": delegation_plan.collection_question})
                 return _with_trace(
                     {
                         "answer": answer,
@@ -5271,8 +5263,19 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
                         "agent": agent,
                         "job": _job_to_dict(job),
                         "evidence": evidence_report.to_dict(),
-                        "collaboration": _collaboration_dialog_for(collection_question, job, created, requested_by=requested_by, delivery_target=delivery_target),
-                        "delegation": {"requested_by": requested_by, "delivery_target": delivery_target, "task": collection_question, "handoff_brief": handoff_brief},
+                        "collaboration": _collaboration_dialog_for(
+                            delegation_plan.collection_question,
+                            job,
+                            created,
+                            requested_by=delegation_plan.requested_by,
+                            delivery_target=delegation_plan.delivery_target,
+                        ),
+                        "delegation": {
+                            "requested_by": delegation_plan.requested_by,
+                            "delivery_target": delegation_plan.delivery_target,
+                            "task": delegation_plan.collection_question,
+                            "handoff_brief": delegation_plan.handoff_brief,
+                        },
                     },
                     trace,
                 )
@@ -5318,51 +5321,42 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
         )
         if planned_delegate:
             collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
-            handoff = _delegation_handoff(payload, original_question, collection_question)
-            requested_by = handoff["requested_by"]
-            delivery_target = str(tool_decision.get("delivery_target") or payload.get("delivery_target") or "").strip()
-            if not delivery_target:
-                delivery_target = "MCagent/RAG" if requested_by in {"mcagent", "user_via_mcagent"} else _infer_delivery_target(original_question, session_summary)
-            planner_summary = dict(session_summary or {})
+            planning_instruction = ""
             if answer.strip():
-                planner_summary["mcagent_gap_summary"] = answer[:4000]
-                planner_summary["planning_instruction"] = (
+                planning_instruction = (
                     "MCagent 已先检索本地资料并总结了现有资料与缺口；CrawlerAgent 应阅读 mcagent_gap_summary，"
                     "自行判断真正缺口、规划来源，采集后按 MCagent/RAG 可检索格式入库。"
                 )
-            planner_summary["collection_target"] = collection_question
-            handoff_brief, brief_reason = _build_delegate_handoff_brief(
+            delegation_plan = CrawlerDelegationService(
+                delegation_handoff=_delegation_handoff,
+                infer_delivery_target=_infer_delivery_target,
+                build_handoff_brief=_build_delegate_handoff_brief,
+            ).prepare(
                 config,
+                payload,
                 model=model,
                 original_question=original_question,
+                current_question=question,
                 collection_target=collection_question,
-                session_summary=planner_summary,
-                requested_by=requested_by,
-                delivery_target=delivery_target,
-                mcagent_gap_summary=answer,
+                session_summary=session_summary,
+                gap_summary=answer[:4000] if answer.strip() else "",
+                planning_instruction=planning_instruction,
+                delivery_target=str(tool_decision.get("delivery_target") or payload.get("delivery_target") or "").strip(),
             )
-            planner_summary["handoff_brief"] = handoff_brief
-            planner_summary["handoff_brief_reason"] = brief_reason
-            if not planner_summary.get("current_topic") and (planner_summary.get("topics") or []):
-                planner_summary["current_topic"] = str((planner_summary.get("topics") or [""])[0])
-            if not planner_summary.get("missing_evidence") and (planner_summary.get("gaps") or []):
-                planner_summary["missing_evidence"] = "；".join(str(item) for item in (planner_summary.get("gaps") or [])[:8])
-            add_trace("delegate", "handoff_brief", {"brief": handoff_brief, "reason": brief_reason})
-            delegate_payload = payload | {
-                "requested_by": requested_by,
-                "handoff_from": handoff["handoff_from"],
-                "original_user_request": handoff["original_user_request"],
-                "delivery_target": delivery_target,
-                "preserve_crawler_request": True,
-                "session_summary": planner_summary,
-            }
-            delegated_job, created = _delegate_crawler_for_missing_data(config, delegate_payload, collection_question)
-            delegated_requested_by = requested_by
-            delegated_delivery_target = delivery_target
-            delegated_task = collection_question
-            delegated_handoff_brief = handoff_brief
-            answer = answer.rstrip() + _crawler_delegation_note_for(delegated_job, collection_question, created, requested_by=requested_by, delivery_target=delivery_target)
-            add_trace("delegate", "planned_workflow", {"job_id": delegated_job.id, "status": delegated_job.status, "task": collection_question})
+            add_trace("delegate", "handoff_brief", {"brief": delegation_plan.handoff_brief, "reason": delegation_plan.brief_reason})
+            delegated_job, created = _delegate_crawler_for_missing_data(config, delegation_plan.delegate_payload, delegation_plan.collection_question)
+            delegated_requested_by = delegation_plan.requested_by
+            delegated_delivery_target = delegation_plan.delivery_target
+            delegated_task = delegation_plan.collection_question
+            delegated_handoff_brief = delegation_plan.handoff_brief
+            answer = answer.rstrip() + _crawler_delegation_note_for(
+                delegated_job,
+                delegation_plan.collection_question,
+                created,
+                requested_by=delegation_plan.requested_by,
+                delivery_target=delegation_plan.delivery_target,
+            )
+            add_trace("delegate", "planned_workflow", {"job_id": delegated_job.id, "status": delegated_job.status, "task": delegation_plan.collection_question})
     plan_text = _format_action_plan_for_user(action_plan) if planned_workflow else ""
     if plan_text and not answer.lstrip().startswith("执行计划："):
         answer = plan_text + "\n\n" + answer

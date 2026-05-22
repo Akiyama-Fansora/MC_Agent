@@ -2408,3 +2408,61 @@ python api.py --host 127.0.0.1 --port 8766
 ### 45.5 下一步
 
 继续拆 Crawler 委托执行器和 job timeline 服务，让 MCagent 与 CrawlerAgent 的交接内容、用户经 MCagent 转达、MCagent 自主补库、用户直连 Crawler 的几种关系在后端结构上更清楚。
+
+## 46. CrawlerDelegationService 第一阶段：MCagent 到 CrawlerAgent 交接包服务化（2026-05-22）
+
+本轮继续遵守“Agent 决策，工具执行”的边界。开始前已重新阅读本文档。本阶段只抽取委托交接包的构建逻辑，不让服务决定是否委托，也不让服务替 CrawlerAgent 规划搜索词或数据源。
+
+### 46.1 本轮目标
+
+之前 `web_server.py` 里有两段重复的 Crawler 委托准备逻辑：一种发生在证据不足且 planned delegate 已明确选择时，另一种发生在最终回答后仍需要同步补库时。这两段都要保留调用关系、交付对象、原始用户请求、MCagent 缺口摘要和 handoff brief。把它们抽成服务后，MCagent/CrawlerAgent 的关系更清楚，也方便后续做 job timeline。
+
+### 46.2 代码变更
+
+1. 新增 `mcagent/crawler_delegation_service.py`：
+   - `CrawlerDelegationPlan`：保存 collection_question、requested_by、delivery_target、handoff_brief、planner_summary、delegate_payload；
+   - `CrawlerDelegationService.prepare()`：在 MCagent 已经决定委托后，构建交给 CrawlerAgent 的上下文包。
+2. 修改 `mcagent/web_server.py`：
+   - 证据不足 planned delegate 分支改用 `CrawlerDelegationService`；
+   - 最终回答后的 planned delegate 分支也改用同一个服务；
+   - `_delegate_crawler_for_missing_data()` 仍负责真正创建任务，CrawlerAgent 仍自行规划采集。
+3. 新增 `tests/crawler_delegation_service_scenarios.py`：
+   - 验证用户经 MCagent 转达时，requested_by、handoff_from、delivery_target、原始用户请求、gap summary 都被保留；
+   - 验证用户直连 Crawler 时，delivery target 可由任务目标推断；
+   - 验证服务不创建 job、不调用搜索、不替 Crawler 规划关键词。
+4. 更新 `.github/workflows/ci.yml`、`README.md`、`scripts/public_readiness_check.py`。
+
+### 46.3 边界说明
+
+`CrawlerDelegationService` 只回答“已经决定委托之后，应该把什么上下文交给 CrawlerAgent”。它不回答“是否需要委托”，也不回答“CrawlerAgent 应该搜什么”。真正的采集路径仍由 CrawlerAgent 的 LLM 在任务执行时根据 handoff brief、历史结果和工具观察循环决定。
+
+### 46.4 本轮测试方案与结果
+
+已执行并通过：
+
+~~~powershell
+python -m py_compile mcagent\crawler_delegation_service.py mcagent\web_server.py tests\crawler_delegation_service_scenarios.py
+python tests\crawler_delegation_service_scenarios.py
+python tests\agent_executor_scenarios.py
+python tests\agent_router_scenarios.py
+python tests\evidence_service_scenarios.py
+python tests\rag_service_scenarios.py
+python -m py_compile api.py mcagent\agent_execution.py mcagent\agent_executor.py mcagent\agent_router.py mcagent\crawler_delegation_service.py mcagent\evidence_service.py mcagent\rag_service.py mcagent\event_stream.py mcagent\fastapi_app.py mcagent\session_state.py mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py tests\crawler_delegation_service_scenarios.py tests\agent_execution_scenarios.py tests\agent_executor_scenarios.py tests\agent_router_scenarios.py tests\evidence_service_scenarios.py tests\rag_service_scenarios.py tests\agent_runtime_scenarios.py tests\backend_services_scenarios.py tests\fastapi_backend_scenarios.py
+python tests\agent_runtime_scenarios.py
+python tests\backend_services_scenarios.py
+python tests\fastapi_backend_scenarios.py
+python tests\smoke_test.py
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+node --check frontend\static\app.js
+node --check frontend\static\settings.js
+git diff --check
+python api.py --host 127.0.0.1 --port 8766
+# 探针结果：/api/health=200，/docs=200，/api/session/context=200，/api/agents/mcagent_rag/tools=200
+~~~
+
+公开检查仍只有 LICENSE 非阻断警告。
+
+### 46.5 下一步
+
+继续把 Crawler job timeline/status card 从 `web_server.py` 拆出来，目标是让 UI 看到的“当前动作、成功/空结果/跑偏、CrawlerAgent 判断、下一步”来自统一的任务视图服务，而不是多个地方各自拼字段。
