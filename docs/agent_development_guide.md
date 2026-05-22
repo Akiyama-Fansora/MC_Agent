@@ -2956,3 +2956,74 @@ python api.py --host 127.0.0.1 --port 8766
 ### 53.5 下一步
 
 继续拆 topic_discovery 候选复审和 bad_streak 触发重规划：把“何时把候选交给 Crawler LLM 复审”“何时把连续坏结果交给 Crawler LLM 重规划”变成明确服务，使 `_run_crawler_job()` 更接近 Agent loop 编排器。
+
+## 54. CrawlerLoopControlService：循环控制信号服务化（2026-05-22）
+
+本轮开始前已重新阅读本文档。第 53 阶段已经把工具结果归档拆出，本轮继续拆 Crawler 循环里“连续坏结果”和“是否把坏结果交回 Crawler LLM 重规划”的客观触发条件。
+
+### 54.1 本轮目标
+
+将 `_run_crawler_job()` 中以下逻辑整理成服务：
+
+- 根据 `ToolObservation.bad` 更新 `bad_streak`；
+- 保证 observation 写回 result，供 timeline 和 CrawlerAgent 反思使用；
+- 根据 planner source、success_count、bad_streak、replan_count、max_replans、任务容量判断是否触发 mid-job replan。
+
+这一步只产生“是否需要把坏结果交回 Crawler LLM”的触发信号，不生成新搜索词，也不替 CrawlerAgent 判断下一步来源。
+
+### 54.2 代码变更
+
+1. 新增 `mcagent/crawler_loop_control_service.py`：
+   - `CrawlerLoopControlService.update_bad_streak()`；
+   - `CrawlerLoopControlService.should_replan()`；
+   - `PLANNER_SOURCES` 统一维护可触发 mid-job replan 的编排来源。
+2. 修改 `mcagent/web_server.py`：
+   - `_run_crawler_job()` 使用 `loop_control.update_bad_streak()`；
+   - mid-job replan 条件改由 `loop_control.should_replan()` 返回；
+   - 真正生成新任务仍调用 `_replan_crawler_tasks()`，也就是交回 Crawler planning LLM。
+3. 新增 `tests/crawler_loop_control_service_scenarios.py`：
+   - 坏结果累加 bad_streak；
+   - 好结果重置 bad_streak；
+   - 只有 planner/auto/smart/orchestrator 且没有成功资料时才允许触发 mid-job replan。
+4. 更新 `.github/workflows/ci.yml`、`README.md`、`scripts/public_readiness_check.py`。
+
+### 54.3 边界说明
+
+`CrawlerLoopControlService` 不决定“应该搜什么”，也不决定“资料够不够”。它只根据工具观察生成循环控制信号。触发 replan 后，仍由 Crawler planning LLM 读取 recent_failures 和 already_planned_tasks 来规划新的工具任务。
+
+### 54.4 本轮测试方案与结果
+
+已执行并通过：
+
+~~~powershell
+python -m py_compile mcagent\crawler_loop_control_service.py mcagent\web_server.py tests\crawler_loop_control_service_scenarios.py
+python tests\crawler_loop_control_service_scenarios.py
+python -m py_compile api.py mcagent\agent_execution.py mcagent\agent_executor.py mcagent\agent_router.py mcagent\crawler_delegation_service.py mcagent\crawler_loop_control_service.py mcagent\crawler_reflection_decision_service.py mcagent\crawler_reflection_service.py mcagent\crawler_runtime_step_service.py mcagent\crawler_task_preparation_service.py mcagent\crawler_result_accounting_service.py mcagent\evidence_service.py mcagent\event_stream.py mcagent\fastapi_app.py mcagent\job_view_service.py mcagent\rag_service.py mcagent\session_state.py mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py tests\crawler_delegation_service_scenarios.py tests\crawler_loop_control_service_scenarios.py tests\crawler_reflection_decision_scenarios.py tests\crawler_reflection_service_scenarios.py tests\crawler_runtime_step_service_scenarios.py tests\crawler_task_preparation_service_scenarios.py tests\crawler_result_accounting_service_scenarios.py tests\agent_execution_scenarios.py tests\agent_executor_scenarios.py tests\agent_router_scenarios.py tests\evidence_service_scenarios.py tests\job_view_service_scenarios.py tests\rag_service_scenarios.py tests\agent_runtime_scenarios.py tests\backend_services_scenarios.py tests\fastapi_backend_scenarios.py
+python tests\crawler_delegation_service_scenarios.py
+python tests\crawler_loop_control_service_scenarios.py
+python tests\crawler_reflection_decision_scenarios.py
+python tests\crawler_reflection_service_scenarios.py
+python tests\crawler_runtime_step_service_scenarios.py
+python tests\crawler_task_preparation_service_scenarios.py
+python tests\crawler_result_accounting_service_scenarios.py
+python tests\agent_executor_scenarios.py
+python tests\agent_router_scenarios.py
+python tests\evidence_service_scenarios.py
+python tests\rag_service_scenarios.py
+python tests\backend_services_scenarios.py
+python tests\fastapi_backend_scenarios.py
+python tests\smoke_test.py
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+node --check frontend\static\app.js
+node --check frontend\static\settings.js
+git diff --check
+python api.py --host 127.0.0.1 --port 8766
+# 探针结果：/api/health=200，/api/jobs=200，/api/agents/crawler_agent/tools=200，POST /api/session/context=200
+~~~
+
+公开检查仍只有 LICENSE 非阻断警告。FastAPI 探针后已关闭临时 `api.py --port 8766` 进程，保留用户正在运行的 `web.py --port 8765`。
+
+### 54.5 下一步
+
+继续拆 topic_discovery 候选复审：把“候选发现结果如何交给 Crawler LLM 复审、如何记录 discovery_expansions”整理成服务，使浏览器/搜索/API 发现出的候选更清楚地回到 CrawlerAgent 的思考循环。

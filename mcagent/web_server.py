@@ -37,6 +37,7 @@ from .crawler_planner import CONCEPTS, decompose_crawler_queries, plan_crawler_t
 from .crawler_runtime_step_service import CrawlerRuntimeStepService
 from .crawler_task_preparation_service import CrawlerTaskPreparationService
 from .crawler_result_accounting_service import CrawlerResultAccountingService
+from .crawler_loop_control_service import CrawlerLoopControlService
 from .evidence_service import EvidenceWorkflowService
 from .ingest import ingest_exports
 from .job_view_service import JobReadableViewService
@@ -1913,6 +1914,7 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
         runtime_step = CrawlerRuntimeStepService()
         task_preparation = CrawlerTaskPreparationService()
         result_accounting = CrawlerResultAccountingService()
+        loop_control = CrawlerLoopControlService()
         while index < len(tasks):
             if job.stop_requested:
                 break
@@ -2106,16 +2108,16 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
                             "new_tasks": [],
                         }
                     )
-            if _crawler_bad_result(result):
-                bad_streak += 1
-            else:
-                bad_streak = 0
-            if (
-                source in {"planner", "auto", "smart", "orchestrator"}
-                and success_count == 0
-                and bad_streak >= 3
-                and replan_count < max_replans
-                and len(tasks) < max_total_tasks
+            loop_signal = loop_control.update_bad_streak(result=result, current_bad_streak=bad_streak)
+            bad_streak = int(loop_signal.get("bad_streak") or 0)
+            if loop_control.should_replan(
+                source=source,
+                success_count=success_count,
+                bad_streak=bad_streak,
+                replan_count=replan_count,
+                max_replans=max_replans,
+                task_count=len(tasks),
+                max_total_tasks=max_total_tasks,
             ):
                 replan_count += 1
                 _update_job(
