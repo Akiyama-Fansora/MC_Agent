@@ -39,6 +39,7 @@ from .crawler_task_preparation_service import CrawlerTaskPreparationService
 from .crawler_result_accounting_service import CrawlerResultAccountingService
 from .crawler_loop_control_service import CrawlerLoopControlService
 from .crawler_topic_discovery_service import CrawlerTopicDiscoveryReviewService
+from .crawler_job_finalization_service import CrawlerJobFinalizationService
 from .evidence_service import EvidenceWorkflowService
 from .ingest import ingest_exports
 from .job_view_service import JobReadableViewService
@@ -1917,6 +1918,7 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
         result_accounting = CrawlerResultAccountingService()
         loop_control = CrawlerLoopControlService()
         topic_discovery_review = CrawlerTopicDiscoveryReviewService()
+        job_finalization = CrawlerJobFinalizationService()
         while index < len(tasks):
             if job.stop_requested:
                 break
@@ -2136,40 +2138,26 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
                 if new_tasks:
                     tasks.extend(new_tasks)
                 bad_streak = 0
-        status = "stopped" if job.stop_requested else ("succeeded" if success_count else "failed")
-        summary = f"资料补库完成：资料成功 {success_count}，候选发现 {candidate_count}，失败 {failure_count}。"
-        if job.stop_requested:
-            summary = f"Crawler 任务已停止：已完成 {len(task_results)}/{len(tasks)} 个任务，资料成功 {success_count}，候选发现 {candidate_count}，失败 {failure_count}。"
-        elif needs_ingest:
-            summary += " 已启动后台入库。"
         collection_summary = _crawler_result_summary(task_results, plan)
+        final_update = job_finalization.build(
+            stop_requested=job.stop_requested,
+            success_count=success_count,
+            candidate_count=candidate_count,
+            failure_count=failure_count,
+            replan_count=replan_count,
+            needs_ingest=needs_ingest,
+            task_results=task_results,
+            planned_tasks=tasks,
+            plan=plan,
+            collection_summary=collection_summary,
+        )
         _update_job(
             job,
-            status=status,
+            status=final_update["status"],
             ended_at=time.time(),
-            summary=summary,
-            error=None if success_count or job.stop_requested else "all crawler sources failed",
-            result={
-                "source": "planner",
-                "success_count": success_count,
-                "candidate_count": candidate_count,
-                "failure_count": failure_count,
-                "replan_count": replan_count,
-                "ingest": None,
-                "ingest_error": "",
-                "ingest_background": bool(needs_ingest and not job.stop_requested),
-                "tasks": task_results,
-                "planned_tasks": tasks,
-                "plan": plan,
-                "collection_summary": collection_summary,
-                "loop": [
-                    {"phase": "understand", "status": "done"},
-                    {"phase": "plan", "status": "done"},
-                    {"phase": "act", "status": "done", "note": f"Succeeded {success_count}; failed {failure_count}"},
-                    {"phase": "ingest", "status": "running" if needs_ingest and not job.stop_requested else "skipped", "note": "Background ingest started." if needs_ingest and not job.stop_requested else "No new records require ingest."},
-                    {"phase": "verify", "status": "done" if success_count else ("stopped" if job.stop_requested else "failed"), "note": "Task results keep records/skipped/errors for the next retry."},
-                ],
-            },
+            summary=str(final_update["summary"]),
+            error=final_update["error"],
+            result=final_update["result"],
         )
         if needs_ingest and not job.stop_requested:
             threading.Thread(target=_run_background_ingest, args=(job.id, config), daemon=True).start()

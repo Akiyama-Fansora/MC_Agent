@@ -3101,3 +3101,77 @@ python api.py --host 127.0.0.1 --port 8766
 ### 55.5 下一步
 
 继续拆 Crawler job 最终汇总：把 status/summary/final loop/result payload 的构建整理成服务，让 `_run_crawler_job()` 的尾部只负责保存 job、启动后台入库和写 memory。
+
+## 56. CrawlerJobFinalizationService：Crawler job 最终汇总服务化（2026-05-22）
+
+本轮开始前已重新阅读本文档。第 55 阶段已经拆出 topic discovery 复审记录，本轮继续拆 `_run_crawler_job()` 尾部：把最终 status、summary、error、result payload、loop 状态的构建放进独立服务。
+
+### 56.1 本轮目标
+
+让 `_run_crawler_job()` 尾部只负责：
+
+- 调用 `_crawler_result_summary()` 生成集合摘要；
+- 调用 finalization 服务构建最终 job update；
+- 保存 job；
+- 如需入库则启动后台入库；
+- 写入 memory event。
+
+最终状态如何展示由服务统一构建，避免 `web_server.py` 继续堆积大量字典拼接。
+
+### 56.2 代码变更
+
+1. 新增 `mcagent/crawler_job_finalization_service.py`：
+   - `CrawlerJobFinalizationService.build()`；
+   - 返回 `status`、`summary`、`error`、`result`；
+   - 统一处理 succeeded/failed/stopped、ingest loop、verify loop。
+2. 修改 `mcagent/web_server.py`：
+   - `_run_crawler_job()` 使用 `job_finalization.build()`；
+   - 删除尾部内联 status/summary/result 字典拼接。
+3. 新增 `tests/crawler_job_finalization_service_scenarios.py`：
+   - 成功且需入库时 ingest loop 为 running；
+   - 无成功资料时状态为 failed 且 error 为 all crawler sources failed；
+   - stopped job 不报 error，且不会启动 ingest_background。
+4. 更新 `.github/workflows/ci.yml`、`README.md`、`scripts/public_readiness_check.py`。
+
+### 56.3 边界说明
+
+`CrawlerJobFinalizationService` 不判断 CrawlerAgent 是否该结束；它只在循环已经结束后，把已有计数和 summary 整理成稳定 job payload。是否提前 finish 仍由 CrawlerAgent reflection 决定。
+
+### 56.4 本轮测试方案与结果
+
+已执行并通过：
+
+~~~powershell
+python -m py_compile mcagent\crawler_job_finalization_service.py mcagent\web_server.py tests\crawler_job_finalization_service_scenarios.py
+python tests\crawler_job_finalization_service_scenarios.py
+python -m py_compile api.py mcagent\agent_execution.py mcagent\agent_executor.py mcagent\agent_router.py mcagent\crawler_delegation_service.py mcagent\crawler_job_finalization_service.py mcagent\crawler_loop_control_service.py mcagent\crawler_reflection_decision_service.py mcagent\crawler_reflection_service.py mcagent\crawler_runtime_step_service.py mcagent\crawler_task_preparation_service.py mcagent\crawler_result_accounting_service.py mcagent\crawler_topic_discovery_service.py mcagent\evidence_service.py mcagent\event_stream.py mcagent\fastapi_app.py mcagent\job_view_service.py mcagent\rag_service.py mcagent\session_state.py mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py tests\crawler_delegation_service_scenarios.py tests\crawler_job_finalization_service_scenarios.py tests\crawler_loop_control_service_scenarios.py tests\crawler_reflection_decision_scenarios.py tests\crawler_reflection_service_scenarios.py tests\crawler_runtime_step_service_scenarios.py tests\crawler_task_preparation_service_scenarios.py tests\crawler_result_accounting_service_scenarios.py tests\crawler_topic_discovery_service_scenarios.py tests\agent_execution_scenarios.py tests\agent_executor_scenarios.py tests\agent_router_scenarios.py tests\evidence_service_scenarios.py tests\job_view_service_scenarios.py tests\rag_service_scenarios.py tests\agent_runtime_scenarios.py tests\backend_services_scenarios.py tests\fastapi_backend_scenarios.py
+python tests\crawler_delegation_service_scenarios.py
+python tests\crawler_job_finalization_service_scenarios.py
+python tests\crawler_loop_control_service_scenarios.py
+python tests\crawler_reflection_decision_scenarios.py
+python tests\crawler_reflection_service_scenarios.py
+python tests\crawler_runtime_step_service_scenarios.py
+python tests\crawler_task_preparation_service_scenarios.py
+python tests\crawler_result_accounting_service_scenarios.py
+python tests\crawler_topic_discovery_service_scenarios.py
+python tests\agent_executor_scenarios.py
+python tests\agent_router_scenarios.py
+python tests\evidence_service_scenarios.py
+python tests\rag_service_scenarios.py
+python tests\backend_services_scenarios.py
+python tests\fastapi_backend_scenarios.py
+python tests\smoke_test.py
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+node --check frontend\static\app.js
+node --check frontend\static\settings.js
+git diff --check
+python api.py --host 127.0.0.1 --port 8766
+# 探针结果：/api/health=200，/api/jobs=200，/api/agents/crawler_agent/tools=200，POST /api/session/context=200
+~~~
+
+公开检查仍只有 LICENSE 非阻断警告。
+
+### 56.5 下一步
+
+继续把 Crawler job 的“运行中状态更新 payload”整理成服务：规划完成、反思中、工具执行中、候选复审中、replan 中这些 `_update_job()` payload 目前仍散落在 `_run_crawler_job()`。
