@@ -2813,3 +2813,73 @@ python api.py --host 127.0.0.1 --port 8766
 ### 51.5 下一步
 
 继续拆 `_run_crawler_job()` 中的工具执行结果归档逻辑：把 task_payload 构造、空查询拒绝、manifest_stats、topic_validation、success/failure 计数更新整理成服务，进一步缩小 `web_server.py` 的责任。
+
+## 52. CrawlerTaskPreparationService：工具输入准备服务化（2026-05-22）
+
+本轮开始前已重新阅读本文档。第 51 阶段把 CrawlerAgent 反思动作应用到任务队列的逻辑拆出，本轮继续拆工具执行前的客观准备逻辑：构造 tool payload、转发 task 字段、拒绝空查询并生成统一 observation。
+
+### 52.1 本轮目标
+
+减少 `_run_crawler_job()` 在执行工具前的内联细节，让它只表达流程：
+
+1. CrawlerAgent 选择任务；
+2. 准备工具输入；
+3. 若输入客观不可执行，记录失败 observation；
+4. 否则执行工具。
+
+空查询拒绝仍然不是主观判断。它只是防止工具被无意义调用，并把失败原因回灌给 CrawlerAgent 反思。
+
+### 52.2 代码变更
+
+1. 新增 `mcagent/crawler_task_preparation_service.py`：
+   - `CrawlerTaskPreparationService.build_payload()`；
+   - `CrawlerTaskPreparationService.empty_query_result()`；
+   - `FORWARDED_TASK_KEYS` 统一维护可从 task 转发到工具 payload 的字段。
+2. 修改 `mcagent/web_server.py`：
+   - `_run_crawler_job()` 使用 `task_preparation.build_payload()`；
+   - 空查询结果使用 `task_preparation.empty_query_result()`，并保留统一 `ToolObservation`；
+   - 删除原本散落在循环里的 task_payload 拼装代码。
+3. 新增 `tests/crawler_task_preparation_service_scenarios.py`：
+   - 验证工具字段能转发；
+   - 验证 query 缺失时回退到 question；
+   - 验证空查询返回 blocked/retryable observation。
+4. 更新 `.github/workflows/ci.yml`、`README.md`、`scripts/public_readiness_check.py`。
+
+### 52.3 边界说明
+
+`CrawlerTaskPreparationService` 不决定任务是否应该执行，也不判断资料是否足够。它只把 CrawlerAgent 已选任务转换成工具调用需要的 payload，并在 query 为空时生成客观失败记录，交给 CrawlerAgent 后续反思。
+
+### 52.4 本轮测试方案与结果
+
+已执行并通过：
+
+~~~powershell
+python -m py_compile mcagent\crawler_task_preparation_service.py mcagent\web_server.py tests\crawler_task_preparation_service_scenarios.py
+python tests\crawler_task_preparation_service_scenarios.py
+python -m py_compile api.py mcagent\agent_execution.py mcagent\agent_executor.py mcagent\agent_router.py mcagent\crawler_delegation_service.py mcagent\crawler_reflection_decision_service.py mcagent\crawler_reflection_service.py mcagent\crawler_runtime_step_service.py mcagent\crawler_task_preparation_service.py mcagent\evidence_service.py mcagent\event_stream.py mcagent\fastapi_app.py mcagent\job_view_service.py mcagent\rag_service.py mcagent\session_state.py mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py tests\crawler_delegation_service_scenarios.py tests\crawler_reflection_decision_scenarios.py tests\crawler_reflection_service_scenarios.py tests\crawler_runtime_step_service_scenarios.py tests\crawler_task_preparation_service_scenarios.py tests\agent_execution_scenarios.py tests\agent_executor_scenarios.py tests\agent_router_scenarios.py tests\evidence_service_scenarios.py tests\job_view_service_scenarios.py tests\rag_service_scenarios.py tests\agent_runtime_scenarios.py tests\backend_services_scenarios.py tests\fastapi_backend_scenarios.py
+python tests\crawler_delegation_service_scenarios.py
+python tests\crawler_reflection_decision_scenarios.py
+python tests\crawler_reflection_service_scenarios.py
+python tests\crawler_runtime_step_service_scenarios.py
+python tests\crawler_task_preparation_service_scenarios.py
+python tests\agent_executor_scenarios.py
+python tests\agent_router_scenarios.py
+python tests\evidence_service_scenarios.py
+python tests\rag_service_scenarios.py
+python tests\backend_services_scenarios.py
+python tests\fastapi_backend_scenarios.py
+python tests\smoke_test.py
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+node --check frontend\static\app.js
+node --check frontend\static\settings.js
+git diff --check
+python api.py --host 127.0.0.1 --port 8766
+# 探针结果：/api/health=200，/api/jobs=200，/api/agents/crawler_agent/tools=200，POST /api/session/context=200
+~~~
+
+公开检查仍只有 LICENSE 非阻断警告。
+
+### 52.5 下一步
+
+继续拆工具执行后的结果归档：把 manifest_stats、duplicate reuse、topic_validation、archive followup、success/failure 计数更新整理为服务，并确保每一步都只处理客观事实，不替 CrawlerAgent 做“资料够不够”的主观结论。

@@ -35,6 +35,7 @@ from .crawler_llm_planner import plan_crawler_tasks_resilient, plan_crawler_task
 from .crawler_delegation_service import CrawlerDelegationService
 from .crawler_planner import CONCEPTS, decompose_crawler_queries, plan_crawler_tasks, toolsets_payload
 from .crawler_runtime_step_service import CrawlerRuntimeStepService
+from .crawler_task_preparation_service import CrawlerTaskPreparationService
 from .evidence_service import EvidenceWorkflowService
 from .ingest import ingest_exports
 from .job_view_service import JobReadableViewService
@@ -1909,6 +1910,7 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
         initial_task_limit = int(payload.get("max_tasks") or len(tasks) or 16)
         max_total_tasks = max(len(tasks), min(32, initial_task_limit + 12))
         runtime_step = CrawlerRuntimeStepService()
+        task_preparation = CrawlerTaskPreparationService()
         while index < len(tasks):
             if job.stop_requested:
                 break
@@ -1979,23 +1981,9 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
             task = tasks[index]
             index += 1
             task_source = _source_alias(str(task.get("source") or "mediawiki"))
-            task_query = str(task.get("query") or question).strip()
-            if not task_query:
-                result = {
-                    "source": task_source,
-                    "returncode": 2,
-                    "command": [],
-                    "output": "Crawler executor refused to run an empty query. This objective failure is returned to CrawlerAgent for reflection/replanning.",
-                    "timeout_seconds": 0,
-                    "timed_out": False,
-                    "export_dir": "",
-                    "query": "",
-                    "reason": str(task.get("reason") or ""),
-                    "manifest_stats": {"records": 0, "skipped": 0, "errors": 0},
-                    "empty_query_result": True,
-                    "empty_result": True,
-                }
-                result["observation"] = classify_crawler_tool_result(result).to_dict()
+            task_payload = task_preparation.build_payload(base_payload=payload, task=task, question=question, task_source=task_source)
+            if not str(task_payload.get("query") or "").strip():
+                result = task_preparation.empty_query_result(task_source=task_source, task=task)
                 task_results.append(result)
                 failure_count += 1
                 bad_streak += 1
@@ -2016,27 +2004,6 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
                     },
                 )
                 continue
-            task_payload = dict(payload)
-            task_payload.update({"source": task_source, "query": task_query, "question": question})
-            for key in (
-                "search_limit",
-                "max_urls",
-                "mods",
-                "modpacks",
-                "resourcepacks",
-                "shaders",
-                "search_depth",
-                "max_files",
-                "max_queries",
-                "max_items",
-                "output_dir",
-                "start_url",
-                "timeout_ms",
-                "fields",
-            ):
-                value = task.get(key)
-                if value is not None:
-                    task_payload[key] = value
             _update_job(
                 job,
                 summary=f"多源补库运行中：{index}/{len(tasks)} {_source_label(task_source)}\n查询：{task_payload['query']}\n原因：{task.get('reason') or ''}",
