@@ -1911,3 +1911,82 @@ python tests\fastapi_backend_scenarios.py
 
 - 第三阶段抽出 `AgentExecutionService`，把 `_chat_impl()` 的工具选择、确认、执行和回答组织拆成可观察步骤；
 - 第四阶段抽出 `CrawlerJobTimelineService`，让后台任务状态、失败原因和当前动作在 UI 中更直观。
+
+## 39. Agent 执行上下文第一阶段：运行态与 Trace 记录器（2026-05-22）
+
+本轮开始前已重新阅读本文档。用户要求继续“大修改”，并特别关心两个 Agent 是否真的像有上下文、有工具、有思考链路的 Agent。本轮开始拆 `_chat_impl()`，但不一次性搬空整个大函数，先抽出稳定的执行上下文、模型解析和 trace 记录器，为后续拆工具执行器做地基。
+
+### 39.1 本轮定位
+
+`_chat_impl()` 当前同时负责：
+
+- 读取 payload；
+- 解析 agent、model、temperature、max_tokens；
+- 记录 trace 并向 SSE emit；
+- 判断空问题/编码损坏；
+- 调用工具选择 LLM；
+- 执行 direct answer、status、RAG、delegate crawler；
+- 组织最终 response 并写会话。
+
+这些职责混在一起，会让后续每次优化 Agent 思考链路都要碰一个超大函数。第 39 阶段先把“运行上下文”和“trace 事件记录”抽出去，让 `_chat_impl()` 以后逐步只保留编排逻辑。
+
+### 39.2 本轮改造
+
+1. 新增 `mcagent/agent_execution.py`：
+   - `AgentTraceRecorder`：统一生成 legacy trace shape，并负责向 SSE emit `trace` / `delta`；
+   - `AgentExecutionContext`：保存 config、payload、原始问题、当前问题、agent、model、temperature、max_tokens 和 trace；
+   - `resolve_agent_model()`：集中处理 model_profile_id、显式 model、Agent profile assignment、默认 Ollama 的优先级；
+   - `build_agent_execution_context()`：从 payload 构造本轮 Agent 运行上下文，并记录 `observe/received`。
+2. `web_server.py`：
+   - `_chat_impl()` 开头改用 `build_agent_execution_context()`；
+   - 保留后续工具选择、检索、委托、回答逻辑不变；
+   - contextualize 后同步更新 `run.question`，为后续拆执行器做准备；
+   - 空问题和编码损坏分支开始使用 `run.response()` 生成带 trace 的响应。
+3. 测试与公开检查：
+   - 新增 `tests/agent_execution_scenarios.py`；
+   - CI、README、`public_readiness_check.py` 都加入新模块和测试。
+
+### 39.3 本轮测试方案
+
+目标行为：
+
+- trace 结构仍保持前端兼容：`stage/status/detail/time`；
+- SSE streaming 下 trace 和 delta 仍能被 emit；
+- model 解析优先级稳定：profile override > raw model > agent assignment；
+- `_chat_impl()` 的现有 Agent 决策路径不因上下文抽离而变化；
+- 公开检查能要求 `agent_execution.py` 和测试存在。
+
+风险点：
+
+- 模型解析从 `_chat_impl()` 移走后，profile assignment 结果变化；
+- trace recorder 的 shape 和旧前端不兼容；
+- streaming 的 delta emit 被漏掉；
+- contextualized question 与 run context 不一致；
+- 测试只测新模块，不测旧 chat path。
+
+离线测试：
+
+- `tests/agent_execution_scenarios.py`：
+  - `AgentTraceRecorder` 的 trace shape 和 emit；
+  - `build_agent_execution_context()` 的 payload 解析；
+  - `resolve_agent_model()` 的优先级。
+
+集成测试：
+
+~~~powershell
+python -m py_compile api.py mcagent\agent_execution.py mcagent\event_stream.py mcagent\fastapi_app.py mcagent\session_state.py mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py tests\agent_execution_scenarios.py tests\agent_runtime_scenarios.py tests\backend_services_scenarios.py tests\fastapi_backend_scenarios.py
+node --check frontend\static\app.js
+node --check frontend\static\settings.js
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+python tests\smoke_test.py
+python tests\agent_execution_scenarios.py
+python tests\agent_runtime_scenarios.py
+python tests\backend_services_scenarios.py
+python tests\fastapi_backend_scenarios.py
+~~~
+
+后续计划：
+
+- 第 40 阶段抽 `AgentToolRouterService`：把工具选择 LLM、确认下一步、planned workflow 判定从 `_chat_impl()` 中拆出来；
+- 第 41 阶段抽 `AgentToolExecutor`：把 direct answer、status、RAG、delegate crawler 分支拆成可测试执行器。

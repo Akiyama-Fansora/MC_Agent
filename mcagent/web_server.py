@@ -28,6 +28,7 @@ from .agent_runtime import (
     tool_catalog_prompt,
     tool_names_for_agent,
 )
+from .agent_execution import build_agent_execution_context
 from .chat import SYSTEM_PROMPT, format_context, format_sources
 from .cleaners import _HTMLTextExtractor, normalize_text
 from .config import AppConfig, OllamaConfig, PROJECT_ROOT, load_config
@@ -5172,42 +5173,26 @@ def _chat(config: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = None) -> dict[str, Any]:
-    def add_trace(stage: str, status: str, detail: Any = None) -> dict[str, Any]:
-        step = _trace_step(stage, status, detail)
-        trace.append(step)
-        if emit is not None:
-            emit("trace", step)
-        return step
-
-    original_question = str(payload.get("question") or payload.get("query") or "").strip()
-    question = original_question
-    agent = str(payload.get("agent") or "mcagent_rag")
-    profile_id = str(payload.get("model_profile_id") or "").strip()
-    if profile_id:
-        model = f"profile:{profile_id}"
-    else:
-        raw_model = str(payload.get("model") or "").strip()
-        if raw_model:
-            model = raw_model
-        else:
-            assigned = profiles_payload(config).get("assignments", {}).get("crawler_agent" if agent == "crawler_agent" else "mcagent_rag", "")
-            model = f"profile:{assigned}" if assigned else config.ollama.model
-    temperature = float(payload.get("temperature") if payload.get("temperature") is not None else config.ollama.temperature)
-    max_tokens = _answer_max_tokens(payload, question)
-    trace: list[dict[str, Any]] = []
-    add_trace("observe", "received", {"agent": agent, "question": question})
+    run = build_agent_execution_context(config, payload, token_resolver=_answer_max_tokens, emit=emit)
+    original_question = run.original_question
+    question = run.question
+    agent = run.agent
+    model = run.model
+    temperature = run.temperature
+    max_tokens = run.max_tokens
+    trace = run.trace.steps
+    add_trace = run.add_trace
     if not question:
-        return _with_trace({"answer": "问题不能为空。", "sources": [], "context": "", "agent": agent}, trace)
+        return run.response({"answer": "问题不能为空。", "sources": [], "context": "", "agent": agent})
     if _question_looks_transport_garbled(question):
         add_trace("done", "invalid_encoding", {"reason": "question contains too many question marks"})
-        return _with_trace(
+        return run.response(
             {
                 "answer": "这条消息看起来在传输或终端输入时发生了编码损坏，问题内容变成了大量问号。请在网页里重新发送原始中文问题，或确认调用方按 UTF-8 发送请求。为了避免污染资料库，本次不会触发 Crawler。",
                 "sources": [],
                 "context": "",
                 "agent": agent,
             },
-            trace,
         )
     retrieval_note = ""
     session_summary = _session_summary(payload)
@@ -5215,6 +5200,7 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
         contextual_question, retrieval_note, rewritten = _contextualize_question(payload, question)
         if rewritten:
             question = contextual_question
+            run.question = question
             add_trace("observe", "contextualized", {"original": original_question, "rewritten": question})
     tool_decision = _agent_tool_decision(
         config,

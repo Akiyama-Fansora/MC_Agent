@@ -35,6 +35,7 @@ jobs:
         run: >
           python -m py_compile
           api.py
+          mcagent\agent_execution.py
           mcagent\event_stream.py
           mcagent\fastapi_app.py
           mcagent\session_state.py
@@ -48,6 +49,7 @@ jobs:
           scripts\fetch_modpack_archive_seed.py
           scripts\public_readiness_check.py
           scripts\smoke_agent_flows.py
+          tests\agent_execution_scenarios.py
           tests\agent_runtime_scenarios.py
           tests\backend_services_scenarios.py
           tests\fastapi_backend_scenarios.py
@@ -62,6 +64,7 @@ jobs:
         shell: pwsh
         run: |
           python tests\smoke_test.py
+          python tests\agent_execution_scenarios.py
           python tests\agent_runtime_scenarios.py
           python tests\backend_services_scenarios.py
           python tests\fastapi_backend_scenarios.py
