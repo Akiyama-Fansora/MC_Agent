@@ -48,7 +48,9 @@ def main() -> int:
     assert {"direct_answer", "local_rag_search", "delegate_crawler", "status"} <= mc_tools, mc_tools
     crawler_route_tools = set(tool_names_for_agent("crawler_agent"))
     assert {"direct_answer", "temporary_extract", "delegate_crawler", "status"} <= crawler_route_tools, crawler_route_tools
-    assert "browser_collect" in crawler_collection_catalog_prompt(), "Crawler collection catalog missing browser tool"
+    collection_catalog = crawler_collection_catalog_prompt()
+    assert "browser_collect" in collection_catalog, "Crawler collection catalog missing browser tool"
+    assert "save_artifact" in collection_catalog, "Crawler collection catalog missing save artifact tool"
     assert validate_tool_name("crawler_agent", "answer", fallback="delegate_crawler") == "delegate_crawler"
     assert "LLM owns interpretation" in tool_catalog_prompt("mcagent_rag")
     assert classify_crawler_tool_result({"source": "tavily", "returncode": 124, "timed_out": True}).status == "timeout"

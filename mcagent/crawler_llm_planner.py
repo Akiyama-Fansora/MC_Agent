@@ -15,7 +15,7 @@ from .llm import OllamaOpenAIClient, OpenAICompatibleClient
 from .llm_profiles import client_for_agent
 
 
-ALLOWED_SOURCES = {"topic_discovery", "modpack_internal", "modpack_download", "mcmod", "modrinth", "followup", "tavily", "firecrawl", "jina", "web_discovery", "playwright", "browser_collect", "mediawiki", "ftbwiki", "createwiki"}
+ALLOWED_SOURCES = {"topic_discovery", "modpack_internal", "modpack_download", "mcmod", "modrinth", "followup", "tavily", "firecrawl", "jina", "web_discovery", "playwright", "browser_collect", "save_artifact", "mediawiki", "ftbwiki", "createwiki"}
 
 SOURCE_DEFAULTS: dict[str, dict[str, Any]] = {
     "modpack_internal": {"priority": 145},
@@ -29,6 +29,7 @@ SOURCE_DEFAULTS: dict[str, dict[str, Any]] = {
     "web_discovery": {"priority": 62, "search_limit": 8, "max_urls": 8},
     "playwright": {"priority": 82, "search_limit": 8, "max_urls": 6},
     "browser_collect": {"priority": 120, "max_items": 50},
+    "save_artifact": {"priority": 110},
     "modpack_download": {"priority": 130, "search_limit": 8},
     "ftbwiki": {"priority": 80, "search_limit": 8},
     "createwiki": {"priority": 80, "search_limit": 8},
@@ -586,7 +587,28 @@ def _normalize_task(raw: dict[str, Any], reason: str, fallback_priority: int) ->
         "reason": str(raw.get("reason") or reason or "Crawler LLM planned collection task"),
         "priority": int(raw.get("priority") or defaults.get("priority") or fallback_priority),
     }
-    for key in ("search_limit", "max_urls", "mods", "modpacks", "resourcepacks", "shaders", "search_depth", "max_items", "output_dir", "start_url", "timeout_ms", "fields"):
+    for key in (
+        "search_limit",
+        "max_urls",
+        "mods",
+        "modpacks",
+        "resourcepacks",
+        "shaders",
+        "search_depth",
+        "max_items",
+        "output_dir",
+        "start_url",
+        "timeout_ms",
+        "fields",
+        "content",
+        "format",
+        "artifact_format",
+        "path",
+        "output_path",
+        "filename",
+        "overwrite",
+        "metadata",
+    ):
         value = raw.get(key, defaults.get(key))
         if value is not None:
             item[key] = value
@@ -756,6 +778,8 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
     for source in sources:
         if source == "browser_collect" and any(str(item.get("source") or "") == "browser_collect" for item in tasks):
             continue
+        if source == "save_artifact":
+            continue
         if source in {"modrinth", "followup", "mediawiki", "ftbwiki", "createwiki", "modpack_download"}:
             source_queries = [topic or queries[0]]
         elif source == "playwright":
@@ -833,8 +857,11 @@ def plan_crawler_tasks_with_llm(question: str, source_dir: Path, *, max_tasks: i
             "known issues and useful tutorials",
         ],
         "subqueries": ["short search phrase, not the full user sentence"],
-        "sources": ["modpack_internal", "modpack_download", "browser_collect", "mcmod", "modrinth", "tavily", "firecrawl", "jina", "web_discovery", "followup", "playwright"],
-        "tasks": [{"source": "browser_collect", "query": "short task/query", "reason": "why this source/query", "priority": 120, "output_dir": "optional user requested folder", "max_items": 50, "fields": ["name", "price", "url"]}],
+        "sources": ["modpack_internal", "modpack_download", "browser_collect", "save_artifact", "mcmod", "modrinth", "tavily", "firecrawl", "jina", "web_discovery", "followup", "playwright"],
+        "tasks": [
+            {"source": "browser_collect", "query": "short task/query", "reason": "why this source/query", "priority": 120, "output_dir": "optional user requested folder", "max_items": 50, "fields": ["name", "price", "url"]},
+            {"source": "save_artifact", "query": "short artifact purpose", "reason": "why this content should be saved", "priority": 110, "content": "text/object/list to save", "format": "md", "path": "optional file or directory path", "filename": "optional file name"},
+        ],
         "success_criteria": [
             "save markdown plus manifest",
             "preserve source URLs and raw HTML when the fetcher supports it",
@@ -855,6 +882,7 @@ def plan_crawler_tasks_with_llm(question: str, source_dir: Path, *, max_tasks: i
             "Decide target entity, coverage goals, short source-specific queries, and ordered tasks. Tools execute after your JSON plan.\n"
             "The authoritative collection target is the current handoff/task goal. Prior current_topic/topics are background memory only; never let old session topics override collection_target/task_goal.\n"
             "For general data collection tasks that ask for structured fields and a save location, use browser_collect. It can open a browser, collect item rows, and save CSV/JSON/report to output_dir. Keep the user's requested output_dir exactly.\n"
+            "Use save_artifact when the useful content is already in the task context or generated by the agent and the next objective action is simply to persist it. It accepts content, format, path/filename, overwrite, and metadata; do not use it as a substitute for web extraction.\n"
             "For full Minecraft modpack collection, cover: basic info, official/download/community links, mod list, quests/beginner route, key systems, items/recipes/acquisition, bosses, tutorials, known issues.\n"
             "If local archive or manifest exists, use modpack_internal first. It extracts manifest, modlist, FTB Quests, KubeJS, OpenLoader/data, recipes, config, raw text. Then use mcmod/modrinth/public web to fill gaps.\n"
             "If no local archive exists, first discover official/download/project pages. Use modpack_download to look for public .mrpack/.zip archives and save them locally; after a real archive is downloaded, use modpack_internal. Use Modrinth with modpack contents for .mrpack projects; use Playwright/topic_discovery to find public download pages and preserve their HTML. Do not pretend the pack internals are available until an archive/manifest is actually downloaded or provided.\n"
@@ -862,7 +890,7 @@ def plan_crawler_tasks_with_llm(question: str, source_dir: Path, *, max_tasks: i
             "When recent results are empty/off-topic or Firecrawl/Tavily quota fails, move Playwright or topic_discovery earlier instead of repeating the same API path. Browser-rendered evidence is often better for Chinese modpack pages, tabs, images, and download links.\n"
             "Queries must be short. Do not use the whole user sentence as a query. Component/system queries may omit the parent pack name when context confirms membership; later validation judges relevance.\n"
             "For MCagent/RAG delivery, require Markdown, manifest, stable title, source URL/internal path, metadata, dedupe key, raw_html/raw_text where available.\n"
-            "Available sources: modpack_internal, modpack_download, browser_collect, mcmod, modrinth, followup, tavily, firecrawl, jina, web_discovery, playwright, mediawiki, ftbwiki, createwiki.\n"
+            "Available sources: modpack_internal, modpack_download, browser_collect, save_artifact, mcmod, modrinth, followup, tavily, firecrawl, jina, web_discovery, playwright, mediawiki, ftbwiki, createwiki.\n"
             "Return valid JSON only, no Markdown, no prose.\n"
             f"用户问题: {question}\n"
             f"采集目标提示: {target_hint or '未明确，请从问题和会话摘要判断'}\n"
@@ -943,7 +971,8 @@ def reflect_crawler_progress(
             "For full modpack collection without a local archive, use modpack_download to find and save public .mrpack/.zip archives, and use Playwright/topic_discovery to inspect project/download pages and preserve download-link HTML. Use modpack_internal only after a real local archive/manifest is available.\n"
             "If several API/search tasks are empty or off-topic, do not keep cycling similar queries; escalate to browser-rendered collection or finish with a clear blocked/missing-download reason.\n"
             "For structured extraction with requested fields/output directory, choose browser_collect and preserve output_dir/max_items/fields.\n"
-            "Available sources: modpack_internal, modpack_download, browser_collect, mcmod, modrinth, followup, tavily, firecrawl, jina, web_discovery, playwright, mediawiki, ftbwiki, createwiki.\n"
+            "Use save_artifact when the selected next step is local persistence of content already held in the task/context, not when the content still needs to be fetched.\n"
+            "Available sources: modpack_internal, modpack_download, browser_collect, save_artifact, mcmod, modrinth, followup, tavily, firecrawl, jina, web_discovery, playwright, mediawiki, ftbwiki, createwiki.\n"
             "Return valid JSON only.\n"
             f"question: {question}\n"
             f"session_summary: {json.dumps(session_summary or {}, ensure_ascii=False)}\n"

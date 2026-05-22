@@ -522,6 +522,14 @@ CRAWLER_COLLECTION_TOOLS = [
         llm_final_answer_required=False,
     ),
     ToolSpec(
+        name="save_artifact",
+        description="Save agent-provided content to a local file in txt, md, json, jsonl, csv, or html format.",
+        input_schema={"content": "string/object/list to persist", "format": "txt|md|json|jsonl|csv|html", "path": "file or directory path", "filename": "optional file name"},
+        result_schema={"path": "saved file", "manifest": "save metadata", "failure_reason": "if serialization or filesystem write failed"},
+        side_effects="filesystem",
+        llm_final_answer_required=False,
+    ),
+    ToolSpec(
         name="playwright",
         description="Use a local browser to render/search pages, preserve text and raw HTML, and diagnose JS-heavy pages.",
         input_schema={"query": "short search or URL task"},

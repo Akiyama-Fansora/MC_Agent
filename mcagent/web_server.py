@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 import traceback
+import uuid
 from typing import Any
 import sqlite3
 
@@ -651,6 +652,9 @@ def _source_alias(source: str) -> str:
         "browser_structured": "browser_collect",
         "structured_browser": "browser_collect",
         "product_collect": "browser_collect",
+        "save": "save_artifact",
+        "artifact": "save_artifact",
+        "save_artifact": "save_artifact",
         "modpack_download": "modpack_download",
         "pack_download": "modpack_download",
         "archive_download": "modpack_download",
@@ -858,6 +862,25 @@ def _round_command(source: str, payload: dict[str, Any]) -> list[str]:
         if timeout_ms:
             command.extend(["--timeout-ms", timeout_ms])
         return command
+    if source == "save_artifact":
+        runtime_dir = PROJECT_ROOT / "runtime" / "tool_payloads"
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        payload_path = runtime_dir / f"save_artifact_{uuid.uuid4().hex}.json"
+        artifact_payload = {
+            "content": payload.get("content", ""),
+            "format": payload.get("format") or payload.get("artifact_format") or "txt",
+            "path": payload.get("path") or payload.get("output_path") or payload.get("output_dir") or "",
+            "filename": payload.get("filename") or "",
+            "overwrite": bool(payload.get("overwrite")),
+            "metadata": payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+        }
+        payload_path.write_text(json.dumps(artifact_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return [
+            sys.executable,
+            str(PROJECT_ROOT / "scripts" / "save_artifact.py"),
+            "--payload",
+            str(payload_path),
+        ]
     if source == "topic_discovery":
         return [
             sys.executable,
@@ -916,7 +939,7 @@ def _round_command(source: str, payload: dict[str, Any]) -> list[str]:
 
 def _command_timeout(source: str) -> int:
     source = _source_alias(source)
-    if source in {"followup", "web_discovery", "tavily", "firecrawl", "jina", "playwright", "browser_collect", "modpack_download"}:
+    if source in {"followup", "web_discovery", "tavily", "firecrawl", "jina", "playwright", "browser_collect", "save_artifact", "modpack_download"}:
         return 360
     if source in {"modrinth", "mcmod"}:
         return 240

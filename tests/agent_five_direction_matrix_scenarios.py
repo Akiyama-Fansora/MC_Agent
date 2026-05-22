@@ -45,6 +45,7 @@ def test_crawler_tool_catalog_exposes_temporary_and_persistent_paths() -> None:
     assert_true("temporary_extract_tool", 'name="temporary_extract"' in runtime)
     assert_true("persistent_delegate_tool", 'name="delegate_crawler"' in runtime)
     assert_true("browser_collect_tool", 'name="browser_collect"' in runtime)
+    assert_true("save_artifact_tool", 'name="save_artifact"' in runtime)
     assert_true("no_persistence_side_effect", "network_only_no_filesystem_persistence" in runtime)
     assert_true("persistent_side_effect", "start_background_job" in runtime)
 

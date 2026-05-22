@@ -20,6 +20,14 @@ FORWARDED_TASK_KEYS = (
     "start_url",
     "timeout_ms",
     "fields",
+    "content",
+    "format",
+    "artifact_format",
+    "path",
+    "output_path",
+    "filename",
+    "overwrite",
+    "metadata",
 )
 
 

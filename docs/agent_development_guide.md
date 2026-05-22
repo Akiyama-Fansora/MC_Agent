@@ -3561,3 +3561,102 @@ python api.py --host 127.0.0.1 --port 8766
 ### 61.5 下一步
 
 继续把 `web_server.py` 中的临时读取、后台采集和保存到指定路径三类工具执行拆成更小的服务，让 CrawlerAgent 的工具目录更加通用：读取、搜索、浏览器采集、保存、入库、失败归因都应是可组合能力，而不是固定流程。
+## 2026-05-23 Stage 19: Generic Artifact Tool And Toolset Baseline
+
+本轮目标不是再给 CrawlerAgent 加某个网站的专用规则，而是把“保存到本地”抽成更通用的工具原语。用户提出的判断是对的：工具函数应当是 Agent 与本地/互联网交互的中间接口，LLM 决定目标、内容、格式、路径和下一步，工具只做客观执行。
+
+### External Agent Tool Baseline
+
+重新对照了三个本地开源 Agent 项目：
+
+1. Hermes (`D:\magic\OpenSourceAgent\_extracted\hermes-agent-main`)
+   - 工具目录在 `AGENTS.md` 和 `toolsets.py` 中组织。
+   - 典型原语：`web_search`、`web_extract`、`terminal`、`process`、`read_file`、`write_file`、`patch`、`search_files`。
+   - 浏览器原语很细：`browser_navigate`、`browser_snapshot`、`browser_click`、`browser_type`、`browser_scroll`、`browser_console`、`browser_cdp`。
+   - 规划/记忆/委托：`todo`、`memory`、`delegate_task`、`session_search`、`clarify`。
+   - 重要设计点：工具 schema 不硬编码跨工具流程，工具集只暴露能力，LLM 组合能力。
+
+2. Claude Code (`D:\magic\OpenSourceAgent\_extracted\claude-code-main`)
+   - 本地源码主要是文档、changelog 和 plugin 示例，但能确认内置工具族。
+   - 典型原语：`Read`、`Write`、`Edit`、`MultiEdit`、`Bash`、`Glob`、`Grep`、`WebFetch`、`WebSearch`、`TodoWrite`、`NotebookEdit`、`Task`、MCP tools。
+   - 重要设计点：allowed-tools、hooks、permission、安全边界和 MCP 动态工具，工具调用由 Agent 决定，但执行前后有可观察约束。
+
+3. OpenClaw (`D:\magic\OpenSourceAgent\_extracted\openclaw-main`)
+   - 工具基础设施在 `src/tools/types.ts`、`src/tools/descriptors.ts`、`src/tools/planner.ts`、`packages/sdk/src/client.ts`。
+   - SDK 暴露 `tools.catalog`、`tools.effective`、`tools.invoke(...)`，并有独立 `artifacts` 命名空间。
+   - Agent 工具有 `web_fetch`、`web_search`、`gateway`、`message`、`image`、`pdf`、`tts`、`cron`、`nodes`、`sessions_*`、`subagents`、`update_plan`。
+   - 重要设计点：工具参数验证通用化，artifact 管理独立于具体采集工具。
+
+结论：成熟 Agent 都倾向暴露低耦合原语：读、写、搜、抓、浏览器、终端、记忆、委托、计划、artifact。MC_Agent 后续应继续减少“关键词触发专用流程”，改成 CrawlerAgent 依据工具目录自行组合这些原语。
+
+### Implemented Changes
+
+1. 新增 `mcagent/artifact_save_service.py`：
+   - `ArtifactSaveService.save(content, artifact_format, path, filename, overwrite, metadata)`。
+   - 支持 `txt`、`md`、`json`、`jsonl`、`csv`、`html`。
+   - 默认不覆盖已有文件，自动生成唯一文件名。
+   - 写入目标文件后生成同目录 `manifest.json`，包含 path、format、bytes、sha256、metadata。
+
+2. 新增 `scripts/save_artifact.py`：
+   - 可通过 `--payload` 接收 JSON payload，避免长内容塞进命令行。
+   - 成功时输出结构化 JSON 和 `Exported to: <dir>`，兼容现有 Crawler job 的 export_dir/manifest 统计。
+   - 失败时返回非零 exit code，并给出 `failure_reason`。
+
+3. Crawler 工具目录新增 `save_artifact`：
+   - `agent_runtime.py` 的 collection tools 暴露该能力。
+   - `crawler_llm_planner.py` 允许 LLM 规划 `save_artifact`，并转发 `content/format/path/filename/overwrite/metadata`。
+   - `crawler_task_preparation_service.py` 保留这些通用 artifact 字段。
+   - `web_server.py` 增加 `save_artifact` 执行分支，使用 runtime payload 文件调用脚本。
+   - `provider_registry.py` 和 `crawler_planner.py` 增加工具描述。
+
+4. 保持边界：
+   - `save_artifact` 不负责抓网页。
+   - `save_artifact` 不负责决定是否入库。
+   - `save_artifact` 不替 CrawlerAgent 判断成功与否，只返回客观保存结果或失败原因。
+
+### Test Plan For This Stage
+
+1. 保存工具单元测试：
+   - Markdown 保存到目录并写 manifest。
+   - JSON 默认不覆盖，自动生成唯一文件。
+   - CSV 支持 list[dict]。
+   - 非支持格式返回客观错误。
+
+2. 工具链路测试：
+   - Crawler collection catalog 必须包含 `save_artifact`。
+   - task preparation 必须保留 `content/format/path/filename/metadata`。
+   - CLI `scripts/save_artifact.py` 必须能独立保存并输出 `Exported to:`。
+
+3. Agent 五方向测试矩阵保持：
+   - MCagent 本地问答。
+   - MCagent 缺口委托 Crawler。
+   - Crawler 临时 URL 读取但不保存。
+   - Crawler 补库给 MCagent/RAG。
+   - Crawler 保存到用户指定路径。第五类后续应优先覆盖 `browser_collect` 与 `save_artifact` 两条路径。
+
+4. 回归测试：
+   - Python syntax check。
+   - `artifact_save_service_scenarios.py`。
+   - `crawler_task_preparation_service_scenarios.py`。
+   - `agent_runtime_scenarios.py`。
+   - `agent_five_direction_matrix_scenarios.py`。
+   - `smoke_test.py`。
+   - `check_text_encoding.py`。
+   - `public_readiness_check.py`。
+
+### Test Results
+
+已通过：
+
+```powershell
+python -m py_compile mcagent\artifact_save_service.py scripts\save_artifact.py mcagent\agent_runtime.py mcagent\crawler_llm_planner.py mcagent\crawler_task_preparation_service.py mcagent\web_server.py mcagent\provider_registry.py mcagent\crawler_planner.py tests\artifact_save_service_scenarios.py tests\agent_runtime_scenarios.py tests\agent_five_direction_matrix_scenarios.py tests\crawler_task_preparation_service_scenarios.py tests\smoke_test.py
+python tests\artifact_save_service_scenarios.py
+python tests\crawler_task_preparation_service_scenarios.py
+python tests\agent_runtime_scenarios.py
+python tests\agent_five_direction_matrix_scenarios.py
+python scripts\save_artifact.py --content "hello" --format md --path runtime\manual_artifact_test --filename sample.md
+```
+
+### Remaining Direction
+
+`save_artifact` 解决的是“Agent 已经拿到内容以后如何通用保存”。下一步要继续向大厂 Agent 结构靠近，应补一个“工具结果引用/共享 artifact store”能力，让 CrawlerAgent 可以把上一工具的输出用引用传给下一工具，而不是把大段内容塞进 plan JSON。那会让流程变成：`web_fetch/browser_collect -> inspect/result_ref -> save_artifact/ingest_artifact`，更像 OpenClaw 的 `tools.invoke + artifacts` 设计。

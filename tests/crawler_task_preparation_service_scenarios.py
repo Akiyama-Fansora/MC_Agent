@@ -48,6 +48,29 @@ def test_build_payload_falls_back_to_question_when_query_missing() -> None:
     assert_equal("query", built["query"], "落幕曲 Boss 列表")
 
 
+def test_build_payload_preserves_generic_artifact_fields() -> None:
+    built = CrawlerTaskPreparationService().build_payload(
+        base_payload={},
+        task={
+            "query": "save summary",
+            "content": [{"name": "item", "price": 12}],
+            "format": "csv",
+            "path": r"C:\tmp\items",
+            "filename": "items.csv",
+            "overwrite": False,
+            "metadata": {"source": "test"},
+        },
+        question="save collected data",
+        task_source="save_artifact",
+    )
+    assert_equal("source", built["source"], "save_artifact")
+    assert_equal("content", built["content"], [{"name": "item", "price": 12}])
+    assert_equal("format", built["format"], "csv")
+    assert_equal("path", built["path"], r"C:\tmp\items")
+    assert_equal("filename", built["filename"], "items.csv")
+    assert_equal("metadata", built["metadata"], {"source": "test"})
+
+
 def test_empty_query_result_is_objective_failure_observation() -> None:
     result = CrawlerTaskPreparationService().empty_query_result(
         task_source="jina",
@@ -63,5 +86,6 @@ def test_empty_query_result_is_objective_failure_observation() -> None:
 if __name__ == "__main__":
     test_build_payload_preserves_task_specific_fields()
     test_build_payload_falls_back_to_question_when_query_missing()
+    test_build_payload_preserves_generic_artifact_fields()
     test_empty_query_result_is_objective_failure_observation()
     print("crawler_task_preparation_service_scenarios passed")

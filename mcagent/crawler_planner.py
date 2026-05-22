@@ -117,6 +117,13 @@ TOOLSETS: dict[str, Toolset] = {
         default_limit=50,
         timeout_seconds=900,
     ),
+    "save_artifact": Toolset(
+        id="save_artifact",
+        label="Save Artifact",
+        purpose="Generic local persistence primitive: save agent-provided txt/md/json/jsonl/csv/html content to a file path or directory and write a manifest. It does not fetch or ingest content by itself.",
+        default_limit=1,
+        timeout_seconds=120,
+    ),
     "modpack_download": Toolset(
         id="modpack_download",
         label="Modpack Archive Discovery/Download",

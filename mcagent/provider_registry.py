@@ -158,6 +158,14 @@ PROVIDERS: dict[str, ProviderSpec] = {
         timeout_seconds=900,
         notes="通用结构化浏览器采集，按目标字段保存 CSV/JSON/report/raw HTML/截图到指定目录；不会绕过登录、验证码或安全验证。",
     ),
+    "save_artifact": ProviderSpec(
+        id="save_artifact",
+        label="Save Artifact",
+        capabilities=ProviderCapability(extract=True),
+        default_limit=1,
+        timeout_seconds=120,
+        notes="Generic local persistence tool for agent-provided content. Saves txt/md/json/jsonl/csv/html plus manifest; it does not fetch web pages or ingest by itself.",
+    ),
     "modpack_download": ProviderSpec(
         id="modpack_download",
         label="Modpack Archive Discovery/Download",
