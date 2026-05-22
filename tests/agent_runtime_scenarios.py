@@ -170,16 +170,20 @@ def test_job_readable_summary_surfaces_observations() -> None:
 
 def test_crawler_delegation_requires_explicit_agent_route() -> None:
     source = (ROOT / "mcagent" / "web_server.py").read_text(encoding="utf-8")
+    router_source = (ROOT / "mcagent" / "agent_router.py").read_text(encoding="utf-8")
+    combined_source = source + "\n" + router_source
     doc = (ROOT / "docs" / "agent_development_guide.md").read_text(encoding="utf-8")
     assert_true("no_answer_post_scan_helper", "_answer_requires_auto_delegate" not in source)
     assert_true("no_answer_gap_regex_helper", "_answer_indicates_missing_data" not in source)
     assert_true("no_post_answer_delegate_trace", "answer_marked_missing" not in source)
     assert_true("router_error_no_delegate_fallback", 'fallback_tool = "delegate_crawler"' not in source)
     assert_true("router_error_no_answer_fallback", 'fallback_tool = "answer"' not in source)
-    assert_true("router_error_route_exists", '"tool": "router_error"' in source and 'route_intent == "router_error"' in source)
+    assert_true("router_error_route_exists", '"tool": "router_error"' in combined_source and 'route_intent == "router_error"' in combined_source)
     assert_true("no_dead_keyword_status_router", "def _is_crawler_status_request" not in source)
     assert_true("no_dead_keyword_start_router", "def _is_crawler_start_request" not in source)
     assert_true("no_dead_keyword_route_intent", "def _mcagent_route_intent" not in source)
+    assert_true("router_prompt_moved", "def _agent_tool_decision" not in source and "def _agent_confirm_next_step" not in source)
+    assert_true("web_no_router_prompt", "你是当前对话里的 Agent 工具选择器" not in source and "你是当前 Agent 的下一步行动确认器" not in source)
     assert_true("no_answer_prompt_auto_delegate", "或本地证据不足时，应使用这个能力" not in source)
     assert_true("no_doc_auto_delegate_gap", "发现证据不足时，说明缺口，并把资料缺口交给 CrawlerAgent" not in doc)
     assert_true("no_doc_final_answer_auto_delegate", "若最终回答中 LLM 判断证据不足，才把缺口交给 CrawlerAgent" not in doc)

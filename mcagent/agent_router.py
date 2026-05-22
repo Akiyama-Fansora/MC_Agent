@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
+import re
 from typing import Any, Callable, Protocol
 
 from .config import AppConfig
+from .agent_runtime import normalize_agent_tool_decision, tool_catalog_prompt, tool_names_for_agent
 
 
 class TraceCapableRun(Protocol):
@@ -21,6 +24,7 @@ class TraceCapableRun(Protocol):
 DecisionFn = Callable[..., dict[str, Any]]
 ConfirmFn = Callable[..., dict[str, Any]]
 ActionPlanHasToolFn = Callable[[list[Any], str], bool]
+ClientSelectorFn = Callable[[AppConfig, str, float], tuple[Any, str]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,3 +102,162 @@ class AgentToolRouterService:
             planned_workflow=planned_workflow,
             planned_delegate=planned_delegate,
         )
+
+
+def json_object_from_llm_text(text: str) -> dict[str, Any]:
+    stripped = str(text or "").strip()
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
+        stripped = re.sub(r"\s*```$", "", stripped)
+    match = re.search(r"\{.*\}", stripped, flags=re.S)
+    if match:
+        stripped = match.group(0)
+    value = json.loads(stripped)
+    if not isinstance(value, dict):
+        raise ValueError("LLM did not return a JSON object")
+    return value
+
+
+class LlmAgentToolRouterService(AgentToolRouterService):
+    def __init__(self, *, select_client: ClientSelectorFn, action_plan_has_tool: ActionPlanHasToolFn) -> None:
+        self._select_client = select_client
+        super().__init__(
+            decide_tool=self.decide_tool,
+            confirm_next_step=self.confirm_next_step,
+            action_plan_has_tool=action_plan_has_tool,
+        )
+
+    def decide_tool(
+        self,
+        config: AppConfig,
+        payload: dict[str, Any],
+        *,
+        agent: str,
+        original_question: str,
+        contextual_question: str,
+        session_summary: dict[str, Any],
+        model: str,
+    ) -> dict[str, Any]:
+        if agent == "retriever_only" or bool(payload.get("no_llm")):
+            return {
+                "tool": "answer",
+                "reason": "仅检索模式或禁用 LLM，直接进入本地 RAG。",
+                "planner": "runtime",
+            }
+        try:
+            client, label = self._select_client(config, model, 0.0)
+            catalog = tool_catalog_prompt(agent)
+            allowed_tools = "|".join(tool_names_for_agent(agent))
+            prompt = (
+                "你是当前对话里的 Agent 工具选择器，只决定下一步使用哪个工具，不回答用户问题。\n"
+                "参与者：用户、MCagent、CrawlerAgent。\n"
+                "下面是本项目统一 Agent Runtime 暴露给当前 Agent 的工具目录。工具目录是能力说明，不是关键词触发规则。\n"
+                f"{catalog}\n"
+                "角色约束：如果 active_agent 是 crawler_agent，CrawlerAgent 不是问答 RAG 助手。用户直接给 CrawlerAgent 的资料采集、网页抓取、保存文件、补库、给 MCagent/RAG 准备数据等目标，应选择 delegate_crawler。只有用户明确询问 CrawlerAgent 能力、已有任务状态、或不是采集目标的闲聊说明时，才选择 direct_answer 或 status。\n"
+                "交付对象判断：如果用户是在 MCagent 对话里要求转达给 CrawlerAgent 收集资料，通常是为了补充 MCagent/RAG 的本地资料库，delivery_target 应选 MCagent/RAG；只有用户明确表示只是要给自己看的摘要或临时结果时才选 human。CrawlerAgent 直接收到用户委托时，也要根据用户是否提到 MCagent/RAG/入库来判断交付对象。\n"
+                "重要原则：不要用关键词触发。必须按语义判断。不要把游戏内“获取某物/如何获得”误判成 Crawler 采集任务。\n"
+                "当前系统主要服务 Minecraft 资料库。若实体名有泛义但当前对话没有给出其他领域，rag_focus 不能只写裸实体，必须带上 Minecraft/整合包/模组等领域限定；若存在同名歧义，后续回答可说明歧义。\n"
+                "委托交接原则：collection_target 不是搜索词，也不是给工具的死规则，而是给 CrawlerAgent 的自然语言任务目标。若任务目标依赖上下文，要把相关背景自然写进目标；不要拆成关键词，也不要丢掉用户原话。\n"
+                "如果是复合问答，优先 answer；如果复合任务包含“先查本地资料/总结缺口/再让 Crawler 补”，选择 planned_workflow，并给出 action_plan。\n"
+                "如果需要本地 RAG 检索，rag_focus 要写成真正要查的主题问题，去掉“本地资料、缺什么、让 Crawler 去找、状态”等元指令。\n"
+                "只输出 JSON，不要 Markdown，不要解释隐藏思考。\n"
+                "额外工具 direct_answer：当用户只是问候、闲聊、询问系统能力、要求解释当前行为，或任何不需要本地资料/状态/Crawler 的问题时选择 direct_answer；选择它就不要触发 local_rag_search。\n"
+                f"active_agent: {agent}\n"
+                f"original_user_message: {original_question}\n"
+                f"contextualized_for_retrieval: {contextual_question}\n"
+                f"session_summary: {json.dumps(session_summary or {}, ensure_ascii=False)}\n"
+                f"JSON schema: {{\"tool\":\"{allowed_tools}\", "
+                "\"reason\":\"一句面向开发日志的理由\", "
+                "\"rag_focus\":\"需要本地检索时的主题化检索问题\", "
+                "\"collection_target\":\"若选择 delegate_crawler，写成完整自然语言采集目标；不要拆搜索词，也不要丢掉用户原话和必要上下文\", "
+                "\"delivery_target\":\"human|MCagent/RAG|\", "
+                "\"action_plan\":[{\"step\":1,\"tool\":\"local_rag_search|summarize_gaps|delegate_crawler|crawler_status\",\"goal\":\"这一步要完成什么\"}]}"
+            )
+            raw_text = client.chat(
+                [
+                    {"role": "system", "content": "只输出合法 JSON。"},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.0,
+                max_tokens=900,
+            )
+            value = json_object_from_llm_text(raw_text)
+            return normalize_agent_tool_decision(
+                value,
+                agent_id=agent,
+                original_question=original_question,
+                planner=label,
+            ).to_dict()
+        except Exception as exc:  # noqa: BLE001 - do not execute any tool without an Agent decision.
+            return {
+                "tool": "router_error",
+                "reason": f"Agent tool selector failed; no tool executed without an Agent decision: {type(exc).__name__}: {exc}",
+                "collection_target": original_question,
+                "delivery_target": "",
+                "planner": "fallback_after_llm_error",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
+    def confirm_next_step(
+        self,
+        config: AppConfig,
+        payload: dict[str, Any],
+        *,
+        agent: str,
+        model: str,
+        original_question: str,
+        session_summary: dict[str, Any],
+        proposed_tool: str,
+        proposed_goal: str,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if agent == "retriever_only" or bool(payload.get("no_llm")):
+            return {"proceed": True, "tool": proposed_tool, "goal": proposed_goal, "reason": "runtime mode confirmed", "planner": "runtime"}
+        try:
+            client, label = self._select_client(config, model, 0.0)
+            catalog = tool_catalog_prompt(agent, include_principles=True)
+            allowed_tools = ", ".join(tool_names_for_agent(agent))
+            prompt = (
+                "你是当前 Agent 的下一步行动确认器。只确认下一步工具动作，不回答用户问题，不写最终答案。\n"
+                "必须基于用户原话、会话摘要、上一步决策和当前上下文判断：现在是否应该执行 proposed_tool，目标是否说清楚，是否需要改用另一个允许工具。\n"
+                f"当前 Agent 工具目录：\n{catalog}\n"
+                f"允许工具名：{allowed_tools}, answer, evidence_select, final_answer_llm。\n"
+                "如果 proposed_tool 合理，proceed=true；如果不合理，proceed=false 并给出 suggested_tool。不要拆 Crawler 的搜索词，不要替工具生成最终回答。\n"
+                "只输出 JSON。\n"
+                "额外工具 direct_answer：当用户只是问候、闲聊、询问系统能力、要求解释当前行为，或任何不需要本地资料/状态/Crawler 的问题时选择 direct_answer；选择它就不要触发 local_rag_search。\n"
+                f"active_agent: {agent}\n"
+                f"original_user_message: {original_question}\n"
+                f"session_summary: {json.dumps(session_summary or {}, ensure_ascii=False)}\n"
+                f"proposed_tool: {proposed_tool}\n"
+                f"proposed_goal: {proposed_goal}\n"
+                f"context: {json.dumps(context or {}, ensure_ascii=False)}\n"
+                "JSON schema: {\"proceed\":true, \"tool\":\"工具名\", \"suggested_tool\":\"可选\", \"goal\":\"确认后的下一步目标\", \"reason\":\"一句理由\", \"concern\":\"可选风险\"}"
+            )
+            raw_text = client.chat(
+                [
+                    {"role": "system", "content": "只输出合法 JSON。"},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.0,
+                max_tokens=700,
+            )
+            value = json_object_from_llm_text(raw_text)
+            tool = str(value.get("tool") or proposed_tool).strip() or proposed_tool
+            suggested = str(value.get("suggested_tool") or "").strip()
+            return {
+                "proceed": bool(value.get("proceed", True)),
+                "tool": tool,
+                "suggested_tool": suggested,
+                "goal": str(value.get("goal") or proposed_goal).strip()[:500],
+                "reason": str(value.get("reason") or "Agent confirmed next step.").strip()[:500],
+                "concern": str(value.get("concern") or "").strip()[:500],
+                "planner": label,
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "proceed": True,
+                "tool": proposed_tool,
+                "goal": proposed_goal,
+                "reason": f"Next-step confirmation failed; continuing with prior Agent decision: {type(exc).__name__}: {exc}",
+                "planner": "fallback_after_confirmation_error",
+            }

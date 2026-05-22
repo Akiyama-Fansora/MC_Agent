@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from mcagent.agent_execution import build_agent_execution_context  # noqa: E402
-from mcagent.agent_router import AgentToolRouterService  # noqa: E402
+from mcagent.agent_router import AgentToolRouterService, LlmAgentToolRouterService, json_object_from_llm_text  # noqa: E402
 from mcagent.config import AppConfig, ChunkingConfig, EmbeddingConfig, OllamaConfig, PathsConfig, RetrievalConfig  # noqa: E402
 
 
@@ -106,10 +106,75 @@ def test_router_marks_planned_delegate_without_executing_it() -> None:
     assert_equal("action_plan_kept", route.action_plan, plan)
 
 
+class FakeClient:
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.calls: list[dict[str, Any]] = []
+
+    def chat(self, messages, *, temperature=None, max_tokens=None):  # noqa: ANN001
+        self.calls.append({"messages": messages, "temperature": temperature, "max_tokens": max_tokens})
+        return self.text
+
+
+def test_llm_router_owns_prompt_and_json_parsing() -> None:
+    tmp, run = make_run("你好")
+    fake = FakeClient('```json\n{"tool":"direct_answer","reason":"greeting"}\n```')
+    try:
+        service = LlmAgentToolRouterService(
+            select_client=lambda _config, _model, _temperature: (fake, "fake-router"),
+            action_plan_has_tool=lambda _plan, _tool: False,
+        )
+        decision = service.decide_tool(
+            run.config,
+            run.payload,
+            agent=run.agent,
+            original_question=run.original_question,
+            contextual_question=run.question,
+            session_summary={},
+            model=run.model,
+        )
+    finally:
+        tmp.cleanup()
+
+    assert_equal("llm_router_tool", decision["tool"], "direct_answer")
+    assert_equal("llm_router_planner", decision["planner"], "fake-router")
+    assert_true("llm_router_prompt_mentions_catalog", "Agent Runtime" in fake.calls[0]["messages"][1]["content"])
+    assert_equal("json_parser", json_object_from_llm_text("prefix {\"ok\": true} suffix"), {"ok": True})
+
+
+def test_llm_router_error_does_not_choose_fallback_tool() -> None:
+    tmp, run = make_run("介绍乌托邦")
+    try:
+        service = LlmAgentToolRouterService(
+            select_client=lambda _config, _model, _temperature: (_raise(RuntimeError("boom")), "never"),
+            action_plan_has_tool=lambda _plan, _tool: False,
+        )
+        decision = service.decide_tool(
+            run.config,
+            run.payload,
+            agent=run.agent,
+            original_question=run.original_question,
+            contextual_question=run.question,
+            session_summary={},
+            model=run.model,
+        )
+    finally:
+        tmp.cleanup()
+
+    assert_equal("router_error_tool", decision["tool"], "router_error")
+    assert_true("router_error_no_delegate", decision.get("delivery_target", "") == "")
+
+
+def _raise(exc: Exception) -> None:
+    raise exc
+
+
 def main() -> int:
     test_router_records_decision_and_confirmation()
     test_router_respects_agent_suggested_tool()
     test_router_marks_planned_delegate_without_executing_it()
+    test_llm_router_owns_prompt_and_json_parsing()
+    test_llm_router_error_does_not_choose_fallback_tool()
     print("AGENT ROUTER SCENARIOS PASSED")
     return 0
 

@@ -2069,3 +2069,78 @@ python tests\fastapi_backend_scenarios.py
 
 - 第 41 阶段把 `_agent_tool_decision()` 与 `_agent_confirm_next_step()` 的 prompt/LLM 调用整体搬进 `agent_router.py`，让 web_server 不再持有路由 prompt；
 - 第 42 阶段抽 direct answer/status/delegate/RAG 的工具执行器。
+
+## 41. Agent 工具路由第二阶段：路由 LLM Prompt 迁出 web_server（2026-05-22）
+
+本轮开始前已重新阅读本文档。第 40 阶段只抽了路由编排，但工具选择和下一步确认的 prompt 仍然留在 `web_server.py`。这会让 web 层继续承担 Agent 主观决策提示词，不符合“后端框架与 Agent runtime 分离”的方向。
+
+### 41.1 本轮定位
+
+本轮把路由 LLM 的 prompt 与 JSON 解析整体迁入 `agent_router.py`，让 `web_server.py` 只负责把选择好的路由结果接到后续工具执行分支。注意：这不是用规则替代 LLM，而是把 LLM 工具选择器搬到正确的 Agent runtime 模块。
+
+### 41.2 本轮改造
+
+1. `agent_router.py` 新增：
+   - `json_object_from_llm_text()`：统一解析模型返回的 JSON；
+   - `LlmAgentToolRouterService`：持有工具选择 prompt、下一步确认 prompt、router_error 失败语义；
+   - `decide_tool()`：由当前 Agent LLM 选择 `direct_answer/status/answer/delegate_crawler/planned_workflow/router_error`；
+   - `confirm_next_step()`：由当前 Agent LLM 确认下一步工具动作。
+2. `web_server.py`：
+   - 删除 `_agent_tool_decision()` 与 `_agent_confirm_next_step()`；
+   - `_chat_impl()` 改用 `LlmAgentToolRouterService`；
+   - delegate/status/retrieve/final_answer 的二次确认也统一调用同一个 router service；
+   - handoff brief 仍复用 `json_object_from_llm_text()`，避免重复 JSON 解析函数。
+3. `tests/agent_router_scenarios.py`：
+   - 增加 fake LLM client，验证路由 prompt 现在由 `agent_router.py` 持有；
+   - 验证 fenced JSON 能解析；
+   - 验证 router LLM 失败时返回 `router_error`，不会回退成 answer 或 delegate。
+4. `tests/agent_runtime_scenarios.py`：
+   - 源码守卫更新为同时检查 `web_server.py` 与 `agent_router.py`，确保 router_error 路径仍存在。
+
+### 41.3 本轮测试方案
+
+目标行为：
+
+- web 层不再持有工具选择/下一步确认 prompt；
+- router LLM 失败仍不执行任何工具；
+- `router_error` 行为保持：不检索、不自动委托 Crawler；
+- prompt 迁移后 direct answer/status/RAG/delegate/planned workflow 分支仍可走通；
+- JSON 解析不因模型包裹 markdown fence 而失败。
+
+风险点：
+
+- prompt 迁移导致导入循环；
+- web_server 中仍有旧路由函数残留；
+- 二次确认调用没有使用同一个 router service；
+- 源码守卫误判；
+- fake client 测试覆盖不了真实服务启动。
+
+离线测试：
+
+- `tests/agent_router_scenarios.py`：
+  - route trace；
+  - suggested_tool；
+  - planned workflow；
+  - LLM prompt ownership；
+  - router_error fallback。
+
+集成测试：
+
+~~~powershell
+python -m py_compile api.py mcagent\agent_execution.py mcagent\agent_router.py mcagent\event_stream.py mcagent\fastapi_app.py mcagent\session_state.py mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py tests\agent_execution_scenarios.py tests\agent_router_scenarios.py tests\agent_runtime_scenarios.py tests\backend_services_scenarios.py tests\fastapi_backend_scenarios.py
+node --check frontend\static\app.js
+node --check frontend\static\settings.js
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+python tests\smoke_test.py
+python tests\agent_execution_scenarios.py
+python tests\agent_router_scenarios.py
+python tests\agent_runtime_scenarios.py
+python tests\backend_services_scenarios.py
+python tests\fastapi_backend_scenarios.py
+~~~
+
+后续计划：
+
+- 第 42 阶段抽 `AgentToolExecutor`，先拆 direct answer/status/delegate 三个执行分支；
+- 第 43 阶段再拆 RAG 检索、证据筛选与 final answer executor。
