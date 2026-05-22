@@ -42,6 +42,7 @@ from .crawler_topic_discovery_service import CrawlerTopicDiscoveryReviewService
 from .crawler_job_finalization_service import CrawlerJobFinalizationService
 from .crawler_job_progress_service import CrawlerJobProgressService
 from .crawler_job_setup_service import CrawlerJobSetupService
+from .crawler_planner_wait_service import CrawlerPlannerWaitService
 from .evidence_service import EvidenceWorkflowService
 from .ingest import ingest_exports
 from .job_view_service import JobReadableViewService
@@ -2092,15 +2093,11 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
 
 
 def _plan_crawler_with_job_timeout(job: Job, question: str, config: AppConfig, max_tasks: int, session_summary: dict[str, Any] | None) -> dict[str, Any]:
-    planner_topic = question
-    handoff_brief = ""
-    if isinstance(session_summary, dict):
-        handoff_brief = str(session_summary.get("handoff_brief") or "").strip()
-        for key in ("authoritative_task_goal", "task_goal", "collection_target", "goal", "target", "current_topic"):
-            planner_topic = str(session_summary.get(key) or "").strip()
-            if planner_topic:
-                break
-        planner_topic = planner_topic or question
+    wait_status = CrawlerPlannerWaitService()
+    context = wait_status.context(question=question, session_summary=session_summary)
+    planner_topic = context["planner_topic"]
+    handoff_brief = context["handoff_brief"]
+    delivery_target = context["delivery_target"]
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     future = executor.submit(plan_crawler_tasks_resilient, question, config.paths.source_dir, max_tasks=max_tasks, session_summary=session_summary)
     started = time.time()
@@ -2110,29 +2107,14 @@ def _plan_crawler_with_job_timeout(job: Job, question: str, config: AppConfig, m
             if job.stop_requested:
                 future.cancel()
                 executor.shutdown(wait=False, cancel_futures=True)
-                return {"strategy": "stopped_before_planner_finished", "topic": planner_topic, "handoff_brief": handoff_brief, "tasks": [], "stopped": True}
+                return wait_status.stopped_plan(planner_topic=planner_topic, handoff_brief=handoff_brief)
             try:
                 return future.result(timeout=0.5)
             except concurrent.futures.TimeoutError:
                 elapsed = time.time() - started
                 if elapsed - last_notice >= 5:
                     last_notice = elapsed
-                    _update_job(
-                        job,
-                        summary=f"CrawlerAgent 正在理解任务并规划采集动作，已思考 {int(elapsed)} 秒。目标：{planner_topic[:80]}",
-                        result={
-                            "source": "planner",
-                            "plan": {"topic": planner_topic, "handoff_brief": handoff_brief, "delivery_target": (session_summary or {}).get("delivery_target") if isinstance(session_summary, dict) else ""},
-                            "planned_tasks": [],
-                            "tasks": [],
-                            "loop": [
-                                {"phase": "understand", "status": "running", "note": "CrawlerAgent is reading the request, memory, and available tools."},
-                                {"phase": "plan", "status": "pending"},
-                                {"phase": "act", "status": "pending"},
-                                {"phase": "verify", "status": "pending"},
-                            ],
-                        },
-                    )
+                    _update_job(job, **wait_status.waiting_update(elapsed_seconds=int(elapsed), planner_topic=planner_topic, handoff_brief=handoff_brief, delivery_target=delivery_target))
     finally:
         if future.done():
             executor.shutdown(wait=False, cancel_futures=True)
