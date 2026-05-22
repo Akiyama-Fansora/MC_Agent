@@ -1,6 +1,6 @@
 ﻿# MCagent / CrawlerAgent 开发文档
 
-最后更新：2026-05-21
+最后更新：2026-05-22
 
 这份文档是当前项目的主开发文档。以后修改 MCagent、CrawlerAgent、RAG、SSE、前端交互或采集流程前，必须先读本文档；修改完成后，必须把本次决策、变更、验证结果追加到本文档。旧的 crawler_runbook.md 和历史乱码内容只作为历史参考，不再作为实现依据。
 
@@ -2286,3 +2286,67 @@ python tests\fastapi_backend_scenarios.py
 - 第 44 阶段抽检索规划与候选召回服务；
 - 第 45 阶段抽证据筛选服务；
 - 第 46 阶段抽 Crawler 委托执行器与 job timeline 服务。
+
+## 44. RAG 检索服务第一阶段：规划与召回执行服务化（2026-05-22）
+
+本轮开始前已重新阅读本文档，尤其确认了“Agent 必须由 LLM 主导、工具只做客观执行”和“每次修改都要有完整测试方案”的原则。本轮没有为某个测试句添加硬编码，而是继续沿第十七、十八两个大方向拆分后端职责。
+
+### 44.1 本轮目标
+
+把 `web_server.py` 中混在主聊天流程里的 RAG 检索准备、检索规划调用、候选召回、raw HTML 补充和去重执行迁入独立服务。这样 MCagent 的工具选择仍由 Agent/LLM 与路由服务负责，而 RAG 服务只在“已经决定要检索”之后执行客观检索步骤。
+
+### 44.2 代码变更
+
+1. 新增 `mcagent/rag_service.py`：
+   - `RagRetrievalPreparation`：保存 evidence question、rough_k、final_k；
+   - `RagRetrievalResult`：保存 retrieval plan、实际检索问题、候选结果和初始去重结果；
+   - `RagRetrievalService`：执行本地 RAG 检索、可选检索规划、raw HTML 候选补充和基础去重。
+2. 修改 `mcagent/web_server.py`：
+   - `_chat_impl()` 不再直接 new `Retriever`、调用 `plan_retrieval()`、拼检索问题和补 raw HTML；
+   - `_chat_impl()` 只负责在 MCagent 已确认下一步是 `local_rag_search` 后调用 `RagRetrievalService`；
+   - 证据是否足够、是否交给 Crawler、最终回答怎么组织仍留在后续 Agent/证据流程中，不由 RAG 服务决定。
+3. 新增 `tests/rag_service_scenarios.py`：
+   - 测试 `rag_focus` 优先级和自适应候选数；
+   - 测试计划型检索会发出 planning/planned/searching/done trace，并用组合后的检索问题调用 retriever；
+   - 测试 MCagent 候选过少时只触发 raw HTML 补充，不生成证据结论；
+   - 测试非 MCagent/无计划检索不会调用 planner 或补充器。
+4. 更新 `.github/workflows/ci.yml`、`README.md`、`scripts/public_readiness_check.py`，把新服务和新测试纳入公开仓库质量检查。
+
+### 44.3 边界说明
+
+`RagRetrievalService` 不是 Agent。它不知道用户最终要不要回答，也不知道证据够不够，更不会自动委托 Crawler。它只执行已经被 MCagent 选择的工具动作，并把可观察 trace 和候选结果交回主流程。
+
+### 44.4 本轮测试方案与已通过结果
+
+已执行并通过：
+
+~~~powershell
+python -m py_compile mcagent\rag_service.py mcagent\web_server.py tests\rag_service_scenarios.py
+python tests\rag_service_scenarios.py
+python -m py_compile api.py mcagent\agent_execution.py mcagent\agent_executor.py mcagent\agent_router.py mcagent\rag_service.py mcagent\event_stream.py mcagent\fastapi_app.py mcagent\session_state.py mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py tests\agent_execution_scenarios.py tests\agent_executor_scenarios.py tests\agent_router_scenarios.py tests\rag_service_scenarios.py tests\agent_runtime_scenarios.py tests\backend_services_scenarios.py tests\fastapi_backend_scenarios.py
+python tests\agent_executor_scenarios.py
+python tests\agent_router_scenarios.py
+python tests\rag_service_scenarios.py
+python tests\agent_runtime_scenarios.py
+python tests\backend_services_scenarios.py
+python tests\fastapi_backend_scenarios.py
+python tests\smoke_test.py
+~~~
+
+随后继续执行并通过：
+
+~~~powershell
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+node --check frontend\static\app.js
+node --check frontend\static\settings.js
+git diff --check
+python api.py --host 127.0.0.1 --port 8766
+# 探针结果：/api/health=200，/docs=200，/api/session/context=200，/api/agents/mcagent_rag/tools=200
+~~~
+
+`scripts\public_readiness_check.py` 仍提示缺少 LICENSE。这不是公开 GitHub 的硬性阻断项；当前策略仍是无 LICENSE 时默认保留所有权利，等仓库所有者决定复用协议后再添加。
+
+### 44.5 下一步
+
+继续拆 `EvidenceWorkflowService`：把证据选择、同主题补充、modpack manifest 补充、raw HTML 二次补充等客观证据工作迁出 `web_server.py`，但保持最终“证据是否能回答”和“是否需要 Crawler”的判断由 Agent/LLM 链路控制。

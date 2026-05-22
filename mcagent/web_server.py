@@ -46,7 +46,7 @@ from .llm_profiles import (
     test_profile_connection,
 )
 from .query_intent import analyze_query
-from .retrieval_planner import plan_retrieval
+from .rag_service import RagRetrievalService
 from .retriever import Retriever
 from .schema import SearchResult
 from .session_state import DEFAULT_SESSION_STORE, merge_limited, normalize_session_id, payload_history
@@ -5141,11 +5141,19 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
         add_trace("status", "next_step_confirmed", status_confirmation)
         return executor.status(run)
 
-    retriever = Retriever(config)
-    evidence_question = rag_focus or question
-    rough_k = _adaptive_rough_k(evidence_question, agent)
-    final_k = _adaptive_final_context_k(evidence_question, config, agent)
-    retrieval_plan = None
+    rag_retrieval = RagRetrievalService(
+        adaptive_rough_k=_adaptive_rough_k,
+        adaptive_final_k=_adaptive_final_context_k,
+        planning_summary=_retrieval_planning_summary,
+        combined_question=_combined_retrieval_question,
+        supplement_results=lambda cfg, query, results, limit: _supplement_raw_html_results(cfg, query, results, limit=limit),
+        dedupe_results=_dedupe_results,
+    )
+    retrieval_preparation = rag_retrieval.prepare(config, agent=agent, question=question, rag_focus=rag_focus)
+    evidence_question = retrieval_preparation.evidence_question
+    rough_k = retrieval_preparation.rough_k
+    final_k = retrieval_preparation.final_k
+    use_retrieval_planner = False
     if agent == "mcagent_rag":
         retrieval_confirmation = router.confirm_next_step(
             config,
@@ -5163,16 +5171,21 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
             suggested_tool = str(retrieval_confirmation.get("suggested_tool") or retrieval_confirmation.get("tool") or "").strip()
             if suggested_tool in {"answer", "direct_answer", "final_answer_llm"}:
                 return executor.direct_answer(run, session_summary=session_summary, mode="direct_after_retrieval_cancelled")
-        planning_summary = _retrieval_planning_summary(session_summary, original_question, evidence_question)
-        add_trace("retrieve", "planning", {"question": evidence_question, "original": original_question})
-        retrieval_plan = plan_retrieval(evidence_question, session_summary=planning_summary, max_queries=10, use_llm=True)
-        add_trace("retrieve", "planned", retrieval_plan.to_dict())
-    add_trace("retrieve", "searching", {"mode": "planned_adaptive" if retrieval_plan else "adaptive", "rough_k": rough_k, "final_context_k": final_k})
-    search_question = _combined_retrieval_question(evidence_question, question, retrieval_plan)
-    rough_results = retriever.search(search_question, top_k=rough_k, plan=retrieval_plan, session_summary=session_summary)
-    if agent == "mcagent_rag" and len(rough_results) < max(4, final_k // 2):
-        rough_results = _supplement_raw_html_results(config, evidence_question, rough_results, limit=24)
-    add_trace("retrieve", "done", {"results": len(rough_results), "top": rough_results[0].title if rough_results else ""})
+        use_retrieval_planner = True
+
+    retrieval_result = rag_retrieval.retrieve(
+        config,
+        agent=agent,
+        original_question=original_question,
+        question=question,
+        session_summary=session_summary,
+        preparation=retrieval_preparation,
+        use_planner=use_retrieval_planner,
+        add_trace=add_trace,
+    )
+    retrieval_plan = retrieval_result.retrieval_plan
+    rough_results = retrieval_result.rough_results
+    selected = retrieval_result.selected
     if not rough_results:
         add_trace("done", "insufficient_evidence", {"reason": "no_retrieval_results", "delegated": False})
         answer = (
@@ -5181,7 +5194,6 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
         )
         return _with_trace({"answer": answer, "sources": [], "context": "", "agent": agent}, trace)
 
-    selected = _dedupe_results(rough_results, limit=final_k)
     evidence_report = None
     if agent == "mcagent_rag" and not bool(payload.get("no_llm")):
         add_trace("decide", "selecting_evidence", {"candidates": len(rough_results)})
