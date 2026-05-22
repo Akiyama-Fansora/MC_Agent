@@ -3400,3 +3400,86 @@ python api.py --host 127.0.0.1 --port 8766
 ### 59.5 下一步
 
 继续拆 `_run_crawler_job()` 周边的 LLM adapter：优先把 `_replan_crawler_tasks()` 与 `_llm_tasks_from_topic_discovery()` 这种“请求 LLM 物化可执行任务”的逻辑整理成明确的 planning adapter，保持工具层只执行合同。
+
+## 60. CrawlerTaskMaterializationService：Crawler 可执行任务物化服务化（2026-05-22）
+
+本轮开始前已重新阅读本文档。第 59 阶段拆出了 planner 等待状态，本轮继续处理 replan 和 topic discovery 的共同问题：LLM 或本地 manifest 给出的候选任务需要被规范化、去重、补充 reason，并过滤不可执行任务。
+
+### 60.1 本轮目标
+
+把“候选任务 -> 可执行任务”的客观整理动作抽出：
+
+- `replan_session_summary()`：为 mid-job replan 组装已有失败、已计划任务和覆盖目标；
+- `replan_question()`：生成 replan LLM 的固定任务说明；
+- `materialize_replan_tasks()`：规范化 replan 返回任务、过滤空 query、去重、补充 replan reason；
+- `record_replan()`：记录 replan 历史，供 UI/调试查看；
+- `existing_brief()`：给 topic discovery review LLM 提供已计划任务；
+- `materialize_topic_review_tasks()`：把 review LLM 返回的候选转成可执行任务；
+- `fallback_topic_tasks()`：当 review LLM 没给可执行任务时，用 manifest seed query 做客观 fallback。
+
+服务不抓网页、不调用 LLM、不选择目标，只执行任务合同的格式化、去重和可执行性过滤。
+
+### 60.2 代码变更
+
+1. 新增 `mcagent/crawler_task_materialization_service.py`：
+   - 提供 replan/topic discovery 两条路径复用的任务物化方法。
+2. 修改 `mcagent/web_server.py`：
+   - `_replan_crawler_tasks()` 使用 materializer 构造 session summary、replan question、过滤新任务和记录 replan；
+   - `_fallback_tasks_from_topic_discovery()` 使用 materializer 从 seed query 生成 fallback task；
+   - `_llm_tasks_from_topic_discovery()` 使用 materializer 生成 existing brief 和过滤 review LLM 返回任务。
+3. 新增 `tests/crawler_task_materialization_service_scenarios.py`：
+   - 覆盖 replan summary、replan 去重/规范化、replan 历史记录、topic review 过滤、fallback source 切换。
+4. 更新 `.github/workflows/ci.yml`、`README.md`、`scripts/public_readiness_check.py`。
+
+### 60.3 边界说明
+
+`CrawlerTaskMaterializationService` 不是 CrawlerAgent 的“大脑”。它不判断用户目标、不决定是否继续采集，也不把关键词写死。它只把 CrawlerAgent/LLM 已经提出的候选任务整理成 executor 能运行的合同，并把失败/重复/空 query 留给 Agent reflection 继续处理。
+
+### 60.4 本轮测试方案与结果
+
+已执行并通过：
+
+~~~powershell
+$env:PYTHONPYCACHEPREFIX='D:\magic\MC_Agent\runtime\pycache_test'
+python -m py_compile mcagent\crawler_task_materialization_service.py mcagent\web_server.py tests\crawler_task_materialization_service_scenarios.py
+python tests\crawler_task_materialization_service_scenarios.py
+python tests\crawler_topic_discovery_service_scenarios.py
+python tests\crawler_loop_control_service_scenarios.py
+python -m py_compile api.py mcagent\agent_execution.py mcagent\agent_executor.py mcagent\agent_router.py mcagent\crawler_delegation_service.py mcagent\crawler_job_finalization_service.py mcagent\crawler_job_progress_service.py mcagent\crawler_job_setup_service.py mcagent\crawler_loop_control_service.py mcagent\crawler_planner_wait_service.py mcagent\crawler_reflection_decision_service.py mcagent\crawler_reflection_service.py mcagent\crawler_runtime_step_service.py mcagent\crawler_task_materialization_service.py mcagent\crawler_task_preparation_service.py mcagent\crawler_result_accounting_service.py mcagent\crawler_topic_discovery_service.py mcagent\evidence_service.py mcagent\event_stream.py mcagent\fastapi_app.py mcagent\job_view_service.py mcagent\rag_service.py mcagent\session_state.py mcagent\web_server.py mcagent\crawler_llm_planner.py mcagent\provider_registry.py mcagent\crawler_planner.py scripts\browser_collect_seed.py scripts\fetch_mcmod_seed.py scripts\fetch_modpack_archive_seed.py scripts\public_readiness_check.py scripts\smoke_agent_flows.py tests\crawler_delegation_service_scenarios.py tests\crawler_job_finalization_service_scenarios.py tests\crawler_job_progress_service_scenarios.py tests\crawler_job_setup_service_scenarios.py tests\crawler_loop_control_service_scenarios.py tests\crawler_planner_wait_service_scenarios.py tests\crawler_reflection_decision_scenarios.py tests\crawler_reflection_service_scenarios.py tests\crawler_runtime_step_service_scenarios.py tests\crawler_task_materialization_service_scenarios.py tests\crawler_task_preparation_service_scenarios.py tests\crawler_result_accounting_service_scenarios.py tests\crawler_topic_discovery_service_scenarios.py tests\agent_execution_scenarios.py tests\agent_executor_scenarios.py tests\agent_router_scenarios.py tests\evidence_service_scenarios.py tests\job_view_service_scenarios.py tests\rag_service_scenarios.py tests\agent_runtime_scenarios.py tests\backend_services_scenarios.py tests\fastapi_backend_scenarios.py
+python tests\crawler_delegation_service_scenarios.py
+python tests\crawler_job_finalization_service_scenarios.py
+python tests\crawler_job_progress_service_scenarios.py
+python tests\crawler_job_setup_service_scenarios.py
+python tests\crawler_loop_control_service_scenarios.py
+python tests\crawler_planner_wait_service_scenarios.py
+python tests\crawler_reflection_decision_scenarios.py
+python tests\crawler_reflection_service_scenarios.py
+python tests\crawler_runtime_step_service_scenarios.py
+python tests\crawler_task_materialization_service_scenarios.py
+python tests\crawler_task_preparation_service_scenarios.py
+python tests\crawler_result_accounting_service_scenarios.py
+python tests\crawler_topic_discovery_service_scenarios.py
+python tests\agent_execution_scenarios.py
+python tests\agent_executor_scenarios.py
+python tests\agent_router_scenarios.py
+python tests\evidence_service_scenarios.py
+python tests\job_view_service_scenarios.py
+python tests\rag_service_scenarios.py
+python tests\agent_runtime_scenarios.py
+python tests\backend_services_scenarios.py
+python tests\fastapi_backend_scenarios.py
+python tests\smoke_test.py
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+node --check frontend\static\app.js
+node --check frontend\static\settings.js
+git diff --check
+python api.py --host 127.0.0.1 --port 8766
+# 探针结果：/api/health=200，/api/jobs=200，/api/agents/crawler_agent/tools=200，POST /api/session/context=200
+~~~
+
+公开检查仍只有 LICENSE 非阻断警告。
+
+### 60.5 下一步
+
+继续压缩 `web_server.py` 中与 Crawler LLM 调用相关的 adapter 层：可以把 `_replan_crawler_tasks()` 和 `_llm_tasks_from_topic_discovery()` 自身进一步移入专门模块，让 `web_server.py` 只负责 job 生命周期和工具执行。

@@ -35,6 +35,7 @@ from .crawler_llm_planner import plan_crawler_tasks_resilient, plan_crawler_task
 from .crawler_delegation_service import CrawlerDelegationService
 from .crawler_planner import CONCEPTS, decompose_crawler_queries, plan_crawler_tasks, toolsets_payload
 from .crawler_runtime_step_service import CrawlerRuntimeStepService
+from .crawler_task_materialization_service import CrawlerTaskMaterializationService
 from .crawler_task_preparation_service import CrawlerTaskPreparationService
 from .crawler_result_accounting_service import CrawlerResultAccountingService
 from .crawler_loop_control_service import CrawlerLoopControlService
@@ -1716,60 +1717,37 @@ def _replan_crawler_tasks(
     *,
     max_new_tasks: int = 6,
 ) -> list[dict[str, Any]]:
-    tried = [_crawler_task_identity(task) for task in existing_tasks]
-    session_summary = {
-        "mode": "mid_job_replan",
-        "previous_topic": plan.get("topic") or plan.get("target_hint") or question,
-        "delivery_target": plan.get("delivery_target"),
-        "cleaning_policy": plan.get("cleaning_policy"),
-        "coverage_goals": plan.get("coverage_goals") or [],
-        "success_criteria": plan.get("success_criteria") or [],
-        "recent_failures": _crawler_failure_summary(task_results),
-        "already_planned_tasks": [{"source": source, "query": query} for source, query in tried if source or query],
-        "instruction": (
-            "Previous crawler tasks were empty, off-topic, or failed. "
-            "Revise the plan with short alternative queries and different sources. "
-            "Do not repeat already planned source/query pairs. "
-            "Keep delivery requirements separate from the data target."
-        ),
-    }
-    replan_question = (
-        "Replan crawler collection for this target. "
-        "Use short search queries, alternate sources, and avoid repeated attempts. "
-        f"Target: {question}"
+    materializer = CrawlerTaskMaterializationService()
+    failure_summary = _crawler_failure_summary(task_results)
+    session_summary = materializer.replan_session_summary(
+        question=question,
+        plan=plan,
+        failure_summary=failure_summary,
+        existing_tasks=existing_tasks,
+        identity_fn=_crawler_task_identity,
     )
+    replan_question = materializer.replan_question(question=question)
     new_plan = plan_crawler_tasks_resilient(
         replan_question,
         config.paths.source_dir,
         max_tasks=max(1, max_new_tasks),
         session_summary=session_summary,
     )
-    seen = set(tried)
-    new_tasks: list[dict[str, Any]] = []
-    for task in list(new_plan.get("tasks") or []):
-        if not isinstance(task, dict):
-            continue
-        identity = _crawler_task_identity(task)
-        if not identity[1] or identity in seen:
-            continue
-        seen.add(identity)
-        cloned = dict(task)
-        cloned["source"] = _source_alias(str(cloned.get("source") or "web_discovery"))
-        cloned["reason"] = f"mid-job replan after empty/off-topic results; {cloned.get('reason') or ''}".strip()
-        new_tasks.append(cloned)
-        if len(new_tasks) >= max_new_tasks:
-            break
+    new_tasks = materializer.materialize_replan_tasks(
+        new_plan=new_plan,
+        existing_tasks=existing_tasks,
+        identity_fn=_crawler_task_identity,
+        source_alias_fn=_source_alias,
+        max_new_tasks=max_new_tasks,
+    )
     if new_tasks:
-        replans = plan.setdefault("replans", [])
-        if isinstance(replans, list):
-            replans.append(
-                {
-                    "at_result_count": len(task_results),
-                    "failure_summary": session_summary["recent_failures"],
-                    "new_tasks": new_tasks,
-                    "planner": new_plan.get("strategy") or new_plan.get("planner_model") or new_plan.get("raw_plan", {}).get("_planner_model"),
-                }
-            )
+        materializer.record_replan(
+            plan=plan,
+            task_results_count=len(task_results),
+            failure_summary=failure_summary,
+            new_tasks=new_tasks,
+            new_plan=new_plan,
+        )
     return new_tasks
 
 
@@ -1779,31 +1757,12 @@ def _fallback_tasks_from_topic_discovery(result: dict[str, Any], existing_tasks:
         return []
     data = _read_json_file(Path(str(manifest_path)))
     seed_queries = data.get("seed_queries") if isinstance(data.get("seed_queries"), list) else []
-    seen = {_crawler_task_identity(task) for task in existing_tasks}
-    new_tasks: list[dict[str, Any]] = []
-    for index, query_value in enumerate(seed_queries):
-        query = str(query_value).strip()
-        if not query:
-            continue
-        source = "mcmod" if index < 10 else "tavily"
-        task = {
-            "source": source,
-            "query": query,
-            "reason": "topic discovery seed expanded from existing local documents",
-            "priority": 95 - index,
-            "search_limit": 8,
-            "max_urls": 6,
-        }
-        if source == "tavily":
-            task["search_depth"] = "advanced"
-        identity = _crawler_task_identity(task)
-        if identity in seen:
-            continue
-        seen.add(identity)
-        new_tasks.append(task)
-        if len(new_tasks) >= max_new_tasks:
-            break
-    return new_tasks
+    return CrawlerTaskMaterializationService().fallback_topic_tasks(
+        seed_queries=seed_queries,
+        existing_tasks=existing_tasks,
+        identity_fn=_crawler_task_identity,
+        max_new_tasks=max_new_tasks,
+    )
 
 
 def _llm_tasks_from_topic_discovery(
@@ -1823,7 +1782,8 @@ def _llm_tasks_from_topic_discovery(
     source_files = data.get("source_files") if isinstance(data.get("source_files"), list) else []
     if not seed_queries and not phrases:
         return []
-    existing_brief = [{"source": source, "query": query} for source, query in (_crawler_task_identity(task) for task in existing_tasks)]
+    materializer = CrawlerTaskMaterializationService()
+    existing_brief = materializer.existing_brief(existing_tasks, identity_fn=_crawler_task_identity)
     try:
         plan = review_topic_discovery_candidates(
             question,
@@ -1835,26 +1795,13 @@ def _llm_tasks_from_topic_discovery(
     except Exception as exc:  # noqa: BLE001
         result["topic_discovery_review_error"] = f"{type(exc).__name__}: {exc}"
         return []
-    seen = {_crawler_task_identity(task) for task in existing_tasks}
-    new_tasks: list[dict[str, Any]] = []
-    for task in list(plan.get("tasks") or []):
-        if not isinstance(task, dict):
-            continue
-        source = _source_alias(str(task.get("source") or ""))
-        query = str(task.get("query") or "").strip()
-        if source == "topic_discovery" or not query:
-            continue
-        cloned = dict(task)
-        cloned["source"] = source
-        cloned["query"] = query
-        cloned["reason"] = f"Crawler LLM reviewed topic discovery candidates; {cloned.get('reason') or ''}".strip()
-        identity = _crawler_task_identity(cloned)
-        if identity in seen:
-            continue
-        seen.add(identity)
-        new_tasks.append(cloned)
-        if len(new_tasks) >= max_new_tasks:
-            break
+    new_tasks = materializer.materialize_topic_review_tasks(
+        review_plan=plan,
+        existing_tasks=existing_tasks,
+        identity_fn=_crawler_task_identity,
+        source_alias_fn=_source_alias,
+        max_new_tasks=max_new_tasks,
+    )
     if new_tasks:
         return new_tasks
     return _fallback_tasks_from_topic_discovery(result, existing_tasks, max_new_tasks=max_new_tasks)
