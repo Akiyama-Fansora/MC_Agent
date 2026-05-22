@@ -36,6 +36,7 @@ from .crawler_delegation_service import CrawlerDelegationService
 from .crawler_planner import CONCEPTS, decompose_crawler_queries, plan_crawler_tasks, toolsets_payload
 from .crawler_runtime_step_service import CrawlerRuntimeStepService
 from .crawler_task_preparation_service import CrawlerTaskPreparationService
+from .crawler_result_accounting_service import CrawlerResultAccountingService
 from .evidence_service import EvidenceWorkflowService
 from .ingest import ingest_exports
 from .job_view_service import JobReadableViewService
@@ -1911,6 +1912,7 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
         max_total_tasks = max(len(tasks), min(32, initial_task_limit + 12))
         runtime_step = CrawlerRuntimeStepService()
         task_preparation = CrawlerTaskPreparationService()
+        result_accounting = CrawlerResultAccountingService()
         while index < len(tasks):
             if job.stop_requested:
                 break
@@ -2040,63 +2042,28 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
                     str(task_payload.get("query") or ""),
                     plan,
                 )
-            if task_source == "modpack_download" and result["returncode"] == 0:
-                downloads_loaded = int(result["manifest_stats"].get("downloads") or 0)
-                if downloads_loaded > 0:
-                    success_count += 1
-                    result["archive_downloaded"] = True
-                    followup_task = {
-                        "source": "modpack_internal",
-                        "query": str(task_payload.get("query") or question),
-                        "reason": "Crawler downloaded a public modpack archive; parse internal manifest/modlist/quests/scripts next.",
-                        "priority": 146,
+            accounting = result_accounting.apply(
+                result=result,
+                task_source=task_source,
+                delivery_target=str(plan.get("delivery_target") or payload.get("delivery_target") or ""),
+                followup_query=str(task_payload.get("query") or question),
+            )
+            success_count += int(accounting.get("success_delta") or 0)
+            candidate_count += int(accounting.get("candidate_delta") or 0)
+            failure_count += int(accounting.get("failure_delta") or 0)
+            needs_ingest = needs_ingest or bool(accounting.get("needs_ingest"))
+            followup_task = accounting.get("followup_task") if isinstance(accounting.get("followup_task"), dict) else None
+            if followup_task and _crawler_task_identity(followup_task) not in {_crawler_task_identity(existing) for existing in tasks} and len(tasks) < max_total_tasks:
+                tasks.insert(index, followup_task)
+                plan.setdefault("agent_reflections", []).append(
+                    {
+                        "at_index": index,
+                        "action": "add_tasks",
+                        "reason": "公开整合包包体已下载，下一步应解析内部文件，而不是继续只搜网页。",
+                        "planner": "executor objective result",
+                        "tasks": [followup_task],
                     }
-                    if _crawler_task_identity(followup_task) not in {_crawler_task_identity(existing) for existing in tasks} and len(tasks) < max_total_tasks:
-                        tasks.insert(index, followup_task)
-                        plan.setdefault("agent_reflections", []).append(
-                            {
-                                "at_index": index,
-                                "action": "add_tasks",
-                                "reason": "公开整合包包体已下载，下一步应解析内部文件，而不是继续只搜网页。",
-                                "planner": "executor objective result",
-                                "tasks": [followup_task],
-                            }
-                        )
-                else:
-                    failure_count += 1
-                    result["archive_not_found"] = True
-                    result["failure_reason"] = result["manifest_stats"].get("failure_reason") or "未发现可公开直接下载的 .mrpack/.zip 整合包包体。"
-            elif task_source == "browser_collect" and result["returncode"] == 0 and records_loaded > 0:
-                success_count += 1
-                delivery_target = str(plan.get("delivery_target") or payload.get("delivery_target") or "").lower()
-                if "rag" in delivery_target or "mcagent" in delivery_target:
-                    needs_ingest = True
-                    result["ingest_deferred"] = "Crawler will ingest structured browser output for MCagent/RAG after the collection loop finishes."
-                else:
-                    result["ingest_skipped"] = "Structured browser output was saved to the requested directory for the human user."
-            elif task_source == "topic_discovery" and result["returncode"] == 0 and records_loaded > 0:
-                candidate_count += 1
-                result["candidate_only"] = True
-                result["ingest_skipped"] = "topic_discovery candidates are reviewed by Crawler LLM before follow-up collection"
-            elif result["returncode"] == 0 and bool(result.get("existing_evidence_reused", {}).get("matched")):
-                success_count += 1
-                result["ingest_skipped"] = "Crawler reused relevant duplicate-skipped evidence that already exists in the local knowledge base."
-            elif result["returncode"] == 0 and records_loaded > 0 and bool(result.get("topic_validation", {}).get("matched")):
-                success_count += 1
-                needs_ingest = True
-                result["ingest_deferred"] = "Crawler will ingest once after the collection loop finishes."
-            elif result["returncode"] == 0:
-                if records_loaded > 0:
-                    topic_reason = str(result.get("topic_validation", {}).get("reason") or "")
-                    if topic_reason in {"llm_judge_error_uncertain", "uncertain"}:
-                        result["uncertain_result"] = True
-                    else:
-                        result["off_topic_result"] = True
-                else:
-                    result["empty_result"] = True
-                failure_count += 1
-            else:
-                failure_count += 1
+                )
             result["observation"] = classify_crawler_tool_result(result).to_dict()
             task_results.append(result)
             if task_source == "topic_discovery" and result["returncode"] == 0:

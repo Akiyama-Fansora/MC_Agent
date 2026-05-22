@@ -1,0 +1,84 @@
+from __future__ import annotations
+
+from typing import Any
+
+
+class CrawlerResultAccountingService:
+    """Classify objective crawler tool results into counters and follow-ups."""
+
+    def apply(
+        self,
+        *,
+        result: dict[str, Any],
+        task_source: str,
+        delivery_target: str,
+        followup_query: str,
+    ) -> dict[str, Any]:
+        manifest = result.get("manifest_stats") if isinstance(result.get("manifest_stats"), dict) else {}
+        records_loaded = int(manifest.get("records") or 0)
+        returncode = int(result.get("returncode") or 0)
+        accounting = {
+            "success_delta": 0,
+            "candidate_delta": 0,
+            "failure_delta": 0,
+            "needs_ingest": False,
+            "followup_task": None,
+        }
+
+        if task_source == "modpack_download" and returncode == 0:
+            downloads_loaded = int(manifest.get("downloads") or 0)
+            if downloads_loaded > 0:
+                accounting["success_delta"] = 1
+                result["archive_downloaded"] = True
+                accounting["followup_task"] = {
+                    "source": "modpack_internal",
+                    "query": followup_query,
+                    "reason": "Crawler downloaded a public modpack archive; parse internal manifest/modlist/quests/scripts next.",
+                    "priority": 146,
+                }
+            else:
+                accounting["failure_delta"] = 1
+                result["archive_not_found"] = True
+                result["failure_reason"] = manifest.get("failure_reason") or "未发现可公开直接下载的 .mrpack/.zip 整合包包体。"
+            return accounting
+
+        if task_source == "browser_collect" and returncode == 0 and records_loaded > 0:
+            accounting["success_delta"] = 1
+            if "rag" in delivery_target.lower() or "mcagent" in delivery_target.lower():
+                accounting["needs_ingest"] = True
+                result["ingest_deferred"] = "Crawler will ingest structured browser output for MCagent/RAG after the collection loop finishes."
+            else:
+                result["ingest_skipped"] = "Structured browser output was saved to the requested directory for the human user."
+            return accounting
+
+        if task_source == "topic_discovery" and returncode == 0 and records_loaded > 0:
+            accounting["candidate_delta"] = 1
+            result["candidate_only"] = True
+            result["ingest_skipped"] = "topic_discovery candidates are reviewed by Crawler LLM before follow-up collection"
+            return accounting
+
+        if returncode == 0 and bool(result.get("existing_evidence_reused", {}).get("matched")):
+            accounting["success_delta"] = 1
+            result["ingest_skipped"] = "Crawler reused relevant duplicate-skipped evidence that already exists in the local knowledge base."
+            return accounting
+
+        if returncode == 0 and records_loaded > 0 and bool(result.get("topic_validation", {}).get("matched")):
+            accounting["success_delta"] = 1
+            accounting["needs_ingest"] = True
+            result["ingest_deferred"] = "Crawler will ingest once after the collection loop finishes."
+            return accounting
+
+        if returncode == 0:
+            if records_loaded > 0:
+                topic_reason = str(result.get("topic_validation", {}).get("reason") or "")
+                if topic_reason in {"llm_judge_error_uncertain", "uncertain"}:
+                    result["uncertain_result"] = True
+                else:
+                    result["off_topic_result"] = True
+            else:
+                result["empty_result"] = True
+            accounting["failure_delta"] = 1
+            return accounting
+
+        accounting["failure_delta"] = 1
+        return accounting

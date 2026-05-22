@@ -2883,3 +2883,76 @@ python api.py --host 127.0.0.1 --port 8766
 ### 52.5 下一步
 
 继续拆工具执行后的结果归档：把 manifest_stats、duplicate reuse、topic_validation、archive followup、success/failure 计数更新整理为服务，并确保每一步都只处理客观事实，不替 CrawlerAgent 做“资料够不够”的主观结论。
+
+## 53. CrawlerResultAccountingService：工具结果归档服务化（2026-05-22）
+
+本轮开始前已重新阅读本文档。第 52 阶段拆出了工具输入准备，本轮继续拆工具执行后的客观结果归档：根据工具返回码、manifest 记录数、下载数、重复复用证据、topic_validation 等事实，更新 success/candidate/failure 计数、入库需求和必要的后续内部解析任务。
+
+### 53.1 本轮目标
+
+把 `_run_crawler_job()` 中以下客观归档逻辑收敛成服务：
+
+- `modpack_download` 下载到公开包体后，生成 `modpack_internal` follow-up；
+- `browser_collect` 面向 human 时只保存结构化结果，面向 MCagent/RAG 时标记待入库；
+- `topic_discovery` 只计为候选发现，等待 Crawler LLM 复审；
+- 重复跳过但已有可复用证据时计为成功；
+- topic_validation 匹配时计为成功并待入库；
+- 空结果、跑偏、不确定或工具失败时计为失败，并保留对应标记。
+
+### 53.2 代码变更
+
+1. 新增 `mcagent/crawler_result_accounting_service.py`：
+   - `CrawlerResultAccountingService.apply()`；
+   - 返回 `success_delta`、`candidate_delta`、`failure_delta`、`needs_ingest`、`followup_task`；
+   - 只根据工具结果事实更新 result flags。
+2. 修改 `mcagent/web_server.py`：
+   - `_run_crawler_job()` 使用 `result_accounting.apply()`；
+   - 计数更新和 `needs_ingest` 聚合从内联 if/elif 移出；
+   - `modpack_internal` follow-up 仍以“公开包体已下载”这个客观结果为触发条件。
+3. 新增 `tests/crawler_result_accounting_service_scenarios.py`：
+   - 匹配记录计成功并待入库；
+   - human 结构化采集跳过入库；
+   - modpack 下载成功生成 internal follow-up；
+   - 跑偏记录计失败；
+   - topic_discovery 计候选。
+4. 更新 `.github/workflows/ci.yml`、`README.md`、`scripts/public_readiness_check.py`。
+
+### 53.3 边界说明
+
+`CrawlerResultAccountingService` 不判断“资料是否已经够回答用户”，也不决定下一步搜索策略。它只把工具结果转成可观察的账本变化。后续是否继续、是否重规划、是否结束，仍由 CrawlerAgent reflection loop 判断。
+
+### 53.4 本轮测试方案与结果
+
+已执行并通过：
+
+~~~powershell
+python -m py_compile mcagent\crawler_result_accounting_service.py mcagent\web_server.py tests\crawler_result_accounting_service_scenarios.py
+python tests\crawler_result_accounting_service_scenarios.py
+python -m py_compile api.py mcagent\agent_execution.py mcagent\agent_executor.py mcagent\agent_router.py mcagent\crawler_delegation_service.py mcagent\crawler_reflection_decision_service.py mcagent\crawler_reflection_service.py mcagent\crawler_runtime_step_service.py mcagent\crawler_task_preparation_service.py mcagent\crawler_result_accounting_service.py mcagent\evidence_service.py mcagent\event_stream.py mcagent\fastapi_app.py mcagent\job_view_service.py mcagent\rag_service.py mcagent\session_state.py mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py tests\crawler_delegation_service_scenarios.py tests\crawler_reflection_decision_scenarios.py tests\crawler_reflection_service_scenarios.py tests\crawler_runtime_step_service_scenarios.py tests\crawler_task_preparation_service_scenarios.py tests\crawler_result_accounting_service_scenarios.py tests\agent_execution_scenarios.py tests\agent_executor_scenarios.py tests\agent_router_scenarios.py tests\evidence_service_scenarios.py tests\job_view_service_scenarios.py tests\rag_service_scenarios.py tests\agent_runtime_scenarios.py tests\backend_services_scenarios.py tests\fastapi_backend_scenarios.py
+python tests\crawler_delegation_service_scenarios.py
+python tests\crawler_reflection_decision_scenarios.py
+python tests\crawler_reflection_service_scenarios.py
+python tests\crawler_runtime_step_service_scenarios.py
+python tests\crawler_task_preparation_service_scenarios.py
+python tests\crawler_result_accounting_service_scenarios.py
+python tests\agent_executor_scenarios.py
+python tests\agent_router_scenarios.py
+python tests\evidence_service_scenarios.py
+python tests\rag_service_scenarios.py
+python tests\backend_services_scenarios.py
+python tests\fastapi_backend_scenarios.py
+python tests\smoke_test.py
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+node --check frontend\static\app.js
+node --check frontend\static\settings.js
+git diff --check
+python api.py --host 127.0.0.1 --port 8766
+# 探针结果：/api/health=200，/api/jobs=200，/api/agents/crawler_agent/tools=200，POST /api/session/context=200
+~~~
+
+公开检查仍只有 LICENSE 非阻断警告。
+
+### 53.5 下一步
+
+继续拆 topic_discovery 候选复审和 bad_streak 触发重规划：把“何时把候选交给 Crawler LLM 复审”“何时把连续坏结果交给 Crawler LLM 重规划”变成明确服务，使 `_run_crawler_job()` 更接近 Agent loop 编排器。

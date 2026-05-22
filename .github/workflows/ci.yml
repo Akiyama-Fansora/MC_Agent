@@ -42,6 +42,7 @@ jobs:
           mcagent\crawler_reflection_decision_service.py
           mcagent\crawler_runtime_step_service.py
           mcagent\crawler_task_preparation_service.py
+          mcagent\crawler_result_accounting_service.py
           mcagent\evidence_service.py
           mcagent\event_stream.py
           mcagent\fastapi_app.py
@@ -63,6 +64,7 @@ jobs:
           tests\crawler_reflection_decision_scenarios.py
           tests\crawler_runtime_step_service_scenarios.py
           tests\crawler_task_preparation_service_scenarios.py
+          tests\crawler_result_accounting_service_scenarios.py
           tests\crawler_reflection_service_scenarios.py
           tests\agent_execution_scenarios.py
           tests\agent_executor_scenarios.py
@@ -88,6 +90,7 @@ jobs:
           python tests\crawler_reflection_decision_scenarios.py
           python tests\crawler_runtime_step_service_scenarios.py
           python tests\crawler_task_preparation_service_scenarios.py
+          python tests\crawler_result_accounting_service_scenarios.py
           python tests\crawler_reflection_service_scenarios.py
           python tests\agent_execution_scenarios.py
           python tests\agent_executor_scenarios.py
