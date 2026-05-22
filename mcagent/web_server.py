@@ -40,6 +40,7 @@ from .crawler_result_accounting_service import CrawlerResultAccountingService
 from .crawler_loop_control_service import CrawlerLoopControlService
 from .crawler_topic_discovery_service import CrawlerTopicDiscoveryReviewService
 from .crawler_job_finalization_service import CrawlerJobFinalizationService
+from .crawler_job_progress_service import CrawlerJobProgressService
 from .evidence_service import EvidenceWorkflowService
 from .ingest import ingest_exports
 from .job_view_service import JobReadableViewService
@@ -1884,22 +1885,7 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
             if not tasks:
                 tasks = _all_source_tasks(question, config, include_completed=True, session_summary=session_summary, max_tasks=max_tasks)
                 plan = {"strategy": "fallback_all_source_tasks", "tasks": tasks}
-            _update_job(
-                job,
-                summary=f"Crawler planned {plan.get('topic') or question}: {len(tasks)} collection tasks. Next: probe, verify, retry with alternate sources if needed, then ingest.",
-                result={
-                    "source": "planner",
-                    "plan": plan,
-                    "planned_tasks": tasks,
-                    "tasks": [],
-                    "loop": [
-                        {"phase": "understand", "status": "done", "note": "Understand caller, target entity, and missing evidence."},
-                        {"phase": "plan", "status": "done", "note": "Crawler LLM produced coverage goals, short queries, and source-specific tasks."},
-                        {"phase": "act", "status": "running", "note": "Execute tasks by priority; record returncode, export_dir, and errors for each task."},
-                        {"phase": "verify", "status": "pending", "note": "Verify records/skipped/errors and try automatic ingest."},
-                    ],
-                },
-            )
+            _update_job(job, **job_progress.planned(topic=str(plan.get("topic") or question), task_count=len(tasks), plan=plan, tasks=tasks))
         else:
             tasks = [{"source": source, "query": str(payload.get("query") or question), "reason": "single source request"}]
         task_results: list[dict[str, Any]] = []
@@ -1919,6 +1905,7 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
         loop_control = CrawlerLoopControlService()
         topic_discovery_review = CrawlerTopicDiscoveryReviewService()
         job_finalization = CrawlerJobFinalizationService()
+        job_progress = CrawlerJobProgressService()
         while index < len(tasks):
             if job.stop_requested:
                 break
@@ -1933,22 +1920,7 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
                     max_new_tasks=max(1, min(4, max_total_tasks - len(tasks))),
                 )
                 plan.setdefault("agent_reflections", []).append(runtime_step.reflection_entry(index=index, reflection=reflection))
-                _update_job(
-                    job,
-                    summary=f"CrawlerAgent 正在思考下一步：{reflection.get('action')}\n理由：{reflection.get('reason')}",
-                    result={
-                        "source": "planner",
-                        "tasks": task_results,
-                        "planned_tasks": tasks,
-                        "plan": plan,
-                        "loop": [
-                            {"phase": "understand", "status": "done"},
-                            {"phase": "reflect", "status": "running", "note": str(reflection.get("reason") or "")},
-                            {"phase": "act", "status": "pending", "note": "CrawlerAgent selected the next tool action; executor has not run it yet."},
-                            {"phase": "verify", "status": "pending"},
-                        ],
-                    },
-                )
+                _update_job(job, **job_progress.reflecting(reflection=reflection, task_results=task_results, tasks=tasks, plan=plan))
                 action = str(reflection.get("action") or "execute_pending")
                 new_tasks = [task for task in list(reflection.get("tasks") or []) if isinstance(task, dict)]
                 contract = reflection.get("contract") if isinstance(reflection.get("contract"), dict) else {}
@@ -1995,38 +1967,20 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
                 task_results.append(result)
                 failure_count += 1
                 bad_streak += 1
-                _update_job(
-                    job,
-                    summary=f"CrawlerAgent 选择了一个空查询，工具层已拒绝执行，等待 CrawlerAgent 重新规划。\n来源：{_source_label(task_source)}",
-                    result={
-                        "source": "planner",
-                        "tasks": task_results,
-                        "planned_tasks": tasks,
-                        "plan": plan,
-                        "loop": [
-                            {"phase": "understand", "status": "done"},
-                            {"phase": "reflect", "status": "pending", "note": "Previous selected task had an empty query."},
-                            {"phase": "act", "status": "blocked", "note": "Tool execution refused empty query."},
-                            {"phase": "verify", "status": "pending"},
-                        ],
-                    },
-                )
+                _update_job(job, **job_progress.empty_query_blocked(source_label=_source_label(task_source), task_results=task_results, tasks=tasks, plan=plan))
                 continue
             _update_job(
                 job,
-                summary=f"多源补库运行中：{index}/{len(tasks)} {_source_label(task_source)}\n查询：{task_payload['query']}\n原因：{task.get('reason') or ''}",
-                result={
-                    "source": "planner",
-                    "tasks": task_results,
-                    "planned_tasks": tasks,
-                    "plan": plan,
-                    "loop": [
-                        {"phase": "understand", "status": "done"},
-                        {"phase": "plan", "status": "done"},
-                        {"phase": "act", "status": "running", "note": f"Executing {index}/{len(tasks)}: {task_payload['query']}"},
-                        {"phase": "verify", "status": "pending"},
-                    ],
-                },
+                **job_progress.executing(
+                    index=index,
+                    task_count=len(tasks),
+                    source_label=_source_label(task_source),
+                    query=str(task_payload["query"]),
+                    reason=str(task.get("reason") or ""),
+                    task_results=task_results,
+                    tasks=tasks,
+                    plan=plan,
+                ),
             )
             result = _run_crawler_command(_round_command(task_source, task_payload), task_source, job=job)
             result["query"] = str(task_payload.get("query") or "")
@@ -2074,23 +2028,7 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
             task_results.append(result)
             if topic_discovery_review.should_review(task_source=task_source, result=result):
                 remaining_slots = topic_discovery_review.remaining_slots(max_total_tasks=max_total_tasks, current_task_count=len(tasks))
-                _update_job(
-                    job,
-                    summary="Crawler 正在审核主题发现候选：由 Crawler LLM 判断哪些候选值得继续采集。",
-                    result={
-                        "source": "planner",
-                        "tasks": task_results,
-                        "planned_tasks": tasks,
-                        "plan": plan,
-                        "loop": [
-                            {"phase": "understand", "status": "done"},
-                            {"phase": "plan", "status": "done"},
-                            {"phase": "act", "status": "running"},
-                            {"phase": "reviewing_candidates", "status": "running", "note": "Topic discovery produced candidates; Crawler LLM is judging what to expand next."},
-                            {"phase": "verify", "status": "pending"},
-                        ],
-                    },
-                )
+                _update_job(job, **job_progress.reviewing_candidates(task_results=task_results, tasks=tasks, plan=plan))
                 discovered_tasks = _llm_tasks_from_topic_discovery(question, config, result, tasks, max_new_tasks=min(16, remaining_slots))
                 if discovered_tasks:
                     tasks.extend(discovered_tasks)
@@ -2109,23 +2047,7 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
                 max_total_tasks=max_total_tasks,
             ):
                 replan_count += 1
-                _update_job(
-                    job,
-                    summary=f"Crawler detected {bad_streak} empty/off-topic/failed results. Replanning queries and sources ({replan_count}/{max_replans}).",
-                    result={
-                        "source": "planner",
-                        "tasks": task_results,
-                        "planned_tasks": tasks,
-                        "plan": plan,
-                        "loop": [
-                            {"phase": "understand", "status": "done"},
-                            {"phase": "plan", "status": "done"},
-                            {"phase": "act", "status": "running"},
-                            {"phase": "replan", "status": "running", "note": "Recent crawler results were empty, off-topic, or failed. Asking Crawler LLM to revise source/query choices."},
-                            {"phase": "verify", "status": "pending"},
-                        ],
-                    },
-                )
+                _update_job(job, **job_progress.replanning(bad_streak=bad_streak, replan_count=replan_count, max_replans=max_replans, task_results=task_results, tasks=tasks, plan=plan))
                 remaining_slots = max(0, max_total_tasks - len(tasks))
                 new_tasks = _replan_crawler_tasks(
                     question,

@@ -3175,3 +3175,76 @@ python api.py --host 127.0.0.1 --port 8766
 ### 56.5 下一步
 
 继续把 Crawler job 的“运行中状态更新 payload”整理成服务：规划完成、反思中、工具执行中、候选复审中、replan 中这些 `_update_job()` payload 目前仍散落在 `_run_crawler_job()`。
+
+## 57. CrawlerJobProgressService：运行中状态 payload 服务化（2026-05-22）
+
+本轮开始前已重新阅读本文档。第 56 阶段拆出了最终汇总，本轮继续拆 `_run_crawler_job()` 运行过程中的 `_update_job()` payload：规划完成、反思中、空查询阻断、工具执行中、候选复审中、mid-job replan 中。
+
+### 57.1 本轮目标
+
+把运行中状态构建统一为纯视图服务：
+
+- `planned()`：规划完成后的初始 loop；
+- `reflecting()`：CrawlerAgent reflection 阶段；
+- `empty_query_blocked()`：工具层拒绝空查询；
+- `executing()`：当前工具动作执行中；
+- `reviewing_candidates()`：topic discovery 候选复审中；
+- `replanning()`：连续坏结果触发 Crawler planning LLM 重规划中。
+
+这些状态只是给用户和前端看的可观察过程，不决定下一步行动。
+
+### 57.2 代码变更
+
+1. 新增 `mcagent/crawler_job_progress_service.py`：
+   - `CrawlerJobProgressService` 的 6 个 payload 构建方法；
+   - 统一返回 `{summary, result}`，直接交给 `_update_job()`。
+2. 修改 `mcagent/web_server.py`：
+   - `_run_crawler_job()` 使用 `job_progress` 构建运行中状态；
+   - 删除多处内联 summary/result/loop 字典。
+3. 新增 `tests/crawler_job_progress_service_scenarios.py`：
+   - 覆盖 planned、reflecting、empty_query、executing、reviewing、replanning。
+4. 更新 `.github/workflows/ci.yml`、`README.md`、`scripts/public_readiness_check.py`。
+
+### 57.3 边界说明
+
+`CrawlerJobProgressService` 是展示层服务。它不触发工具、不调用 LLM、不改变任务队列，只把已经发生或正在发生的阶段转成稳定 UI/API payload。这样前端看到的进度来自统一格式，但 Agent 的思考和工具选择仍然在 CrawlerAgent loop 内。
+
+### 57.4 本轮测试方案与结果
+
+已执行并通过：
+
+~~~powershell
+python -m py_compile mcagent\crawler_job_progress_service.py mcagent\web_server.py tests\crawler_job_progress_service_scenarios.py
+python tests\crawler_job_progress_service_scenarios.py
+python -m py_compile api.py mcagent\agent_execution.py mcagent\agent_executor.py mcagent\agent_router.py mcagent\crawler_delegation_service.py mcagent\crawler_job_finalization_service.py mcagent\crawler_job_progress_service.py mcagent\crawler_loop_control_service.py mcagent\crawler_reflection_decision_service.py mcagent\crawler_reflection_service.py mcagent\crawler_runtime_step_service.py mcagent\crawler_task_preparation_service.py mcagent\crawler_result_accounting_service.py mcagent\crawler_topic_discovery_service.py mcagent\evidence_service.py mcagent\event_stream.py mcagent\fastapi_app.py mcagent\job_view_service.py mcagent\rag_service.py mcagent\session_state.py mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py tests\crawler_delegation_service_scenarios.py tests\crawler_job_finalization_service_scenarios.py tests\crawler_job_progress_service_scenarios.py tests\crawler_loop_control_service_scenarios.py tests\crawler_reflection_decision_scenarios.py tests\crawler_reflection_service_scenarios.py tests\crawler_runtime_step_service_scenarios.py tests\crawler_task_preparation_service_scenarios.py tests\crawler_result_accounting_service_scenarios.py tests\crawler_topic_discovery_service_scenarios.py tests\agent_execution_scenarios.py tests\agent_executor_scenarios.py tests\agent_router_scenarios.py tests\evidence_service_scenarios.py tests\job_view_service_scenarios.py tests\rag_service_scenarios.py tests\agent_runtime_scenarios.py tests\backend_services_scenarios.py tests\fastapi_backend_scenarios.py
+python tests\crawler_delegation_service_scenarios.py
+python tests\crawler_job_finalization_service_scenarios.py
+python tests\crawler_job_progress_service_scenarios.py
+python tests\crawler_loop_control_service_scenarios.py
+python tests\crawler_reflection_decision_scenarios.py
+python tests\crawler_reflection_service_scenarios.py
+python tests\crawler_runtime_step_service_scenarios.py
+python tests\crawler_task_preparation_service_scenarios.py
+python tests\crawler_result_accounting_service_scenarios.py
+python tests\crawler_topic_discovery_service_scenarios.py
+python tests\agent_executor_scenarios.py
+python tests\agent_router_scenarios.py
+python tests\evidence_service_scenarios.py
+python tests\rag_service_scenarios.py
+python tests\backend_services_scenarios.py
+python tests\fastapi_backend_scenarios.py
+python tests\smoke_test.py
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+node --check frontend\static\app.js
+node --check frontend\static\settings.js
+git diff --check
+python api.py --host 127.0.0.1 --port 8766
+# 探针结果：/api/health=200，/api/jobs=200，/api/agents/crawler_agent/tools=200，POST /api/session/context=200
+~~~
+
+公开检查仍只有 LICENSE 非阻断警告。
+
+### 57.5 下一步
+
+继续收敛 `_run_crawler_job()` 的外层结构：把初始化 plan/tasks、stop handling、fallback_all_source_tasks 的编排拆成更清晰的 crawler job planner/start service，进一步减少 `web_server.py` 对 CrawlerAgent loop 的直接控制。

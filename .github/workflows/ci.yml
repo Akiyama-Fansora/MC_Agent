@@ -40,6 +40,7 @@ jobs:
           mcagent\agent_router.py
           mcagent\crawler_delegation_service.py
           mcagent\crawler_job_finalization_service.py
+          mcagent\crawler_job_progress_service.py
           mcagent\crawler_loop_control_service.py
           mcagent\crawler_reflection_decision_service.py
           mcagent\crawler_runtime_step_service.py
@@ -65,6 +66,7 @@ jobs:
           scripts\smoke_agent_flows.py
           tests\crawler_delegation_service_scenarios.py
           tests\crawler_job_finalization_service_scenarios.py
+          tests\crawler_job_progress_service_scenarios.py
           tests\crawler_loop_control_service_scenarios.py
           tests\crawler_reflection_decision_scenarios.py
           tests\crawler_runtime_step_service_scenarios.py
@@ -94,6 +96,7 @@ jobs:
           python tests\smoke_test.py
           python tests\crawler_delegation_service_scenarios.py
           python tests\crawler_job_finalization_service_scenarios.py
+          python tests\crawler_job_progress_service_scenarios.py
           python tests\crawler_loop_control_service_scenarios.py
           python tests\crawler_reflection_decision_scenarios.py
           python tests\crawler_runtime_step_service_scenarios.py
