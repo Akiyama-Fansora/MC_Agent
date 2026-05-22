@@ -36,6 +36,7 @@ jobs:
           python -m py_compile
           api.py
           mcagent\agent_execution.py
+          mcagent\agent_executor.py
           mcagent\agent_router.py
           mcagent\event_stream.py
           mcagent\fastapi_app.py
@@ -51,6 +52,7 @@ jobs:
           scripts\public_readiness_check.py
           scripts\smoke_agent_flows.py
           tests\agent_execution_scenarios.py
+          tests\agent_executor_scenarios.py
           tests\agent_router_scenarios.py
           tests\agent_runtime_scenarios.py
           tests\backend_services_scenarios.py
@@ -67,6 +69,7 @@ jobs:
         run: |
           python tests\smoke_test.py
           python tests\agent_execution_scenarios.py
+          python tests\agent_executor_scenarios.py
           python tests\agent_router_scenarios.py
           python tests\agent_runtime_scenarios.py
           python tests\backend_services_scenarios.py
@@ -74,4 +77,6 @@ jobs:
 
       - name: Frontend syntax check
         shell: pwsh
-        run: node --check frontend\static\app.js
+        run: |
+          node --check frontend\static\app.js
+          node --check frontend\static\settings.js

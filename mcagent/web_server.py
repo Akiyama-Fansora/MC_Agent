@@ -26,6 +26,7 @@ from .agent_runtime import (
     make_agent_loop_event,
 )
 from .agent_execution import build_agent_execution_context
+from .agent_executor import AgentToolExecutor
 from .agent_router import LlmAgentToolRouterService, json_object_from_llm_text
 from .chat import SYSTEM_PROMPT, format_context, format_sources
 from .cleaners import _HTMLTextExtractor, normalize_text
@@ -5044,6 +5045,11 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
         select_client=_selected_llm_client,
         action_plan_has_tool=_action_plan_has_tool,
     )
+    executor = AgentToolExecutor(
+        generate_direct_answer=_generate_direct_answer,
+        generate_direct_answer_stream=_generate_direct_answer_stream,
+        status_answer=_crawler_monitor_answer,
+    )
     route = router.route(run, session_summary=session_summary)
     tool_decision = route.tool_decision
     route_intent = route.route_intent
@@ -5052,45 +5058,9 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
     planned_workflow = route.planned_workflow
     planned_delegate = route.planned_delegate
     if route_intent == "router_error":
-        error_text = str(tool_decision.get("error") or tool_decision.get("reason") or "unknown error")
-        add_trace("done", "router_error", {"error": error_text, "delegated": False})
-        return _with_trace(
-            {
-                "answer": f"Agent 工具选择模型调用失败：{error_text}\n\n本次没有执行本地检索，也没有启动 Crawler。请检查当前模型配置或稍后重试。",
-                "sources": [],
-                "context": "",
-                "agent": agent,
-            },
-            trace,
-        )
+        return executor.router_error(run, tool_decision)
     if route_intent == "direct_answer":
-        add_trace("answer", "generating", {"model": model, "mode": "direct"})
-        try:
-            if emit is not None:
-                answer = _generate_direct_answer_stream(
-                    config,
-                    original_question,
-                    question,
-                    session_summary,
-                    model,
-                    temperature,
-                    max_tokens,
-                    lambda chunk: emit("delta", {"text": chunk}),
-                    emit_thinking=lambda detail: add_trace("answer", "thinking", detail),
-                )
-            else:
-                answer = _generate_direct_answer(
-                    config,
-                    original_question,
-                    question,
-                    session_summary,
-                    model,
-                    temperature,
-                    max_tokens,
-                )
-        except Exception as exc:  # noqa: BLE001
-            answer = f"模型调用失败：{exc}"
-        return _with_trace({"answer": answer, "sources": [], "context": "", "agent": agent}, trace)
+        return executor.direct_answer(run, session_summary=session_summary)
     if route_intent == "delegate_crawler":
         collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
         delegate_confirmation = router.confirm_next_step(
@@ -5166,7 +5136,7 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
             context={},
         )
         add_trace("status", "next_step_confirmed", status_confirmation)
-        return _with_trace(_crawler_monitor_answer(config), trace)
+        return executor.status(run)
 
     retriever = Retriever(config)
     evidence_question = rag_focus or question
@@ -5189,33 +5159,7 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
         if not bool(retrieval_confirmation.get("proceed", True)):
             suggested_tool = str(retrieval_confirmation.get("suggested_tool") or retrieval_confirmation.get("tool") or "").strip()
             if suggested_tool in {"answer", "direct_answer", "final_answer_llm"}:
-                add_trace("answer", "generating", {"model": model, "mode": "direct_after_retrieval_cancelled"})
-                try:
-                    if emit is not None:
-                        answer = _generate_direct_answer_stream(
-                            config,
-                            original_question,
-                            question,
-                            session_summary,
-                            model,
-                            temperature,
-                            max_tokens,
-                            lambda chunk: emit("delta", {"text": chunk}),
-                            emit_thinking=lambda detail: add_trace("answer", "thinking", detail),
-                        )
-                    else:
-                        answer = _generate_direct_answer(
-                            config,
-                            original_question,
-                            question,
-                            session_summary,
-                            model,
-                            temperature,
-                            max_tokens,
-                        )
-                except Exception as exc:  # noqa: BLE001
-                    answer = f"模型调用失败：{exc}"
-                return _with_trace({"answer": answer, "sources": [], "context": "", "agent": agent}, trace)
+                return executor.direct_answer(run, session_summary=session_summary, mode="direct_after_retrieval_cancelled")
         planning_summary = _retrieval_planning_summary(session_summary, original_question, evidence_question)
         add_trace("retrieve", "planning", {"question": evidence_question, "original": original_question})
         retrieval_plan = plan_retrieval(evidence_question, session_summary=planning_summary, max_queries=10, use_llm=True)

@@ -1,0 +1,87 @@
+from __future__ import annotations
+
+from typing import Any, Callable, Protocol
+
+
+class ExecutableRun(Protocol):
+    config: Any
+    original_question: str
+    question: str
+    agent: str
+    model: str
+    temperature: float
+    max_tokens: int | None
+    is_streaming: bool
+
+    def add_trace(self, stage: str, status: str, detail: Any = None) -> dict[str, Any]:
+        ...
+
+    def emit_delta(self, text: str) -> None:
+        ...
+
+    def response(self, payload: dict[str, Any]) -> dict[str, Any]:
+        ...
+
+
+DirectAnswerFn = Callable[[Any, str, str, dict[str, Any], str, float, int | None], str]
+DirectAnswerStreamFn = Callable[..., str]
+StatusAnswerFn = Callable[[Any], dict[str, Any]]
+
+
+class AgentToolExecutor:
+    """Run an already selected tool without deciding which tool should run."""
+
+    def __init__(
+        self,
+        *,
+        generate_direct_answer: DirectAnswerFn,
+        generate_direct_answer_stream: DirectAnswerStreamFn,
+        status_answer: StatusAnswerFn,
+    ) -> None:
+        self._generate_direct_answer = generate_direct_answer
+        self._generate_direct_answer_stream = generate_direct_answer_stream
+        self._status_answer = status_answer
+
+    def router_error(self, run: ExecutableRun, tool_decision: dict[str, Any]) -> dict[str, Any]:
+        error_text = str(tool_decision.get("error") or tool_decision.get("reason") or "unknown error")
+        run.add_trace("done", "router_error", {"error": error_text, "delegated": False})
+        return run.response(
+            {
+                "answer": f"Agent 工具选择模型调用失败：{error_text}\n\n本次没有执行本地检索，也没有启动 Crawler。请检查当前模型配置或稍后重试。",
+                "sources": [],
+                "context": "",
+                "agent": run.agent,
+            }
+        )
+
+    def direct_answer(self, run: ExecutableRun, *, session_summary: dict[str, Any], mode: str = "direct") -> dict[str, Any]:
+        run.add_trace("answer", "generating", {"model": run.model, "mode": mode})
+        try:
+            if run.is_streaming:
+                answer = self._generate_direct_answer_stream(
+                    run.config,
+                    run.original_question,
+                    run.question,
+                    session_summary,
+                    run.model,
+                    run.temperature,
+                    run.max_tokens,
+                    run.emit_delta,
+                    emit_thinking=lambda detail: run.add_trace("answer", "thinking", detail),
+                )
+            else:
+                answer = self._generate_direct_answer(
+                    run.config,
+                    run.original_question,
+                    run.question,
+                    session_summary,
+                    run.model,
+                    run.temperature,
+                    run.max_tokens,
+                )
+        except Exception as exc:  # noqa: BLE001 - model failures must be visible as model failures.
+            answer = f"模型调用失败：{exc}"
+        return run.response({"answer": answer, "sources": [], "context": "", "agent": run.agent})
+
+    def status(self, run: ExecutableRun) -> dict[str, Any]:
+        return run.response(self._status_answer(run.config))

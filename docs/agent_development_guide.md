@@ -2144,3 +2144,85 @@ python tests\fastapi_backend_scenarios.py
 
 - 第 42 阶段抽 `AgentToolExecutor`，先拆 direct answer/status/delegate 三个执行分支；
 - 第 43 阶段再拆 RAG 检索、证据筛选与 final answer executor。
+
+## 42. Agent 工具执行第一阶段：direct/status/router_error 执行器（2026-05-22）
+
+本轮开始前已重新阅读本文档。第 41 阶段已经把工具路由 prompt 迁出 web 层，但 `_chat_impl()` 里仍然直接执行 direct answer、status 和 router_error 分支。为了继续降低后端耦合，本轮先抽出低风险工具执行器。
+
+### 42.1 本轮定位
+
+这次抽离只处理“Agent 已经明确选中的工具”。它不决定要不要查状态、不决定要不要直接回答、不决定要不要委托 Crawler。工具选择仍由 `LlmAgentToolRouterService` 和当前 Agent LLM 完成。
+
+执行器的职责是客观执行：
+
+- router_error：把工具选择模型失败明确展示给用户，并保证不检索、不委托；
+- direct_answer：调用最终回答模型或流式模型，把 delta 和 thinking trace 转发给前端；
+- status：调用状态监控工具并返回结果；
+- retrieval 被 Agent 二次确认取消且建议直接回答时，复用同一 direct_answer 执行路径。
+
+### 42.2 本轮改造
+
+1. 新增 `mcagent/agent_executor.py`：
+   - `AgentToolExecutor` 封装 direct/status/router_error 的客观执行；
+   - streaming direct answer 通过 `run.emit_delta` 输出 token，通过 `answer/thinking` trace 展示可观察思考进度；
+   - 模型失败只显示“模型调用失败”，不把工具抽取结果伪装成最终回答。
+2. `web_server.py`：
+   - route_intent 为 `router_error`、`direct_answer`、`status` 时改用执行器；
+   - 本地 RAG 检索被 Agent 二次确认取消且建议 direct answer 时，也走执行器，避免旧分支重复调用模型。
+3. `README.md`：
+   - 发现旧 README 已经乱码，本轮重写为干净 UTF-8 中文版；
+   - README 只保留公开用户需要的安装、配置、启动、导入、测试与 Agent 边界，不写内部公开标准清单。
+4. `public_readiness_check.py`：
+   - 公开检查改为检查正常中文短语“本地质量检查”；
+   - 加入 `agent_executor.py` 与对应测试。
+5. CI 加入 `agent_executor` 语法检查、场景测试与 `settings.js` 前端语法检查。
+
+### 42.3 本轮测试方案
+
+目标行为：
+
+- direct answer 非流式和流式都能由执行器调用；
+- streaming 能发出 delta，并保留 thinking trace；
+- router_error 不执行本地检索、不启动 Crawler；
+- status 分支仍直接返回监控结果；
+- README 与公开检查不再包含乱码短语；
+- FastAPI 仍能启动，`/api/health`、`/docs`、`/api/session/context`、`/api/agents/{agent}/tools` 可用。
+
+风险点：
+
+- 执行器抽离后 trace shape 与前端不兼容；
+- streaming direct answer 漏掉 delta；
+- router_error 被误写成普通 answer 或触发工具；
+- README 重写遗漏公开安装步骤；
+- 公开检查仍引用旧乱码短语。
+
+离线测试：
+
+- `tests/agent_executor_scenarios.py`：
+  - router_error 不执行工具；
+  - direct answer 非流式；
+  - direct answer 流式 delta + thinking trace；
+  - direct answer 模型失败可见；
+  - status 返回监控 payload。
+
+集成测试：
+
+~~~powershell
+python -m py_compile api.py mcagent\agent_execution.py mcagent\agent_executor.py mcagent\agent_router.py mcagent\event_stream.py mcagent\fastapi_app.py mcagent\session_state.py mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py tests\agent_execution_scenarios.py tests\agent_executor_scenarios.py tests\agent_router_scenarios.py tests\agent_runtime_scenarios.py tests\backend_services_scenarios.py tests\fastapi_backend_scenarios.py
+node --check frontend\static\app.js
+node --check frontend\static\settings.js
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+python tests\smoke_test.py
+python tests\agent_execution_scenarios.py
+python tests\agent_executor_scenarios.py
+python tests\agent_router_scenarios.py
+python tests\agent_runtime_scenarios.py
+python tests\backend_services_scenarios.py
+python tests\fastapi_backend_scenarios.py
+~~~
+
+后续计划：
+
+- 第 43 阶段抽 RAG 检索、证据筛选与 final answer 执行器；
+- 第 44 阶段抽 Crawler 委托执行器和 job timeline 服务。
