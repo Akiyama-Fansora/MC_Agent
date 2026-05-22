@@ -1828,3 +1828,86 @@ python tests\fastapi_backend_scenarios.py
 
 - 第二阶段再把上下文、Agent 工具事件、job timeline 抽成清晰的 service 层；
 - 第三阶段把 FastAPI 设为唯一默认后端，旧 `web.py` 只保留一段迁移期。
+
+## 38. FastAPI 后端第二阶段：会话状态与 SSE 事件服务化（2026-05-22）
+
+本轮开始前已重新阅读本文档。用户允许进行“大修改”，目标是继续打磨后端，让两个 Agent 的上下文、事件流和后续工具链路不再堆在旧 `web_server.py` 的全局变量和重复 SSE 代码里。
+
+### 38.1 本轮定位
+
+上一轮 FastAPI 后端已经能跑，但仍然直接引用旧后端的 `SESSIONS`、`SESSIONS_LOCK` 和手写队列线程。这说明框架层已经换了，状态层还没有真正拆出来。继续在接口里直接摸全局变量，会让后续“Agent 计划、上下文、工具调用、任务时间线”越来越难观察和测试。
+
+本轮只抽离客观状态与事件基础设施，不改变 Agent 的主观判断原则：
+
+- Agent 是否回答、检索、查状态或委托 Crawler，仍由 LLM 工具选择链路判断；
+- 新模块只负责保存会话、生成上下文快照、编码 SSE、把后台线程事件送到前端；
+- 不新增任何针对测试句子的关键词路由或特例规则；
+- 旧 `web.py` 与 FastAPI 共用同一个会话状态服务，避免两个后端上下文不一致。
+
+### 38.2 本轮改造
+
+1. 新增 `mcagent/session_state.py`：
+   - `InMemorySessionStore` 管理会话历史、摘要、删除和上下文快照；
+   - `SessionContext` 统一返回 `session_id`、`agent`、`history`、`summary`、`turn_count`、`last_turn`；
+   - `payload_history()` 专门把前端传入的历史消息转成后端 turn；
+   - `merge_limited()` 作为会话摘要去重合并工具。
+2. 新增 `mcagent/event_stream.py`：
+   - `StreamEvent` 负责 SSE 编码；
+   - `ThreadedEventStream` 负责在线程中执行旧的同步 Agent 函数，并把 trace/response/done/error 流式送出。
+3. `web_server.py`：
+   - 删除直接维护 `SESSIONS`、`SESSION_SUMMARIES`、`SESSIONS_LOCK` 的方式；
+   - `_append_session()`、`_session_history()`、`_session_summary()`、`_delete_session()` 改为使用 `SESSION_STORE`；
+   - 旧标准库后端也新增 `/api/session/context`，与 FastAPI 的上下文接口保持一致。
+4. `fastapi_app.py`：
+   - 不再直接读取 `SESSIONS`；
+   - `/api/session` 与 `/api/session/context` 统一走 `DEFAULT_SESSION_STORE`；
+   - `/api/chat/stream` 使用 `ThreadedEventStream`，去掉重复的 SSE 队列实现。
+5. FastAPI 新增 `/api/agents/{agent_id}/tools`：
+   - 返回该 Agent 的 route tools、Crawler 的 collection tools 和 prompt 级工具目录；
+   - 该接口只暴露环境能力，方便前端和测试观察，不负责替 Agent 选择工具。
+6. README、CI、公开检查加入新后端服务模块和测试。
+
+### 38.3 本轮测试方案
+
+目标行为：
+
+- FastAPI 和旧后端都能通过同一个会话状态服务读取上下文；
+- `/api/session/context` 能稳定返回可观察的 history 与 summary；
+- `/api/agents/{agent_id}/tools` 能稳定展示 Agent 可用工具；
+- SSE 事件编码和后台线程流式输出可独立测试；
+- Agent 决策链路不因服务化改造改变；
+- 公开检查能要求这些后端基础模块存在，避免未来误删。
+
+风险点：
+
+- 从全局变量迁移到 store 后，会话历史丢失或删除失效；
+- FastAPI 与旧后端使用不同 store，造成上下文不一致；
+- SSE 抽象吞掉异常或漏发 `done`；
+- 旧测试只覆盖 FastAPI，不覆盖服务层本身；
+- 公开检查没有把新增文件列为必需文件。
+
+离线测试：
+
+- `tests/backend_services_scenarios.py`：
+  - `InMemorySessionStore` 的 append/context/delete；
+  - `payload_history()` 对前端历史的解析；
+  - `merge_limited()` 的去重限制；
+  - `ThreadedEventStream` 的 trace/response/done SSE 形状。
+
+集成测试：
+
+~~~powershell
+python -m py_compile api.py mcagent\event_stream.py mcagent\fastapi_app.py mcagent\session_state.py mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py tests\agent_runtime_scenarios.py tests\backend_services_scenarios.py tests\fastapi_backend_scenarios.py
+node --check frontend\static\app.js
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+python tests\smoke_test.py
+python tests\agent_runtime_scenarios.py
+python tests\backend_services_scenarios.py
+python tests\fastapi_backend_scenarios.py
+~~~
+
+后续计划：
+
+- 第三阶段抽出 `AgentExecutionService`，把 `_chat_impl()` 的工具选择、确认、执行和回答组织拆成可观察步骤；
+- 第四阶段抽出 `CrawlerJobTimelineService`，让后台任务状态、失败原因和当前动作在 UI 中更直观。

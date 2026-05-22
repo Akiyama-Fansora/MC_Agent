@@ -1,24 +1,21 @@
 from __future__ import annotations
 
 import argparse
-import json
-import queue
-import threading
-import traceback
 from typing import Any, Iterator
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from .agent_runtime import collection_tools_for_crawler, tool_catalog_prompt, tools_for_agent
 from .config import AppConfig, load_config
 from .crawler_llm_planner import plan_crawler_tasks_resilient
 from .crawler_planner import plan_crawler_tasks, toolsets_payload
+from .event_stream import ThreadedEventStream
 from .llm_profiles import profile_by_id, profiles_payload, save_profiles_payload, test_profile_connection
+from .session_state import DEFAULT_SESSION_STORE, normalize_session_id
 from .web_server import (
     AGENTS,
-    SESSIONS,
-    SESSIONS_LOCK,
     STATIC_DIR,
     WEB_DIR,
     _adaptive_preview_k,
@@ -41,33 +38,13 @@ from .web_server import (
 )
 
 
-def _sse(event: str, data: Any) -> str:
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-
 def _stream_chat_events(config: AppConfig, payload: dict[str, Any]) -> Iterator[str]:
-    events: queue.Queue[tuple[str, Any]] = queue.Queue()
+    def run(emit: Any) -> None:
+        result = _chat_impl(config, payload, emit=emit)
+        emit("response", result)
+        emit("done", {"ok": True})
 
-    def emit(event: str, data: Any) -> None:
-        events.put((event, data))
-
-    def worker() -> None:
-        try:
-            result = _chat_impl(config, payload, emit=emit)
-            emit("response", result)
-            emit("done", {"ok": True})
-        except Exception as exc:  # noqa: BLE001 - mirror legacy SSE behavior.
-            traceback.print_exc()
-            emit("error", {"error": f"{type(exc).__name__}: {exc}"})
-        finally:
-            events.put(("__end__", None))
-
-    threading.Thread(target=worker, daemon=True).start()
-    while True:
-        event, data = events.get()
-        if event == "__end__":
-            break
-        yield _sse(event, data)
+    return ThreadedEventStream(run).sse()
 
 
 def create_app(config: AppConfig | None = None) -> FastAPI:
@@ -123,6 +100,17 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     @app.get("/api/agents")
     def agents() -> dict[str, Any]:
         return {"agents": AGENTS}
+
+    @app.get("/api/agents/{agent_id}/tools")
+    def agent_tools(agent_id: str) -> dict[str, Any]:
+        route_tools = [tool.to_dict() for tool in tools_for_agent(agent_id)]
+        collection_tools = [tool.to_dict() for tool in collection_tools_for_crawler()] if agent_id == "crawler_agent" else []
+        return {
+            "agent": agent_id,
+            "route_tools": route_tools,
+            "collection_tools": collection_tools,
+            "catalog": tool_catalog_prompt(agent_id),
+        }
 
     @app.get("/api/crawler/summary")
     def crawler_summary_get() -> dict[str, Any]:
@@ -233,27 +221,17 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     @app.post("/api/session")
     async def session_get(request: Request) -> dict[str, Any]:
         payload = await request.json()
-        session_id = str(payload.get("session_id") or "default")
-        with SESSIONS_LOCK:
-            history = list(SESSIONS.get(session_id, []))
+        session_id = normalize_session_id(payload.get("session_id"))
+        history = DEFAULT_SESSION_STORE.history(session_id)
         return {"session_id": session_id, "history": history}
 
     @app.post("/api/session/context")
     async def session_context(request: Request) -> dict[str, Any]:
         payload = await request.json()
-        session_id = str(payload.get("session_id") or "default")
+        session_id = normalize_session_id(payload.get("session_id"))
         agent = str(payload.get("agent") or "mcagent_rag")
-        with SESSIONS_LOCK:
-            history = list(SESSIONS.get(session_id, []))
         summary = _session_summary(payload | {"session_id": session_id})
-        return {
-            "session_id": session_id,
-            "agent": agent,
-            "history": history,
-            "summary": summary,
-            "turn_count": len(history),
-            "last_turn": history[-1] if history else None,
-        }
+        return DEFAULT_SESSION_STORE.context(session_id, agent=agent, summary=summary).to_dict()
 
     @app.exception_handler(HTTPException)
     async def http_exception_handler(_request: Request, exc: HTTPException) -> JSONResponse:

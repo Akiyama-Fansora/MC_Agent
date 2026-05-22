@@ -56,6 +56,13 @@ def test_fastapi_core_routes() -> None:
         assert_true("mcagent_present", "mcagent_rag" in names)
         assert_true("crawler_present", "crawler_agent" in names)
 
+        tools = client.get("/api/agents/mcagent_rag/tools")
+        tools_json = tools.json()
+        route_tool_names = [item.get("name") for item in tools_json.get("route_tools", [])]
+        assert_true("agent_tools_ok", tools.status_code == 200)
+        assert_true("agent_tools_include_rag", "local_rag_search" in route_tool_names)
+        assert_true("agent_tools_catalog", "Available tools" in tools_json.get("catalog", ""))
+
         status = client.get("/api/status")
         assert_true("status_ok", status.status_code == 200 and "database" in status.json())
 

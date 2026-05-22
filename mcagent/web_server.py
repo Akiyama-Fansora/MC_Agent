@@ -49,6 +49,7 @@ from .query_intent import analyze_query
 from .retrieval_planner import plan_retrieval
 from .retriever import Retriever
 from .schema import SearchResult
+from .session_state import DEFAULT_SESSION_STORE, merge_limited, normalize_session_id, payload_history
 from .storage import connect, count_rows
 
 
@@ -91,9 +92,7 @@ AGENTS = [
 ]
 
 
-SESSIONS: dict[str, list[dict[str, Any]]] = {}
-SESSION_SUMMARIES: dict[str, dict[str, Any]] = {}
-SESSIONS_LOCK = threading.Lock()
+SESSION_STORE = DEFAULT_SESSION_STORE
 JOBS: dict[str, "Job"] = {}
 JOBS_ORDER: list[str] = []
 JOBS_LOCK = threading.Lock()
@@ -4551,26 +4550,23 @@ def _available_models(config: AppConfig) -> list[dict[str, Any]]:
 
 
 def _append_session(payload: dict[str, Any], question: str, answer: str, sources: list[dict[str, Any]]) -> None:
-    session_id = str(payload.get("session_id") or "default")
-    with SESSIONS_LOCK:
-        history = SESSIONS.setdefault(session_id, [])
-        history.append({"time": time.time(), "question": question, "answer": answer, "sources": sources})
-        _update_session_summary_locked(session_id, history[-1])
-        del history[:-80]
+    session_id = normalize_session_id(payload.get("session_id"))
+    turn = {"time": time.time(), "question": question, "answer": answer, "sources": sources}
+    SESSION_STORE.append_turn(session_id, turn, max_turns=80)
+    _update_session_summary(session_id, turn)
 
 
 def _session_history(payload: dict[str, Any], limit: int = 10) -> list[dict[str, Any]]:
-    session_id = str(payload.get("session_id") or "default")
-    with SESSIONS_LOCK:
-        server_history = list(SESSIONS.get(session_id, []))[-limit:]
-    payload_history = _payload_history(payload, limit=limit)
-    if not payload_history:
+    session_id = normalize_session_id(payload.get("session_id"))
+    server_history = SESSION_STORE.history(session_id, limit=limit)
+    provided_history = payload_history(payload, limit=limit)
+    if not provided_history:
         return server_history
     if not server_history:
-        return payload_history
+        return provided_history
     seen = {(str(item.get("question") or ""), str(item.get("answer") or "")[:120]) for item in server_history}
     merged = list(server_history)
-    for item in payload_history:
+    for item in provided_history:
         key = (str(item.get("question") or ""), str(item.get("answer") or "")[:120])
         if key not in seen:
             merged.append(item)
@@ -4580,59 +4576,19 @@ def _session_history(payload: dict[str, Any], limit: int = 10) -> list[dict[str,
 
 def _session_summary(payload: dict[str, Any]) -> dict[str, Any]:
     explicit = payload.get("session_summary") if isinstance(payload.get("session_summary"), dict) else {}
-    session_id = str(payload.get("session_id") or "default")
-    with SESSIONS_LOCK:
-        summary = dict(SESSION_SUMMARIES.get(session_id) or {})
+    session_id = normalize_session_id(payload.get("session_id"))
+    summary = SESSION_STORE.summary(session_id)
     if not summary:
-        summary = _summary_from_history(_payload_history(payload, limit=20))
+        summary = _summary_from_history(payload_history(payload, limit=20))
     if explicit:
         merged = dict(summary)
         for key, value in explicit.items():
             if isinstance(value, list) and isinstance(merged.get(key), list):
-                merged[key] = _merge_limited(list(merged.get(key) or []), [str(item) for item in value], limit=80)
+                merged[key] = merge_limited(list(merged.get(key) or []), [str(item) for item in value], limit=80)
             elif value not in (None, "", []):
                 merged[key] = value
         return merged
     return summary
-
-
-def _payload_history(payload: dict[str, Any], limit: int = 10) -> list[dict[str, Any]]:
-    raw = payload.get("history")
-    if not isinstance(raw, list):
-        return []
-    turns: list[dict[str, Any]] = []
-    pending_question = ""
-    pending_time = time.time()
-    for item in raw:
-        if not isinstance(item, dict):
-            continue
-        role = str(item.get("role") or "")
-        text = str(item.get("text") or "").strip()
-        if not text:
-            continue
-        if role == "user":
-            pending_question = text
-            try:
-                pending_time = float(item.get("time") or time.time() * 1000) / 1000
-            except (TypeError, ValueError):
-                pending_time = time.time()
-            continue
-        if role != "assistant" or not pending_question:
-            continue
-        if text in {"处理中...", "处理 中...", "Processing..."}:
-            continue
-        turns.append(
-            {
-                "time": pending_time,
-                "question": pending_question,
-                "answer": text,
-                "sources": item.get("sources") if isinstance(item.get("sources"), list) else [],
-            }
-        )
-        pending_question = ""
-        if len(turns) > limit * 2:
-            turns = turns[-limit:]
-    return turns[-limit:]
 
 
 def _summary_from_history(history: list[dict[str, Any]]) -> dict[str, Any]:
@@ -4649,53 +4605,37 @@ def _summary_from_history(history: list[dict[str, Any]]) -> dict[str, Any]:
         for source in turn.get("sources") or []:
             if isinstance(source, dict):
                 topics.extend(_fallback_focus_terms(str(source.get("title") or "")))
-        summary["topics"] = _merge_limited(summary.get("topics") or [], topics, limit=24)
-        summary["names"] = _merge_limited(summary.get("names") or [], names, limit=40)
-        summary["gaps"] = _merge_limited(summary.get("gaps") or [], gaps, limit=24)
-        summary["entities"] = _merge_limited(summary.get("entities") or [], [*topics[:8], *names[:16]], limit=48)
+        summary["topics"] = merge_limited(summary.get("topics") or [], topics, limit=24)
+        summary["names"] = merge_limited(summary.get("names") or [], names, limit=40)
+        summary["gaps"] = merge_limited(summary.get("gaps") or [], gaps, limit=24)
+        summary["entities"] = merge_limited(summary.get("entities") or [], [*topics[:8], *names[:16]], limit=48)
     return summary
 
 
 def _delete_session(session_id: str) -> dict[str, Any]:
-    session_id = session_id or "default"
-    with SESSIONS_LOCK:
-        had_history = session_id in SESSIONS
-        had_summary = session_id in SESSION_SUMMARIES
-        SESSIONS.pop(session_id, None)
-        SESSION_SUMMARIES.pop(session_id, None)
-    return {"session_id": session_id, "deleted": had_history or had_summary}
+    return SESSION_STORE.delete(session_id)
 
 
-def _update_session_summary_locked(session_id: str, turn: dict[str, Any]) -> None:
-    summary = SESSION_SUMMARIES.setdefault(session_id, {"topics": [], "entities": [], "names": [], "gaps": [], "turn_count": 0})
-    summary["turn_count"] = int(summary.get("turn_count") or 0) + 1
-    question = str(turn.get("question") or "")
-    answer = _strip_answer_metadata(str(turn.get("answer") or ""))
-    topics = _fallback_focus_terms(question)
-    names = _extract_context_names(answer, limit=24)
-    gaps = _extract_context_gaps(answer, limit=12)
-    for source in turn.get("sources") or []:
-        if isinstance(source, dict):
-            topics.extend(_fallback_focus_terms(str(source.get("title") or "")))
-    summary["topics"] = _merge_limited(summary.get("topics") or [], topics, limit=24)
-    summary["names"] = _merge_limited(summary.get("names") or [], names, limit=40)
-    summary["gaps"] = _merge_limited(summary.get("gaps") or [], gaps, limit=24)
-    summary["entities"] = _merge_limited(summary.get("entities") or [], [*topics[:8], *names[:16]], limit=48)
+def _update_session_summary(session_id: str, turn: dict[str, Any]) -> None:
+    def updater(summary: dict[str, Any]) -> dict[str, Any]:
+        if not summary:
+            summary = {"topics": [], "entities": [], "names": [], "gaps": [], "turn_count": 0}
+        summary["turn_count"] = int(summary.get("turn_count") or 0) + 1
+        question = str(turn.get("question") or "")
+        answer = _strip_answer_metadata(str(turn.get("answer") or ""))
+        topics = _fallback_focus_terms(question)
+        names = _extract_context_names(answer, limit=24)
+        gaps = _extract_context_gaps(answer, limit=12)
+        for source in turn.get("sources") or []:
+            if isinstance(source, dict):
+                topics.extend(_fallback_focus_terms(str(source.get("title") or "")))
+        summary["topics"] = merge_limited(summary.get("topics") or [], topics, limit=24)
+        summary["names"] = merge_limited(summary.get("names") or [], names, limit=40)
+        summary["gaps"] = merge_limited(summary.get("gaps") or [], gaps, limit=24)
+        summary["entities"] = merge_limited(summary.get("entities") or [], [*topics[:8], *names[:16]], limit=48)
+        return summary
 
-
-def _merge_limited(existing: list[Any], new_items: list[Any], limit: int) -> list[str]:
-    output: list[str] = []
-    seen: set[str] = set()
-    for item in [*existing, *new_items]:
-        value = str(item).strip()
-        key = value.lower()
-        if not value or key in seen:
-            continue
-        seen.add(key)
-        output.append(value)
-        if len(output) >= limit:
-            break
-    return output
+    SESSION_STORE.update_summary(session_id, updater)
 
 
 def _strip_answer_metadata(answer: str) -> str:
@@ -5863,10 +5803,15 @@ class MCagentHandler(BaseHTTPRequestHandler):
             _send_json(self, _delete_session(str(payload.get("session_id") or "default")))
             return
         if request_path == "/api/session":
-            session_id = str(payload.get("session_id") or "default")
-            with SESSIONS_LOCK:
-                history = list(SESSIONS.get(session_id, []))
+            session_id = normalize_session_id(payload.get("session_id"))
+            history = SESSION_STORE.history(session_id)
             _send_json(self, {"session_id": session_id, "history": history})
+            return
+        if request_path == "/api/session/context":
+            session_id = normalize_session_id(payload.get("session_id"))
+            agent = str(payload.get("agent") or "mcagent_rag")
+            context = SESSION_STORE.context(session_id, agent=agent, summary=_session_summary(payload | {"session_id": session_id}))
+            _send_json(self, context.to_dict())
             return
         _send_json(self, {"error": "not found"}, status=404)
 
