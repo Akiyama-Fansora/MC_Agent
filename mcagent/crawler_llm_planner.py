@@ -7,6 +7,7 @@ from typing import Any
 
 from .config import OllamaConfig, load_config
 from .crawler_planner import decompose_crawler_queries, plan_crawler_tasks
+from .crawler_reflection_decision_service import CrawlerReflectionDecisionService
 from .crawler_reflection_service import CrawlerReflectionSnapshotService
 from .agent_memory import read_memory_events
 from .agent_runtime import classify_crawler_tool_result, crawler_collection_catalog_prompt
@@ -965,26 +966,18 @@ def reflect_crawler_progress(
             raw = _json_from_text(raw_text)
         except Exception:
             raw = _repair_planner_json(client, raw_text, label=label, schema=schema)
-        action = str(raw.get("action") or "execute_pending").strip().lower()
-        if action not in {"execute_pending", "add_tasks", "replan", "finish"}:
-            action = "execute_pending"
-        selected_index = _safe_int(raw.get("selected_index"), 0)
-        if selected_index < 0 or selected_index >= max(len(compact_pending), 1):
-            selected_index = 0
         tasks: list[dict[str, Any]] = []
         for raw_task in list(raw.get("tasks") or [])[:max_new_tasks]:
             if isinstance(raw_task, dict):
                 task = _normalize_task(raw_task, str(raw.get("reason") or "CrawlerAgent reflection task"), 75)
                 if task:
                     tasks.append(task)
-        return {
-            "action": action,
-            "selected_index": selected_index,
-            "reason": str(raw.get("reason") or "CrawlerAgent selected next action.").strip()[:500],
-            "tasks": _select_diverse_tasks(tasks, max_new_tasks),
-            "done_summary": str(raw.get("done_summary") or "").strip()[:800],
-            "planner": label,
-        }
+        return CrawlerReflectionDecisionService().normalize(
+            raw,
+            pending_count=len(compact_pending),
+            normalized_tasks=_select_diverse_tasks(tasks, max_new_tasks),
+            planner=label,
+        )
     except Exception as exc:  # noqa: BLE001
         return {
             "action": "execute_pending" if pending_tasks else "finish",
@@ -993,6 +986,12 @@ def reflect_crawler_progress(
             "tasks": [],
             "done_summary": "",
             "planner": "reflection_fallback_after_llm_error",
+            "contract": {
+                "valid": False,
+                "issues": ["reflection_llm_error"],
+                "requires_llm_task_materialization": False,
+                "pending_count": len(pending_tasks),
+            },
         }
 
 

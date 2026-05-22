@@ -2664,3 +2664,77 @@ python api.py --host 127.0.0.1 --port 8766
 ### 49.5 下一步
 
 继续优化 CrawlerAgent 的复盘闭环：把 reflection 返回结果也规范成更明确的 action contract，避免 LLM 返回“想重规划但没给任务”时由执行器补救过多。
+
+## 50. CrawlerReflectionDecisionService：反思输出契约化（2026-05-22）
+
+本轮开始前已重新阅读本文档。第 49 阶段已经把反思输入整理成 snapshot，本轮继续处理反思输出：CrawlerAgent LLM 仍然决定下一步行动，但返回给执行器的内容必须被整理成可检查的 action contract。这样可以把“LLM 的决定”和“工具能否执行”分开，避免工具层悄悄替 Agent 做主观决策。
+
+### 50.1 本轮目标
+
+让 `reflect_crawler_progress()` 返回的结果包含稳定 contract：
+
+- action：`execute_pending`、`add_tasks`、`replan`、`finish`；
+- selected_index：只在执行 pending task 时使用；
+- tasks：只在 `add_tasks` 或 `replan` 时作为 LLM 给出的可执行任务；
+- reason / done_summary：保留 CrawlerAgent 的理由和完成说明；
+- contract：记录是否有效、有哪些结构问题、是否需要再次询问 Crawler planning LLM 把意图转成可执行工具任务。
+
+### 50.2 代码变更
+
+1. 新增 `mcagent/crawler_reflection_decision_service.py`：
+   - `CrawlerReflectionDecisionService.normalize()`；
+   - 只校验和规范 LLM 的反思输出；
+   - 不选择来源、不生成搜索词、不判断是否采集足够。
+2. 修改 `mcagent/crawler_llm_planner.py`：
+   - `reflect_crawler_progress()` 解析 LLM JSON 后，把 action、selected_index、tasks 交给 decision service 生成统一 contract；
+   - 保留 CrawlerAgent 原始 action，不把“想 replan 但没给 tasks”偷偷改成别的行为。
+   - reflection LLM 连接失败时，也返回带 `reflection_llm_error` 的 contract，避免前端和执行器面对两种数据形状。
+3. 修改 `mcagent/web_server.py`：
+   - `agent_reflections` 中记录 `contract`；
+   - 只有当 contract 明确 `requires_llm_task_materialization` 时，执行器才再次调用 Crawler planning LLM 生成可执行任务；
+   - 这一步是“把 CrawlerAgent 的 replan 意图交回 Crawler LLM 落实”，不是工具层自己编任务。
+4. 新增 `tests/crawler_reflection_decision_scenarios.py`：
+   - 覆盖 selected_index 越界；
+   - 覆盖 replan/add_tasks 没有可执行 tasks 时的契约问题；
+   - 覆盖 finish 自动使用 reason 作为 done_summary；
+   - 覆盖无效 action 不会把 tasks 误当作工具层决定。
+5. 更新 `.github/workflows/ci.yml`、`README.md`、`scripts/public_readiness_check.py`。
+
+### 50.3 边界说明
+
+`CrawlerReflectionDecisionService` 不是新的 Agent，也不是 planner。它只回答：“CrawlerAgent 刚才给出的决定能否被执行？如果不能，是缺 selected_index、缺 tasks，还是 action 不合法？”真正的下一步仍来自 CrawlerAgent LLM；执行器最多把 contract issue 交回 Crawler planning LLM 请求补全可执行任务。
+
+### 50.4 本轮测试方案与结果
+
+已执行并通过：
+
+~~~powershell
+python -m py_compile mcagent\crawler_reflection_decision_service.py mcagent\crawler_llm_planner.py mcagent\web_server.py tests\crawler_reflection_decision_scenarios.py
+python tests\crawler_reflection_decision_scenarios.py
+python tests\crawler_reflection_service_scenarios.py
+python tests\job_view_service_scenarios.py
+python -m py_compile api.py mcagent\agent_execution.py mcagent\agent_executor.py mcagent\agent_router.py mcagent\crawler_delegation_service.py mcagent\crawler_reflection_decision_service.py mcagent\crawler_reflection_service.py mcagent\evidence_service.py mcagent\event_stream.py mcagent\fastapi_app.py mcagent\job_view_service.py mcagent\rag_service.py mcagent\session_state.py mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py tests\crawler_delegation_service_scenarios.py tests\crawler_reflection_decision_scenarios.py tests\crawler_reflection_service_scenarios.py tests\agent_execution_scenarios.py tests\agent_executor_scenarios.py tests\agent_router_scenarios.py tests\evidence_service_scenarios.py tests\job_view_service_scenarios.py tests\rag_service_scenarios.py tests\agent_runtime_scenarios.py tests\backend_services_scenarios.py tests\fastapi_backend_scenarios.py
+python tests\crawler_delegation_service_scenarios.py
+python tests\crawler_reflection_decision_scenarios.py
+python tests\crawler_reflection_service_scenarios.py
+python tests\agent_executor_scenarios.py
+python tests\agent_router_scenarios.py
+python tests\evidence_service_scenarios.py
+python tests\rag_service_scenarios.py
+python tests\backend_services_scenarios.py
+python tests\fastapi_backend_scenarios.py
+python tests\smoke_test.py
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+node --check frontend\static\app.js
+node --check frontend\static\settings.js
+git diff --check
+python api.py --host 127.0.0.1 --port 8766
+# 探针结果：/api/health=200，/api/jobs=200，POST /api/session/context=200，/api/agents/crawler_agent/tools=200
+~~~
+
+公开检查仍只有 LICENSE 非阻断警告。`mcagent/crawler_llm_planner.py` 仍有 Git 的 CRLF/LF 工作区提示，不影响测试。
+
+### 50.5 下一步
+
+继续把 `_run_crawler_job()` 的循环拆成更明确的 CrawlerRuntime 服务：把“反思、执行、观察、再次反思”的状态迁移出 `web_server.py`，让后端路由只负责启动 job 和推送状态，减少固定流水线对 CrawlerAgent 的影响。

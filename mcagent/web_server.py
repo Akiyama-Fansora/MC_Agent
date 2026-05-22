@@ -1928,6 +1928,7 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
                         "reason": reflection.get("reason"),
                         "planner": reflection.get("planner"),
                         "tasks": reflection.get("tasks") or [],
+                        "contract": reflection.get("contract") or {},
                     }
                 )
                 _update_job(
@@ -1948,7 +1949,9 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
                 )
                 action = str(reflection.get("action") or "execute_pending")
                 new_tasks = [task for task in list(reflection.get("tasks") or []) if isinstance(task, dict)]
-                if action in {"add_tasks", "replan"} and not new_tasks and len(tasks) < max_total_tasks:
+                contract = reflection.get("contract") if isinstance(reflection.get("contract"), dict) else {}
+                needs_materialization = bool(contract.get("requires_llm_task_materialization"))
+                if action in {"add_tasks", "replan"} and needs_materialization and len(tasks) < max_total_tasks:
                     remaining_slots = max(0, max_total_tasks - len(tasks))
                     new_tasks = _replan_crawler_tasks(
                         question,
@@ -1963,9 +1966,10 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
                             {
                                 "at_index": index,
                                 "action": "replan_tasks_generated",
-                                "reason": "CrawlerAgent requested replan/add_tasks without executable tasks, so the executor asked the Crawler planning LLM to materialize the next tool actions.",
+                                "reason": "CrawlerAgent requested replan/add_tasks without executable tasks; the executor returned the contract issue to the Crawler planning LLM to materialize executable tool actions.",
                                 "planner": "Crawler replan LLM",
                                 "tasks": new_tasks,
+                                "contract_issue": contract.get("issues") or [],
                             }
                         )
                 if action in {"add_tasks", "replan"} and new_tasks:
