@@ -84,6 +84,24 @@ def test_router_respects_agent_suggested_tool() -> None:
     assert_equal("suggested_route", route.route_intent, "direct_answer")
 
 
+def test_router_error_stops_before_confirmation() -> None:
+    tmp, run = make_run("介绍一个网页")
+    calls = {"confirm": 0}
+    try:
+        service = AgentToolRouterService(
+            decide_tool=lambda *args, **kwargs: {"tool": "router_error", "reason": "invalid tool"},
+            confirm_next_step=lambda *args, **kwargs: calls.__setitem__("confirm", calls["confirm"] + 1) or {"proceed": True},
+            action_plan_has_tool=lambda _plan, _tool: False,
+        )
+        route = service.route(run, session_summary={})
+    finally:
+        tmp.cleanup()
+
+    assert_equal("router_error_route", route.route_intent, "router_error")
+    assert_equal("confirm_not_called", calls["confirm"], 0)
+    assert_equal("router_error_proceed", route.route_confirmation["proceed"], False)
+
+
 def test_router_marks_planned_delegate_without_executing_it() -> None:
     plan: list[dict[str, Any]] = [
         {"step": 1, "tool": "local_rag_search", "goal": "summarize local data"},
@@ -172,6 +190,7 @@ def _raise(exc: Exception) -> None:
 def main() -> int:
     test_router_records_decision_and_confirmation()
     test_router_respects_agent_suggested_tool()
+    test_router_error_stops_before_confirmation()
     test_router_marks_planned_delegate_without_executing_it()
     test_llm_router_owns_prompt_and_json_parsing()
     test_llm_router_error_does_not_choose_fallback_tool()

@@ -123,14 +123,14 @@ def normalize_agent_tool_decision(
     original_question: str,
     planner: str,
 ) -> AgentToolDecision:
-    raw_tool = str(value.get("tool") or "answer").strip().lower()
+    raw_tool = str(value.get("tool") or "").strip().lower()
     tool = TOOL_DECISION_ALIASES.get(raw_tool, raw_tool)
     allowed_routes = {"answer", "direct_answer", "planned_workflow", "status", "delegate_crawler"}
     allowed_routes.update(tool_names_for_agent(agent_id))
     if agent_id == "crawler_agent" and tool == "answer":
         tool = "direct_answer"
     if tool not in allowed_routes:
-        tool = "delegate_crawler" if agent_id == "crawler_agent" else "answer"
+        tool = "router_error"
 
     action_plan: list[dict[str, Any]] = []
     raw_plan = value.get("action_plan")
@@ -148,7 +148,14 @@ def normalize_agent_tool_decision(
 
     return AgentToolDecision(
         tool=tool,
-        reason=str(value.get("reason") or "Agent LLM selected tool.").strip()[:500],
+        reason=str(
+            value.get("reason")
+            or (
+                f"Agent LLM returned invalid tool {raw_tool!r}; no fallback tool executed."
+                if tool == "router_error"
+                else "Agent LLM selected tool."
+            )
+        ).strip()[:500],
         rag_focus=str(value.get("rag_focus") or "").strip()[:500],
         collection_target=str(value.get("collection_target") or original_question).strip(),
         delivery_target=str(value.get("delivery_target") or "").strip(),
@@ -460,6 +467,15 @@ CRAWLER_ROUTE_TOOLS = [
         side_effects="read_runtime_state",
         terminal=True,
         llm_final_answer_required=False,
+    ),
+    ToolSpec(
+        name="temporary_extract",
+        description="Fetch public URL text for an immediate CrawlerAgent answer when persistence is not part of the selected plan.",
+        input_schema={"query_or_url": "public URL and extraction/summarization request"},
+        result_schema={"extracted_text": "temporary page text", "answer": "LLM-written summary", "saved_to_local": False},
+        side_effects="network_only_no_filesystem_persistence",
+        terminal=True,
+        llm_final_answer_required=True,
     ),
     ToolSpec(
         name="delegate_crawler",

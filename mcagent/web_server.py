@@ -37,6 +37,7 @@ from .crawler_planner import CONCEPTS, decompose_crawler_queries, plan_crawler_t
 from .crawler_runtime_step_service import CrawlerRuntimeStepService
 from .crawler_task_materialization_service import CrawlerTaskMaterializationService
 from .crawler_task_preparation_service import CrawlerTaskPreparationService
+from .crawler_temporary_extract_service import CrawlerTemporaryExtractService
 from .crawler_result_accounting_service import CrawlerResultAccountingService
 from .crawler_loop_control_service import CrawlerLoopControlService
 from .crawler_topic_discovery_service import CrawlerTopicDiscoveryReviewService
@@ -2878,21 +2879,25 @@ def _build_direct_answer_messages(
     original_question: str,
     contextual_question: str,
     session_summary: dict[str, Any] | None = None,
+    agent: str = "mcagent_rag",
 ) -> list[dict[str, str]]:
     summary_text = json.dumps(session_summary or {}, ensure_ascii=False)
+    role_name = "CrawlerAgent" if agent == "crawler_agent" else "MCagent"
+    role_desc = (
+        "你是 CrawlerAgent，一个专注网页读取、资料采集、保存/不保存交付约束和失败原因说明的爬虫 Agent。"
+        if agent == "crawler_agent"
+        else "你是 MCagent，一个可以自然对话、也可以在需要时使用工具的资料助手。"
+    )
     user_text = (
         f"用户原话：{original_question}\n"
         f"当前会话理解：{contextual_question}\n"
         f"会话摘要：{summary_text}\n\n"
-        "请直接自然回复用户。不要声称查过本地资料库，不要编造来源，不要调用 Crawler。"
+        f"请以 {role_name} 的身份直接自然回复用户。不要声称执行过未执行的工具，不要编造来源。"
     )
     return [
         {
             "role": "system",
-            "content": (
-                "你是 MCagent，一个可以自然对话、也可以在需要时使用工具的资料助手。"
-                "本轮已经由 Agent 判断为不需要工具；请简洁、友好、按上下文直接回答。"
-            ),
+            "content": role_desc + "本轮已经由 Agent 判断为不需要工具；请简洁、友好、按上下文直接回答。",
         },
         {"role": "user", "content": user_text},
     ]
@@ -2906,9 +2911,10 @@ def _generate_direct_answer(
     model: str,
     temperature: float,
     max_tokens: int | None,
+    agent: str = "mcagent_rag",
 ) -> str:
-    messages = _build_direct_answer_messages(original_question, contextual_question, session_summary)
-    client, model_label = _selected_llm_client(config, model, temperature)
+    messages = _build_direct_answer_messages(original_question, contextual_question, session_summary, agent=agent)
+    client, model_label = _selected_llm_client(config, model, temperature, agent=agent)
     answer = client.chat(messages, temperature=temperature, max_tokens=max_tokens)
     answer = answer.strip()
     return f"{answer}\n\n模型：{model_label}" if answer else "我在。"
@@ -2924,9 +2930,10 @@ def _generate_direct_answer_stream(
     max_tokens: int | None,
     emit_delta: Any,
     emit_thinking: Any | None = None,
+    agent: str = "mcagent_rag",
 ) -> str:
-    messages = _build_direct_answer_messages(original_question, contextual_question, session_summary)
-    client, model_label = _selected_llm_client(config, model, temperature)
+    messages = _build_direct_answer_messages(original_question, contextual_question, session_summary, agent=agent)
+    client, model_label = _selected_llm_client(config, model, temperature, agent=agent)
     chunks = _collect_streaming_answer(client, messages, temperature, max_tokens, emit_delta, emit_thinking)
     answer = "".join(chunks).strip()
     if not answer:
@@ -2934,6 +2941,35 @@ def _generate_direct_answer_stream(
         chunks = _collect_streaming_answer(client, messages, temperature, retry_tokens, emit_delta, emit_thinking)
         answer = "".join(chunks).strip()
     return f"{answer}\n\n模型：{model_label}" if answer else "我在。"
+
+
+def _generate_temporary_extract_summary(
+    config: AppConfig,
+    original_question: str,
+    url: str,
+    page_text: str,
+    model: str,
+    temperature: float,
+    max_tokens: int | None,
+) -> str:
+    client, model_label = _selected_llm_client(config, model, temperature, agent="crawler_agent")
+    prompt = (
+        "你是 CrawlerAgent。用户要求临时读取一个公开网页并总结，不保存到本地、不入库。\n"
+        "请只基于下面抓取到的网页正文回答用户，不要声称已经保存文件。\n"
+        "如果正文不足以回答，就说明缺口或访问限制。\n\n"
+        f"用户问题：{original_question}\n"
+        f"URL：{url}\n"
+        f"网页正文：\n{page_text}"
+    )
+    answer = client.chat(
+        [
+            {"role": "system", "content": "你是负责临时网页抽取与摘要的 CrawlerAgent。"},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=temperature,
+        max_tokens=max_tokens or DEFAULT_ANSWER_MAX_TOKENS,
+    ).strip()
+    return f"{answer}\n\n模型：{model_label}" if answer else "页面内容已读取，但模型没有生成摘要。"
 
 
 def _generate_grounded_answer_stream(
@@ -4101,12 +4137,15 @@ def _build_delegate_handoff_brief(
     )
     try:
         client, label = _selected_llm_client(config, model, 0.0)
+        caller_text = "用户直接委托 CrawlerAgent" if requested_by == "user" else "用户经 MCagent 转达给 CrawlerAgent" if requested_by == "user_via_mcagent" else "MCagent 委托 CrawlerAgent"
         prompt = (
-            "你是 MCagent 写给 CrawlerAgent 的交接摘要生成器。\n"
+            "你是 Agent Runtime 的 CrawlerAgent 任务说明整理器。\n"
             "你的任务不是搜索、不是回答用户、不是拆关键词，而是把这次委托完整说明给 CrawlerAgent。\n"
-            "交接摘要必须包含：调用关系、用户原话、转达目标、相关会话背景、已知资料缺口、交付对象、交付要求。\n"
+            "交接摘要必须包含：调用关系、用户原话、任务目标、相关会话背景、已知资料缺口、交付对象、交付要求。\n"
+            "调用关系必须严格依据 requested_by；requested_by=user 时，不要写成来自 MCagent 或由 MCagent 转发。\n"
             "如果用户原话依赖上下文，就用 session_summary 和 mcagent_gap_summary 补充背景；如果不依赖上下文，也要保留原始目标。\n"
             "输出 JSON：{\"handoff_brief\":\"给 CrawlerAgent 的完整交接摘要\", \"reason\":\"一句简短理由\"}\n"
+            f"caller_relationship: {caller_text}\n"
             f"original_user_message: {original_question}\n"
             f"router_collection_target: {collection_target}\n"
             f"requested_by: {requested_by}\n"
@@ -4752,6 +4791,66 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
         return executor.router_error(run, tool_decision)
     if route_intent == "direct_answer":
         return executor.direct_answer(run, session_summary=session_summary)
+    if route_intent == "temporary_extract":
+        collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
+        extract_confirmation = router.confirm_next_step(
+            config,
+            payload,
+            agent=agent,
+            model=model,
+            original_question=original_question,
+            session_summary=session_summary,
+            proposed_tool="temporary_extract",
+            proposed_goal=f"临时读取并总结公开网页，不保存到本地：{collection_question}",
+            context={"collection_target": collection_question, "delivery_target": tool_decision.get("delivery_target") or "human"},
+        )
+        add_trace("extract", "next_step_confirmed", extract_confirmation)
+        if not bool(extract_confirmation.get("proceed", True)):
+            suggested_tool = str(extract_confirmation.get("suggested_tool") or extract_confirmation.get("tool") or "").strip()
+            if suggested_tool == "delegate_crawler":
+                route_intent = "delegate_crawler"
+            else:
+                return executor.direct_answer(run, session_summary=session_summary, mode="direct_after_extract_cancelled")
+        else:
+            extractor = CrawlerTemporaryExtractService()
+
+            def summarize(question_text: str, url: str, page_text: str) -> str:
+                return _generate_temporary_extract_summary(
+                    config,
+                    question_text,
+                    url,
+                    page_text,
+                    model,
+                    temperature,
+                    max_tokens,
+                )
+
+            try:
+                result = extractor.run(question=original_question, collection_target=collection_question, summarize=summarize)
+                add_trace(
+                    "extract",
+                    "temporary_url_extracted",
+                    {
+                        "url": result.url,
+                        "status_code": result.status_code,
+                        "content_type": result.content_type,
+                        "text_chars": result.text_chars,
+                        "saved_to_local": False,
+                    },
+                )
+                return _with_trace(result.to_response(agent=agent), trace)
+            except Exception as exc:  # noqa: BLE001
+                add_trace("extract", "temporary_url_failed", {"error": f"{type(exc).__name__}: {exc}", "saved_to_local": False})
+                return _with_trace(
+                    {
+                        "answer": f"CrawlerAgent 临时读取网页失败，且没有保存到本地。失败原因：{type(exc).__name__}: {exc}",
+                        "sources": [],
+                        "context": "",
+                        "agent": agent,
+                        "temporary_extract": {"saved_to_local": False, "error": f"{type(exc).__name__}: {exc}"},
+                    },
+                    trace,
+                )
     if route_intent == "delegate_crawler":
         collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
         delegate_confirmation = router.confirm_next_step(

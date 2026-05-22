@@ -3483,3 +3483,81 @@ python api.py --host 127.0.0.1 --port 8766
 ### 60.5 下一步
 
 继续压缩 `web_server.py` 中与 Crawler LLM 调用相关的 adapter 层：可以把 `_replan_crawler_tasks()` 和 `_llm_tasks_from_topic_discovery()` 自身进一步移入专门模块，让 `web_server.py` 只负责 job 生命周期和工具执行。
+
+## 61. Crawler 直连工具通用化与五方向测试矩阵（2026-05-22）
+
+本轮开始前已重新阅读本文档。用户指出：不能为了某个测试句式给 Crawler 加硬规则；CrawlerAgent 应像 Codex 一样由 LLM 读取目标、观察工具目录、选择下一步。工具层应该提供通用能力和客观结果，而不是替 LLM 判断“看到 URL 就一定怎么做”。
+
+### 61.1 本轮原则修正
+
+1. CrawlerAgent 直连用户时，身份链必须是 `requested_by=user`，不能生成“当前委托来自 MCagent”的交接语。
+2. `temporary_extract` 是通用工具能力：临时读取公开 URL 文本，并由 CrawlerAgent 直接回答，副作用明确为不写本地文件。它不是关键词规则，也不绑定“URL + 不保存”这种测试语句。
+3. `delegate_crawler` 是持久化/后台采集能力：当 Agent 选择启动采集循环、保存资料、补库或写入指定路径时使用。
+4. 工具选择 LLM 返回缺失或未知工具名时，不再自动 fallback 到 `answer` 或 `delegate_crawler`。系统进入 `router_error`，避免工具替 Agent 做决定。
+5. 前端初始状态只显示“正在理解问题/任务”，不再写“三选一”的固定提示，避免把用户看到的过程文本变成隐性流程限制。
+
+### 61.2 代码变更
+
+1. 新增 `mcagent/crawler_temporary_extract_service.py`：
+   - 从自然语言任务中提取公开 URL；
+   - 优先尝试 Jina Reader 包装 URL，再回退原始 URL；
+   - 把 HTML 转成简洁文本；
+   - 返回 `saved_to_local=False` 的客观结果，并交给 CrawlerAgent LLM 生成最终摘要。
+2. 修改 `mcagent/agent_runtime.py`：
+   - Crawler 工具目录增加 `temporary_extract`；
+   - 无效工具选择进入 `router_error`，不再根据 agent 类型强行改成某个工具；
+   - 测试覆盖 Crawler 能选择 `temporary_extract`。
+3. 修改 `mcagent/agent_router.py`：
+   - `router_error` 在确认阶段前停止，不再继续请求下一步确认；
+   - 工具选择 prompt 改成“工具目录是能力说明，不是关键词触发规则”；
+   - CrawlerAgent 不再被 Minecraft 领域限制，按用户目标采集合法公开资料或本地资料。
+4. 修改 `mcagent/web_server.py`：
+   - `route_intent == "temporary_extract"` 时直接执行临时读取并返回；
+   - 失败时说明失败原因且明确未保存到本地；
+   - 只有 Agent 明确选择 `delegate_crawler` 时才启动后台 Crawler job。
+5. 修改 `frontend/static/app.js`：
+   - MCagent 初始状态改为“MCagent 正在理解你的问题。”；
+   - CrawlerAgent 初始状态改为“CrawlerAgent 正在理解你的任务。”。
+6. 新增 `docs/agent_test_matrix.md`：
+   - 固化用户要求的五个测试方向；
+   - 每个方向提供多个对话例子；
+   - 明确测试例子不是硬编码规则，新增例子不能直接写进 router 作为固定分支。
+
+### 61.3 以后必须执行的五方向 Agent 测试
+
+每次修改 Agent、Crawler、RAG、SSE、前端过程展示或后端路由后，至少覆盖：
+
+1. 与 MCagent 问答本地已有资料，检查检索、证据选择、语言组织和引用。
+2. 与 MCagent 问答本地缺资料或资料不足的问题，检查它是否先说明缺口，再由 Agent 明确选择是否委托 Crawler。
+3. 直接与 Crawler 对话，给公开可访问 URL，检查 Crawler 能获取指定数据、直接返回结果，并在不保存时不写本地。
+4. 让 Crawler 上网找资料并保存给 MCagent/RAG，检查能产生 manifest/markdown，导入后 MCagent 能检索到。
+5. 让 Crawler 获取网页或数据并保存到用户指定本地路径，检查文件存在、格式合理、失败时能说明访问限制或工具错误。
+
+### 61.4 本轮测试方案与结果
+
+本轮已执行并通过：
+
+~~~powershell
+$env:PYTHONPYCACHEPREFIX='D:\magic\MC_Agent\runtime\pycache_test'
+python -m py_compile api.py mcagent\agent_execution.py mcagent\agent_executor.py mcagent\agent_router.py mcagent\agent_runtime.py mcagent\crawler_delegation_service.py mcagent\crawler_job_finalization_service.py mcagent\crawler_job_progress_service.py mcagent\crawler_job_setup_service.py mcagent\crawler_loop_control_service.py mcagent\crawler_planner_wait_service.py mcagent\crawler_reflection_decision_service.py mcagent\crawler_reflection_service.py mcagent\crawler_runtime_step_service.py mcagent\crawler_task_materialization_service.py mcagent\crawler_task_preparation_service.py mcagent\crawler_temporary_extract_service.py mcagent\crawler_result_accounting_service.py mcagent\crawler_topic_discovery_service.py mcagent\evidence_service.py mcagent\event_stream.py mcagent\fastapi_app.py mcagent\job_view_service.py mcagent\rag_service.py mcagent\session_state.py mcagent\web_server.py mcagent\crawler_llm_planner.py mcagent\provider_registry.py mcagent\crawler_planner.py scripts\browser_collect_seed.py scripts\fetch_mcmod_seed.py scripts\fetch_modpack_archive_seed.py scripts\public_readiness_check.py scripts\smoke_agent_flows.py tests\crawler_delegation_service_scenarios.py tests\crawler_job_finalization_service_scenarios.py tests\crawler_job_progress_service_scenarios.py tests\crawler_job_setup_service_scenarios.py tests\crawler_loop_control_service_scenarios.py tests\crawler_planner_wait_service_scenarios.py tests\crawler_reflection_decision_scenarios.py tests\crawler_reflection_service_scenarios.py tests\crawler_runtime_step_service_scenarios.py tests\crawler_task_materialization_service_scenarios.py tests\crawler_task_preparation_service_scenarios.py tests\crawler_temporary_extract_service_scenarios.py tests\crawler_result_accounting_service_scenarios.py tests\crawler_topic_discovery_service_scenarios.py tests\agent_execution_scenarios.py tests\agent_executor_scenarios.py tests\agent_five_direction_matrix_scenarios.py tests\agent_router_scenarios.py tests\evidence_service_scenarios.py tests\job_view_service_scenarios.py tests\rag_service_scenarios.py tests\agent_runtime_scenarios.py tests\backend_services_scenarios.py tests\fastapi_backend_scenarios.py
+python tests\crawler_temporary_extract_service_scenarios.py
+python tests\agent_five_direction_matrix_scenarios.py
+python tests\agent_router_scenarios.py
+python tests\agent_runtime_scenarios.py
+python tests\agent_execution_scenarios.py
+python tests\agent_executor_scenarios.py
+python tests\smoke_test.py
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+node --check frontend\static\app.js
+node --check frontend\static\settings.js
+git diff --check
+python api.py --host 127.0.0.1 --port 8766
+# 探针结果：/api/health=200，/api/jobs=200，/api/agents/crawler_agent/tools=200，POST /api/session/context=200
+~~~
+
+公开检查仍只有 LICENSE 非阻断警告。
+
+### 61.5 下一步
+
+继续把 `web_server.py` 中的临时读取、后台采集和保存到指定路径三类工具执行拆成更小的服务，让 CrawlerAgent 的工具目录更加通用：读取、搜索、浏览器采集、保存、入库、失败归因都应是可组合能力，而不是固定流程。

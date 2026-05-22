@@ -71,6 +71,25 @@ class AgentToolRouterService:
         if rag_focus:
             run.add_trace("plan", "rag_focus", {"question": rag_focus})
 
+        if route_intent == "router_error":
+            route_confirmation = {
+                "proceed": False,
+                "tool": "router_error",
+                "goal": "Agent tool selection failed validation; no tool should execute.",
+                "reason": str(tool_decision.get("reason") or "Invalid or missing tool selection."),
+                "planner": str(tool_decision.get("planner") or "runtime"),
+            }
+            run.add_trace("decide", "next_step_confirmed", route_confirmation)
+            return AgentRouteDecision(
+                route_intent=route_intent,
+                tool_decision=tool_decision,
+                route_confirmation=route_confirmation,
+                action_plan=action_plan,
+                rag_focus=rag_focus,
+                planned_workflow=False,
+                planned_delegate=False,
+            )
+
         route_confirmation = self._confirm_next_step(
             run.config,
             run.payload,
@@ -85,7 +104,8 @@ class AgentToolRouterService:
         run.add_trace("decide", "next_step_confirmed", route_confirmation)
         if not bool(route_confirmation.get("proceed", True)):
             suggested_tool = str(route_confirmation.get("suggested_tool") or route_confirmation.get("tool") or "").strip()
-            if suggested_tool in {"direct_answer", "answer", "planned_workflow", "status", "delegate_crawler"}:
+            allowed_suggestions = set(tool_names_for_agent(run.agent)) | {"answer", "planned_workflow", "router_error"}
+            if suggested_tool in allowed_suggestions:
                 route_intent = suggested_tool
 
         planned_workflow = route_intent == "planned_workflow"
@@ -153,12 +173,12 @@ class LlmAgentToolRouterService(AgentToolRouterService):
                 "参与者：用户、MCagent、CrawlerAgent。\n"
                 "下面是本项目统一 Agent Runtime 暴露给当前 Agent 的工具目录。工具目录是能力说明，不是关键词触发规则。\n"
                 f"{catalog}\n"
-                "角色约束：如果 active_agent 是 crawler_agent，CrawlerAgent 不是问答 RAG 助手。用户直接给 CrawlerAgent 的资料采集、网页抓取、保存文件、补库、给 MCagent/RAG 准备数据等目标，应选择 delegate_crawler。只有用户明确询问 CrawlerAgent 能力、已有任务状态、或不是采集目标的闲聊说明时，才选择 direct_answer 或 status。\n"
-                "交付对象判断：如果用户是在 MCagent 对话里要求转达给 CrawlerAgent 收集资料，通常是为了补充 MCagent/RAG 的本地资料库，delivery_target 应选 MCagent/RAG；只有用户明确表示只是要给自己看的摘要或临时结果时才选 human。CrawlerAgent 直接收到用户委托时，也要根据用户是否提到 MCagent/RAG/入库来判断交付对象。\n"
+                "角色与工具关系：active_agent 只能从自己的工具目录中选择下一步；工具目录描述能力与副作用，不提供关键词触发规则。\n"
+                "交付对象判断：delivery_target 是任务语义的一部分。根据用户目标、会话上下文和工具副作用判断交付给 human、MCagent/RAG 或两者，而不是按固定句式判断。\n"
                 "重要原则：不要用关键词触发。必须按语义判断。不要把游戏内“获取某物/如何获得”误判成 Crawler 采集任务。\n"
-                "当前系统主要服务 Minecraft 资料库。若实体名有泛义但当前对话没有给出其他领域，rag_focus 不能只写裸实体，必须带上 Minecraft/整合包/模组等领域限定；若存在同名歧义，后续回答可说明歧义。\n"
+                "MCagent 的本地 RAG 当前主要服务 Minecraft 资料库；CrawlerAgent 不限于 Minecraft，应按用户给定目标采集合法、可访问的公开资料或本地资料。\n"
                 "委托交接原则：collection_target 不是搜索词，也不是给工具的死规则，而是给 CrawlerAgent 的自然语言任务目标。若任务目标依赖上下文，要把相关背景自然写进目标；不要拆成关键词，也不要丢掉用户原话。\n"
-                "如果是复合问答，优先 answer；如果复合任务包含“先查本地资料/总结缺口/再让 Crawler 补”，选择 planned_workflow，并给出 action_plan。\n"
+                "复合任务可以选择 planned_workflow，并给出 action_plan；简单、可直接回答的内容可以选择 direct_answer。\n"
                 "如果需要本地 RAG 检索，rag_focus 要写成真正要查的主题问题，去掉“本地资料、缺什么、让 Crawler 去找、状态”等元指令。\n"
                 "只输出 JSON，不要 Markdown，不要解释隐藏思考。\n"
                 "额外工具 direct_answer：当用户只是问候、闲聊、询问系统能力、要求解释当前行为，或任何不需要本地资料/状态/Crawler 的问题时选择 direct_answer；选择它就不要触发 local_rag_search。\n"

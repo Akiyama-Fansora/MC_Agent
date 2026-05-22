@@ -1155,7 +1155,7 @@ async function sendQuestion(event) {
 
   try {
     if (payload.agent === "mcagent_rag") {
-      const initialText = "我先理解一下你的问题，判断这是问答、状态，还是要交给 Crawler 采集。";
+      const initialText = "MCagent 正在理解你的问题。";
       setActivity(initialText, "thinking");
       session.messages[pendingIndex].text = initialText;
       saveSessions();
@@ -1163,7 +1163,7 @@ async function sendQuestion(event) {
     } else if (payload.agent === "retriever_only") {
       setActivity("仅检索：正在读取本地向量库...", "working");
     } else if (payload.agent === "crawler_agent") {
-      const initialText = "我先理解你的采集目标，再判断这份数据是给你看，还是要清洗成 MCagent/RAG 能用的格式。";
+      const initialText = "CrawlerAgent 正在理解你的任务。";
       setActivity(initialText, "crawler");
       session.messages[pendingIndex].text = initialText;
       saveSessions();

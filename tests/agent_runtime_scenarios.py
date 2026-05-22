@@ -88,7 +88,15 @@ def test_agent_tool_decision_normalization() -> None:
         original_question="随便问问",
         planner="test",
     )
-    assert_equal("unknown_tool_fallback", unknown.tool, "answer")
+    assert_equal("unknown_tool_router_error", unknown.tool, "router_error")
+
+    crawler_extract = normalize_agent_tool_decision(
+        {"tool": "temporary_extract", "collection_target": "读取并总结公开网页"},
+        agent_id="crawler_agent",
+        original_question="总结这个网页，不用保存",
+        planner="test",
+    )
+    assert_equal("crawler_temporary_extract_tool", crawler_extract.tool, "temporary_extract")
 
     planned = normalize_agent_tool_decision(
         {"tool": "answer_then_crawler", "action_plan": [{"tool": "local_rag_search", "goal": "先查本地"}, {"tool": "delegate_crawler", "goal": "再补缺口"}]},

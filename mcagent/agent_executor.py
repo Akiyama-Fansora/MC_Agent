@@ -23,7 +23,7 @@ class ExecutableRun(Protocol):
         ...
 
 
-DirectAnswerFn = Callable[[Any, str, str, dict[str, Any], str, float, int | None], str]
+DirectAnswerFn = Callable[[Any, str, str, dict[str, Any], str, float, int | None, str], str]
 DirectAnswerStreamFn = Callable[..., str]
 GroundedAnswerFn = Callable[..., tuple[str, str]]
 GroundedAnswerStreamFn = Callable[..., tuple[str, str]]
@@ -77,6 +77,7 @@ class AgentToolExecutor:
                     run.max_tokens,
                     run.emit_delta,
                     emit_thinking=lambda detail: run.add_trace("answer", "thinking", detail),
+                    agent=run.agent,
                 )
             else:
                 answer = self._generate_direct_answer(
@@ -87,6 +88,7 @@ class AgentToolExecutor:
                     run.model,
                     run.temperature,
                     run.max_tokens,
+                    run.agent,
                 )
         except Exception as exc:  # noqa: BLE001 - model failures must be visible as model failures.
             answer = f"模型调用失败：{exc}"

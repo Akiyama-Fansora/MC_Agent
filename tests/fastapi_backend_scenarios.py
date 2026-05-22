@@ -63,6 +63,13 @@ def test_fastapi_core_routes() -> None:
         assert_true("agent_tools_include_rag", "local_rag_search" in route_tool_names)
         assert_true("agent_tools_catalog", "Available tools" in tools_json.get("catalog", ""))
 
+        crawler_tools = client.get("/api/agents/crawler_agent/tools")
+        crawler_tools_json = crawler_tools.json()
+        crawler_route_names = [item.get("name") for item in crawler_tools_json.get("route_tools", [])]
+        assert_true("crawler_tools_ok", crawler_tools.status_code == 200)
+        assert_true("crawler_tools_include_temporary_extract", "temporary_extract" in crawler_route_names)
+        assert_true("crawler_tools_include_delegate", "delegate_crawler" in crawler_route_names)
+
         status = client.get("/api/status")
         assert_true("status_ok", status.status_code == 200 and "database" in status.json())
 

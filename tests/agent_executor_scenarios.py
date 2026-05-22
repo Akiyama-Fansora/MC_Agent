@@ -46,10 +46,11 @@ def make_executor(
     fail_direct: bool = False,
     fail_grounded: bool = False,
 ) -> AgentToolExecutor:
-    def generate_direct_answer(config, original_question, question, session_summary, model, temperature, max_tokens):
+    def generate_direct_answer(config, original_question, question, session_summary, model, temperature, max_tokens, agent):
         assert original_question == "你好"
         assert question == "你好"
         assert model == "fake-model"
+        assert agent == "mcagent_rag"
         if fail_direct:
             raise RuntimeError("broken model")
         return direct_answer
@@ -65,9 +66,11 @@ def make_executor(
         emit_delta,
         *,
         emit_thinking=None,
+        agent="mcagent_rag",
     ):
         if fail_direct:
             raise RuntimeError("broken stream")
+        assert agent == "mcagent_rag"
         if emit_thinking:
             emit_thinking({"reasoning_events": 1})
         emit_delta("你")
