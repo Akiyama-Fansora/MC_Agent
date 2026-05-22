@@ -3027,3 +3027,77 @@ python api.py --host 127.0.0.1 --port 8766
 ### 54.5 下一步
 
 继续拆 topic_discovery 候选复审：把“候选发现结果如何交给 Crawler LLM 复审、如何记录 discovery_expansions”整理成服务，使浏览器/搜索/API 发现出的候选更清楚地回到 CrawlerAgent 的思考循环。
+
+## 55. CrawlerTopicDiscoveryReviewService：候选发现复审记录服务化（2026-05-22）
+
+本轮开始前已重新阅读本文档。第 54 阶段拆出了循环控制信号，本轮继续拆 `topic_discovery` 候选复审的 bookkeeping：是否需要复审、还剩多少任务容量、复审后如何记录 `discovery_expansions`。
+
+### 55.1 本轮目标
+
+让 `_run_crawler_job()` 中的 topic discovery 分支只表达主流程：
+
+1. 工具发现候选主题；
+2. 如果是成功的 `topic_discovery` 结果，就交给 Crawler LLM 复审；
+3. 将 Crawler LLM 复审出的后续任务加入队列；
+4. 把复审结果或复审错误记录到 plan。
+
+其中第 2 步的“挑哪些候选继续采集”仍由 `review_topic_discovery_candidates()` 调用 Crawler LLM 完成。
+
+### 55.2 代码变更
+
+1. 新增 `mcagent/crawler_topic_discovery_service.py`：
+   - `CrawlerTopicDiscoveryReviewService.should_review()`；
+   - `remaining_slots()`；
+   - `record_review()`。
+2. 修改 `mcagent/web_server.py`：
+   - topic_discovery 是否复审改用服务判断；
+   - remaining_slots 计算改用服务；
+   - `discovery_expansions` 的 success/error 记录改用服务写入。
+3. 新增 `tests/crawler_topic_discovery_service_scenarios.py`：
+   - 只有成功的 topic_discovery 触发复审；
+   - remaining_slots 不会为负；
+   - 复审成功记录 new_tasks；
+   - 复审失败记录 error 和空 new_tasks。
+4. 更新 `.github/workflows/ci.yml`、`README.md`、`scripts/public_readiness_check.py`。
+
+### 55.3 边界说明
+
+`CrawlerTopicDiscoveryReviewService` 不读取 manifest，不筛选候选，也不生成后续搜索词。它只负责复审流程的客观记录。候选是否值得扩展，仍由 Crawler LLM 根据 seed_queries、discovered_phrases 和 existing_brief 判断。
+
+### 55.4 本轮测试方案与结果
+
+已执行并通过：
+
+~~~powershell
+python -m py_compile mcagent\crawler_topic_discovery_service.py mcagent\web_server.py tests\crawler_topic_discovery_service_scenarios.py
+python tests\crawler_topic_discovery_service_scenarios.py
+python -m py_compile api.py mcagent\agent_execution.py mcagent\agent_executor.py mcagent\agent_router.py mcagent\crawler_delegation_service.py mcagent\crawler_loop_control_service.py mcagent\crawler_reflection_decision_service.py mcagent\crawler_reflection_service.py mcagent\crawler_runtime_step_service.py mcagent\crawler_task_preparation_service.py mcagent\crawler_result_accounting_service.py mcagent\crawler_topic_discovery_service.py mcagent\evidence_service.py mcagent\event_stream.py mcagent\fastapi_app.py mcagent\job_view_service.py mcagent\rag_service.py mcagent\session_state.py mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py tests\crawler_delegation_service_scenarios.py tests\crawler_loop_control_service_scenarios.py tests\crawler_reflection_decision_scenarios.py tests\crawler_reflection_service_scenarios.py tests\crawler_runtime_step_service_scenarios.py tests\crawler_task_preparation_service_scenarios.py tests\crawler_result_accounting_service_scenarios.py tests\crawler_topic_discovery_service_scenarios.py tests\agent_execution_scenarios.py tests\agent_executor_scenarios.py tests\agent_router_scenarios.py tests\evidence_service_scenarios.py tests\job_view_service_scenarios.py tests\rag_service_scenarios.py tests\agent_runtime_scenarios.py tests\backend_services_scenarios.py tests\fastapi_backend_scenarios.py
+python tests\crawler_delegation_service_scenarios.py
+python tests\crawler_loop_control_service_scenarios.py
+python tests\crawler_reflection_decision_scenarios.py
+python tests\crawler_reflection_service_scenarios.py
+python tests\crawler_runtime_step_service_scenarios.py
+python tests\crawler_task_preparation_service_scenarios.py
+python tests\crawler_result_accounting_service_scenarios.py
+python tests\crawler_topic_discovery_service_scenarios.py
+python tests\agent_executor_scenarios.py
+python tests\agent_router_scenarios.py
+python tests\evidence_service_scenarios.py
+python tests\rag_service_scenarios.py
+python tests\backend_services_scenarios.py
+python tests\fastapi_backend_scenarios.py
+python tests\smoke_test.py
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+node --check frontend\static\app.js
+node --check frontend\static\settings.js
+git diff --check
+python api.py --host 127.0.0.1 --port 8766
+# 探针结果：/api/health=200，/api/jobs=200，/api/agents/crawler_agent/tools=200，POST /api/session/context=200
+~~~
+
+公开检查仍只有 LICENSE 非阻断警告。
+
+### 55.5 下一步
+
+继续拆 Crawler job 最终汇总：把 status/summary/final loop/result payload 的构建整理成服务，让 `_run_crawler_job()` 的尾部只负责保存 job、启动后台入库和写 memory。

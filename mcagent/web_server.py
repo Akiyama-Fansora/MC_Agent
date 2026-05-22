@@ -38,6 +38,7 @@ from .crawler_runtime_step_service import CrawlerRuntimeStepService
 from .crawler_task_preparation_service import CrawlerTaskPreparationService
 from .crawler_result_accounting_service import CrawlerResultAccountingService
 from .crawler_loop_control_service import CrawlerLoopControlService
+from .crawler_topic_discovery_service import CrawlerTopicDiscoveryReviewService
 from .evidence_service import EvidenceWorkflowService
 from .ingest import ingest_exports
 from .job_view_service import JobReadableViewService
@@ -1915,6 +1916,7 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
         task_preparation = CrawlerTaskPreparationService()
         result_accounting = CrawlerResultAccountingService()
         loop_control = CrawlerLoopControlService()
+        topic_discovery_review = CrawlerTopicDiscoveryReviewService()
         while index < len(tasks):
             if job.stop_requested:
                 break
@@ -2068,8 +2070,8 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
                 )
             result["observation"] = classify_crawler_tool_result(result).to_dict()
             task_results.append(result)
-            if task_source == "topic_discovery" and result["returncode"] == 0:
-                remaining_slots = max(0, max_total_tasks - len(tasks))
+            if topic_discovery_review.should_review(task_source=task_source, result=result):
+                remaining_slots = topic_discovery_review.remaining_slots(max_total_tasks=max_total_tasks, current_task_count=len(tasks))
                 _update_job(
                     job,
                     summary="Crawler 正在审核主题发现候选：由 Crawler LLM 判断哪些候选值得继续采集。",
@@ -2090,24 +2092,9 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
                 discovered_tasks = _llm_tasks_from_topic_discovery(question, config, result, tasks, max_new_tasks=min(16, remaining_slots))
                 if discovered_tasks:
                     tasks.extend(discovered_tasks)
-                    plan.setdefault("discovery_expansions", []).append(
-                        {
-                            "at_result_count": len(task_results),
-                            "source_query": result.get("query"),
-                            "reviewer": "Crawler LLM",
-                            "new_tasks": discovered_tasks,
-                        }
-                    )
+                    topic_discovery_review.record_review(plan=plan, result=result, task_results_count=len(task_results), discovered_tasks=discovered_tasks)
                 elif result.get("topic_discovery_review_error"):
-                    plan.setdefault("discovery_expansions", []).append(
-                        {
-                            "at_result_count": len(task_results),
-                            "source_query": result.get("query"),
-                            "reviewer": "Crawler LLM",
-                            "error": result.get("topic_discovery_review_error"),
-                            "new_tasks": [],
-                        }
-                    )
+                    topic_discovery_review.record_review(plan=plan, result=result, task_results_count=len(task_results), discovered_tasks=[])
             loop_signal = loop_control.update_bad_streak(result=result, current_bad_streak=bad_streak)
             bad_streak = int(loop_signal.get("bad_streak") or 0)
             if loop_control.should_replan(
