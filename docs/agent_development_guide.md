@@ -2738,3 +2738,78 @@ python api.py --host 127.0.0.1 --port 8766
 ### 50.5 下一步
 
 继续把 `_run_crawler_job()` 的循环拆成更明确的 CrawlerRuntime 服务：把“反思、执行、观察、再次反思”的状态迁移出 `web_server.py`，让后端路由只负责启动 job 和推送状态，减少固定流水线对 CrawlerAgent 的影响。
+
+## 51. CrawlerRuntimeStepService：反思动作应用服务化（2026-05-22）
+
+本轮开始前已重新阅读本文档，并在第 50 阶段基础上继续拆 `_run_crawler_job()`。本阶段只抽取“把 CrawlerAgent 已经选好的 reflection action 应用到任务队列”的逻辑，不改变 CrawlerAgent 如何思考，也不让服务替 CrawlerAgent 选择来源或查询词。
+
+### 51.1 本轮目标
+
+把以下队列操作从 `web_server.py` 中移出：
+
+- 记录 `agent_reflections` 条目；
+- 将 `add_tasks` / `replan` 返回的新任务插到当前 index 前；
+- 去重，避免重复执行同一 source/query；
+- 根据 `selected_index` 调换下一步要执行的 pending task；
+- 根据 `finish` action 写入 finish reason。
+
+这些都是“执行 CrawlerAgent 已选 action”的机械动作，不属于主观决策。
+
+### 51.2 代码变更
+
+1. 新增 `mcagent/crawler_runtime_step_service.py`：
+   - `CrawlerRuntimeStepService.reflection_entry()`；
+   - `CrawlerRuntimeStepService.apply_action()`；
+   - `task_identity()` 和 `_insert_unique()` 仅用于客观去重和队列插入。
+2. 修改 `mcagent/web_server.py`：
+   - `_run_crawler_job()` 创建 `runtime_step`；
+   - reflection entry 构建改由服务负责；
+   - replan/add_tasks 插入、finish、selected_index swap 改由服务执行；
+   - materialization 仍只在 CrawlerAgent contract 明确缺少 executable tasks 时触发，并交回 Crawler planning LLM。
+3. 新增 `tests/crawler_runtime_step_service_scenarios.py`：
+   - 验证 reflection entry 保留 contract；
+   - 验证 replan 新任务插入当前 index；
+   - 验证重复任务不会插入；
+   - 验证 selected_index 会调换 pending task；
+   - 验证 finish reason 正确返回。
+4. 更新 `.github/workflows/ci.yml`、`README.md`、`scripts/public_readiness_check.py`。
+
+### 51.3 边界说明
+
+`CrawlerRuntimeStepService` 不是 planner，也不读取网页，不调用 LLM。它只把 CrawlerAgent LLM 已经输出的 reflection decision 作用到本轮任务队列上。是否重规划、是否结束、是否选择浏览器，仍由 CrawlerAgent 在 reflection 阶段决定。
+
+### 51.4 本轮测试方案与结果
+
+已执行并通过：
+
+~~~powershell
+python -m py_compile mcagent\crawler_runtime_step_service.py mcagent\web_server.py tests\crawler_runtime_step_service_scenarios.py
+python tests\crawler_runtime_step_service_scenarios.py
+python tests\crawler_reflection_decision_scenarios.py
+python tests\job_view_service_scenarios.py
+python -m py_compile api.py mcagent\agent_execution.py mcagent\agent_executor.py mcagent\agent_router.py mcagent\crawler_delegation_service.py mcagent\crawler_reflection_decision_service.py mcagent\crawler_reflection_service.py mcagent\crawler_runtime_step_service.py mcagent\evidence_service.py mcagent\event_stream.py mcagent\fastapi_app.py mcagent\job_view_service.py mcagent\rag_service.py mcagent\session_state.py mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py tests\crawler_delegation_service_scenarios.py tests\crawler_reflection_decision_scenarios.py tests\crawler_reflection_service_scenarios.py tests\crawler_runtime_step_service_scenarios.py tests\agent_execution_scenarios.py tests\agent_executor_scenarios.py tests\agent_router_scenarios.py tests\evidence_service_scenarios.py tests\job_view_service_scenarios.py tests\rag_service_scenarios.py tests\agent_runtime_scenarios.py tests\backend_services_scenarios.py tests\fastapi_backend_scenarios.py
+python tests\crawler_delegation_service_scenarios.py
+python tests\crawler_reflection_decision_scenarios.py
+python tests\crawler_reflection_service_scenarios.py
+python tests\crawler_runtime_step_service_scenarios.py
+python tests\agent_executor_scenarios.py
+python tests\agent_router_scenarios.py
+python tests\evidence_service_scenarios.py
+python tests\rag_service_scenarios.py
+python tests\backend_services_scenarios.py
+python tests\fastapi_backend_scenarios.py
+python tests\smoke_test.py
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+node --check frontend\static\app.js
+node --check frontend\static\settings.js
+git diff --check
+python api.py --host 127.0.0.1 --port 8766
+# 探针结果：/api/health=200，/api/jobs=200，/api/agents/crawler_agent/tools=200，POST /api/session/context=200
+~~~
+
+公开检查仍只有 LICENSE 非阻断警告。
+
+### 51.5 下一步
+
+继续拆 `_run_crawler_job()` 中的工具执行结果归档逻辑：把 task_payload 构造、空查询拒绝、manifest_stats、topic_validation、success/failure 计数更新整理成服务，进一步缩小 `web_server.py` 的责任。

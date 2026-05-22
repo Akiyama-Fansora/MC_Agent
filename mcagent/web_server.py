@@ -34,6 +34,7 @@ from .config import AppConfig, OllamaConfig, PROJECT_ROOT, load_config
 from .crawler_llm_planner import plan_crawler_tasks_resilient, plan_crawler_tasks_rule_fallback, reflect_crawler_progress, review_topic_discovery_candidates
 from .crawler_delegation_service import CrawlerDelegationService
 from .crawler_planner import CONCEPTS, decompose_crawler_queries, plan_crawler_tasks, toolsets_payload
+from .crawler_runtime_step_service import CrawlerRuntimeStepService
 from .evidence_service import EvidenceWorkflowService
 from .ingest import ingest_exports
 from .job_view_service import JobReadableViewService
@@ -1907,6 +1908,7 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
         max_replans = int(payload.get("max_replans") or 2)
         initial_task_limit = int(payload.get("max_tasks") or len(tasks) or 16)
         max_total_tasks = max(len(tasks), min(32, initial_task_limit + 12))
+        runtime_step = CrawlerRuntimeStepService()
         while index < len(tasks):
             if job.stop_requested:
                 break
@@ -1920,17 +1922,7 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
                     session_summary=session_summary,
                     max_new_tasks=max(1, min(4, max_total_tasks - len(tasks))),
                 )
-                plan.setdefault("agent_reflections", []).append(
-                    {
-                        "at_index": index,
-                        "action": reflection.get("action"),
-                        "selected_index": reflection.get("selected_index"),
-                        "reason": reflection.get("reason"),
-                        "planner": reflection.get("planner"),
-                        "tasks": reflection.get("tasks") or [],
-                        "contract": reflection.get("contract") or {},
-                    }
-                )
+                plan.setdefault("agent_reflections", []).append(runtime_step.reflection_entry(index=index, reflection=reflection))
                 _update_job(
                     job,
                     summary=f"CrawlerAgent 正在思考下一步：{reflection.get('action')}\n理由：{reflection.get('reason')}",
@@ -1972,24 +1964,18 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
                                 "contract_issue": contract.get("issues") or [],
                             }
                         )
-                if action in {"add_tasks", "replan"} and new_tasks:
-                    seen_identities = {_crawler_task_identity(task) for task in tasks}
-                    inserted: list[dict[str, Any]] = []
-                    for new_task in new_tasks:
-                        identity = _crawler_task_identity(new_task)
-                        if identity in seen_identities or len(tasks) >= max_total_tasks:
-                            continue
-                        inserted.append(new_task)
-                        seen_identities.add(identity)
-                    if inserted:
-                        tasks[index:index] = inserted
-                        continue
-                if action == "finish":
-                    plan["agent_finish_reason"] = str(reflection.get("done_summary") or reflection.get("reason") or "")
+                step_result = runtime_step.apply_action(
+                    tasks=tasks,
+                    index=index,
+                    reflection=reflection,
+                    max_total_tasks=max_total_tasks,
+                    materialized_tasks=new_tasks,
+                )
+                if step_result.get("continue_loop"):
+                    continue
+                if step_result.get("finished"):
+                    plan["agent_finish_reason"] = str(step_result.get("finish_reason") or "")
                     break
-                selected_offset = int(reflection.get("selected_index") or 0)
-                if selected_offset > 0 and index + selected_offset < len(tasks):
-                    tasks[index], tasks[index + selected_offset] = tasks[index + selected_offset], tasks[index]
             task = tasks[index]
             index += 1
             task_source = _source_alias(str(task.get("source") or "mediawiki"))
