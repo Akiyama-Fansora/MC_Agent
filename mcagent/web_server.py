@@ -41,6 +41,7 @@ from .crawler_loop_control_service import CrawlerLoopControlService
 from .crawler_topic_discovery_service import CrawlerTopicDiscoveryReviewService
 from .crawler_job_finalization_service import CrawlerJobFinalizationService
 from .crawler_job_progress_service import CrawlerJobProgressService
+from .crawler_job_setup_service import CrawlerJobSetupService
 from .evidence_service import EvidenceWorkflowService
 from .ingest import ingest_exports
 from .job_view_service import JobReadableViewService
@@ -1861,33 +1862,42 @@ def _llm_tasks_from_topic_discovery(
 def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> None:
     source = _source_alias(str(payload.get("source") or "planner"))
     question = str(payload.get("source_question") or payload.get("question") or payload.get("query") or "").strip()
+    job_setup = CrawlerJobSetupService()
+    runtime_step = CrawlerRuntimeStepService()
+    task_preparation = CrawlerTaskPreparationService()
+    result_accounting = CrawlerResultAccountingService()
+    loop_control = CrawlerLoopControlService()
+    topic_discovery_review = CrawlerTopicDiscoveryReviewService()
+    job_finalization = CrawlerJobFinalizationService()
+    job_progress = CrawlerJobProgressService()
     _update_job(job, status="running", started_at=time.time(), summary="Crawler job started.")
     try:
         plan: dict[str, Any] = {}
-        if source in {"planner", "auto", "smart", "orchestrator"}:
+        if job_setup.is_planner_source(source):
             session_summary = payload.get("session_summary") if isinstance(payload.get("session_summary"), dict) else None
             max_tasks = int(payload.get("max_tasks") or 16)
             if job.stop_requested:
-                _update_job(job, status="stopped", ended_at=time.time(), summary="Crawler 任务已在规划前停止。", error=None)
+                _update_job(job, ended_at=time.time(), **job_setup.stopped_update(stage="before_plan"))
                 return
             if not bool(payload.get("include_completed")):
                 plan = _plan_crawler_with_job_timeout(job, question, config, max_tasks, session_summary)
                 if plan.get("stopped"):
-                    _update_job(job, status="stopped", ended_at=time.time(), summary="Crawler 任务已在规划阶段停止。", error=None, result={"source": "planner", "plan": plan, "planned_tasks": [], "tasks": []})
+                    _update_job(job, ended_at=time.time(), **job_setup.stopped_update(stage="planning", plan=plan))
                     return
                 tasks = list(plan.get("tasks") or [])
             else:
                 plan = plan_crawler_tasks(question, config.paths.source_dir, max_tasks=max_tasks, include_completed=True)
                 tasks = list(plan.get("tasks") or [])
             if job.stop_requested:
-                _update_job(job, status="stopped", ended_at=time.time(), summary="Crawler 任务已在规划后停止。", error=None, result={"source": "planner", "plan": plan, "planned_tasks": tasks, "tasks": []})
+                _update_job(job, ended_at=time.time(), **job_setup.stopped_update(stage="after_plan", plan=plan, tasks=tasks))
                 return
             if not tasks:
                 tasks = _all_source_tasks(question, config, include_completed=True, session_summary=session_summary, max_tasks=max_tasks)
-                plan = {"strategy": "fallback_all_source_tasks", "tasks": tasks}
+                plan = job_setup.fallback_plan(tasks=tasks)
             _update_job(job, **job_progress.planned(topic=str(plan.get("topic") or question), task_count=len(tasks), plan=plan, tasks=tasks))
         else:
-            tasks = [{"source": source, "query": str(payload.get("query") or question), "reason": "single source request"}]
+            session_summary = None
+            tasks = job_setup.single_source_tasks(source=source, payload=payload, question=question)
         task_results: list[dict[str, Any]] = []
         success_count = 0
         candidate_count = 0
@@ -1896,20 +1906,13 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
         bad_streak = 0
         replan_count = 0
         needs_ingest = False
-        max_replans = int(payload.get("max_replans") or 2)
-        initial_task_limit = int(payload.get("max_tasks") or len(tasks) or 16)
-        max_total_tasks = max(len(tasks), min(32, initial_task_limit + 12))
-        runtime_step = CrawlerRuntimeStepService()
-        task_preparation = CrawlerTaskPreparationService()
-        result_accounting = CrawlerResultAccountingService()
-        loop_control = CrawlerLoopControlService()
-        topic_discovery_review = CrawlerTopicDiscoveryReviewService()
-        job_finalization = CrawlerJobFinalizationService()
-        job_progress = CrawlerJobProgressService()
+        limits = job_setup.limits(payload=payload, tasks=tasks)
+        max_replans = limits["max_replans"]
+        max_total_tasks = limits["max_total_tasks"]
         while index < len(tasks):
             if job.stop_requested:
                 break
-            if source in {"planner", "auto", "smart", "orchestrator"}:
+            if job_setup.is_planner_source(source):
                 pending_tasks = list(tasks[index:])
                 reflection = reflect_crawler_progress(
                     question,

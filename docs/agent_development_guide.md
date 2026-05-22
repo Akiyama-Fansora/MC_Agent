@@ -3248,3 +3248,80 @@ python api.py --host 127.0.0.1 --port 8766
 ### 57.5 下一步
 
 继续收敛 `_run_crawler_job()` 的外层结构：把初始化 plan/tasks、stop handling、fallback_all_source_tasks 的编排拆成更清晰的 crawler job planner/start service，进一步减少 `web_server.py` 对 CrawlerAgent loop 的直接控制。
+
+## 58. CrawlerJobSetupService：Crawler job 启动编排服务化（2026-05-22）
+
+本轮开始前已重新阅读本文档。第 57 阶段拆出了运行中状态 payload，本轮继续处理 `_run_crawler_job()` 最外层启动逻辑：planner source 判断、单来源任务构造、fallback plan、停止阶段 payload 和循环限制值。
+
+### 58.1 本轮目标
+
+把启动编排中“客观、可验证、无主观决策”的部分抽成服务：
+
+- `is_planner_source()`：只判断 source 是否属于 CrawlerAgent planner 类入口；
+- `single_source_tasks()`：把明确指定来源的请求转成单个工具任务；
+- `fallback_plan()`：在 LLM planner 无任务时承接 `_all_source_tasks()` 的客观结果；
+- `limits()`：计算 max_replans、initial_task_limit、max_total_tasks；
+- `stopped_update()`：统一规划前、规划中、规划后的 stopped job payload。
+
+这个服务不搜索、不调用 LLM、不决定目标、不替 CrawlerAgent 选择下一步。它只是把启动阶段的固定合同收拢，让 `_run_crawler_job()` 更接近“Agent loop + 工具执行器”的结构。
+
+### 58.2 代码变更
+
+1. 新增 `mcagent/crawler_job_setup_service.py`：
+   - 提供 planner source、单来源任务、fallback plan、限制值、停止 payload 的纯函数式服务。
+2. 修改 `mcagent/web_server.py`：
+   - `_run_crawler_job()` 入口实例化 setup/progress/runtime/accounting/finalization 等服务；
+   - 修复 `job_progress` 在 planner 分支使用前尚未实例化的问题；
+   - 用 `CrawlerJobSetupService` 替换散落的 planner source 集合判断、单来源任务内联字典、fallback plan 字典和限制值计算。
+3. 新增 `tests/crawler_job_setup_service_scenarios.py`：
+   - 覆盖 planner source、query fallback、fallback plan、limits cap、stopped payload。
+4. 更新 `.github/workflows/ci.yml`、`README.md`、`scripts/public_readiness_check.py`。
+
+### 58.3 边界说明
+
+`CrawlerJobSetupService` 不是 planner，也不是策略层。它不能根据用户语义修改目标，不能把“要不要补库”“搜什么关键词”“下一步执行哪个来源”写死。真正的任务理解仍由 MCagent/CrawlerAgent 的 LLM router、planner 和 reflection loop 完成。
+
+### 58.4 本轮测试方案与结果
+
+已执行并通过：
+
+~~~powershell
+$env:PYTHONPYCACHEPREFIX='D:\magic\MC_Agent\runtime\pycache_test'
+python -m py_compile mcagent\crawler_job_setup_service.py mcagent\web_server.py tests\crawler_job_setup_service_scenarios.py
+python tests\crawler_job_setup_service_scenarios.py
+python -m py_compile api.py mcagent\agent_execution.py mcagent\agent_executor.py mcagent\agent_router.py mcagent\crawler_delegation_service.py mcagent\crawler_job_finalization_service.py mcagent\crawler_job_progress_service.py mcagent\crawler_job_setup_service.py mcagent\crawler_loop_control_service.py mcagent\crawler_reflection_decision_service.py mcagent\crawler_reflection_service.py mcagent\crawler_runtime_step_service.py mcagent\crawler_task_preparation_service.py mcagent\crawler_result_accounting_service.py mcagent\crawler_topic_discovery_service.py mcagent\evidence_service.py mcagent\event_stream.py mcagent\fastapi_app.py mcagent\job_view_service.py mcagent\rag_service.py mcagent\session_state.py mcagent\web_server.py mcagent\crawler_llm_planner.py mcagent\provider_registry.py mcagent\crawler_planner.py scripts\browser_collect_seed.py scripts\fetch_mcmod_seed.py scripts\fetch_modpack_archive_seed.py scripts\public_readiness_check.py scripts\smoke_agent_flows.py tests\crawler_delegation_service_scenarios.py tests\crawler_job_finalization_service_scenarios.py tests\crawler_job_progress_service_scenarios.py tests\crawler_job_setup_service_scenarios.py tests\crawler_loop_control_service_scenarios.py tests\crawler_reflection_decision_scenarios.py tests\crawler_reflection_service_scenarios.py tests\crawler_runtime_step_service_scenarios.py tests\crawler_task_preparation_service_scenarios.py tests\crawler_result_accounting_service_scenarios.py tests\crawler_topic_discovery_service_scenarios.py tests\agent_execution_scenarios.py tests\agent_executor_scenarios.py tests\agent_router_scenarios.py tests\evidence_service_scenarios.py tests\job_view_service_scenarios.py tests\rag_service_scenarios.py tests\agent_runtime_scenarios.py tests\backend_services_scenarios.py tests\fastapi_backend_scenarios.py
+python tests\crawler_delegation_service_scenarios.py
+python tests\crawler_job_finalization_service_scenarios.py
+python tests\crawler_job_progress_service_scenarios.py
+python tests\crawler_job_setup_service_scenarios.py
+python tests\crawler_loop_control_service_scenarios.py
+python tests\crawler_reflection_decision_scenarios.py
+python tests\crawler_reflection_service_scenarios.py
+python tests\crawler_runtime_step_service_scenarios.py
+python tests\crawler_task_preparation_service_scenarios.py
+python tests\crawler_result_accounting_service_scenarios.py
+python tests\crawler_topic_discovery_service_scenarios.py
+python tests\agent_execution_scenarios.py
+python tests\agent_executor_scenarios.py
+python tests\agent_router_scenarios.py
+python tests\evidence_service_scenarios.py
+python tests\job_view_service_scenarios.py
+python tests\rag_service_scenarios.py
+python tests\agent_runtime_scenarios.py
+python tests\backend_services_scenarios.py
+python tests\fastapi_backend_scenarios.py
+python tests\smoke_test.py
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+node --check frontend\static\app.js
+node --check frontend\static\settings.js
+git diff --check
+python api.py --host 127.0.0.1 --port 8766
+# 探针结果：/api/health=200，/api/jobs=200，/api/agents/crawler_agent/tools=200，POST /api/session/context=200
+~~~
+
+公开检查仍只有 LICENSE 非阻断警告。第一次本地 `py_compile` 遇到旧 `__pycache__` 写入权限冲突，已用 `PYTHONPYCACHEPREFIX` 指向临时缓存目录重跑通过；CI 的干净工作区不受影响。
+
+### 58.5 下一步
+
+继续收敛 `_run_crawler_job()` 的剩余大块职责：优先考虑把 planner 超时轮询 `_plan_crawler_with_job_timeout()` 的状态 payload 与规划执行隔离，或者把 replan/topic discovery 的 LLM materialization 进一步拆成明确的 Crawler planning adapter。
