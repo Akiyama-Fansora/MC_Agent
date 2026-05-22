@@ -29,6 +29,7 @@ from .agent_runtime import (
     tool_names_for_agent,
 )
 from .agent_execution import build_agent_execution_context
+from .agent_router import AgentToolRouterService
 from .chat import SYSTEM_PROMPT, format_context, format_sources
 from .cleaners import _HTMLTextExtractor, normalize_text
 from .config import AppConfig, OllamaConfig, PROJECT_ROOT, load_config
@@ -5202,43 +5203,17 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
             question = contextual_question
             run.question = question
             add_trace("observe", "contextualized", {"original": original_question, "rewritten": question})
-    tool_decision = _agent_tool_decision(
-        config,
-        payload,
-        agent=agent,
-        original_question=original_question,
-        contextual_question=question,
-        session_summary=session_summary,
-        model=model,
-    )
-    route_intent = str(tool_decision.get("tool") or "answer")
-    action_plan = tool_decision.get("action_plan") if isinstance(tool_decision.get("action_plan"), list) else []
-    rag_focus = str(tool_decision.get("rag_focus") or "").strip()
-    add_trace("decide", "tool_selected", {"tool": route_intent, "original_question": original_question, "decision": tool_decision})
-    if action_plan:
-        add_trace("plan", "created", {"steps": action_plan})
-    if rag_focus:
-        add_trace("plan", "rag_focus", {"question": rag_focus})
-    route_confirmation = _agent_confirm_next_step(
-        config,
-        payload,
-        agent=agent,
-        model=model,
-        original_question=original_question,
-        session_summary=session_summary,
-        proposed_tool=route_intent,
-        proposed_goal=str(tool_decision.get("reason") or "确认本轮应执行的工具路径。"),
-        context={"tool_decision": tool_decision, "action_plan": action_plan},
-    )
-    add_trace("decide", "next_step_confirmed", route_confirmation)
-    if not bool(route_confirmation.get("proceed", True)):
-        suggested_tool = str(route_confirmation.get("suggested_tool") or route_confirmation.get("tool") or "").strip()
-        if suggested_tool in {"direct_answer", "answer", "planned_workflow", "status", "delegate_crawler"}:
-            route_intent = suggested_tool
-    planned_workflow = route_intent == "planned_workflow"
-    planned_delegate = planned_workflow and _action_plan_has_tool(action_plan, "delegate_crawler")
-    if planned_workflow:
-        route_intent = "answer"
+    route = AgentToolRouterService(
+        decide_tool=_agent_tool_decision,
+        confirm_next_step=_agent_confirm_next_step,
+        action_plan_has_tool=_action_plan_has_tool,
+    ).route(run, session_summary=session_summary)
+    tool_decision = route.tool_decision
+    route_intent = route.route_intent
+    action_plan = route.action_plan
+    rag_focus = route.rag_focus
+    planned_workflow = route.planned_workflow
+    planned_delegate = route.planned_delegate
     if route_intent == "router_error":
         error_text = str(tool_decision.get("error") or tool_decision.get("reason") or "unknown error")
         add_trace("done", "router_error", {"error": error_text, "delegated": False})

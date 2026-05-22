@@ -1990,3 +1990,82 @@ python tests\fastapi_backend_scenarios.py
 
 - 第 40 阶段抽 `AgentToolRouterService`：把工具选择 LLM、确认下一步、planned workflow 判定从 `_chat_impl()` 中拆出来；
 - 第 41 阶段抽 `AgentToolExecutor`：把 direct answer、status、RAG、delegate crawler 分支拆成可测试执行器。
+
+## 40. Agent 工具路由第一阶段：路由编排服务化（2026-05-22）
+
+本轮开始前已重新阅读本文档。用户明确授权：每个新阶段只要能优化 Agent，就继续执行，不必再等待逐次确认。本轮继续拆 `_chat_impl()`，目标是把“工具选择、下一步确认、planned workflow 判定”从大函数中抽成可测试服务。
+
+### 40.1 本轮定位
+
+上一轮 `AgentExecutionContext` 解决了运行态和 trace 的基础问题，但 `_chat_impl()` 里仍然直接写着：
+
+- 调用工具选择 LLM；
+- 解析 `tool_decision`；
+- 记录 `tool_selected`、`plan.created`、`plan.rag_focus`；
+- 调用下一步确认 LLM；
+- 根据 confirmation suggested_tool 改道；
+- 判断 `planned_workflow` 与 `planned_delegate`。
+
+这些都属于 Agent 工具路由编排，不应该散落在 chat 大函数里。本轮先抽编排服务，但保持 LLM prompt 函数仍在旧模块中，通过依赖注入调用，避免一次性大搬迁导致循环依赖。
+
+### 40.2 本轮改造
+
+1. 新增 `mcagent/agent_router.py`：
+   - `AgentRouteDecision`：统一保存 `route_intent`、`tool_decision`、`route_confirmation`、`action_plan`、`rag_focus`、`planned_workflow`、`planned_delegate`；
+   - `AgentToolRouterService`：负责调用注入的工具选择函数、下一步确认函数、planned workflow 判定函数；
+   - 服务会记录现有 trace shape，但不替 LLM 做主观判断。
+2. `web_server.py`：
+   - `_chat_impl()` 改用 `AgentToolRouterService.route()`；
+   - 后续 direct answer、status、RAG、delegate crawler 执行分支保持不变；
+   - 工具选择 LLM 和确认 LLM 的 prompt 暂时仍在 `web_server.py`，下一阶段再整体搬迁。
+3. 新增 `tests/agent_router_scenarios.py`：
+   - 验证 route service 保留 trace；
+   - 验证 confirmation 可建议改道到 `direct_answer`；
+   - 验证 planned workflow 只标记 `planned_delegate`，不直接执行 Crawler。
+4. CI、README、公开检查加入新模块和测试。
+
+### 40.3 本轮测试方案
+
+目标行为：
+
+- 工具路由 trace 仍包含 `decide/tool_selected` 与 `decide/next_step_confirmed`；
+- `rag_focus` 和 `action_plan` 仍能被传回 `_chat_impl()` 后续逻辑；
+- confirmation suggested_tool 能改道，但仍只允许既有工具集合；
+- planned workflow 仍先进入 answer 路径，只有后续分支按计划决定是否委托 Crawler；
+- `_chat_impl()` 的行为不因路由编排服务化而改变。
+
+风险点：
+
+- 路由服务没有同步 action_plan/rag_focus，导致 RAG 检索失去主题；
+- planned_workflow 判定变化，误触发或漏触发 Crawler；
+- trace stage/status 与前端不兼容；
+- 依赖注入隐藏了 LLM 调用失败路径；
+- 测试只测服务，不测整体 chat path。
+
+离线测试：
+
+- `tests/agent_router_scenarios.py`：
+  - 路由决策和确认 trace；
+  - suggested_tool 改道；
+  - planned workflow + delegate 标记。
+
+集成测试：
+
+~~~powershell
+python -m py_compile api.py mcagent\agent_execution.py mcagent\agent_router.py mcagent\event_stream.py mcagent\fastapi_app.py mcagent\session_state.py mcagent\agent_runtime.py mcagent\web_server.py mcagent\crawler_llm_planner.py scripts\public_readiness_check.py tests\agent_execution_scenarios.py tests\agent_router_scenarios.py tests\agent_runtime_scenarios.py tests\backend_services_scenarios.py tests\fastapi_backend_scenarios.py
+node --check frontend\static\app.js
+node --check frontend\static\settings.js
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+python tests\smoke_test.py
+python tests\agent_execution_scenarios.py
+python tests\agent_router_scenarios.py
+python tests\agent_runtime_scenarios.py
+python tests\backend_services_scenarios.py
+python tests\fastapi_backend_scenarios.py
+~~~
+
+后续计划：
+
+- 第 41 阶段把 `_agent_tool_decision()` 与 `_agent_confirm_next_step()` 的 prompt/LLM 调用整体搬进 `agent_router.py`，让 web_server 不再持有路由 prompt；
+- 第 42 阶段抽 direct answer/status/delegate/RAG 的工具执行器。
