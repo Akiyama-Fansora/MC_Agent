@@ -151,6 +151,10 @@ function progressTextForTrace(step) {
   const detail = step?.detail || {};
   const stage = `${step?.stage || ""}:${step?.status || ""}`;
   const activeName = state.agents.find((item) => item.id === state.activeAgent)?.name || (state.activeAgent === "crawler_agent" ? "CrawlerAgent" : "MCagent");
+  if (stage === "message:received") {
+    const tuple = detail.tuple || [detail.from_agent || "User", detail.content || "", detail.to_agent || activeName];
+    return `消息通道：${tuple[0]} -> ${tuple[2]}。${tuple[2]} 正在理解消息。`;
+  }
   if (stage === "observe:received") return `${activeName} 正在读取你的目标和当前上下文。`;
   if (stage === "observe:contextualized") return `${activeName} 正在把这轮问题和最近会话上下文合并理解。`;
   if (stage === "decide:tool_selected") {
@@ -1155,6 +1159,15 @@ async function sendQuestion(event) {
     session_id: session.id,
     agent: $("noLlm").checked && state.activeAgent === "mcagent_rag" ? "retriever_only" : state.activeAgent,
     question,
+    agent_message: {
+      from_agent: "User",
+      to_agent: state.activeAgent === "crawler_agent" ? "CrawlerAgent" : "MCagent",
+      content: question,
+      intent: "user_chat",
+      conversation_id: session.id,
+      requires_reply: true,
+      metadata: { ui_agent: state.activeAgent },
+    },
     history: requestHistoryForAgent(session, pendingIndex),
     model_profile_id: $("modelSelect").value,
     model: `profile:${$("modelSelect").value}`,

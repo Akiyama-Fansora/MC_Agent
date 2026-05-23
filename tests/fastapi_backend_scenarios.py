@@ -19,6 +19,7 @@ from mcagent.config import (  # noqa: E402
     RetrievalConfig,
 )
 from mcagent.fastapi_app import create_app  # noqa: E402
+import mcagent.web_server as web_server  # noqa: E402
 
 
 def make_temp_config(root: Path) -> AppConfig:
@@ -42,6 +43,16 @@ def make_temp_config(root: Path) -> AppConfig:
 def assert_true(name: str, condition: bool, detail: str = "") -> None:
     if not condition:
         raise AssertionError(f"{name}: {detail}")
+
+
+class SequencedClient:
+    def __init__(self, replies: list[str]) -> None:
+        self.replies = list(replies)
+
+    def chat(self, messages, *, temperature=None, max_tokens=None):  # noqa: ANN001, ANN201, ARG002
+        if not self.replies:
+            raise AssertionError("fake LLM was called more times than expected")
+        return self.replies.pop(0)
 
 
 def test_fastapi_core_routes() -> None:
@@ -96,9 +107,36 @@ def test_fastapi_sse_chat_shape() -> None:
         assert_true("sse_done_event", "event: done" in text)
 
 
+def test_fastapi_agent_message_endpoint_dispatches() -> None:
+    fake = SequencedClient(
+        [
+            '{"tool":"direct_answer","reason":"simple greeting","collection_target":"你好","delivery_target":"human"}',
+            '{"proceed":true,"tool":"direct_answer","reason":"ok"}',
+            "你好，我是 CrawlerAgent。",
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake, "fake")  # type: ignore[assignment]
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            client = TestClient(create_app(make_temp_config(Path(tmp))))
+            response = client.post(
+                "/api/agent-message",
+                json={"from_agent": "User", "to_agent": "CrawlerAgent", "content": "你好", "session_id": "fastapi-message"},
+            )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+    assert_true("agent_message_status", response.status_code == 200, response.text)
+    body = response.json()
+    assert_true("agent_message_agent", body.get("agent") == "crawler_agent")
+    traces = body.get("trace") or []
+    assert_true("agent_message_trace", any(step.get("stage") == "message" and step.get("status") == "received" for step in traces))
+
+
 def main() -> int:
     test_fastapi_core_routes()
     test_fastapi_sse_chat_shape()
+    test_fastapi_agent_message_endpoint_dispatches()
     print("FASTAPI BACKEND SCENARIOS PASSED")
     return 0
 

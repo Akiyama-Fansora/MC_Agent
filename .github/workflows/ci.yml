@@ -37,6 +37,7 @@ jobs:
           api.py
           mcagent\agent_execution.py
           mcagent\agent_executor.py
+          mcagent\agent_message.py
           mcagent\agent_router.py
           mcagent\artifact_reference_service.py
           mcagent\artifact_save_service.py
@@ -95,6 +96,7 @@ jobs:
           tests\agent_execution_scenarios.py
           tests\agent_executor_scenarios.py
           tests\agent_five_direction_matrix_scenarios.py
+          tests\agent_message_bus_scenarios.py
           tests\generic_local_tool_scenarios.py
           tests\agent_router_scenarios.py
           tests\evidence_service_scenarios.py
@@ -136,6 +138,7 @@ jobs:
           python tests\agent_execution_scenarios.py
           python tests\agent_executor_scenarios.py
           python tests\agent_five_direction_matrix_scenarios.py
+          python tests\agent_message_bus_scenarios.py
           python tests\generic_local_tool_scenarios.py
           python tests\agent_router_scenarios.py
           python tests\evidence_service_scenarios.py

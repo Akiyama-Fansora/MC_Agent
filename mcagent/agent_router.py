@@ -189,7 +189,7 @@ class LlmAgentToolRouterService(AgentToolRouterService):
             allowed_tools = "|".join(tool_names_for_agent(agent))
             prompt = (
                 "你是当前对话里的 Agent 工具选择器，只决定下一步使用哪个工具，不回答用户问题。\n"
-                "参与者：用户、MCagent、CrawlerAgent。\n"
+                "参与者：用户、MCagent、CrawlerAgent。任意一轮沟通都可以表示为 AgentMessage(from_agent, content, to_agent)。\n"
                 "下面是本项目统一 Agent Runtime 暴露给当前 Agent 的工具目录。工具目录是能力说明，不是关键词触发规则。\n"
                 f"{catalog}\n"
                 "角色与工具关系：active_agent 只能从自己的工具目录中选择下一步；工具目录描述能力与副作用，不提供关键词触发规则。\n"
@@ -197,7 +197,7 @@ class LlmAgentToolRouterService(AgentToolRouterService):
                 "重要原则：不要用关键词触发。必须按语义判断。不要把游戏内“获取某物/如何获得”误判成 Crawler 采集任务。\n"
                 "MCagent 的本地 RAG 当前主要服务 Minecraft 资料库；CrawlerAgent 不限于 Minecraft，应按用户给定目标采集合法、可访问的公开资料或本地资料。\n"
                 "CrawlerAgent 工具边界：temporary_extract 是即时读取、抽取、总结且不保存；delegate_crawler 会启动后台采集循环，通常会产生本地导出或补库。若用户目标明确是只读/只总结且不保存，应选择没有持久化副作用的工具。\n"
-                "CrawlerAgent 跨 Agent 上下文：如果用户要求先查看 MCagent/RAG 已有什么、缺什么，再为 MCagent/RAG 补资料，应选择 planned_workflow，并在 action_plan 中先用 mcagent_context 观察，再用 delegate_crawler 采集；如果只问 MCagent/RAG 本地情况而不要求采集，选择 mcagent_context。\n"
+                "跨 Agent 沟通原则：消息通道只负责把内容送给目标 Agent，收到消息的 Agent 再根据自己的工具目录判断下一步。若当前 Agent 需要对方能力，选择能完成这次消息投递的工具，例如向 MCagent 询问本地上下文或向 CrawlerAgent 交付采集目标。\n"
                 "委托交接原则：collection_target 不是搜索词，也不是给工具的死规则，而是给 CrawlerAgent 的自然语言任务目标。若任务目标依赖上下文，要把相关背景自然写进目标；不要拆成关键词，也不要丢掉用户原话。\n"
                 "复合任务可以选择 planned_workflow，并给出 action_plan；简单、可直接回答的内容可以选择 direct_answer。\n"
                 "如果需要本地 RAG 检索，rag_focus 要写成真正要查的主题问题，去掉“本地资料、缺什么、让 Crawler 去找、状态”等元指令。\n"
@@ -273,7 +273,7 @@ class LlmAgentToolRouterService(AgentToolRouterService):
                 f"允许工具名：{allowed_tools}, answer, evidence_select, final_answer_llm。\n"
                 "如果 proposed_tool 合理，proceed=true；如果不合理，proceed=false 并给出 suggested_tool。不要拆 Crawler 的搜索词，不要替工具生成最终回答。\n"
                 "CrawlerAgent 工具边界：temporary_extract 不保存本地文件；delegate_crawler 会启动后台采集循环。确认时必须检查 proposed_tool 的副作用是否符合用户对保存、入库、后台任务的要求。\n"
-                "如果 CrawlerAgent 被要求先查看 MCagent/RAG 本地上下文或缺口再采集，direct_answer 不足以完成动作，应改用 mcagent_context 或 planned_workflow。\n"
+                "跨 Agent 沟通原则：确认的是消息是否应送达目标 Agent 或当前 Agent 是否应执行所选工具；不要在确认器里替接收方决定后续搜索、保存或最终回答。\n"
                 "只输出 JSON。\n"
                 "额外工具 direct_answer：当用户只是问候、闲聊、询问系统能力、要求解释当前行为，或任何不需要本地资料/状态/Crawler 的问题时选择 direct_answer；选择它就不要触发 local_rag_search。\n"
                 f"active_agent: {agent}\n"

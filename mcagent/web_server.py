@@ -21,6 +21,7 @@ from typing import Any
 import sqlite3
 
 from .agent_memory import append_memory_event, memory_summary
+from .agent_message import AgentMessage, make_agent_message, message_from_payload
 from .agent_runtime import (
     build_handoff_contract,
     classify_crawler_tool_result,
@@ -1075,11 +1076,18 @@ def _run_mcagent_context_tool(config: AppConfig, payload: dict[str, Any], plan: 
     query = str(payload.get("query") or payload.get("question") or "").strip()
     collection_target = str(payload.get("collection_target") or payload.get("source_question") or payload.get("question") or "").strip()
     focus = _mcagent_context_focus(query or collection_target, collection_target)
-    inter_agent_request = (
-        "CrawlerAgent -> MCagent: 请你作为 MCagent 使用自己的本地资料库/RAG 能力检查这个主题，"
-        "告诉我本地已有证据、还缺哪些资料，以及 CrawlerAgent 下一步应该去网上补什么。"
-        f"\n主题：{focus}"
+    request_message = make_agent_message(
+        "CrawlerAgent",
+        (
+            "请你使用自己的本地资料库/RAG 能力检查这个主题，告诉我本地已有证据、还缺哪些资料，"
+            f"以及 CrawlerAgent 下一步应该去网上补什么。\n主题：{focus}"
+        ),
+        "MCagent",
+        intent="mcagent_context_request",
+        conversation_id=str(payload.get("session_id") or ""),
+        metadata={"tool": "mcagent_context", "collection_target": collection_target},
     )
+    inter_agent_request = f"{request_message.from_agent} -> {request_message.to_agent}: {request_message.content}"
     export_dir = PROJECT_ROOT / "data" / "crawler_exports" / "mcagent_context" / f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{uuid.uuid4().hex[:8]}"
     export_dir.mkdir(parents=True, exist_ok=True)
     report_path = export_dir / "mcagent_context.md"
@@ -1177,6 +1185,19 @@ def _run_mcagent_context_tool(config: AppConfig, payload: dict[str, Any], plan: 
                 "请你优先补采能确定主题身份、官方/下载页面、模组列表或依赖、玩法/任务线、版本更新和已知问题的公开资料。\n\n"
                 f"资料缺口摘要：\n{gap_summary}"
             )
+        reply_message = make_agent_message(
+            "MCagent",
+            mcagent_answer,
+            "CrawlerAgent",
+            intent="mcagent_context_reply",
+            conversation_id=request_message.conversation_id,
+            reply_to=request_message.message_id,
+            metadata={
+                "tool": "mcagent_context",
+                "local_source_count": len(selected),
+                "gap_count": len(gaps),
+            },
+        )
         lines = [
             "# Inter-Agent Context: MCagent -> CrawlerAgent",
             "",
@@ -1188,7 +1209,7 @@ def _run_mcagent_context_tool(config: AppConfig, payload: dict[str, Any], plan: 
             "",
             "## MCagent Reply",
             "",
-            mcagent_answer,
+            reply_message.content,
             "",
             "## MCagent Local Search Focus",
             "",
@@ -1224,13 +1245,15 @@ def _run_mcagent_context_tool(config: AppConfig, payload: dict[str, Any], plan: 
             "query": focus,
             "fetched_at": datetime.now().isoformat(timespec="seconds"),
             "inter_agent": {
-                "from_agent": "CrawlerAgent",
-                "to_agent": "MCagent",
-                "reply_from": "MCagent",
-                "reply_to": "CrawlerAgent",
-                "request": inter_agent_request,
-                "reply": mcagent_answer,
+                "from_agent": request_message.from_agent,
+                "to_agent": request_message.to_agent,
+                "reply_from": reply_message.from_agent,
+                "reply_to": reply_message.to_agent,
+                "request": request_message.content,
+                "reply": reply_message.content,
+                "messages": [request_message.to_dict(), reply_message.to_dict()],
             },
+            "agent_message_exchange": _agent_message_response_trace(request_message, reply_message),
             "mcagent_trace": trace_events,
             "evidence_report": evidence_report,
             "records": [
@@ -1263,8 +1286,9 @@ def _run_mcagent_context_tool(config: AppConfig, payload: dict[str, Any], plan: 
             "timed_out": False,
             "export_dir": str(export_dir),
             "mcagent_gap_summary": gap_summary,
-            "mcagent_answer": mcagent_answer,
+            "mcagent_answer": reply_message.content,
             "mcagent_source_count": len(selected),
+            "agent_message_exchange": _agent_message_response_trace(request_message, reply_message),
         }
     except Exception as exc:  # noqa: BLE001
         manifest = {
@@ -4344,11 +4368,27 @@ def _delegate_crawler_for_missing_data(config: AppConfig, payload: dict[str, Any
     crawler_payload["handoff_from"] = handoff["handoff_from"]
     crawler_payload["original_user_request"] = handoff["original_user_request"]
     crawler_payload["delivery_target"] = str(payload.get("delivery_target") or _infer_delivery_target(collection_question, session_summary))
+    from_agent = "User" if crawler_payload["requested_by"] == "user" else "MCagent"
+    agent_message = make_agent_message(
+        from_agent,
+        collection_question,
+        "CrawlerAgent",
+        intent="collection_request",
+        conversation_id=str(payload.get("session_id") or ""),
+        metadata={
+            "requested_by": crawler_payload["requested_by"],
+            "handoff_from": crawler_payload["handoff_from"],
+            "delivery_target": crawler_payload["delivery_target"],
+            "original_user_request": crawler_payload["original_user_request"],
+        },
+    )
+    crawler_payload["agent_message"] = agent_message.to_dict()
     explicit_collection_target = str((session_summary or {}).get("collection_target") or "").strip()
     planner_collection_target = explicit_collection_target or collection_question
     planner_summary = dict(session_summary or {})
     planner_summary.update(
         {
+            "agent_message": agent_message.to_dict(),
             "requested_by": crawler_payload["requested_by"],
             "handoff_from": crawler_payload["handoff_from"],
             "original_user_request": crawler_payload["original_user_request"],
@@ -4377,6 +4417,7 @@ def _delegate_crawler_for_missing_data(config: AppConfig, payload: dict[str, Any
                 "handoff_from": crawler_payload["handoff_from"],
                 "original_user_request": crawler_payload["original_user_request"],
                 "delivery_target": crawler_payload["delivery_target"],
+                "agent_message": agent_message.to_dict(),
             },
         )
     return job, created
@@ -5178,6 +5219,52 @@ def _trace_step(stage: str, status: str, detail: Any = None) -> dict[str, Any]:
     return make_agent_loop_event(stage, status, detail).to_trace_dict()
 
 
+def _agent_display_name(agent_id: str) -> str:
+    if agent_id == "crawler_agent":
+        return "CrawlerAgent"
+    if agent_id == "mcagent_rag":
+        return "MCagent"
+    if agent_id == "retriever_only":
+        return "MCagent"
+    return str(agent_id or "User")
+
+
+def _incoming_agent_message(payload: dict[str, Any], *, agent: str, question: str) -> AgentMessage:
+    return message_from_payload(payload, default_to_agent=_agent_display_name(agent), default_content=question)
+
+
+def _trace_agent_message(add_trace: Any, message: AgentMessage, status: str = "received") -> None:
+    add_trace("message", status, message.to_dict())
+
+
+def _agent_message_response_trace(request: AgentMessage, reply: AgentMessage) -> dict[str, Any]:
+    return {
+        "request": request.to_dict(),
+        "reply": reply.to_dict(),
+    }
+
+
+def _agent_message_payload(payload: dict[str, Any], message: AgentMessage) -> dict[str, Any]:
+    next_payload = dict(payload)
+    next_payload["agent"] = message.to_agent_id
+    next_payload["question"] = message.content
+    next_payload["message_from"] = message.from_agent
+    next_payload["agent_message"] = message.to_dict()
+    next_payload.setdefault("session_id", message.conversation_id or payload.get("session_id") or "default")
+    return next_payload
+
+
+def _send_agent_message(config: AppConfig, payload: dict[str, Any], message: AgentMessage, emit: Any | None = None) -> dict[str, Any]:
+    """Send a message to an Agent through the normal chat runtime.
+
+    This is the explicit message-bus primitive for User -> Agent and
+    Agent -> Agent conversation. The bus only delivers the message; the
+    receiving Agent still owns tool choice and final wording.
+    """
+
+    return _chat_impl(config, _agent_message_payload(payload, message), emit=emit)
+
+
 def _action_plan_has_tool(action_plan: list[dict[str, Any]], tool: str) -> bool:
     wanted = tool.strip().lower()
     return any(str(step.get("tool") or "").strip().lower() == wanted for step in action_plan)
@@ -5229,6 +5316,8 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
     add_trace = run.add_trace
     if not question:
         return run.response({"answer": "问题不能为空。", "sources": [], "context": "", "agent": agent})
+    incoming_message = _incoming_agent_message(payload, agent=agent, question=question)
+    _trace_agent_message(add_trace, incoming_message)
     if _question_looks_transport_garbled(question):
         add_trace("done", "invalid_encoding", {"reason": "question contains too many question marks"})
         return run.response(
@@ -5855,6 +5944,19 @@ class MCagentHandler(BaseHTTPRequestHandler):
         request_path = self.path.split("?", 1)[0]
         if request_path == "/api/chat":
             _send_json(self, _chat(config, payload))
+            return
+        if request_path == "/api/agent-message":
+            message = make_agent_message(
+                str(payload.get("from_agent") or payload.get("from") or "User"),
+                str(payload.get("content") or payload.get("message") or payload.get("question") or ""),
+                str(payload.get("to_agent") or payload.get("to") or payload.get("agent") or "MCagent"),
+                intent=str(payload.get("intent") or ""),
+                conversation_id=str(payload.get("session_id") or payload.get("conversation_id") or ""),
+                reply_to=str(payload.get("reply_to") or ""),
+                requires_reply=bool(payload.get("requires_reply", True)),
+                metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+            )
+            _send_json(self, _send_agent_message(config, payload, message))
             return
         if request_path == "/api/chat/stream":
             _send_sse_headers(self)

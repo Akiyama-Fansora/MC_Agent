@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .agent_runtime import collection_tools_for_crawler, tool_catalog_prompt, tools_for_agent
+from .agent_message import make_agent_message
 from .config import AppConfig, load_config
 from .crawler_llm_planner import plan_crawler_tasks_resilient
 from .crawler_planner import plan_crawler_tasks, toolsets_payload
@@ -32,6 +33,7 @@ from .web_server import (
     _request_job_stop,
     _run_ingest_job,
     _search,
+    _send_agent_message,
     _session_summary,
     _start_job,
     _status_payload,
@@ -120,6 +122,21 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     async def chat(request: Request) -> dict[str, Any]:
         payload = await request.json()
         return _chat(cfg(), payload)
+
+    @app.post("/api/agent-message")
+    async def agent_message(request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        message = make_agent_message(
+            str(payload.get("from_agent") or payload.get("from") or "User"),
+            str(payload.get("content") or payload.get("message") or payload.get("question") or ""),
+            str(payload.get("to_agent") or payload.get("to") or payload.get("agent") or "MCagent"),
+            intent=str(payload.get("intent") or ""),
+            conversation_id=str(payload.get("session_id") or payload.get("conversation_id") or ""),
+            reply_to=str(payload.get("reply_to") or ""),
+            requires_reply=bool(payload.get("requires_reply", True)),
+            metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+        )
+        return _send_agent_message(cfg(), payload, message)
 
     @app.post("/api/chat/stream")
     async def chat_stream(request: Request) -> StreamingResponse:

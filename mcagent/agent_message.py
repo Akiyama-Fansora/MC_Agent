@@ -6,6 +6,146 @@ import json
 from typing import Any
 
 
+AGENT_ALIASES = {
+    "user": "User",
+    "human": "User",
+    "mcagent": "MCagent",
+    "mcagent_rag": "MCagent",
+    "mc agent": "MCagent",
+    "mca": "MCagent",
+    "crawler": "CrawlerAgent",
+    "crawleragent": "CrawlerAgent",
+    "crawler_agent": "CrawlerAgent",
+    "crawler agent": "CrawlerAgent",
+}
+
+AGENT_IDS = {
+    "User": "user",
+    "MCagent": "mcagent_rag",
+    "CrawlerAgent": "crawler_agent",
+}
+
+
+def normalize_agent_name(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "User"
+    return AGENT_ALIASES.get(text.lower(), text)
+
+
+def agent_id_for_name(value: str) -> str:
+    return AGENT_IDS.get(normalize_agent_name(value), str(value or "").strip())
+
+
+@dataclass(frozen=True, slots=True)
+class AgentMessage:
+    """A single message passed between User, MCagent, and CrawlerAgent.
+
+    The message bus is deliberately small: it records who said what to whom.
+    Tool routing and next-step decisions still belong to the receiving Agent.
+    """
+
+    from_agent: str
+    content: str
+    to_agent: str
+    intent: str = ""
+    conversation_id: str = ""
+    message_id: str = ""
+    reply_to: str = ""
+    requires_reply: bool = True
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "from_agent", normalize_agent_name(self.from_agent))
+        object.__setattr__(self, "to_agent", normalize_agent_name(self.to_agent))
+        if not self.message_id:
+            seed = f"{self.created_at}:{self.from_agent}:{self.to_agent}:{self.content[:80]}"
+            import hashlib
+
+            digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:12]
+            object.__setattr__(self, "message_id", f"msg_{digest}")
+
+    @property
+    def from_agent_id(self) -> str:
+        return agent_id_for_name(self.from_agent)
+
+    @property
+    def to_agent_id(self) -> str:
+        return agent_id_for_name(self.to_agent)
+
+    def to_tuple(self) -> tuple[str, str, str]:
+        return (self.from_agent, self.content, self.to_agent)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "message_id": self.message_id,
+            "from_agent": self.from_agent,
+            "from_agent_id": self.from_agent_id,
+            "to_agent": self.to_agent,
+            "to_agent_id": self.to_agent_id,
+            "content": self.content,
+            "intent": self.intent,
+            "conversation_id": self.conversation_id,
+            "reply_to": self.reply_to,
+            "requires_reply": self.requires_reply,
+            "metadata": self.metadata,
+            "created_at": self.created_at,
+            "tuple": list(self.to_tuple()),
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), ensure_ascii=False)
+
+
+def make_agent_message(
+    from_agent: str,
+    content: str,
+    to_agent: str,
+    *,
+    intent: str = "",
+    conversation_id: str = "",
+    reply_to: str = "",
+    requires_reply: bool = True,
+    metadata: dict[str, Any] | None = None,
+) -> AgentMessage:
+    return AgentMessage(
+        from_agent=from_agent,
+        content=str(content or ""),
+        to_agent=to_agent,
+        intent=intent,
+        conversation_id=conversation_id,
+        reply_to=reply_to,
+        requires_reply=requires_reply,
+        metadata=dict(metadata or {}),
+    )
+
+
+def message_from_payload(payload: dict[str, Any], *, default_to_agent: str, default_content: str) -> AgentMessage:
+    raw = payload.get("agent_message")
+    if isinstance(raw, AgentMessage):
+        return raw
+    if isinstance(raw, dict):
+        return make_agent_message(
+            str(raw.get("from_agent") or raw.get("from") or payload.get("message_from") or "User"),
+            str(raw.get("content") or raw.get("message") or default_content),
+            str(raw.get("to_agent") or raw.get("to") or default_to_agent),
+            intent=str(raw.get("intent") or payload.get("intent") or ""),
+            conversation_id=str(raw.get("conversation_id") or payload.get("session_id") or ""),
+            reply_to=str(raw.get("reply_to") or ""),
+            requires_reply=bool(raw.get("requires_reply", True)),
+            metadata=raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {},
+        )
+    return make_agent_message(
+        str(payload.get("message_from") or "User"),
+        default_content,
+        default_to_agent,
+        intent=str(payload.get("intent") or ""),
+        conversation_id=str(payload.get("session_id") or ""),
+        metadata={"source": "chat_payload"},
+    )
+
+
 @dataclass(slots=True)
 class CrawlerTask:
     task_id: str

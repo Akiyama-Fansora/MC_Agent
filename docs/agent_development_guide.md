@@ -4197,3 +4197,53 @@ git diff --check
 
 `public_readiness_check.py` passed with the expected LICENSE warning only: the repository can remain private or be published all-rights-reserved until the owner chooses a reuse license.
 
+## 2026-05-23 Stage 29: Unified AgentMessage Bus
+
+This stage introduces the simple communication model the project should converge on:
+
+```python
+AgentMessage(from_agent="User", content="你好", to_agent="MCagent")
+AgentMessage(from_agent="User", content="总结这个网页", to_agent="CrawlerAgent")
+AgentMessage(from_agent="CrawlerAgent", content="这个主题本地还缺哪些资料？", to_agent="MCagent")
+AgentMessage(from_agent="MCagent", content="本地缺模组列表、任务线和 Boss 资料。", to_agent="CrawlerAgent")
+```
+
+The message bus is deliberately not a hidden router. It only records and delivers `from_agent -> to_agent` messages. The receiving Agent still owns interpretation, tool choice, reflection, and final wording.
+
+### Implemented Changes
+
+1. Added `AgentMessage` to `mcagent\agent_message.py`:
+   - normalizes `User`, `MCagent`, and `CrawlerAgent` names;
+   - preserves the user-friendly tuple `(from_agent, content, to_agent)`;
+   - carries `intent`, `conversation_id`, `reply_to`, `requires_reply`, and `metadata`;
+   - exposes `from_agent_id` / `to_agent_id` for runtime dispatch.
+2. Added `_send_agent_message()` in `mcagent\web_server.py` as the backend message-bus primitive.
+3. `/api/chat` now records every turn as a `message:received` trace event.
+4. Added `/api/agent-message` for explicit structured message calls from tools/tests/clients.
+5. The frontend now sends an explicit `agent_message` object with every chat request.
+6. `mcagent_context` now persists a real `AgentMessage` exchange:
+   - request message: `CrawlerAgent -> MCagent`;
+   - reply message: `MCagent -> CrawlerAgent`;
+   - both messages are written into the manifest under `inter_agent.messages` and `agent_message_exchange`.
+7. Crawler job delegation now includes the originating `AgentMessage` in the payload, planner summary, and memory event.
+8. Router prompts were adjusted away from phrase-specific cross-agent rules and toward the general message principle: delivery does not decide the receiver's next tool.
+
+### Test Plan
+
+New regression file: `tests\agent_message_bus_scenarios.py`.
+
+It verifies:
+
+- `AgentMessage("User", "你好", "MCAgent")` normalizes to `("User", "你好", "MCagent")`;
+- chat requests record `message:received` traces;
+- `_send_agent_message()` dispatches to the target Agent instead of treating the target as a keyword;
+- Crawler and MCagent identities stay visible in the trace.
+
+This stage should be tested together with the existing five-direction matrix:
+
+1. MCagent answers from local data.
+2. MCagent detects insufficient local data and delegates Crawler.
+3. Direct Crawler URL reading without persistence.
+4. Crawler collects and saves data for MCagent/RAG.
+5. Crawler collects data and saves to a user-specified local format/path.
+

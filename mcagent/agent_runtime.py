@@ -10,6 +10,7 @@ LLM_OWNERSHIP_PRINCIPLES = [
     "LLM owns interpretation, tool choice, reflection, and final answer wording.",
     "Tools provide objective observations only; tools must not invent final answers or subjective decisions.",
     "Agent behavior must be general. Do not encode one-off user test phrases as routing rules.",
+    "All User/MCagent/CrawlerAgent communication should be representable as AgentMessage(from_agent, content, to_agent); message delivery does not decide the receiver's next tool.",
     "Every non-trivial action should be observable as: observe -> deliberate -> choose_action -> preflight -> execute_tool -> observe_result -> reflect -> continue_or_finish.",
     "If a task is delegated between agents, pass caller, target, known context, acceptance criteria, delivery target, and failure-reporting expectations.",
 ]
