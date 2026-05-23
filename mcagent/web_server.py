@@ -4318,6 +4318,104 @@ def _should_use_temporary_extract_without_persistence(agent: str, original_quest
     return bool(CrawlerTemporaryExtractService().extract_url(combined))
 
 
+def _mentions_mcagent_context(text: str) -> bool:
+    value = str(text or "")
+    lowered = value.lower()
+    patterns = (
+        r"mcagent",
+        r"mc agent",
+        r"rag",
+        r"知识库",
+        r"资料库",
+        r"本地库",
+        r"本地资料",
+    )
+    return any(re.search(pattern, lowered, flags=re.I) for pattern in patterns)
+
+
+def _asks_for_context_or_gaps(text: str) -> bool:
+    value = str(text or "")
+    lowered = value.lower()
+    patterns = (
+        r"缺",
+        r"缺口",
+        r"缺失",
+        r"还差",
+        r"已有",
+        r"有什么",
+        r"有哪些",
+        r"问下",
+        r"查询",
+        r"检查",
+        r"inspect",
+        r"context",
+        r"gap",
+        r"missing",
+        r"what.*know",
+    )
+    return any(re.search(pattern, lowered, flags=re.I) for pattern in patterns)
+
+
+def _asks_for_collection_or_handoff(text: str) -> bool:
+    value = str(text or "")
+    lowered = value.lower()
+    patterns = (
+        r"补",
+        r"补全",
+        r"补充",
+        r"补给",
+        r"补库",
+        r"找",
+        r"网上",
+        r"联网",
+        r"采集",
+        r"爬取",
+        r"抓取",
+        r"获取",
+        r"保存",
+        r"入库",
+        r"给他",
+        r"给\s*MCagent",
+        r"collect",
+        r"crawl",
+        r"fetch",
+        r"find",
+        r"fill",
+        r"ingest",
+    )
+    return any(re.search(pattern, lowered, flags=re.I) for pattern in patterns)
+
+
+def _should_force_crawler_mcagent_gap_workflow(agent: str, original_question: str, route_intent: str, tool_decision: dict[str, Any]) -> bool:
+    if agent != "crawler_agent" or route_intent != "direct_answer":
+        return False
+    combined = "\n".join(
+        str(item or "")
+        for item in (
+            original_question,
+            tool_decision.get("reason"),
+            tool_decision.get("collection_target"),
+            tool_decision.get("delivery_target"),
+        )
+    )
+    return _mentions_mcagent_context(combined) and _asks_for_context_or_gaps(combined) and _asks_for_collection_or_handoff(combined)
+
+
+def _mcagent_context_focus(question: str, collection_target: str = "") -> str:
+    value = str(collection_target or question or "").strip()
+    value = re.sub(r"(?i)\bMCagent\b|\bMC Agent\b|\bRAG\b", " ", value)
+    value = re.sub(r"(问下|查询|检查|本地资料库|本地资料|知识库|资料库|你去|网上|联网|找|补给他|补给|补库|补充|采集|爬取|抓取|获取)", " ", value)
+    value = re.sub(r"\s+", " ", value).strip(" ，。；;:：")
+    return value or str(question or "").strip()
+
+
+def _default_mcagent_gap_action_plan() -> list[dict[str, Any]]:
+    return [
+        {"step": 1, "tool": "mcagent_context", "goal": "Inspect MCagent/RAG local evidence and missing-data gaps for the requested topic."},
+        {"step": 2, "tool": "delegate_crawler", "goal": "Collect missing public data and deliver it to MCagent/RAG."},
+    ]
+
+
 def _clean_crawler_task_question(question: str) -> str:
     value = str(question).strip()
     value = re.sub(r"^\s*(?:\u8bf7|\u9ebb\u70e6|\u5e2e\u6211|\u5e2e\u5fd9)?\s*(?:\u544a\u8bc9|\u53eb|\u8ba9|\u6d3e|\u901a\u77e5)?\s*(?:MCagent|MCAgent|MC Agent)?\s*(?:\u53bb)?\s*(?:\u544a\u8bc9|\u53eb|\u8ba9|\u6d3e|\u901a\u77e5)?\s*(?:CrawlerAgent|Crawler|\u722c\u866bAgent|\u722c\u866bagent|\u722c\u866b)\s*(?:\u4f60|\u4ed6)?\s*(?:\u8ba9\u4ed6)?\s*(?:\u53bb|\u6765|\u5e2e\u6211|\u5e2e\u5fd9|\u7ee7\u7eed)?\s*(?:\u6536\u96c6|\u91c7\u96c6|\u83b7\u53d6|\u6293\u53d6|\u722c\u53d6|\u8865\u5145|\u8865\u5e93|\u66f4\u65b0\u8d44\u6599)?\s*", "", value, flags=re.I)
@@ -4893,6 +4991,39 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
     rag_focus = route.rag_focus
     planned_workflow = route.planned_workflow
     planned_delegate = route.planned_delegate
+    if _should_force_crawler_mcagent_gap_workflow(agent, original_question, route_intent, tool_decision):
+        proposed_collection = str(tool_decision.get("collection_target") or original_question or question).strip()
+        route_intent = "answer"
+        planned_workflow = True
+        planned_delegate = True
+        if not action_plan:
+            action_plan = _default_mcagent_gap_action_plan()
+        if not rag_focus:
+            rag_focus = _mcagent_context_focus(original_question, proposed_collection)
+            tool_decision["rag_focus"] = rag_focus
+        tool_decision["tool"] = "planned_workflow"
+        tool_decision["collection_target"] = (
+            "先根据 MCagent/RAG 本地检索结果判断资料缺口，再为该主题采集缺失资料并交付给 MCagent/RAG。"
+            f" 用户原始目标：{proposed_collection}"
+        )
+        tool_decision["delivery_target"] = "MCagent/RAG"
+        add_trace(
+            "decide",
+            "inter_agent_workflow_corrected",
+            {
+                "from_tool": "direct_answer",
+                "to_tool": "planned_workflow",
+                "reason": "The user requested MCagent/RAG context inspection plus follow-up collection; a direct answer cannot perform those tool actions.",
+                "rag_focus": rag_focus,
+                "action_plan": action_plan,
+            },
+        )
+    if route_intent == "mcagent_context":
+        route_intent = "answer"
+        if not rag_focus:
+            rag_focus = _mcagent_context_focus(original_question, str(tool_decision.get("collection_target") or ""))
+            tool_decision["rag_focus"] = rag_focus
+        add_trace("decide", "mcagent_context_selected", {"rag_focus": rag_focus})
     if route_intent == "delegate_crawler":
         proposed_collection = str(tool_decision.get("collection_target") or original_question or question).strip()
         if _should_use_temporary_extract_without_persistence(agent, original_question, proposed_collection, str(tool_decision.get("delivery_target") or "")):
@@ -5094,6 +5225,68 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
     rough_results = retrieval_result.rough_results
     selected = retrieval_result.selected
     if not rough_results:
+        if planned_delegate:
+            collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
+            gap_summary = (
+                "MCagent/RAG local retrieval produced no usable evidence for this requested context check.\n"
+                f"Evidence question: {evidence_question}\n"
+                "CrawlerAgent should treat the local gap as broad and collect public data that can fill MCagent/RAG."
+            )
+            delegation_plan = CrawlerDelegationService(
+                delegation_handoff=_delegation_handoff,
+                infer_delivery_target=_infer_delivery_target,
+                build_handoff_brief=_build_delegate_handoff_brief,
+            ).prepare(
+                config,
+                payload,
+                model=model,
+                original_question=original_question,
+                current_question=question,
+                collection_target=collection_question,
+                session_summary=session_summary,
+                gap_summary=gap_summary,
+                planning_instruction=(
+                    "No local MCagent/RAG evidence was available after the planned context check. "
+                    "CrawlerAgent should independently plan public-source collection and deliver results to MCagent/RAG."
+                ),
+                delivery_target=str(tool_decision.get("delivery_target") or payload.get("delivery_target") or "MCagent/RAG").strip(),
+            )
+            add_trace("delegate", "handoff_brief", {"brief": delegation_plan.handoff_brief, "reason": delegation_plan.brief_reason})
+            job, created = _delegate_crawler_for_missing_data(config, delegation_plan.delegate_payload, delegation_plan.collection_question)
+            answer = (
+                "MCagent/RAG 本地没有检索到可用证据；我已把这个空缺作为采集上下文交给 CrawlerAgent 继续补资料。"
+            )
+            answer += _crawler_delegation_note_for(
+                job,
+                delegation_plan.collection_question,
+                created,
+                requested_by=delegation_plan.requested_by,
+                delivery_target=delegation_plan.delivery_target,
+            )
+            add_trace("delegate", "planned_workflow", {"job_id": job.id, "status": job.status, "task": delegation_plan.collection_question})
+            return _with_trace(
+                {
+                    "answer": answer,
+                    "sources": [],
+                    "context": "",
+                    "agent": agent,
+                    "job": _job_to_dict(job),
+                    "collaboration": _collaboration_dialog_for(
+                        delegation_plan.collection_question,
+                        job,
+                        created,
+                        requested_by=delegation_plan.requested_by,
+                        delivery_target=delegation_plan.delivery_target,
+                    ),
+                    "delegation": {
+                        "requested_by": delegation_plan.requested_by,
+                        "delivery_target": delegation_plan.delivery_target,
+                        "task": delegation_plan.collection_question,
+                        "handoff_brief": delegation_plan.handoff_brief,
+                    },
+                },
+                trace,
+            )
         add_trace("done", "insufficient_evidence", {"reason": "no_retrieval_results", "delegated": False})
         answer = (
             "本地资料库没有检索到可用证据。本轮不会自动通知 Crawler。\n\n"

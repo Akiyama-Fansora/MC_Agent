@@ -479,6 +479,15 @@ CRAWLER_ROUTE_TOOLS = [
         llm_final_answer_required=True,
     ),
     ToolSpec(
+        name="mcagent_context",
+        description="Inspect MCagent/RAG local evidence and likely gaps for a topic before answering or before collecting data for MCagent/RAG.",
+        input_schema={"question": "topic-focused local MCagent/RAG context or gap question"},
+        result_schema={"sources": "local MCagent/RAG evidence", "gap_summary": "LLM-written local context and missing-data summary"},
+        side_effects="read_local_index",
+        terminal=False,
+        llm_final_answer_required=True,
+    ),
+    ToolSpec(
         name="delegate_crawler",
         description="Accept a human or MCagent collection request and start CrawlerAgent's background collection loop; use when persistence, saving, multi-step collection, or RAG handoff is wanted.",
         input_schema={"collection_target": "natural-language goal", "delivery_target": "human|MCagent/RAG|both"},

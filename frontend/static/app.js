@@ -162,6 +162,8 @@ function progressTextForTrace(step) {
     return `${activeName} 已选择下一步工具：${detail.tool || "local_rag_search"}。`;
   }
   if (stage === "decide:side_effect_boundary_corrected") return `已按副作用边界调整：这轮改为临时读取，不启动后台保存任务。`;
+  if (stage === "decide:inter_agent_workflow_corrected") return `已切换为跨 Agent 工作流：先查 MCagent/RAG 上下文，再交给 Crawler 补资料。`;
+  if (stage === "decide:mcagent_context_selected") return `Crawler 正在读取 MCagent/RAG 本地上下文。`;
   if (stage === "retrieve:planning") return `${activeName} 正在规划本地资料检索问题。`;
   if (stage === "retrieve:planned") return `检索方向已确定，开始查找可用证据。`;
   if (stage === "retrieve:searching") return `正在检索本地资料库、全文索引和 raw HTML 线索。`;

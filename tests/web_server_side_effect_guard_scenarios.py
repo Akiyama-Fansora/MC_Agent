@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 from typing import Any
 
 
@@ -143,8 +144,89 @@ def test_direct_crawler_delegate_choice_is_corrected_to_temporary_extract() -> N
     assert_true("no_background_job", "job" not in result)
 
 
+def test_direct_crawler_mcagent_gap_request_forces_planned_workflow() -> None:
+    decision = {
+        "tool": "direct_answer",
+        "reason": "CrawlerAgent cannot ask MCagent directly.",
+        "collection_target": "问下MCAgent乌托邦整合包还缺哪些东西 你去网上找补给他",
+        "delivery_target": "human",
+    }
+    assert_true(
+        "forces_inter_agent_workflow",
+        web_server._should_force_crawler_mcagent_gap_workflow(
+            "crawler_agent",
+            "问下MCAgent乌托邦整合包还缺哪些东西 你去网上找补给他",
+            "direct_answer",
+            decision,
+        ),
+    )
+    assert_true(
+        "simple_direct_answer_not_forced",
+        not web_server._should_force_crawler_mcagent_gap_workflow(
+            "crawler_agent",
+            "你好",
+            "direct_answer",
+            {"tool": "direct_answer", "reason": "greeting"},
+        ),
+    )
+    plan = web_server._default_mcagent_gap_action_plan()
+    assert_equal("plan_first_tool", plan[0]["tool"], "mcagent_context")
+    assert_equal("plan_second_tool", plan[1]["tool"], "delegate_crawler")
+
+
+def test_direct_crawler_mcagent_gap_request_delegates_when_local_empty() -> None:
+    tmp = tempfile.TemporaryDirectory()
+    fake_client = SequencedClient(
+        [
+            '{"tool":"direct_answer","reason":"CrawlerAgent cannot ask MCagent directly.","collection_target":"问下MCAgent乌托邦整合包还缺哪些东西 你去网上找补给他","delivery_target":"human"}',
+            '{"proceed":true,"tool":"direct_answer","reason":"mistaken direct answer"}',
+            '{"handoff_brief":"用户直接委托 CrawlerAgent：先参考 MCagent/RAG 空缺，再采集乌托邦整合包缺失资料。","reason":"handoff"}',
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    original_delegate = web_server._delegate_crawler_for_missing_data
+    original_retrieve = web_server.RagRetrievalService.retrieve
+    calls: list[dict[str, Any]] = []
+
+    def fake_delegate(config: AppConfig, payload: dict[str, Any], question: str, plan: dict[str, Any] | None = None):  # noqa: ARG001
+        calls.append({"payload": payload, "question": question, "plan": plan})
+        job = web_server.Job(id="fake-crawler-job", kind="crawler", title=question, status="queued", summary="queued")
+        job.result = {"plan": {"topic": question, "delivery_target": payload.get("delivery_target")}}
+        return job, True
+
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake_client, "fake")  # type: ignore[assignment]
+    web_server._delegate_crawler_for_missing_data = fake_delegate  # type: ignore[assignment]
+    web_server.RagRetrievalService.retrieve = (  # type: ignore[assignment]
+        lambda self, *args, **kwargs: SimpleNamespace(retrieval_plan=None, rough_results=[], selected=[])
+    )
+    try:
+        result = web_server._chat_impl(
+            make_temp_config(Path(tmp.name)),
+            {
+                "agent": "crawler_agent",
+                "question": "问下MCAgent乌托邦整合包还缺哪些东西  你去网上找补给他",
+                "session_id": "direct-crawler-mcagent-gap-test",
+                "model": "fake-model",
+            },
+        )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._delegate_crawler_for_missing_data = original_delegate  # type: ignore[assignment]
+        web_server.RagRetrievalService.retrieve = original_retrieve  # type: ignore[assignment]
+        tmp.cleanup()
+
+    statuses = [(step["stage"], step["status"]) for step in result.get("trace", [])]
+    assert_true("inter_agent_correction_trace", ("decide", "inter_agent_workflow_corrected") in statuses)
+    assert_true("delegated", bool(calls))
+    assert_equal("requested_by", result.get("delegation", {}).get("requested_by"), "user")
+    assert_equal("delivery_target", result.get("delegation", {}).get("delivery_target"), "MCagent/RAG")
+    assert_true("mentions_topic", "乌托邦" in calls[0]["question"])
+
+
 if __name__ == "__main__":
     test_direct_crawler_no_save_url_uses_temporary_extract_boundary()
     test_direct_user_handoff_brief_rejects_wrong_mcagent_identity()
     test_direct_crawler_delegate_choice_is_corrected_to_temporary_extract()
+    test_direct_crawler_mcagent_gap_request_forces_planned_workflow()
+    test_direct_crawler_mcagent_gap_request_delegates_when_local_empty()
     print("web_server_side_effect_guard_scenarios passed")

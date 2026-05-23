@@ -3817,3 +3817,47 @@ PY
 
 Result: Baidu Baike returned HTTP 200 with about 12.9k extracted text characters, so the long wait was caused by the old background-job route, not by page extraction itself.
 
+## 2026-05-23 Stage 22: Crawler To MCagent Context Workflow
+
+The user exposed another agent-loop gap with a direct CrawlerAgent request: "ask MCagent what the Utopia modpack is still missing, then search online and fill it for him." CrawlerAgent incorrectly answered that it could not ask MCagent. The missing piece was not a web tool; it was a cross-agent context primitive.
+
+### Design Boundary
+
+1. CrawlerAgent may inspect MCagent/RAG local context when the user asks it to collect for MCagent/RAG.
+2. Inspecting MCagent/RAG is a read-only observation step, not a final answer and not a crawler job by itself.
+3. A compound request can become:
+   - `mcagent_context`: read local MCagent/RAG evidence and gaps.
+   - `delegate_crawler`: collect missing public data and deliver to MCagent/RAG.
+4. If the tool-selection LLM incorrectly chooses `direct_answer` for a request that explicitly requires MCagent/RAG context plus follow-up collection, runtime corrects it to a planned workflow. This is an action-capability boundary: a no-tool direct answer cannot perform a requested cross-agent observation and collection.
+5. If MCagent/RAG local retrieval returns no evidence, planned collection still proceeds with a broad gap summary instead of stopping early.
+
+### Implemented Changes
+
+1. Added Crawler route tool `mcagent_context` to the runtime catalog.
+2. Updated router prompts so CrawlerAgent knows it can plan `mcagent_context -> delegate_crawler`.
+3. Added runtime helper checks:
+   - `_should_force_crawler_mcagent_gap_workflow()`
+   - `_mcagent_context_focus()`
+   - `_default_mcagent_gap_action_plan()`
+4. `_chat_impl()` now corrects impossible direct answers into planned workflows when the user asked for MCagent/RAG context plus collection.
+5. The planned-delegate branch now delegates even when local retrieval is empty, carrying an explicit no-local-evidence gap summary to CrawlerAgent.
+6. Frontend trace text now includes the cross-agent correction step.
+
+### Test Plan And Results
+
+Passed:
+```powershell
+python -m py_compile mcagent\agent_runtime.py mcagent\agent_router.py mcagent\web_server.py tests\web_server_side_effect_guard_scenarios.py tests\agent_runtime_scenarios.py tests\smoke_test.py
+python tests\web_server_side_effect_guard_scenarios.py
+python tests\agent_runtime_scenarios.py
+python tests\smoke_test.py
+python tests\agent_router_scenarios.py
+node --check frontend\static\app.js
+python tests\agent_five_direction_matrix_scenarios.py
+python tests\fastapi_backend_scenarios.py
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+```
+
+Regression coverage now includes the case where CrawlerAgent's LLM initially says it cannot ask MCagent; runtime converts that to a planned workflow, keeps `requested_by=user`, sets `delivery_target=MCagent/RAG`, and delegates collection.
+

@@ -131,6 +131,8 @@ def test_tool_catalog_exposes_agent_capabilities() -> None:
     crawler_catalog = crawler_collection_catalog_prompt()
     assert_true("mcagent_direct_answer", "direct_answer" in mcagent_catalog)
     assert_true("mcagent_local_rag", "local_rag_search" in mcagent_catalog)
+    crawler_route_catalog = tool_catalog_prompt("crawler_agent")
+    assert_true("crawler_mcagent_context", "mcagent_context" in crawler_route_catalog)
     assert_true("crawler_browser", "browser_collect" in crawler_catalog)
     assert_true("crawler_save_artifact", "save_artifact" in crawler_catalog)
     assert_true("crawler_artifact_ref_schema", "content_ref" in crawler_catalog or "artifact_ref" in crawler_catalog)
