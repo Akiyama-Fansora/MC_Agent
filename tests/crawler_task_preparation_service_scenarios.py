@@ -73,6 +73,23 @@ def test_build_payload_preserves_generic_artifact_fields() -> None:
     assert_equal("content_ref", built["content_ref"], "latest:md")
 
 
+def test_browser_collect_recovers_url_path_and_count_from_original_question() -> None:
+    question = (
+        "\u7528 Crawler \u6253\u5f00 https://webscraper.io/test-sites/e-commerce/static/computers/laptops "
+        "\u63d0\u53d6\u524d 5 \u4e2a\u5546\u54c1\u7684\u540d\u79f0\u3001\u4ef7\u683c\u3001\u94fe\u63a5\uff0c"
+        "\u4fdd\u5b58\u4e3a xlsx\u3001csv\u3001json \u5230 D:\\magic\\MC_Agent\\data\\manual_tests\\items\u3002"
+    )
+    built = CrawlerTaskPreparationService().build_payload(
+        base_payload={"original_user_request": question},
+        task={"query": "\u4ece\u6307\u5b9a\u7535\u5546\u6d4b\u8bd5\u9875\u9762\u6293\u53d6\u524d\u4e94\u4e2a\u7b14\u8bb0\u672c\u5546\u54c1\u7684\u57fa\u672c\u4fe1\u606f"},
+        question=question,
+        task_source="browser_collect",
+    )
+    assert_equal("start_url", built["start_url"], "https://webscraper.io/test-sites/e-commerce/static/computers/laptops")
+    assert_equal("output_dir", built["output_dir"], r"D:\magic\MC_Agent\data\manual_tests\items")
+    assert_equal("max_items", built["max_items"], 5)
+
+
 def test_empty_query_result_is_objective_failure_observation() -> None:
     result = CrawlerTaskPreparationService().empty_query_result(
         task_source="fetch_url",
@@ -89,6 +106,7 @@ if __name__ == "__main__":
     test_build_payload_preserves_task_specific_fields()
     test_build_payload_falls_back_to_question_when_query_missing()
     test_build_payload_preserves_generic_artifact_fields()
+    test_browser_collect_recovers_url_path_and_count_from_original_question()
     test_empty_query_result_is_objective_failure_observation()
     print("crawler_task_preparation_service_scenarios passed")
 

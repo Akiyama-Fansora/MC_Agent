@@ -98,7 +98,49 @@ def test_prepare_uses_inferred_delivery_for_direct_user_request() -> None:
     assert_equal("payload_delivery", plan.delegate_payload["delivery_target"], "human")
 
 
+def test_prepare_corrects_model_human_delivery_for_mcagent_gap_fill() -> None:
+    calls: list[dict[str, Any]] = []
+    service = build_service(calls, requested_by="user_via_mcagent")
+
+    plan = service.prepare(
+        object(),
+        {"agent": "mcagent_rag"},
+        model="model-a",
+        original_question="现在乌托邦整合包本地还缺哪些资料，列出来，然后让 Crawler 去补充。",
+        current_question="现在乌托邦整合包本地还缺哪些资料，列出来，然后让 Crawler 去补充。",
+        collection_target="现在乌托邦整合包本地还缺哪些资料，列出来，然后让 Crawler 去补充。",
+        session_summary={"gaps": ["完整模组列表"]},
+        delivery_target="human",
+    )
+
+    assert_equal("delivery_target", plan.delivery_target, "MCagent/RAG")
+    assert_equal("payload_delivery", plan.delegate_payload["delivery_target"], "MCagent/RAG")
+    brief_call = next(call for call in calls if call.get("fn") == "brief")
+    assert_equal("brief_delivery", brief_call["delivery_target"], "MCagent/RAG")
+
+
+def test_prepare_normalizes_mixed_human_rag_delivery_for_mcagent_gap_fill() -> None:
+    calls: list[dict[str, Any]] = []
+    service = build_service(calls, requested_by="user_via_mcagent")
+
+    plan = service.prepare(
+        object(),
+        {"agent": "mcagent_rag"},
+        model="model-a",
+        original_question="collect missing Utopia data for MCagent",
+        current_question="collect missing Utopia data for MCagent",
+        collection_target="collect missing Utopia data for MCagent/RAG and report to user",
+        session_summary={},
+        delivery_target="human|MCagent/RAG",
+    )
+
+    assert_equal("delivery_target", plan.delivery_target, "MCagent/RAG")
+    assert_equal("payload_delivery", plan.delegate_payload["delivery_target"], "MCagent/RAG")
+
+
 if __name__ == "__main__":
     test_prepare_preserves_mcagent_to_crawler_relationship()
     test_prepare_uses_inferred_delivery_for_direct_user_request()
+    test_prepare_corrects_model_human_delivery_for_mcagent_gap_fill()
+    test_prepare_normalizes_mixed_human_rag_delivery_for_mcagent_gap_fill()
     print("crawler_delegation_service_scenarios: ok")

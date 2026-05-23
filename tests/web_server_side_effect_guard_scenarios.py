@@ -232,6 +232,115 @@ def test_successful_mcagent_context_prunes_duplicate_pending_context_tasks() -> 
     assert_equal("remaining_sources", [item["source"] for item in tasks], ["mcagent_context", "mcmod", "web_discovery"])
 
 
+def test_successful_mcagent_context_filters_new_duplicate_context_tasks() -> None:
+    task_results = [
+        {
+            "source": "mcagent_context",
+            "returncode": 0,
+            "manifest_stats": {"records": 1},
+        }
+    ]
+    new_tasks = [
+        {"source": "mcagent_context", "query": "repeat"},
+        {"source": "web_discovery", "query": "乌托邦探险之旅"},
+    ]
+    filtered = web_server._drop_duplicate_mcagent_context_tasks(new_tasks, task_results)
+    assert_equal("remaining_sources", [item["source"] for item in filtered], ["web_discovery"])
+
+
+def test_runtime_status_request_bypasses_llm_router() -> None:
+    tmp = tempfile.TemporaryDirectory()
+    original_selector = web_server._selected_llm_client
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("status must not call LLM"))  # type: ignore[assignment]
+    try:
+        result = web_server._chat_impl(
+            make_temp_config(Path(tmp.name)),
+            {"agent": "mcagent_rag", "question": "状态", "session_id": "runtime-status-fast-path"},
+        )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        tmp.cleanup()
+
+    statuses = [(step["stage"], step["status"]) for step in result.get("trace", [])]
+    assert_true("status_tool_selected", ("decide", "tool_selected") in statuses)
+    assert_true("status_answer", "本地库" in str(result.get("answer") or "") and bool(result.get("status")))
+
+
+def test_mcagent_gap_delegation_overrides_human_delivery_to_rag() -> None:
+    tmp = tempfile.TemporaryDirectory()
+    question = "\u73b0\u5728\u4e4c\u6258\u90a6\u6574\u5408\u5305\u4f60\u672c\u5730\u8fd8\u7f3a\u54ea\u4e9b\u8d44\u6599\uff0c\u5217\u51fa\u6765\uff0c\u7136\u540e\u8ba9 Crawler \u53bb\u8865\u5145\u3002"
+    fake_client = SequencedClient(
+        [
+            json.dumps(
+                {
+                    "tool": "delegate_crawler",
+                    "reason": "needs Crawler to collect missing local knowledge",
+                    "collection_target": question,
+                    "delivery_target": "human",
+                },
+                ensure_ascii=False,
+            ),
+            '{"proceed":true,"tool":"delegate_crawler","reason":"confirmed"}',
+            '{"handoff_brief":"MCagent delegates missing Utopia material to CrawlerAgent for RAG ingestion.","reason":"handoff"}',
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    original_delegate = web_server._delegate_crawler_for_missing_data
+    calls: list[dict[str, Any]] = []
+
+    def fake_delegate(config: AppConfig, payload: dict[str, Any], delegated_question: str, plan: dict[str, Any] | None = None):  # noqa: ARG001
+        calls.append({"payload": payload, "question": delegated_question, "plan": plan})
+        job = web_server.Job(id="fake-mcagent-gap-job", kind="crawler", title=delegated_question, status="queued", summary="queued")
+        job.result = {"plan": {"topic": delegated_question, "delivery_target": payload.get("delivery_target")}}
+        return job, True
+
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake_client, "fake")  # type: ignore[assignment]
+    web_server._delegate_crawler_for_missing_data = fake_delegate  # type: ignore[assignment]
+    try:
+        result = web_server._chat_impl(
+            make_temp_config(Path(tmp.name)),
+            {
+                "agent": "mcagent_rag",
+                "question": question,
+                "session_id": "mcagent-gap-human-delivery-correction",
+                "model": "fake-model",
+            },
+        )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._delegate_crawler_for_missing_data = original_delegate  # type: ignore[assignment]
+        tmp.cleanup()
+
+    assert_true("delegated", bool(calls))
+    assert_equal("requested_by", result.get("delegation", {}).get("requested_by"), "user_via_mcagent")
+    assert_equal("delivery_target", result.get("delegation", {}).get("delivery_target"), "MCagent/RAG")
+    assert_equal("payload_delivery", calls[0]["payload"].get("delivery_target"), "MCagent/RAG")
+
+
+def test_mcagent_explicit_crawler_request_forces_planned_delegate() -> None:
+    question = "现在乌托邦整合包你本地还缺哪些资料，列出来，然后让 Crawler 去补充。"
+    decision = {
+        "tool": "answer",
+        "reason": "list gaps only",
+        "collection_target": question,
+        "delivery_target": "human",
+    }
+    assert_true(
+        "force_planned_delegate",
+        web_server._should_force_mcagent_planned_delegate("mcagent_rag", question, "answer", decision, []),
+    )
+    assert_true(
+        "respect_no_crawler",
+        not web_server._should_force_mcagent_planned_delegate(
+            "mcagent_rag",
+            "列出缺口，但不要交给 Crawler。",
+            "answer",
+            {"tool": "answer", "reason": "answer only", "collection_target": "", "delivery_target": "human"},
+            [],
+        ),
+    )
+
+
 def test_direct_crawler_mcagent_gap_request_delegates_when_local_empty() -> None:
     tmp = tempfile.TemporaryDirectory()
     fake_client = SequencedClient(
@@ -457,6 +566,10 @@ if __name__ == "__main__":
     test_direct_crawler_router_error_gap_request_recovers_to_context_workflow()
     test_mcagent_context_focus_expands_minecraft_utopia_aliases()
     test_successful_mcagent_context_prunes_duplicate_pending_context_tasks()
+    test_successful_mcagent_context_filters_new_duplicate_context_tasks()
+    test_runtime_status_request_bypasses_llm_router()
+    test_mcagent_gap_delegation_overrides_human_delivery_to_rag()
+    test_mcagent_explicit_crawler_request_forces_planned_delegate()
     test_direct_crawler_mcagent_gap_request_delegates_when_local_empty()
     test_crawler_mcagent_context_with_collection_continues_to_delegate()
     test_direct_crawler_delegate_choice_runs_as_crawler_context_workflow()

@@ -39,3 +39,37 @@ class CrawlerLoopControlService:
             and replan_count < max_replans
             and task_count < max_total_tasks
         )
+
+    def should_finish_after_useful_low_yield(
+        self,
+        *,
+        source: str,
+        success_count: int,
+        bad_streak: int,
+        executed_count: int,
+        min_executed: int = 6,
+        bad_streak_threshold: int = 4,
+    ) -> bool:
+        return (
+            source in PLANNER_SOURCES
+            and success_count > 0
+            and executed_count >= min_executed
+            and bad_streak >= bad_streak_threshold
+        )
+
+    def should_finish_after_no_success_low_yield(
+        self,
+        *,
+        source: str,
+        success_count: int,
+        bad_streak: int,
+        executed_count: int,
+        min_executed: int = 6,
+        bad_streak_threshold: int = 3,
+    ) -> bool:
+        return (
+            source in PLANNER_SOURCES
+            and success_count <= 0
+            and executed_count >= min_executed
+            and bad_streak >= bad_streak_threshold
+        )

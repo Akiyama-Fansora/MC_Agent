@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+import re
 from typing import Any, Callable
 
 from .config import AppConfig
@@ -58,7 +60,23 @@ class CrawlerDelegationService:
         collection_question = str(collection_target or original_question or current_question).strip()
         handoff = self._delegation_handoff(payload, original_question, collection_question)
         requested_by = handoff["requested_by"]
-        resolved_delivery_target = str(delivery_target or payload.get("delivery_target") or "").strip()
+        explicit_payload_delivery = str(payload.get("delivery_target") or "").strip()
+        resolved_delivery_target = str(explicit_payload_delivery or delivery_target or "").strip()
+        if not explicit_payload_delivery and "mcagent/rag" in resolved_delivery_target.lower():
+            resolved_delivery_target = "MCagent/RAG"
+        if (
+            requested_by in {"mcagent", "user_via_mcagent"}
+            and not explicit_payload_delivery
+            and resolved_delivery_target.lower() == "human"
+            and _looks_like_mcagent_rag_fill_goal(
+                original_question,
+                collection_question,
+                gap_summary,
+                planning_instruction,
+                session_summary,
+            )
+        ):
+            resolved_delivery_target = "MCagent/RAG"
         if not resolved_delivery_target:
             resolved_delivery_target = (
                 "MCagent/RAG"
@@ -107,3 +125,28 @@ class CrawlerDelegationService:
             planner_summary=planner_summary,
             delegate_payload=delegate_payload,
         )
+
+
+def _looks_like_mcagent_rag_fill_goal(*parts: Any) -> bool:
+    text = "\n".join(json.dumps(part, ensure_ascii=False, default=str) if isinstance(part, (dict, list)) else str(part or "") for part in parts)
+    lowered = text.lower()
+    if "mcagent/rag" in lowered or "mcagent" in lowered or "rag" in lowered:
+        return True
+    patterns = (
+        r"补",
+        r"补全",
+        r"补充",
+        r"补给",
+        r"补库",
+        r"入库",
+        r"知识库",
+        r"资料库",
+        r"缺",
+        r"缺口",
+        r"missing",
+        r"gap",
+        r"collect",
+        r"fill",
+        r"ingest",
+    )
+    return any(re.search(pattern, lowered, flags=re.I) for pattern in patterns)

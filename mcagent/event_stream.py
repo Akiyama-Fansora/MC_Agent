@@ -14,7 +14,7 @@ class StreamEvent:
     data: Any
 
     def to_sse(self) -> str:
-        return f"event: {self.event}\ndata: {json.dumps(self.data, ensure_ascii=False)}\n\n"
+        return f"event: {self.event}\ndata: {json.dumps(self.data, ensure_ascii=False, default=str)}\n\n"
 
 
 class ThreadedEventStream:

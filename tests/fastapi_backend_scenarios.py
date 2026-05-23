@@ -107,6 +107,12 @@ def test_fastapi_sse_chat_shape() -> None:
         assert_true("sse_agent_message", '"agent_message"' in text)
         assert_true("sse_done_event", "event: done" in text)
 
+        with client.stream("POST", "/api/chat/stream", json={"question": "状态", "session_id": "sse-status-test"}) as response:
+            status_text = "".join(response.iter_text())
+        assert_true("sse_status_command_status", response.status_code == 200)
+        assert_true("sse_status_command_response", "event: response" in status_text, status_text[:500])
+        assert_true("sse_status_command_done", "event: done" in status_text, status_text[:500])
+
 
 def test_fastapi_agent_message_endpoint_dispatches() -> None:
     fake = SequencedClient(

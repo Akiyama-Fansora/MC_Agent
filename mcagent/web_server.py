@@ -2162,8 +2162,27 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
                 _update_job(job, **job_progress.reflecting(reflection=reflection, task_results=task_results, tasks=tasks, plan=plan))
                 action = str(reflection.get("action") or "execute_pending")
                 new_tasks = [task for task in list(reflection.get("tasks") or []) if isinstance(task, dict)]
+                new_tasks = _drop_duplicate_mcagent_context_tasks(new_tasks, task_results)
                 contract = reflection.get("contract") if isinstance(reflection.get("contract"), dict) else {}
                 needs_materialization = bool(contract.get("requires_llm_task_materialization"))
+                if action in {"add_tasks", "replan"} and needs_materialization and _has_successful_mcagent_context(task_results) and pending_tasks:
+                    action = "execute_pending"
+                    reflection["action"] = "execute_pending"
+                    reflection["selected_index"] = 0
+                    reflection["reason"] = (
+                        "MCagent context is already available in the previous tool result; skip another LLM materialization pass "
+                        "and continue with the pending objective collection tools."
+                    )
+                    new_tasks = []
+                    needs_materialization = False
+                    plan.setdefault("agent_reflections", []).append(
+                        {
+                            "at_index": index,
+                            "action": "skip_unmaterialized_replan_after_mcagent_context",
+                            "reason": reflection["reason"],
+                            "planner": "executor objective result",
+                        }
+                    )
                 if action in {"add_tasks", "replan"} and needs_materialization and len(tasks) < max_total_tasks:
                     remaining_slots = max(0, max_total_tasks - len(tasks))
                     new_tasks = _replan_crawler_tasks(
@@ -2174,6 +2193,7 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
                         tasks,
                         max_new_tasks=min(6, remaining_slots),
                     )
+                    new_tasks = _drop_duplicate_mcagent_context_tasks(new_tasks, task_results)
                     if new_tasks:
                         plan.setdefault("agent_reflections", []).append(
                             {
@@ -2319,9 +2339,44 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
                     tasks,
                     max_new_tasks=min(6, remaining_slots),
                 )
+                new_tasks = _drop_duplicate_mcagent_context_tasks(new_tasks, task_results)
                 if new_tasks:
                     tasks.extend(new_tasks)
                 bad_streak = 0
+            elif loop_control.should_finish_after_useful_low_yield(
+                source=source,
+                success_count=success_count,
+                bad_streak=bad_streak,
+                executed_count=len(task_results),
+            ):
+                finish_reason = "Useful crawler evidence was collected, and recent follow-up tasks became low-yield; finish now and report remaining gaps instead of exhausting similar searches."
+                plan["agent_finish_reason"] = finish_reason
+                plan.setdefault("agent_reflections", []).append(
+                    {
+                        "at_index": index,
+                        "action": "finish",
+                        "reason": finish_reason,
+                        "planner": "executor low-yield guard",
+                    }
+                )
+                break
+            elif loop_control.should_finish_after_no_success_low_yield(
+                source=source,
+                success_count=success_count,
+                bad_streak=bad_streak,
+                executed_count=len(task_results),
+            ):
+                finish_reason = "Several crawler actions produced no usable external evidence; finish now with a clear blocked/low-yield report instead of continuing similar searches."
+                plan["agent_finish_reason"] = finish_reason
+                plan.setdefault("agent_reflections", []).append(
+                    {
+                        "at_index": index,
+                        "action": "finish",
+                        "reason": finish_reason,
+                        "planner": "executor no-success low-yield guard",
+                    }
+                )
+                break
         collection_summary = _crawler_result_summary(task_results, plan)
         final_update = job_finalization.build(
             stop_requested=job.stop_requested,
@@ -4378,11 +4433,11 @@ def _delegate_crawler_for_missing_data(config: AppConfig, payload: dict[str, Any
                 "query": str(payload.get("query") or collection_question),
             }
         )
-    crawler_payload["max_tasks"] = int(payload.get("max_tasks") or crawler_payload.get("max_tasks") or 16)
     crawler_payload["requested_by"] = handoff["requested_by"]
     crawler_payload["handoff_from"] = handoff["handoff_from"]
     crawler_payload["original_user_request"] = handoff["original_user_request"]
     crawler_payload["delivery_target"] = str(payload.get("delivery_target") or _infer_delivery_target(collection_question, session_summary))
+    crawler_payload["max_tasks"] = int(payload.get("max_tasks") or crawler_payload.get("max_tasks") or 8)
     from_agent = "User" if crawler_payload["requested_by"] == "user" else "MCagent"
     agent_message = make_agent_message(
         from_agent,
@@ -4716,6 +4771,35 @@ def _should_force_crawler_mcagent_gap_workflow(agent: str, original_question: st
     return _mentions_mcagent_context(combined) and _asks_for_context_or_gaps(combined) and _asks_for_collection_or_handoff(combined)
 
 
+def _mentions_crawler_agent(text: str) -> bool:
+    value = str(text or "")
+    lowered = value.lower()
+    return bool(re.search(r"crawler|crawleragent|爬虫|采集器", lowered, flags=re.I))
+
+
+def _forbids_crawler_handoff(text: str) -> bool:
+    value = str(text or "").lower()
+    return bool(re.search(r"(不要|不用|别|禁止|不要自动|不用自动).{0,16}(crawler|crawleragent|爬虫|采集|委托)", value, flags=re.I))
+
+
+def _should_force_mcagent_planned_delegate(agent: str, original_question: str, route_intent: str, tool_decision: dict[str, Any], action_plan: list[Any]) -> bool:
+    if agent != "mcagent_rag" or route_intent == "delegate_crawler":
+        return False
+    if _action_plan_has_tool(action_plan, "delegate_crawler"):
+        return False
+    combined = "\n".join(
+        str(item or "")
+        for item in (
+            original_question,
+            tool_decision.get("reason"),
+            tool_decision.get("collection_target"),
+            tool_decision.get("delivery_target"),
+            json.dumps(action_plan, ensure_ascii=False, default=str),
+        )
+    )
+    return _mentions_crawler_agent(combined) and _asks_for_collection_or_handoff(combined) and not _forbids_crawler_handoff(combined)
+
+
 def _mcagent_context_focus(question: str, collection_target: str = "") -> str:
     value = str(collection_target or question or "").strip()
     value = re.sub(r"(?i)MC\s*Agent|MCagent|RAG", " ", value)
@@ -4753,6 +4837,21 @@ def _prune_pending_mcagent_context_tasks_after_success(tasks: list[dict[str, Any
     if removed:
         tasks[index:] = kept_tail
     return removed
+
+
+def _has_successful_mcagent_context(task_results: list[dict[str, Any]]) -> bool:
+    return any(
+        _source_alias(str(result.get("source") or "")) == "mcagent_context"
+        and int(result.get("returncode") or 0) == 0
+        and int(((result.get("manifest_stats") or {}).get("records") if isinstance(result.get("manifest_stats"), dict) else 0) or 0) > 0
+        for result in task_results
+    )
+
+
+def _drop_duplicate_mcagent_context_tasks(new_tasks: list[dict[str, Any]], task_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not _has_successful_mcagent_context(task_results):
+        return new_tasks
+    return [task for task in new_tasks if _source_alias(str(task.get("source") or "")) != "mcagent_context"]
 
 
 def _expand_mcagent_context_aliases(value: str) -> str:
@@ -5358,6 +5457,35 @@ def _question_looks_transport_garbled(question: str) -> bool:
     return False
 
 
+def _is_runtime_status_request(question: str) -> bool:
+    value = re.sub(r"\s+", "", str(question or "")).strip().lower()
+    if not value:
+        return False
+    return value in {
+        "状态",
+        "进度",
+        "后台状态",
+        "任务状态",
+        "入库状态",
+        "采集状态",
+        "爬虫状态",
+        "现在状态",
+        "当前状态",
+        "进度怎么样",
+        "现在进度怎么样",
+        "当前进度怎么样",
+        "crawler状态",
+        "crawler进度",
+        "crawleragent状态",
+        "crawleragent进度",
+        "status",
+        "progress",
+        "jobstatus",
+        "crawlerstatus",
+        "crawlerprogress",
+    }
+
+
 def _chat(config: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
     return _chat_impl(config, payload)
 
@@ -5394,10 +5522,6 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
             question = contextual_question
             run.question = question
             add_trace("observe", "contextualized", {"original": original_question, "rewritten": question})
-    router = LlmAgentToolRouterService(
-        select_client=_selected_llm_client,
-        action_plan_has_tool=_action_plan_has_tool,
-    )
     executor = AgentToolExecutor(
         generate_direct_answer=_generate_direct_answer,
         generate_direct_answer_stream=_generate_direct_answer_stream,
@@ -5406,6 +5530,31 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
         repair_answer=_repair_list_answer,
         status_answer=_crawler_monitor_answer,
     )
+    if _is_runtime_status_request(original_question):
+        status_decision = {
+            "tool": "status",
+            "reason": "Short runtime status command; read local job, ingest, and crawler progress directly.",
+            "collection_target": "",
+            "delivery_target": "human",
+            "planner": "runtime",
+        }
+        add_trace("decide", "tool_selected", {"tool": "status", "original_question": original_question, "decision": status_decision})
+        add_trace(
+            "decide",
+            "next_step_confirmed",
+            {
+                "proceed": True,
+                "tool": "status",
+                "goal": "读取采集、入库和后台任务状态。",
+                "reason": "Runtime status commands do not need a remote model call.",
+                "planner": "runtime",
+            },
+        )
+        return executor.status(run)
+    router = LlmAgentToolRouterService(
+        select_client=_selected_llm_client,
+        action_plan_has_tool=_action_plan_has_tool,
+    )
     route = router.route(run, session_summary=session_summary)
     tool_decision = route.tool_decision
     route_intent = route.route_intent
@@ -5413,6 +5562,27 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
     rag_focus = route.rag_focus
     planned_workflow = route.planned_workflow
     planned_delegate = route.planned_delegate
+    if _should_force_mcagent_planned_delegate(agent, original_question, route_intent, tool_decision, action_plan):
+        proposed_collection = _clean_inter_agent_collection_target(original_question, str(tool_decision.get("collection_target") or ""))
+        route_intent = "answer"
+        planned_workflow = True
+        planned_delegate = True
+        action_plan = _default_mcagent_gap_action_plan()
+        rag_focus = rag_focus or _mcagent_context_focus(original_question, proposed_collection)
+        tool_decision["tool"] = "planned_workflow"
+        tool_decision["rag_focus"] = rag_focus
+        tool_decision["collection_target"] = proposed_collection or original_question
+        tool_decision["delivery_target"] = "MCagent/RAG"
+        add_trace(
+            "decide",
+            "mcagent_delegate_workflow_corrected",
+            {
+                "reason": "The user explicitly asked MCagent to involve CrawlerAgent for collection; keep the delegation as a planned workflow instead of only mentioning it in the final answer.",
+                "collection_target": tool_decision["collection_target"],
+                "rag_focus": rag_focus,
+                "action_plan": action_plan,
+            },
+        )
     if _should_force_crawler_mcagent_gap_workflow(agent, original_question, route_intent, tool_decision):
         proposed_collection = _clean_inter_agent_collection_target(original_question, str(tool_decision.get("collection_target") or ""))
         route_intent = "delegate_crawler"
@@ -5569,12 +5739,32 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
         add_trace("delegate", "next_step_confirmed", delegate_confirmation)
         handoff = _delegation_handoff(payload, original_question, collection_question)
         requested_by = handoff["requested_by"]
-        if str(payload.get("delivery_target") or "").strip():
-            delivery_target = str(payload.get("delivery_target")).strip()
-        elif str(tool_decision.get("delivery_target") or "").strip():
-            delivery_target = str(tool_decision.get("delivery_target")).strip()
-        elif requested_by in {"mcagent", "user_via_mcagent"}:
+        explicit_payload_delivery = str(payload.get("delivery_target") or "").strip()
+        decision_delivery = str(tool_decision.get("delivery_target") or "").strip()
+        if not explicit_payload_delivery and "mcagent/rag" in decision_delivery.lower():
+            decision_delivery = "MCagent/RAG"
+        delegate_goal_text = "\n".join(
+            str(item or "")
+            for item in (
+                original_question,
+                collection_question,
+                tool_decision.get("reason"),
+                tool_decision.get("planning_instruction"),
+                decision_delivery,
+            )
+        )
+        if explicit_payload_delivery:
+            delivery_target = explicit_payload_delivery
+        elif requested_by in {"mcagent", "user_via_mcagent"} and (
+            not decision_delivery
+            or (
+                decision_delivery.lower() == "human"
+                and (_asks_for_collection_or_handoff(delegate_goal_text) or _request_wants_persistence(delegate_goal_text))
+            )
+        ):
             delivery_target = "MCagent/RAG"
+        elif decision_delivery:
+            delivery_target = decision_delivery
         else:
             delivery_target = _infer_delivery_target(original_question, session_summary)
         handoff_brief, brief_reason = _build_delegate_handoff_brief(

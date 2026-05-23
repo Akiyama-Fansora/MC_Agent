@@ -19,6 +19,22 @@ def now_slug() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S_%f")
 
 
+def parse_inline_options(query: str) -> dict[str, str]:
+    options: dict[str, str] = {}
+    pattern = r'(?:^|\s)(url|start_url|start-url|output_dir|output-dir|max_items|max-items|fields|formats)=(".*?"|\'.*?\'|\S+)'
+    for match in re.finditer(pattern, str(query or ""), flags=re.I):
+        key = match.group(1).lower().replace("-", "_")
+        value = match.group(2).strip().strip('"').strip("'")
+        options[key] = value
+    return options
+
+
+def strip_inline_options(query: str) -> str:
+    pattern = r'(?:^|\s)(url|start_url|start-url|output_dir|output-dir|max_items|max-items|fields|formats)=(".*?"|\'.*?\'|\S+)'
+    cleaned = re.sub(pattern, " ", str(query or ""), flags=re.I)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
 def detect_start_url(query: str, start_url: str = "") -> str:
     query = query.strip()
     if start_url:
@@ -235,10 +251,19 @@ def write_outputs(out_dir: Path, records: list[dict[str, str]], manifest: dict[s
 def run_collect(args: argparse.Namespace) -> dict[str, Any]:
     from playwright.sync_api import sync_playwright
 
-    query = args.query.strip()
-    start_url = detect_start_url(query, args.start_url.strip())
+    inline_options = parse_inline_options(args.query)
+    query = strip_inline_options(args.query) or args.query.strip()
+    inline_url = inline_options.get("url") or inline_options.get("start_url")
+    inline_output_dir = inline_options.get("output_dir")
+    inline_max_items = inline_options.get("max_items")
+    if inline_max_items and int(args.max_items or 0) == 50:
+        try:
+            args.max_items = max(1, min(int(inline_max_items), 200))
+        except Exception:
+            pass
+    start_url = detect_start_url(query, args.start_url.strip() or str(inline_url or "").strip())
     run_root = Path(args.dest).resolve() / "browser_collect" / now_slug()
-    output_dir = Path(args.output_dir).resolve() if args.output_dir else run_root
+    output_dir = Path(args.output_dir or inline_output_dir).resolve() if (args.output_dir or inline_output_dir) else run_root
     output_dir.mkdir(parents=True, exist_ok=True)
     raw_path = output_dir / "raw_page.html"
     screenshot_path = output_dir / "page.png"
