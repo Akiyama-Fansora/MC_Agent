@@ -65,6 +65,7 @@ GOAL_QUERY_HINTS = {
 
 def _collection_target_hint(question: str) -> str:
     text = re.sub(r"\s+", " ", question.strip())
+    text = re.sub(r"^(?:用户原始目标|原始请求|用户请求|Task goal|Original user request)\s*[:：]\s*", "", text, flags=re.I)
     quoted_patterns = [
         r"(?:整合包|modpack)[「《\"']([^」》\"']{2,60})[」》\"']",
         r"[「《\"']([^」》\"']{2,60})[」》\"'](?:的)?(?:完整数据|完整资料|资料|数据|内容|知识库|整合包|modpack)",
@@ -76,6 +77,8 @@ def _collection_target_hint(question: str) -> str:
             if 2 <= len(target) <= 60 and not _looks_like_agent_target(target):
                 return target
     package_patterns = [
+        r"(?:关于|有关)?\s*(?:Minecraft|MC)?\s*(整合包|modpack)\s*([\u4e00-\u9fffA-Za-z0-9_ （）()+-]{2,60}?)(?:的)?(?:完整数据|完整资料|详细资料|资料|数据|内容|知识库|模组列表|玩法指南|包括)",
+        r"([\u4e00-\u9fffA-Za-z0-9_ （）()+-]{2,60}?)(整合包|modpack)(?:还)?(?:缺|缺少|缺哪些|有哪些缺口|还差|需要补|补全|补充)",
         r"([\u4e00-\u9fffA-Za-z0-9_ （）()+-]{2,60}?)(?:整合包|modpack)(?:的)?(?:完整数据|完整资料|资料|数据|内容|知识库)",
         r"(?:补齐|补充|采集|收集|获取|整理|检查)([\u4e00-\u9fffA-Za-z0-9_ （）()+-]{2,60}?)(?:整合包|modpack)",
     ]
@@ -83,10 +86,18 @@ def _collection_target_hint(question: str) -> str:
         match = re.search(pattern, text, flags=re.I)
         if not match:
             continue
-        target = match.group(1)
+        if len(match.groups()) >= 2 and str(match.group(1)).lower() in {"整合包", "modpack"}:
+            suffix = match.group(1)
+            target = match.group(2)
+        else:
+            suffix = match.group(2) if len(match.groups()) >= 2 else ""
+            target = match.group(1)
         target = re.split(r"[,，。；;：:]|流程手册|采集流程|教学复跑|请回忆|重新检查", target, maxsplit=1)[-1]
-        target = re.sub(r"^(?:(?:一下|这个|那个|关于|有关|请|帮我|你去|去|把|将|对|并|重新|开始|复跑|检查|补齐|补充|采集|收集|获取|整理|教学复跑|请回忆)\s*)+", "", target.strip())
+        target = re.sub(r"^(?:(?:一下|这个|那个|关于|有关|请|帮我|帮忙|问下|问问|询问|咨询|你去|去|把|将|对|并|重新|开始|复跑|检查|补齐|补充|采集|收集|获取|整理|教学复跑|请回忆)\s*)+", "", target.strip())
+        target = re.sub(r"^(?:MCagent|MCAgent|MC Agent|CrawlerAgent|Crawler|RAG|本地资料库|知识库)\s*", "", target, flags=re.I)
         target = re.sub(r"\s+", " ", target).strip(" ：:，,。；;")
+        if suffix and suffix.lower() in {"整合包", "modpack"} and not re.search(r"(整合包|modpack)$", target, flags=re.I):
+            target = f"{target}{suffix}"
         if 2 <= len(target) <= 40 and not _looks_like_agent_target(target):
             return target
     patterns = [
@@ -114,6 +125,9 @@ def _session_target_hint(session_summary: dict[str, Any] | None = None) -> str:
         value = str(session_summary.get(key) or "").strip()
         if not value:
             continue
+        extracted = _collection_target_hint(value) or _question_subject_hint(value)
+        if extracted:
+            return extracted
         value = _strip_delivery_recipient(value)
         value = re.sub(r"\s+", " ", value).strip(" ：:，,。；;")
         if 2 <= len(value) <= 80 and not _looks_like_agent_target(value):
@@ -181,7 +195,8 @@ def _looks_like_agent_target(text: str) -> bool:
         return True
     lowered = stripped.lower()
     agent_hits = sum(1 for word in AGENT_WORDS if word.lower() in lowered)
-    return agent_hits > 0 and len(stripped) <= 16
+    handoff_terms = ("交付", "转交", "委托", "本地上下文", "缺口", "用户原始", "taskgoal", "originaluserrequest", "deliverytarget")
+    return agent_hits > 0 and (len(stripped) <= 16 or any(term in lowered for term in handoff_terms))
 
 
 def _target_core_terms(target: str) -> list[str]:
@@ -198,10 +213,11 @@ def _target_queries(target: str) -> list[str]:
     base_terms = _target_core_terms(target)
     queries: list[str] = []
     for base in base_terms[:2]:
+        pack_query = base if re.search(r"(整合包|modpack)$", base, flags=re.I) else f"{base} 整合包"
         queries.extend(
             [
                 base,
-                f"{base} 整合包",
+                pack_query,
                 f"{base} MC百科",
                 f"{base} 模组列表",
                 f"{base} 新手攻略",

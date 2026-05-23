@@ -79,7 +79,7 @@ MAX_SOURCE_CONTEXT_CHARS = 1500
 MAX_DEEP_EVIDENCE_CHARS = 900
 DEFAULT_ANSWER_MAX_TOKENS = 3000
 ANSWER_MAX_TOKENS_CAP = 6000
-DEFAULT_CRAWLER_PLANNER_TIMEOUT_SECONDS = 120
+DEFAULT_CRAWLER_PLANNER_TIMEOUT_SECONDS = 35
 MAX_JOBS = 40
 GROW_PROGRESS_PATH = PROJECT_ROOT / "runtime" / "grow_knowledge_base_progress.json"
 GROW_LOG_CANDIDATES = (
@@ -2082,12 +2082,13 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
         _update_job(job, status="failed", ended_at=time.time(), summary=_tail_text(traceback.format_exc()), error=f"{type(exc).__name__}: {exc}")
 
 
-def _plan_crawler_with_job_timeout(job: Job, question: str, config: AppConfig, max_tasks: int, session_summary: dict[str, Any] | None) -> dict[str, Any]:
+def _plan_crawler_with_job_timeout(job: Job, question: str, config: AppConfig, max_tasks: int, session_summary: dict[str, Any] | None, timeout_seconds: int | None = None) -> dict[str, Any]:
     wait_status = CrawlerPlannerWaitService()
     context = wait_status.context(question=question, session_summary=session_summary)
     planner_topic = context["planner_topic"]
     handoff_brief = context["handoff_brief"]
     delivery_target = context["delivery_target"]
+    timeout_limit = max(1, int(timeout_seconds or DEFAULT_CRAWLER_PLANNER_TIMEOUT_SECONDS))
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     future = executor.submit(plan_crawler_tasks_resilient, question, config.paths.source_dir, max_tasks=max_tasks, session_summary=session_summary)
     started = time.time()
@@ -2102,6 +2103,18 @@ def _plan_crawler_with_job_timeout(job: Job, question: str, config: AppConfig, m
                 return future.result(timeout=0.5)
             except concurrent.futures.TimeoutError:
                 elapsed = time.time() - started
+                if elapsed >= timeout_limit:
+                    future.cancel()
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    fallback = plan_crawler_tasks_rule_fallback(
+                        question,
+                        config.paths.source_dir,
+                        max_tasks=max_tasks,
+                        planner_error=f"planner exceeded {timeout_limit}s startup timeout",
+                        session_summary=session_summary,
+                    )
+                    fallback["planner_timeout_seconds"] = timeout_limit
+                    return fallback
                 if elapsed - last_notice >= 5:
                     last_notice = elapsed
                     _update_job(job, **wait_status.waiting_update(elapsed_seconds=int(elapsed), planner_topic=planner_topic, handoff_brief=handoff_brief, delivery_target=delivery_target))

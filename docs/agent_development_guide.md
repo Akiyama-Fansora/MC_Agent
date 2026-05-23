@@ -3861,3 +3861,42 @@ python scripts\public_readiness_check.py
 
 Regression coverage now includes the case where CrawlerAgent's LLM initially says it cannot ask MCagent; runtime converts that to a planned workflow, keeps `requested_by=user`, sets `delivery_target=MCagent/RAG`, and delegates collection.
 
+## 2026-05-23 Stage 23: Crawler Planner Startup Timeout And Handoff Target Recovery
+
+The next live test showed a subtler failure: the Crawler job was created, but stayed in the planner startup phase with `planned_tasks=[]` and `tasks=[]`. That is still a broken agent loop because no objective tool action can run.
+
+### Implemented Changes
+
+1. Added a hard startup timeout for Crawler planning. If the LLM planner has not produced executable tasks within the timeout, the runtime returns a target-aware rule fallback instead of leaving the job in `0/0 waiting for plan`.
+2. Lowered the default Crawler planner startup timeout from 120 seconds to 35 seconds. The LLM can still reflect and replan after tasks begin, but the first observable action should not wait indefinitely.
+3. Improved handoff target extraction so Crawler fallback planning extracts the domain target from cross-agent text such as `用户原始目标：问下MCAgent乌托邦整合包还缺哪些东西...` instead of using `MCagent/RAG` handoff prose as a query.
+4. Added support for both `X 整合包` and `整合包 X` target phrasing, and prevented duplicate query text such as `整合包 整合包`.
+5. Added regression coverage for planner timeout fallback and stale-session-topic override.
+
+### Test Plan And Results
+
+Passed:
+```powershell
+python tests\crawler_planner_timeout_scenarios.py
+python tests\crawler_planner_wait_service_scenarios.py
+python tests\web_server_side_effect_guard_scenarios.py
+python tests\agent_runtime_scenarios.py
+python tests\smoke_test.py
+python tests\crawler_task_materialization_service_scenarios.py
+python tests\crawler_job_setup_service_scenarios.py
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+```
+
+Manual backend verification:
+```powershell
+python api.py --host 127.0.0.1 --port 8765
+```
+
+Then sent the live CrawlerAgent request:
+```text
+问下MCAgent乌托邦整合包还缺哪些东西 你去网上找补给他
+```
+
+Result: the backend created job `1779510399121-1`, target recovered as `乌托邦整合包`, planned 20 executable tasks, and progressed from planning into actual collection. The job reused existing MC百科 evidence for the first action and moved on to package discovery/download.
+
