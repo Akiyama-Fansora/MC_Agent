@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 from typing import Any, Callable
+from urllib.parse import urlsplit, urlunsplit
 
 from .cleaners import _HTMLTextExtractor, normalize_text
 from .provider_registry import request_text
@@ -13,6 +14,7 @@ SummarizeFn = Callable[[str, str, str], str]
 
 
 URL_RE = re.compile(r"https?://[^\s<>'\"，。；、)）\]]+", flags=re.I)
+ASCII_URI_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~:/?#[]@!$&'()*+,;=%")
 DEFAULT_USER_AGENT = "MC_Agent/0.1 (temporary crawler extraction; no local persistence)"
 
 
@@ -62,7 +64,32 @@ class CrawlerTemporaryExtractService:
 
     def extract_url(self, text: str) -> str:
         match = URL_RE.search(str(text or ""))
-        return match.group(0).rstrip(".,;:")
+        if not match:
+            return ""
+        candidate = match.group(0).rstrip(".,;:")
+        end = 0
+        for index, char in enumerate(candidate):
+            if char not in ASCII_URI_CHARS:
+                break
+            end = index + 1
+        return self.normalize_url(candidate[:end])
+
+    def normalize_url(self, url: str) -> str:
+        value = str(url or "").strip().rstrip(".,;:")
+        if not value:
+            return ""
+        try:
+            parts = urlsplit(value)
+        except ValueError:
+            return value.rstrip("?")
+        if not parts.scheme or not parts.netloc:
+            return value.rstrip("?")
+        path = parts.path.rstrip("?")
+        query = parts.query
+        fragment = parts.fragment
+        if query and set(query) == {"?"}:
+            query = ""
+        return urlunsplit((parts.scheme, parts.netloc, path, query, fragment)).rstrip(".,;:")
 
     def html_to_text(self, raw: str, content_type: str) -> tuple[str, str]:
         if "html" not in str(content_type or "").lower() and "<html" not in raw[:1000].lower():
@@ -79,6 +106,7 @@ class CrawlerTemporaryExtractService:
 
     def fetch_text(self, url: str, *, fetch: FetchTextFn | None = None) -> tuple[str, str, str, int]:
         fetcher = fetch or self.default_fetch
+        url = self.normalize_url(url)
         errors: list[str] = []
         try:
             raw, content_type, status = fetcher(url)

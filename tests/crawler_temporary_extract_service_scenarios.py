@@ -24,6 +24,10 @@ def test_extract_url_from_natural_request() -> None:
     service = CrawlerTemporaryExtractService()
     url = service.extract_url("总结一下 https://example.com/a/b?x=1 的内容，不用保存")
     assert_equal("url", url, "https://example.com/a/b?x=1")
+    attached = service.extract_url("总结一下https://baike.baidu.com/item/%E5%95%86%E5%93%81/1245866的内容给我 不用保存到本地")
+    assert_equal("attached_chinese_suffix", attached, "https://baike.baidu.com/item/%E5%95%86%E5%93%81/1245866")
+    damaged = service.extract_url("总结一下https://baike.baidu.com/item/%E5%95%86%E5%93%81/1245866" + "\u003f" * 5 + " 不用保存")
+    assert_equal("damaged_suffix", damaged, "https://baike.baidu.com/item/%E5%95%86%E5%93%81/1245866")
 
 
 def test_html_to_text_extracts_title_and_body() -> None:
