@@ -1163,13 +1163,15 @@ def _run_mcagent_context_tool(config: AppConfig, payload: dict[str, Any], plan: 
         gap_summary = "\n".join(f"- {item}" for item in list(dict.fromkeys(gaps))[:12]) or "- No explicit gap list was found; use coverage goals and selected local evidence to decide what to collect next."
         if selected:
             try:
+                answer_question = (
+                    "CrawlerAgent 正在通过 Agent 通道询问 MCagent："
+                    "请根据本地证据回答本地已有关于该主题的资料、缺口，以及 CrawlerAgent 应补采哪些资料。"
+                    f"\n主题：{focus}"
+                )
+                add_exchange_trace("answer", "mcagent_reply_generating", {"local_sources": len(selected)})
                 mcagent_answer, _context = _generate_grounded_answer(
                     config,
-                    (
-                        "CrawlerAgent 正在通过 Agent 通道询问 MCagent："
-                        "请根据本地证据回答本地已有关于该主题的资料、缺口，以及 CrawlerAgent 应补采哪些资料。"
-                        f"\n主题：{focus}"
-                    ),
+                    answer_question,
                     selected,
                     str(payload.get("mcagent_model") or ""),
                     0.0,
@@ -1177,6 +1179,7 @@ def _run_mcagent_context_tool(config: AppConfig, payload: dict[str, Any], plan: 
                     retrieval_note="这不是面向最终用户的回答，而是 MCagent 给 CrawlerAgent 的内部上下文回复；请明确列出现有证据和资料缺口。",
                     evidence_question=focus,
                 )
+                add_exchange_trace("answer", "mcagent_reply_ready", {"local_sources": len(selected)})
             except Exception as exc:  # noqa: BLE001
                 mcagent_answer = f"MCagent 本地检索已完成，但生成给 CrawlerAgent 的自然语言回复失败：{type(exc).__name__}: {exc}\n\n资料缺口摘要：\n{gap_summary}"
         else:
@@ -2273,6 +2276,18 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
                 )
             result["observation"] = classify_crawler_tool_result(result).to_dict()
             task_results.append(result)
+            if task_source == "mcagent_context" and result["returncode"] == 0 and records_loaded > 0:
+                removed_context_tasks = _prune_pending_mcagent_context_tasks_after_success(tasks, index)
+                if removed_context_tasks:
+                    plan.setdefault("agent_reflections", []).append(
+                        {
+                            "at_index": index,
+                            "action": "prune_pending_mcagent_context",
+                            "reason": "MCagent has already returned usable local context for this Crawler job; skip duplicate pending mcagent_context tasks and continue with web collection.",
+                            "planner": "executor objective result",
+                            "tasks": removed_context_tasks,
+                        }
+                    )
             if topic_discovery_review.should_review(task_source=task_source, result=result):
                 remaining_slots = topic_discovery_review.remaining_slots(max_total_tasks=max_total_tasks, current_task_count=len(tasks))
                 _update_job(job, **job_progress.reviewing_candidates(task_results=task_results, tasks=tasks, plan=plan))
@@ -4703,11 +4718,41 @@ def _should_force_crawler_mcagent_gap_workflow(agent: str, original_question: st
 
 def _mcagent_context_focus(question: str, collection_target: str = "") -> str:
     value = str(collection_target or question or "").strip()
-    value = re.sub(r"(?i)\bMCagent\b|\bMC Agent\b|\bRAG\b", " ", value)
+    value = re.sub(r"(?i)MC\s*Agent|MCagent|RAG", " ", value)
+    value = re.sub(r"(还缺哪些东西|还缺什么|缺哪些东西|缺什么|有哪些缺口|缺口有哪些|缺失哪些内容|缺失什么)", " ", value)
     value = re.sub(r"(问下|查询|检查|本地资料库|本地资料|知识库|资料库|你去|网上|联网|找|补给他|补给|补库|补充|采集|爬取|抓取|获取)", " ", value)
     value = re.sub(r"\s+", " ", value).strip(" ，。；;:：")
     value = _expand_mcagent_context_aliases(value)
     return value or str(question or "").strip()
+
+
+def _clean_inter_agent_collection_target(original_question: str, proposed_collection: str = "") -> str:
+    proposed = str(proposed_collection or "").strip()
+    original = str(original_question or "").strip()
+    workflow_markers = (
+        "CrawlerAgent 应",
+        "CrawlerAgent should",
+        "MCagent 使用",
+        "用户原始目标",
+        "mcagent_context",
+        "planning_instruction",
+    )
+    source = original if any(marker.lower() in proposed.lower() for marker in workflow_markers) else (proposed or original)
+    focus = _mcagent_context_focus(source, source)
+    return focus or original or proposed
+
+
+def _prune_pending_mcagent_context_tasks_after_success(tasks: list[dict[str, Any]], index: int) -> list[dict[str, Any]]:
+    removed: list[dict[str, Any]] = []
+    kept_tail: list[dict[str, Any]] = []
+    for task in tasks[index:]:
+        if _source_alias(str(task.get("source") or "")) == "mcagent_context":
+            removed.append(task)
+        else:
+            kept_tail.append(task)
+    if removed:
+        tasks[index:] = kept_tail
+    return removed
 
 
 def _expand_mcagent_context_aliases(value: str) -> str:
@@ -5369,7 +5414,7 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
     planned_workflow = route.planned_workflow
     planned_delegate = route.planned_delegate
     if _should_force_crawler_mcagent_gap_workflow(agent, original_question, route_intent, tool_decision):
-        proposed_collection = str(tool_decision.get("collection_target") or original_question or question).strip()
+        proposed_collection = _clean_inter_agent_collection_target(original_question, str(tool_decision.get("collection_target") or ""))
         route_intent = "delegate_crawler"
         planned_workflow = True
         planned_delegate = True
@@ -5378,10 +5423,10 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
         rag_focus = rag_focus or _mcagent_context_focus(original_question, proposed_collection)
         tool_decision["rag_focus"] = rag_focus
         tool_decision["tool"] = "delegate_crawler"
-        tool_decision["collection_target"] = (
-            "CrawlerAgent 应在自己的任务循环中先调用 mcagent_context 向 MCagent 询问本地已有资料与缺口；"
-            "MCagent 使用自己的本地 RAG/证据筛选流程回复后，CrawlerAgent 再根据这份回复去网上补齐资料并交付给 MCagent/RAG。"
-            f" 用户原始目标：{proposed_collection}"
+        tool_decision["collection_target"] = proposed_collection
+        tool_decision["planning_instruction"] = (
+            "CrawlerAgent should run mcagent_context as the first internal task, read MCagent/RAG local evidence and gaps, "
+            "then collect public web data that fills those gaps and deliver usable artifacts to MCagent/RAG."
         )
         tool_decision["delivery_target"] = "MCagent/RAG"
         add_trace(
@@ -5391,12 +5436,14 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
                 "from_tool": route.route_intent,
                 "to_tool": "delegate_crawler",
                 "reason": "The user requested an inter-agent MCagent context check plus follow-up collection; direct Crawler chat must start a Crawler job and run mcagent_context inside that job instead of doing chat-turn local retrieval.",
+                "collection_target": proposed_collection,
+                "planning_instruction": tool_decision["planning_instruction"],
                 "rag_focus": rag_focus,
                 "action_plan": action_plan,
             },
         )
     if route_intent == "mcagent_context":
-        proposed_collection = str(tool_decision.get("collection_target") or original_question or question).strip()
+        proposed_collection = _clean_inter_agent_collection_target(original_question, str(tool_decision.get("collection_target") or ""))
         should_delegate_after_context = _action_plan_has_tool(action_plan, "delegate_crawler") or _asks_for_collection_or_handoff(
             "\n".join([original_question, proposed_collection, str(tool_decision.get("reason") or "")])
         )
@@ -5407,17 +5454,18 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
             if not action_plan or not _action_plan_has_tool(action_plan, "delegate_crawler"):
                 action_plan = _default_mcagent_gap_action_plan()
             tool_decision["delivery_target"] = str(tool_decision.get("delivery_target") or "MCagent/RAG")
-            tool_decision["collection_target"] = (
-                "CrawlerAgent 应先通过 mcagent_context 向 MCagent 询问本地已有资料与缺口；"
-                "MCagent 使用自己的本地 RAG/证据筛选流程回复后，CrawlerAgent 再按 MCagent 回复去网上补齐资料并交付给 MCagent/RAG。"
-                f" 用户原始目标：{proposed_collection}"
+            tool_decision["collection_target"] = proposed_collection
+            tool_decision["planning_instruction"] = (
+                "CrawlerAgent should run mcagent_context as the first internal task, read MCagent/RAG local evidence and gaps, "
+                "then collect public web data that fills those gaps and deliver usable artifacts to MCagent/RAG."
             )
             add_trace(
                 "decide",
                 "mcagent_context_deferred_to_crawler_job",
                 {
                     "reason": "Direct Crawler request requires an inter-agent round trip plus web collection; run mcagent_context inside the Crawler job instead of intercepting the chat turn with local retrieval.",
-                    "collection_target": tool_decision["collection_target"],
+                    "collection_target": proposed_collection,
+                    "planning_instruction": tool_decision["planning_instruction"],
                     "action_plan": action_plan,
                 },
             )
@@ -5542,6 +5590,8 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
         delegate_summary = dict(session_summary or {})
         delegate_summary["handoff_brief"] = handoff_brief
         delegate_summary["handoff_brief_reason"] = brief_reason
+        if str(tool_decision.get("planning_instruction") or "").strip():
+            delegate_summary["planning_instruction"] = str(tool_decision["planning_instruction"]).strip()
         if not delegate_summary.get("current_topic") and (delegate_summary.get("topics") or []):
             delegate_summary["current_topic"] = str((delegate_summary.get("topics") or [""])[0])
         if not delegate_summary.get("missing_evidence") and (delegate_summary.get("gaps") or []):

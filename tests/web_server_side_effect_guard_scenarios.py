@@ -220,6 +220,18 @@ def test_mcagent_context_focus_expands_minecraft_utopia_aliases() -> None:
     assert_true("focus_adds_english_alias", "Utopian Journey" in focus)
 
 
+def test_successful_mcagent_context_prunes_duplicate_pending_context_tasks() -> None:
+    tasks = [
+        {"source": "mcagent_context", "query": "乌托邦缺口"},
+        {"source": "mcmod", "query": "乌托邦探险之旅"},
+        {"source": "mcagent_context", "query": "乌托邦整合包"},
+        {"source": "web_discovery", "query": "乌托邦攻略"},
+    ]
+    removed = web_server._prune_pending_mcagent_context_tasks_after_success(tasks, 1)
+    assert_equal("removed_count", len(removed), 1)
+    assert_equal("remaining_sources", [item["source"] for item in tasks], ["mcagent_context", "mcmod", "web_discovery"])
+
+
 def test_direct_crawler_mcagent_gap_request_delegates_when_local_empty() -> None:
     tmp = tempfile.TemporaryDirectory()
     fake_client = SequencedClient(
@@ -268,6 +280,9 @@ def test_direct_crawler_mcagent_gap_request_delegates_when_local_empty() -> None
     assert_equal("requested_by", result.get("delegation", {}).get("requested_by"), "user")
     assert_equal("delivery_target", result.get("delegation", {}).get("delivery_target"), "MCagent/RAG")
     assert_true("mentions_topic", "乌托邦" in calls[0]["question"])
+    assert_true("clean_collection_target", "CrawlerAgent 应" not in calls[0]["question"] and "用户原始目标" not in calls[0]["question"])
+    summary = calls[0]["payload"].get("session_summary") or {}
+    assert_true("planning_instruction_carried", "mcagent_context" in str(summary.get("planning_instruction") or ""))
 
 
 def test_crawler_mcagent_context_with_collection_continues_to_delegate() -> None:
@@ -316,7 +331,9 @@ def test_crawler_mcagent_context_with_collection_continues_to_delegate() -> None
     assert_true("deferred_to_job", ("decide", "mcagent_context_deferred_to_crawler_job") in statuses)
     assert_true("delegated_after_context", bool(calls))
     assert_equal("delivery_target", result.get("delegation", {}).get("delivery_target"), "MCagent/RAG")
-    assert_true("job_task_mentions_round_trip", "mcagent_context" in calls[0]["question"] and "MCagent" in calls[0]["question"])
+    assert_true("job_task_keeps_clean_topic", "乌托邦" in calls[0]["question"] and "mcagent_context" not in calls[0]["question"])
+    summary = calls[0]["payload"].get("session_summary") or {}
+    assert_true("planning_instruction_carried", "mcagent_context" in str(summary.get("planning_instruction") or ""))
 
 
 def test_direct_crawler_delegate_choice_runs_as_crawler_context_workflow() -> None:
@@ -368,6 +385,9 @@ def test_direct_crawler_delegate_choice_runs_as_crawler_context_workflow() -> No
     assert_equal("delivery_target", result.get("delegation", {}).get("delivery_target"), "MCagent/RAG")
     assert_true("crawler_voice", str(result.get("answer") or "").startswith("我是 CrawlerAgent。"))
     assert_true("no_self_handoff_voice", "转交给 CrawlerAgent" not in str(result.get("answer") or ""))
+    assert_true("clean_collection_target", "CrawlerAgent 应" not in calls[0]["question"] and "用户原始目标" not in calls[0]["question"])
+    summary = calls[0]["payload"].get("session_summary") or {}
+    assert_true("planning_instruction_carried", "mcagent_context" in str(summary.get("planning_instruction") or ""))
 
 
 def test_crawler_job_can_execute_mcagent_context_tool() -> None:
@@ -436,6 +456,7 @@ if __name__ == "__main__":
     test_direct_crawler_delegate_gap_request_is_rewritten_to_context_workflow()
     test_direct_crawler_router_error_gap_request_recovers_to_context_workflow()
     test_mcagent_context_focus_expands_minecraft_utopia_aliases()
+    test_successful_mcagent_context_prunes_duplicate_pending_context_tasks()
     test_direct_crawler_mcagent_gap_request_delegates_when_local_empty()
     test_crawler_mcagent_context_with_collection_continues_to_delegate()
     test_direct_crawler_delegate_choice_runs_as_crawler_context_workflow()
