@@ -5268,17 +5268,17 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
     planned_delegate = route.planned_delegate
     if _should_force_crawler_mcagent_gap_workflow(agent, original_question, route_intent, tool_decision):
         proposed_collection = str(tool_decision.get("collection_target") or original_question or question).strip()
-        route_intent = "answer"
+        route_intent = "delegate_crawler"
         planned_workflow = True
         planned_delegate = True
-        if not action_plan:
+        if not action_plan or not _action_plan_has_tool(action_plan, "delegate_crawler"):
             action_plan = _default_mcagent_gap_action_plan()
-        if not rag_focus:
-            rag_focus = _mcagent_context_focus(original_question, proposed_collection)
-            tool_decision["rag_focus"] = rag_focus
-        tool_decision["tool"] = "planned_workflow"
+        rag_focus = rag_focus or _mcagent_context_focus(original_question, proposed_collection)
+        tool_decision["rag_focus"] = rag_focus
+        tool_decision["tool"] = "delegate_crawler"
         tool_decision["collection_target"] = (
-            "先根据 MCagent/RAG 本地检索结果判断资料缺口，再为该主题采集缺失资料并交付给 MCagent/RAG。"
+            "CrawlerAgent 应在自己的任务循环中先调用 mcagent_context 向 MCagent 询问本地已有资料与缺口；"
+            "MCagent 使用自己的本地 RAG/证据筛选流程回复后，CrawlerAgent 再根据这份回复去网上补齐资料并交付给 MCagent/RAG。"
             f" 用户原始目标：{proposed_collection}"
         )
         tool_decision["delivery_target"] = "MCagent/RAG"
@@ -5287,27 +5287,40 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
             "inter_agent_workflow_corrected",
             {
                 "from_tool": route.route_intent,
-                "to_tool": "planned_workflow",
-                "reason": "The user requested MCagent/RAG context inspection plus follow-up collection; a direct answer cannot perform those tool actions.",
+                "to_tool": "delegate_crawler",
+                "reason": "The user requested an inter-agent MCagent context check plus follow-up collection; direct Crawler chat must start a Crawler job and run mcagent_context inside that job instead of doing chat-turn local retrieval.",
                 "rag_focus": rag_focus,
                 "action_plan": action_plan,
             },
         )
     if route_intent == "mcagent_context":
-        route_intent = "answer"
         proposed_collection = str(tool_decision.get("collection_target") or original_question or question).strip()
-        if _action_plan_has_tool(action_plan, "delegate_crawler") or _asks_for_collection_or_handoff(
+        should_delegate_after_context = _action_plan_has_tool(action_plan, "delegate_crawler") or _asks_for_collection_or_handoff(
             "\n".join([original_question, proposed_collection, str(tool_decision.get("reason") or "")])
-        ):
+        )
+        if agent == "crawler_agent" and should_delegate_after_context:
+            route_intent = "delegate_crawler"
             planned_workflow = True
             planned_delegate = True
-            if not action_plan:
+            if not action_plan or not _action_plan_has_tool(action_plan, "delegate_crawler"):
                 action_plan = _default_mcagent_gap_action_plan()
             tool_decision["delivery_target"] = str(tool_decision.get("delivery_target") or "MCagent/RAG")
             tool_decision["collection_target"] = (
-                "根据 MCagent/RAG 本地上下文与缺口，为该主题采集缺失资料并交付给 MCagent/RAG。"
+                "CrawlerAgent 应先通过 mcagent_context 向 MCagent 询问本地已有资料与缺口；"
+                "MCagent 使用自己的本地 RAG/证据筛选流程回复后，CrawlerAgent 再按 MCagent 回复去网上补齐资料并交付给 MCagent/RAG。"
                 f" 用户原始目标：{proposed_collection}"
             )
+            add_trace(
+                "decide",
+                "mcagent_context_deferred_to_crawler_job",
+                {
+                    "reason": "Direct Crawler request requires an inter-agent round trip plus web collection; run mcagent_context inside the Crawler job instead of intercepting the chat turn with local retrieval.",
+                    "collection_target": tool_decision["collection_target"],
+                    "action_plan": action_plan,
+                },
+            )
+        else:
+            route_intent = "answer"
         if not rag_focus:
             rag_focus = _mcagent_context_focus(original_question, str(tool_decision.get("collection_target") or ""))
             tool_decision["rag_focus"] = rag_focus
@@ -5440,7 +5453,10 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
             "session_summary": delegate_summary,
         }
         job, created = _delegate_crawler_for_missing_data(config, delegate_payload, collection_question)
-        answer = "Crawler 多源采集任务已启动。" if created else "Crawler 已有任务在运行。"
+        if agent == "crawler_agent" and requested_by == "user":
+            answer = "我是 CrawlerAgent。采集任务已启动。" if created else "我是 CrawlerAgent。已有采集任务在运行。"
+        else:
+            answer = "Crawler 多源采集任务已启动。" if created else "Crawler 已有任务在运行。"
         answer += _crawler_delegation_note_for(job, collection_question, created, requested_by=requested_by, delivery_target=delivery_target)
         return _with_trace(
             {

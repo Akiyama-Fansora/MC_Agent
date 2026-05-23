@@ -242,9 +242,10 @@ def test_direct_crawler_mcagent_gap_request_delegates_when_local_empty() -> None
 
     web_server._selected_llm_client = lambda *_args, **_kwargs: (fake_client, "fake")  # type: ignore[assignment]
     web_server._delegate_crawler_for_missing_data = fake_delegate  # type: ignore[assignment]
-    web_server.RagRetrievalService.retrieve = (  # type: ignore[assignment]
-        lambda self, *args, **kwargs: SimpleNamespace(retrieval_plan=None, rough_results=[], selected=[])
-    )
+    def fail_if_route_reads_rag(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("direct Crawler mcagent_context+collection must run inside the Crawler job, not as chat-turn retrieval")
+
+    web_server.RagRetrievalService.retrieve = fail_if_route_reads_rag  # type: ignore[assignment]
     try:
         result = web_server._chat_impl(
             make_temp_config(Path(tmp.name)),
@@ -312,8 +313,10 @@ def test_crawler_mcagent_context_with_collection_continues_to_delegate() -> None
 
     statuses = [(step["stage"], step["status"]) for step in result.get("trace", [])]
     assert_true("mcagent_context_trace", ("decide", "mcagent_context_selected") in statuses)
+    assert_true("deferred_to_job", ("decide", "mcagent_context_deferred_to_crawler_job") in statuses)
     assert_true("delegated_after_context", bool(calls))
     assert_equal("delivery_target", result.get("delegation", {}).get("delivery_target"), "MCagent/RAG")
+    assert_true("job_task_mentions_round_trip", "mcagent_context" in calls[0]["question"] and "MCagent" in calls[0]["question"])
 
 
 def test_direct_crawler_delegate_choice_runs_as_crawler_context_workflow() -> None:

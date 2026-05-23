@@ -4141,3 +4141,59 @@ node --check frontend\static\settings.js
 git diff --check
 ```
 
+## 2026-05-23 Stage 28: Direct Crawler Inter-Agent Round Trip Boundary
+
+This stage fixes the chat-router boundary for direct Crawler conversations such as:
+
+```text
+问下MCAgent乌托邦整合包还缺哪些东西 你去网上找补给他
+```
+
+The intended semantics are not "Crawler reads RAG directly in the chat turn" and not "MCagent speaks for Crawler." The correct flow is:
+
+1. The user is talking to CrawlerAgent.
+2. CrawlerAgent starts its own Crawler job.
+3. Inside that job, CrawlerAgent calls the generic `mcagent_context` tool.
+4. `mcagent_context` records a real inter-agent transcript: `CrawlerAgent -> MCagent`, then `MCagent -> CrawlerAgent`.
+5. MCagent uses its own local RAG/evidence workflow to answer what exists and what is missing.
+6. CrawlerAgent uses that MCagent reply to continue public web collection and deliver cleaned artifacts to MCagent/RAG.
+
+### Implemented Changes
+
+1. The `_should_force_crawler_mcagent_gap_workflow()` correction path now routes direct Crawler gap-fill requests to `delegate_crawler`, not `answer`.
+2. The chat turn no longer performs `RagRetrievalService.retrieve()` for direct Crawler requests that require "ask MCagent, then collect." Local retrieval is deferred into the Crawler job through `mcagent_context`.
+3. The delegated Crawler task text explicitly tells CrawlerAgent to call `mcagent_context` inside its task loop before web collection.
+4. Direct Crawler job-start responses now use CrawlerAgent's own voice instead of a generic "transferred to Crawler" system-style message.
+5. Regression coverage now fails if the chat router tries to read RAG directly for this direct-Crawler path.
+
+### Test Plan And Results
+
+Updated `tests\web_server_side_effect_guard_scenarios.py`:
+
+- direct Crawler `direct_answer` mistakes are corrected into a Crawler job;
+- direct Crawler `mcagent_context + delegate_crawler` plans are deferred into the Crawler job;
+- the direct Crawler path raises a test failure if chat-turn RAG retrieval happens;
+- the delegated job target mentions both `mcagent_context` and `MCagent`;
+- direct Crawler replies start in CrawlerAgent voice.
+
+Passed:
+
+```powershell
+python tests\web_server_side_effect_guard_scenarios.py
+python tests\crawler_planner_timeout_scenarios.py
+python tests\agent_router_scenarios.py
+python tests\agent_runtime_scenarios.py
+python tests\crawler_reflection_decision_scenarios.py
+python tests\crawler_reflection_service_scenarios.py
+python tests\fastapi_backend_scenarios.py
+python tests\agent_five_direction_matrix_scenarios.py
+python tests\smoke_test.py
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+node --check frontend\static\app.js
+node --check frontend\static\settings.js
+git diff --check
+```
+
+`public_readiness_check.py` passed with the expected LICENSE warning only: the repository can remain private or be published all-rights-reserved until the owner chooses a reuse license.
+
