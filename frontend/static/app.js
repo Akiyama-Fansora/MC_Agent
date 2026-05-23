@@ -147,6 +147,10 @@ function activityTextForTrace(step) {
   return progressTextForTrace(step);
 }
 
+function agentReplyContent(response) {
+  return response?.agent_message?.content || response?.answer || "";
+}
+
 function progressTextForTrace(step) {
   const detail = step?.detail || {};
   const stage = `${step?.stage || ""}:${step?.status || ""}`;
@@ -1219,9 +1223,11 @@ async function sendQuestion(event) {
       },
       onResponse(partial) {
         if (state.currentChat !== currentChat || !partial) return;
-        session.messages[pendingIndex].text = partial.answer || session.messages[pendingIndex].text || "";
-        session.messages[pendingIndex].hasFinalAnswer = Boolean(partial.answer);
+        const replyText = agentReplyContent(partial);
+        session.messages[pendingIndex].text = replyText || session.messages[pendingIndex].text || "";
+        session.messages[pendingIndex].hasFinalAnswer = Boolean(replyText);
         session.messages[pendingIndex].isStreamingAnswer = false;
+        session.messages[pendingIndex].agentMessage = partial.agent_message || null;
         session.messages[pendingIndex].trace = partial.trace || session.messages[pendingIndex].trace || [];
         session.messages[pendingIndex].collaboration = partial.collaboration || [];
         session.messages[pendingIndex].sources = partial.sources || [];
@@ -1231,10 +1237,11 @@ async function sendQuestion(event) {
       },
     });
     if (state.currentChat !== currentChat) return;
-    session.messages[pendingIndex].text = data.answer || "";
+    session.messages[pendingIndex].text = agentReplyContent(data);
     session.messages[pendingIndex].hasFinalAnswer = true;
     session.messages[pendingIndex].isStreamingAnswer = false;
     session.messages[pendingIndex].agent = state.agents.find((item) => item.id === state.activeAgent)?.name || state.activeAgent;
+    session.messages[pendingIndex].agentMessage = data.agent_message || null;
     session.messages[pendingIndex].trace = data.trace || [];
     session.messages[pendingIndex].collaboration = data.collaboration || [];
     session.messages[pendingIndex].sources = data.sources || [];

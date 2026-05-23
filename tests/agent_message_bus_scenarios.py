@@ -93,6 +93,9 @@ def test_chat_records_user_to_agent_message() -> None:
     assert_true("message_trace", bool(message_steps))
     assert_equal("message_tuple", tuple(message_steps[0]["detail"]["tuple"]), ("User", "你好", "CrawlerAgent"))
     assert_equal("agent_identity", result.get("agent"), "crawler_agent")
+    reply = result.get("agent_message") or {}
+    assert_equal("reply_tuple_agents", (reply.get("from_agent"), reply.get("to_agent")), ("CrawlerAgent", "User"))
+    assert_true("reply_content", "CrawlerAgent" in str(reply.get("content") or ""))
 
 
 def test_send_agent_message_dispatches_to_target_agent() -> None:
@@ -120,6 +123,9 @@ def test_send_agent_message_dispatches_to_target_agent() -> None:
     assert_true("message_trace", bool(message_steps))
     assert_equal("dispatch_agent", result.get("agent"), "mcagent_rag")
     assert_equal("dispatch_tuple", tuple(message_steps[0]["detail"]["tuple"]), ("User", "你好", "MCagent"))
+    reply = result.get("agent_message") or {}
+    assert_equal("dispatch_reply_agents", (reply.get("from_agent"), reply.get("to_agent")), ("MCagent", "User"))
+    assert_true("dispatch_reply_to", bool(reply.get("reply_to")))
 
 
 def main() -> int:

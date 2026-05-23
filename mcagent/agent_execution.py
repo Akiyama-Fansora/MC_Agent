@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import time
 from typing import Any, Callable
 
+from .agent_message import agent_reply_message_from_payload
 from .config import AppConfig
 from .llm_profiles import profiles_payload
 
@@ -58,6 +59,12 @@ class AgentExecutionContext:
         return self.trace.add(stage, status, detail)
 
     def response(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if "agent_message" not in payload and str(payload.get("answer") or "").strip():
+            payload["agent_message"] = agent_reply_message_from_payload(
+                self.payload,
+                from_agent_id=str(payload.get("agent") or self.agent),
+                content=str(payload.get("answer") or ""),
+            ).to_dict()
         return self.trace.response(payload)
 
     def emit_delta(self, text: str) -> None:

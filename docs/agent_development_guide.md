@@ -4247,3 +4247,41 @@ This stage should be tested together with the existing five-direction matrix:
 4. Crawler collects and saves data for MCagent/RAG.
 5. Crawler collects data and saves to a user-specified local format/path.
 
+## 2026-05-23 Stage 30: Agent-To-User Reply Messages With SSE Compatibility
+
+Stage 29 made the input side explicit: `User -> Agent` and Agent-to-Agent messages are now represented as `AgentMessage`. This stage closes the loop by making Agent replies to the user explicit too.
+
+### Implemented Changes
+
+1. Added `agent_reply_message_from_payload()` in `mcagent\agent_message.py`.
+2. `AgentExecutionContext.response()` now attaches `agent_message` whenever a response has an `answer`:
+   - `from_agent`: `MCagent` or `CrawlerAgent`;
+   - `to_agent`: usually `User`;
+   - `content`: the same user-visible answer text;
+   - `reply_to`: the incoming message id.
+3. `_with_trace()` now does the same for manual response paths in `web_server.py`.
+4. SSE behavior is preserved:
+   - `trace` events still stream execution progress;
+   - `delta` events still stream token text in real time;
+   - final `response` event now includes both legacy `answer` and structured `agent_message`.
+5. The frontend now prefers `response.agent_message.content` and falls back to `response.answer` for compatibility.
+
+The full communication loop is now representable as messages:
+
+```text
+User -> MCagent
+MCagent -> User
+User -> CrawlerAgent
+CrawlerAgent -> User
+CrawlerAgent -> MCagent
+MCagent -> CrawlerAgent
+```
+
+### Test Plan
+
+Updated tests verify:
+
+- direct chat responses include `CrawlerAgent -> User` or `MCagent -> User`;
+- `/api/agent-message` returns a structured Agent reply message;
+- SSE final `response` contains `agent_message` while keeping `response` and `done` events.
+

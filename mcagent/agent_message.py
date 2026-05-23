@@ -25,6 +25,8 @@ AGENT_IDS = {
     "CrawlerAgent": "crawler_agent",
 }
 
+AGENT_ID_NAMES = {value: key for key, value in AGENT_IDS.items()}
+
 
 def normalize_agent_name(value: str) -> str:
     text = str(value or "").strip()
@@ -35,6 +37,11 @@ def normalize_agent_name(value: str) -> str:
 
 def agent_id_for_name(value: str) -> str:
     return AGENT_IDS.get(normalize_agent_name(value), str(value or "").strip())
+
+
+def display_name_for_agent_id(value: str) -> str:
+    agent_id = str(value or "").strip()
+    return AGENT_ID_NAMES.get(agent_id, normalize_agent_name(agent_id))
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +150,24 @@ def message_from_payload(payload: dict[str, Any], *, default_to_agent: str, defa
         intent=str(payload.get("intent") or ""),
         conversation_id=str(payload.get("session_id") or ""),
         metadata={"source": "chat_payload"},
+    )
+
+
+def agent_reply_message_from_payload(payload: dict[str, Any], *, from_agent_id: str, content: str) -> AgentMessage:
+    request = message_from_payload(
+        payload,
+        default_to_agent=display_name_for_agent_id(from_agent_id),
+        default_content=str(payload.get("question") or payload.get("query") or ""),
+    )
+    return make_agent_message(
+        display_name_for_agent_id(from_agent_id),
+        content,
+        request.from_agent or "User",
+        intent="agent_reply",
+        conversation_id=request.conversation_id or str(payload.get("session_id") or ""),
+        reply_to=request.message_id,
+        requires_reply=False,
+        metadata={"request_message_id": request.message_id, "response_agent_id": from_agent_id},
     )
 
 

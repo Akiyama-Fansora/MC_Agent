@@ -104,6 +104,7 @@ def test_fastapi_sse_chat_shape() -> None:
             text = "".join(response.iter_text())
         assert_true("sse_status", response.status_code == 200)
         assert_true("sse_response_event", "event: response" in text)
+        assert_true("sse_agent_message", '"agent_message"' in text)
         assert_true("sse_done_event", "event: done" in text)
 
 
@@ -129,6 +130,8 @@ def test_fastapi_agent_message_endpoint_dispatches() -> None:
     assert_true("agent_message_status", response.status_code == 200, response.text)
     body = response.json()
     assert_true("agent_message_agent", body.get("agent") == "crawler_agent")
+    reply = body.get("agent_message") or {}
+    assert_true("agent_message_reply", reply.get("from_agent") == "CrawlerAgent" and reply.get("to_agent") == "User")
     traces = body.get("trace") or []
     assert_true("agent_message_trace", any(step.get("stage") == "message" and step.get("status") == "received" for step in traces))
 

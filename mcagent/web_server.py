@@ -21,7 +21,7 @@ from typing import Any
 import sqlite3
 
 from .agent_memory import append_memory_event, memory_summary
-from .agent_message import AgentMessage, make_agent_message, message_from_payload
+from .agent_message import AgentMessage, agent_reply_message_from_payload, make_agent_message, message_from_payload
 from .agent_runtime import (
     build_handoff_contract,
     classify_crawler_tool_result,
@@ -5211,8 +5211,21 @@ def _combined_retrieval_question(original_question: str, contextual_question: st
 
 
 def _with_trace(payload: dict[str, Any], trace: list[dict[str, Any]]) -> dict[str, Any]:
+    if "agent_message" not in payload and str(payload.get("answer") or "").strip():
+        payload["agent_message"] = agent_reply_message_from_payload(
+            {"agent_message": _incoming_message_detail_from_trace(trace), "session_id": payload.get("session_id") or ""},
+            from_agent_id=str(payload.get("agent") or "mcagent_rag"),
+            content=str(payload.get("answer") or ""),
+        ).to_dict()
     payload["trace"] = trace
     return payload
+
+
+def _incoming_message_detail_from_trace(trace: list[dict[str, Any]]) -> dict[str, Any]:
+    for step in reversed(trace):
+        if step.get("stage") == "message" and step.get("status") == "received" and isinstance(step.get("detail"), dict):
+            return dict(step.get("detail") or {})
+    return {"from_agent": "User", "to_agent": "MCagent", "content": ""}
 
 
 def _trace_step(stage: str, status: str, detail: Any = None) -> dict[str, Any]:
