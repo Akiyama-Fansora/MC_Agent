@@ -661,6 +661,10 @@ def _source_alias(source: str) -> str:
         "search_files": "search_local_files",
         "local_file_search": "search_local_files",
         "search_local_files": "search_local_files",
+        "mcagent_context": "mcagent_context",
+        "ask_mcagent": "mcagent_context",
+        "rag_context": "mcagent_context",
+        "local_rag_context": "mcagent_context",
         "modpack_download": "modpack_download",
         "pack_download": "modpack_download",
         "archive_download": "modpack_download",
@@ -685,6 +689,7 @@ def _source_label(source: str) -> str:
         "fetch_url": "本地 URL 抓取/正文提取",
         "playwright": "Playwright 浏览器采集",
         "browser_collect": "浏览器结构化采集",
+        "mcagent_context": "MCagent/RAG 上下文",
         "read_local_file": "Local file read",
         "search_local_files": "Local file search",
         "modpack_download": "整合包包体发现/下载",
@@ -706,6 +711,7 @@ def _save_dir_hint(source: str) -> str:
         "fetch_url": r"D:\magic\MC_Agent\data\crawler_exports\fetch_url\...",
         "playwright": r"D:\magic\MC_Agent\data\crawler_exports\playwright\...",
         "browser_collect": r"用户指定目录，或 D:\magic\MC_Agent\data\crawler_exports\browser_collect\...",
+        "mcagent_context": r"D:\magic\MC_Agent\data\crawler_exports\mcagent_context\...",
         "read_local_file": r"D:\magic\MC_Agent\data\crawler_exports\local_file_read\...",
         "search_local_files": r"D:\magic\MC_Agent\data\crawler_exports\local_file_search\...",
         "modpack_download": r"D:\magic\MC_Agent\data\crawler_exports\modpack_download\...",
@@ -1063,6 +1069,125 @@ def _crawler_manifest_stats(export_dir: str) -> dict[str, Any]:
         "failure_reason": str(data.get("failure_reason") or ""),
         "next_action": str(data.get("next_action") or ""),
     }
+
+
+def _run_mcagent_context_tool(config: AppConfig, payload: dict[str, Any], plan: dict[str, Any], session_summary: dict[str, Any] | None) -> dict[str, Any]:
+    query = str(payload.get("query") or payload.get("question") or "").strip()
+    collection_target = str(payload.get("collection_target") or payload.get("source_question") or payload.get("question") or "").strip()
+    focus = _mcagent_context_focus(query or collection_target, collection_target)
+    export_dir = PROJECT_ROOT / "data" / "crawler_exports" / "mcagent_context" / f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{uuid.uuid4().hex[:8]}"
+    export_dir.mkdir(parents=True, exist_ok=True)
+    report_path = export_dir / "mcagent_context.md"
+    manifest_path = export_dir / "manifest.json"
+    started = time.time()
+    try:
+        rough_k = _adaptive_rough_k(focus, "mcagent_rag")
+        final_k = _adaptive_final_context_k(focus, config, "mcagent_rag")
+        rough_results = Retriever(config).search(focus, top_k=rough_k, session_summary=session_summary or {})
+        selected = _dedupe_results(rough_results, final_k)
+        selected = _supplement_raw_html_results(config, focus, selected, final_k)
+        gaps: list[str] = []
+        if isinstance(session_summary, dict):
+            for item in session_summary.get("gaps") or []:
+                if str(item).strip():
+                    gaps.append(str(item).strip())
+            for key in ("missing_evidence", "mcagent_gap_summary"):
+                value = str(session_summary.get(key) or "").strip()
+                if value:
+                    gaps.append(value)
+        if not selected:
+            gaps.append("MCagent/RAG did not find usable local evidence for this context query; CrawlerAgent should collect public sources that establish the topic, official/project pages, gameplay guide, mod list/dependencies, versions/changelog, and known issues if relevant.")
+        elif len(selected) < 4:
+            gaps.append("MCagent/RAG returned only limited local evidence; CrawlerAgent should prioritize missing high-signal public sources and avoid repeating low-value duplicates.")
+        gap_summary = "\n".join(f"- {item}" for item in list(dict.fromkeys(gaps))[:12]) or "- No explicit gap list was found; use coverage goals and selected local evidence to decide what to collect next."
+        lines = [
+            "# MCagent/RAG Local Context",
+            "",
+            "<!-- source: mcagent_context -->",
+            "",
+            "## Query",
+            "",
+            focus,
+            "",
+            "## Gap Summary",
+            "",
+            gap_summary,
+            "",
+            "## Local Evidence",
+            "",
+        ]
+        if selected:
+            for index, item in enumerate(selected, start=1):
+                source_line = item.url or item.source_path
+                text = normalize_text(item.text)[:900]
+                lines.extend(
+                    [
+                        f"### S{index}. {item.title}",
+                        "",
+                        f"- score: {item.score:.4f}",
+                        f"- source: {source_line}",
+                        "",
+                        text,
+                        "",
+                    ]
+                )
+        else:
+            lines.extend(["No local MCagent/RAG evidence was found.", ""])
+        report_path.write_text("\n".join(lines), encoding="utf-8")
+        manifest = {
+            "source": "mcagent_context",
+            "query": focus,
+            "fetched_at": datetime.now().isoformat(timespec="seconds"),
+            "records": [
+                {
+                    "title": "MCagent/RAG Local Context",
+                    "url": None,
+                    "path": str(report_path),
+                    "snippet": f"local_sources={len(selected)}; gaps={len(gaps)}",
+                    "metadata": {
+                        "local_source_count": len(selected),
+                        "gap_count": len(gaps),
+                        "delivery_target": str(plan.get("delivery_target") or payload.get("delivery_target") or ""),
+                    },
+                }
+            ],
+            "sources": [_result_to_dict(item) for item in selected],
+            "errors": [],
+            "skipped": [],
+        }
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {
+            "source": "mcagent_context",
+            "returncode": 0,
+            "command": ["internal", "mcagent_context"],
+            "output": f"MCagent/RAG local context collected. local_sources={len(selected)} gaps={len(gaps)} export_dir={export_dir}",
+            "timeout_seconds": 0,
+            "elapsed_seconds": round(time.time() - started, 3),
+            "timed_out": False,
+            "export_dir": str(export_dir),
+            "mcagent_gap_summary": gap_summary,
+            "mcagent_source_count": len(selected),
+        }
+    except Exception as exc:  # noqa: BLE001
+        manifest = {
+            "source": "mcagent_context",
+            "query": focus,
+            "fetched_at": datetime.now().isoformat(timespec="seconds"),
+            "records": [],
+            "errors": [{"error": f"{type(exc).__name__}: {exc}"}],
+            "skipped": [],
+        }
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {
+            "source": "mcagent_context",
+            "returncode": 1,
+            "command": ["internal", "mcagent_context"],
+            "output": f"{type(exc).__name__}: {exc}",
+            "timeout_seconds": 0,
+            "elapsed_seconds": round(time.time() - started, 3),
+            "timed_out": False,
+            "export_dir": str(export_dir),
+        }
 
 
 def _crawler_reusable_duplicate_evidence(export_dir: str, question: str, task_query: str, plan: dict[str, Any]) -> dict[str, Any]:
@@ -1638,6 +1763,9 @@ def _all_source_tasks(
         ("playwright", focused_query, "Playwright 浏览器搜索/渲染，保存正文与 raw HTML"),
         ("web_discovery", focused_query, "公开搜索兜底发现资料源"),
     ]
+    context_text = "\n".join([question, json.dumps(session_summary or {}, ensure_ascii=False)])
+    if re.search(r"MCagent|MCAgent|RAG|本地资料|本地上下文|缺口|缺失|还缺|找补", context_text, flags=re.I):
+        wanted.insert(0, ("mcagent_context", query, "ask MCagent/RAG for local evidence and missing-data gaps before external collection"))
     if intent.domain == "vanilla":
         wanted.insert(0, ("mediawiki", question, "原版 Minecraft Wiki"))
     if any(token in question.lower() for token in ("create", "机械动力")):
@@ -1678,7 +1806,7 @@ def _all_source_tasks(
         else:
             expanded.append(task)
     tasks = expanded
-    priority = {"mcmod": 100, "modrinth": 90, "ftbwiki": 85, "createwiki": 85, "fetch_url": 88, "playwright": 82, "followup": 74, "web_discovery": 70, "mediawiki": 50}
+    priority = {"mcagent_context": 110, "mcmod": 100, "modrinth": 90, "ftbwiki": 85, "createwiki": 85, "fetch_url": 88, "playwright": 82, "followup": 74, "web_discovery": 70, "mediawiki": 50}
     for task in tasks:
         source = _source_alias(str(task.get("source") or ""))
         if source == "mcmod":
@@ -1969,7 +2097,10 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
                     plan=plan,
                 ),
             )
-            result = _run_crawler_command(_round_command(task_source, task_payload), task_source, job=job)
+            if task_source == "mcagent_context":
+                result = _run_mcagent_context_tool(config, task_payload, plan, session_summary)
+            else:
+                result = _run_crawler_command(_round_command(task_source, task_payload), task_source, job=job)
             result["query"] = str(task_payload.get("query") or "")
             result["reason"] = str(task.get("reason") or "")
             result["manifest_stats"] = _crawler_manifest_stats(str(result.get("export_dir") or ""))

@@ -49,6 +49,7 @@ def main() -> int:
     crawler_route_tools = set(tool_names_for_agent("crawler_agent"))
     assert {"direct_answer", "temporary_extract", "mcagent_context", "delegate_crawler", "status"} <= crawler_route_tools, crawler_route_tools
     collection_catalog = crawler_collection_catalog_prompt()
+    assert "mcagent_context" in collection_catalog, "Crawler collection catalog missing MCagent context tool"
     assert "browser_collect" in collection_catalog, "Crawler collection catalog missing browser tool"
     assert "save_artifact" in collection_catalog, "Crawler collection catalog missing save artifact tool"
     assert validate_tool_name("crawler_agent", "answer", fallback="delegate_crawler") == "delegate_crawler"

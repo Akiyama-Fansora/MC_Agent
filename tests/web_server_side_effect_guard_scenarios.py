@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
+import shutil
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -12,6 +14,7 @@ sys.path.insert(0, str(ROOT))
 
 import mcagent.web_server as web_server  # noqa: E402
 from mcagent.config import AppConfig, ChunkingConfig, EmbeddingConfig, OllamaConfig, PathsConfig, RetrievalConfig  # noqa: E402
+from mcagent.schema import SearchResult  # noqa: E402
 
 
 def make_temp_config(root: Path) -> AppConfig:
@@ -364,6 +367,55 @@ def test_direct_crawler_delegate_choice_runs_as_crawler_context_workflow() -> No
     assert_true("no_self_handoff_voice", "转交给 CrawlerAgent" not in str(result.get("answer") or ""))
 
 
+def test_crawler_job_can_execute_mcagent_context_tool() -> None:
+    tmp = tempfile.TemporaryDirectory()
+    original_retriever = web_server.Retriever
+
+    class FakeRetriever:
+        def __init__(self, config: AppConfig):  # noqa: ARG002
+            pass
+
+        def search(self, query: str, top_k: int, session_summary: dict[str, Any] | None = None):  # noqa: ARG002
+            return [
+                SearchResult(
+                    rank=1,
+                    score=9.5,
+                    chunk_id=1,
+                    document_id=1,
+                    chunk_index=0,
+                    title="乌托邦探险之旅本地资料",
+                    source_path=str(Path(tmp.name) / "utopia.md"),
+                    url="https://example.test/utopia",
+                    text="乌托邦探险之旅已有基础介绍，但缺少完整模组列表、任务线和 Boss 攻略。",
+                    metadata={},
+                )
+            ]
+
+    web_server.Retriever = FakeRetriever  # type: ignore[assignment]
+    try:
+        result = web_server._run_mcagent_context_tool(
+            make_temp_config(Path(tmp.name)),
+            {"query": "乌托邦整合包", "question": "问下MCAgent乌托邦整合包还缺哪些东西"},
+            {"delivery_target": "MCagent/RAG"},
+            {"gaps": ["完整模组列表", "任务线"]},
+        )
+    finally:
+        web_server.Retriever = original_retriever  # type: ignore[assignment]
+        tmp.cleanup()
+
+    try:
+        assert_equal("source", result["source"], "mcagent_context")
+        assert_equal("returncode", result["returncode"], 0)
+        assert_true("has_gap_summary", "完整模组列表" in str(result.get("mcagent_gap_summary") or ""))
+        export_dir = Path(str(result.get("export_dir") or ""))
+        manifest = json.loads((export_dir / "manifest.json").read_text(encoding="utf-8"))
+        assert_equal("manifest_source", manifest["source"], "mcagent_context")
+        assert_true("manifest_records", len(manifest.get("records") or []) == 1)
+    finally:
+        if result.get("export_dir"):
+            shutil.rmtree(str(result["export_dir"]), ignore_errors=True)
+
+
 if __name__ == "__main__":
     test_direct_crawler_no_save_url_uses_temporary_extract_boundary()
     test_direct_user_handoff_brief_rejects_wrong_mcagent_identity()
@@ -375,4 +427,5 @@ if __name__ == "__main__":
     test_direct_crawler_mcagent_gap_request_delegates_when_local_empty()
     test_crawler_mcagent_context_with_collection_continues_to_delegate()
     test_direct_crawler_delegate_choice_runs_as_crawler_context_workflow()
+    test_crawler_job_can_execute_mcagent_context_tool()
     print("web_server_side_effect_guard_scenarios passed")

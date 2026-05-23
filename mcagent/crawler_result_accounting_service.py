@@ -42,6 +42,11 @@ class CrawlerResultAccountingService:
                 result["failure_reason"] = manifest.get("failure_reason") or "未发现可公开直接下载的 .mrpack/.zip 整合包包体。"
             return accounting
 
+        if task_source == "mcagent_context" and returncode == 0:
+            accounting["success_delta"] = 1
+            result["ingest_skipped"] = "MCagent/RAG context is an inter-agent diagnostic artifact; Crawler uses it for planning but does not re-ingest it as new external evidence."
+            return accounting
+
         if task_source == "browser_collect" and returncode == 0 and records_loaded > 0:
             accounting["success_delta"] = 1
             if "rag" in delivery_target.lower() or "mcagent" in delivery_target.lower():

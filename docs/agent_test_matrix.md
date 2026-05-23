@@ -77,7 +77,7 @@ Examples:
 Expected:
 
 - `delivery_target` is `MCagent/RAG`.
-- Crawler chooses among generic tools such as `web_discovery`, `fetch_url`, `playwright`, `browser_collect`, `modpack_download`, `modpack_internal`, `read_local_file`, `search_local_files`, and `save_artifact`.
+- Crawler chooses among generic/inter-agent tools such as `mcagent_context`, `web_discovery`, `fetch_url`, `playwright`, `browser_collect`, `modpack_download`, `modpack_internal`, `read_local_file`, `search_local_files`, and `save_artifact`.
 - Saved outputs include manifest plus readable evidence with URL/path/source metadata.
 - Crawler does not treat "MCagent/RAG/入库" as search target text.
 

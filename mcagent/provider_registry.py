@@ -107,6 +107,14 @@ PROVIDERS: dict[str, ProviderSpec] = {
         timeout_seconds=900,
         notes="从 Source/Wiki/README/官网链接继续抓取。",
     ),
+    "mcagent_context": ProviderSpec(
+        id="mcagent_context",
+        label="MCagent/RAG Local Context",
+        capabilities=ProviderCapability(search=True, extract=True),
+        default_limit=10,
+        timeout_seconds=120,
+        notes="CrawlerAgent 向 MCagent/RAG 读取本地证据、覆盖情况和缺口的跨 Agent 上下文工具；不是公网搜索。",
+    ),
     "web_discovery": ProviderSpec(
         id="web_discovery",
         label="公开搜索发现",

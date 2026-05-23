@@ -15,9 +15,10 @@ from .llm import OllamaOpenAIClient, OpenAICompatibleClient
 from .llm_profiles import client_for_agent
 
 
-ALLOWED_SOURCES = {"topic_discovery", "modpack_internal", "modpack_download", "mcmod", "modrinth", "followup", "web_discovery", "playwright", "browser_collect", "fetch_url", "save_artifact", "read_local_file", "search_local_files", "mediawiki", "ftbwiki", "createwiki"}
+ALLOWED_SOURCES = {"mcagent_context", "topic_discovery", "modpack_internal", "modpack_download", "mcmod", "modrinth", "followup", "web_discovery", "playwright", "browser_collect", "fetch_url", "save_artifact", "read_local_file", "search_local_files", "mediawiki", "ftbwiki", "createwiki"}
 
 SOURCE_DEFAULTS: dict[str, dict[str, Any]] = {
+    "mcagent_context": {"priority": 150},
     "modpack_internal": {"priority": 145},
     "topic_discovery": {"priority": 130, "max_files": 120, "max_queries": 40},
     "mcmod": {"priority": 100, "search_limit": 10, "max_urls": 8},
@@ -612,13 +613,15 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
         sources = ["web_discovery", "playwright", "modpack_download", "fetch_url", "followup", "mcmod", "modrinth"]
     else:
         sources = ["web_discovery", "playwright", "fetch_url", "modpack_download", "followup", "mcmod", "modrinth"]
+    if _is_gap_analysis_collection_context(context_text, delivery_target):
+        sources.insert(0, "mcagent_context")
     if any(term in _planner_context_text(question, session_summary) for term in ("完整", "完整资料", "完整数据", "全量", "发现", "未知主题")):
         sources.insert(0, "topic_discovery")
     if any(term.lower() in _planner_context_text(question, session_summary).lower() for term in ("本地安装包", "本地包体", "已下载", "内部文件", "kubejs", "openloader", "modlist", "manifest", "整合包完整")):
         sources.insert(0, "modpack_internal")
     tasks: list[dict[str, Any]] = []
     for source in sources:
-        if source in {"modrinth", "followup", "modpack_internal", "modpack_download"}:
+        if source in {"mcagent_context", "modrinth", "followup", "modpack_internal", "modpack_download"}:
             source_queries = [target]
         elif source == "fetch_url":
             source_queries = [query for query in queries[:6] if _is_url_query(query)]
@@ -645,6 +648,7 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
                     "mcmod": 88,
                     "modrinth": 84,
                     "topic_discovery": 118,
+                    "mcagent_context": 150,
                 }.get(source, int(defaults.get("priority") or 50))
             else:
                 priority_base = int(defaults.get("priority") or 50)
@@ -964,6 +968,8 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
         for source in ("fetch_url", "web_discovery", "playwright", "modpack_download"):
             if source not in sources:
                 sources.append(source)
+    if _is_gap_analysis_collection_context(_planner_context_text(question, session_summary), str(raw.get("delivery_target") or "")) and "mcagent_context" not in sources:
+        sources.insert(0, "mcagent_context")
 
     tasks: list[dict[str, Any]] = []
     raw_tasks = raw.get("tasks")
@@ -1004,7 +1010,7 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
             continue
         if source == "save_artifact":
             continue
-        if source in {"modrinth", "followup", "mediawiki", "ftbwiki", "createwiki", "modpack_download"}:
+        if source in {"mcagent_context", "modrinth", "followup", "mediawiki", "ftbwiki", "createwiki", "modpack_download"}:
             source_queries = [topic or queries[0]]
         elif source == "fetch_url":
             source_queries = [query for query in queries[:4] if "http://" in query.lower() or "https://" in query.lower()]
@@ -1091,8 +1097,9 @@ def plan_crawler_tasks_with_llm(question: str, source_dir: Path, *, max_tasks: i
             "known issues and useful tutorials",
         ],
         "subqueries": ["short search phrase, not the full user sentence"],
-        "sources": ["modpack_internal", "modpack_download", "browser_collect", "fetch_url", "save_artifact", "read_local_file", "search_local_files", "mcmod", "modrinth", "web_discovery", "followup", "playwright"],
+        "sources": ["mcagent_context", "modpack_internal", "modpack_download", "browser_collect", "fetch_url", "save_artifact", "read_local_file", "search_local_files", "mcmod", "modrinth", "web_discovery", "followup", "playwright"],
         "tasks": [
+            {"source": "mcagent_context", "query": "topic or question for MCagent/RAG local context", "reason": "ask MCagent/RAG what local evidence and gaps exist before collecting", "priority": 150},
             {"source": "browser_collect", "query": "short task/query", "reason": "why this source/query", "priority": 120, "output_dir": "optional user requested folder", "max_items": 50, "fields": ["name", "price", "url"]},
             {"source": "fetch_url", "query": "https://example.com/page", "reason": "fetch this exact public URL with local HTTP and parse readable text", "priority": 125},
             {"source": "save_artifact", "query": "short artifact purpose", "reason": "why this content should be saved", "priority": 110, "content": "text/object/list to save or omit when using content_ref", "content_ref": "optional artifact id such as latest or r1.1", "format": "md", "path": "optional file or directory path", "filename": "optional file name"},
@@ -1119,6 +1126,7 @@ def plan_crawler_tasks_with_llm(question: str, source_dir: Path, *, max_tasks: i
             "Decide target entity, coverage goals, short source-specific queries, and ordered tasks. Tools execute after your JSON plan.\n"
             "The authoritative collection target is the current handoff/task goal. Prior current_topic/topics are background memory only; never let old session topics override collection_target/task_goal.\n"
             "When a handoff says 'what is missing / 还缺哪些 / 缺口' for MCagent/RAG, treat it as local coverage-gap analysis: read mcagent_gap_summary/gaps, turn each gap into positive coverage queries (mod list, quest line, boss guide, beginner route, changelog, download page), and then collect evidence. Do not search literal phrases like '缺少模组', '还缺什么', or '待添加' unless the user explicitly asks for roadmap/future features/community wish lists.\n"
+            "Use mcagent_context when CrawlerAgent needs to ask MCagent/RAG what local evidence/gaps exist. This is an inter-agent context tool inside the Crawler collection loop, not a web search provider.\n"
             "For general data collection tasks that ask for structured fields and a save location, use browser_collect. It can open a browser, collect item rows, and save XLSX/CSV/JSON/report to output_dir. Keep the user's requested output_dir exactly.\n"
             "Use fetch_url for exact public URL extraction when local HTTP plus readable-text parsing is enough. It does not require hosted extraction APIs. If fetch_url fails because the page needs rendering, then choose Playwright/browser tools.\n"
             "Use save_artifact when the useful content is already in the task context, generated by the agent, or available as an artifact_ref/content_ref from earlier objective tool output. It accepts content or content_ref, format, path/filename, overwrite, and metadata; do not use it as a substitute for web extraction.\n"
@@ -1129,7 +1137,7 @@ def plan_crawler_tasks_with_llm(question: str, source_dir: Path, *, max_tasks: i
             "When recent results are empty/off-topic, move Playwright or topic_discovery earlier instead of repeating the same path. Browser-rendered evidence is often better for Chinese modpack pages, tabs, images, and download links.\n"
             "Queries must be short. Do not use the whole user sentence as a query. Component/system queries may omit the parent pack name when context confirms membership; later validation judges relevance.\n"
             "For MCagent/RAG delivery, require Markdown, manifest, stable title, source URL/internal path, metadata, dedupe key, raw_html/raw_text where available.\n"
-            "Available sources: modpack_internal, modpack_download, browser_collect, fetch_url, save_artifact, read_local_file, search_local_files, mcmod, modrinth, followup, web_discovery, playwright, mediawiki, ftbwiki, createwiki.\n"
+            "Available sources: mcagent_context, modpack_internal, modpack_download, browser_collect, fetch_url, save_artifact, read_local_file, search_local_files, mcmod, modrinth, followup, web_discovery, playwright, mediawiki, ftbwiki, createwiki.\n"
             "Return valid JSON only, no Markdown, no prose.\n"
             f"用户问题: {question}\n"
             f"采集目标提示: {target_hint or '未明确，请从问题和会话摘要判断'}\n"
@@ -1206,6 +1214,7 @@ def reflect_crawler_progress(
             "If enough useful records or reusable evidence has been found for the delivery target, choose finish.\n"
             "Do not use the whole user request as a query. Keep queries short and reusable.\n"
             "For MCagent/RAG gap handoffs, 'missing / 还缺 / 缺口' is not itself a web topic. Derive positive coverage goals from mcagent_gap_summary/gaps and search those. Avoid literal meta queries such as '缺少模组', '还缺哪些', '待添加', or '开发计划' unless the user explicitly asked for future roadmap/community requests.\n"
+            "Use mcagent_context if the next best step is to ask MCagent/RAG for local evidence/gaps or to validate what Crawler should collect for MCagent.\n"
             "If the task is for MCagent/RAG, prefer evidence that is citeable and chunkable; raw HTML support is valuable for hard pages.\n"
             "Playwright is a first-class browser tool. Prefer it when lightweight HTTP fetch cannot read enough text, when a page needs rendering, or when project tabs/download pages need browser HTML.\n"
             "For full modpack collection without a local archive, use modpack_download to find and save public .mrpack/.zip archives, and use Playwright/topic_discovery to inspect project/download pages and preserve download-link HTML. Use modpack_internal only after a real local archive/manifest is available.\n"
@@ -1213,7 +1222,7 @@ def reflect_crawler_progress(
             "For structured extraction with requested fields/output directory, choose browser_collect and preserve output_dir/max_items/fields.\n"
             "For an exact public URL, prefer fetch_url before broad search. If fetch_url returns blocked/short/empty output, escalate to Playwright/browser tools.\n"
             "Use save_artifact when the selected next step is local persistence of content already held in the task/context or available through an artifact_ref/content_ref, not when the content still needs to be fetched.\n"
-            "Available sources: modpack_internal, modpack_download, browser_collect, fetch_url, save_artifact, read_local_file, search_local_files, mcmod, modrinth, followup, web_discovery, playwright, mediawiki, ftbwiki, createwiki.\n"
+            "Available sources: mcagent_context, modpack_internal, modpack_download, browser_collect, fetch_url, save_artifact, read_local_file, search_local_files, mcmod, modrinth, followup, web_discovery, playwright, mediawiki, ftbwiki, createwiki.\n"
             "Return valid JSON only.\n"
             f"question: {question}\n"
             f"session_summary: {json.dumps(session_summary or {}, ensure_ascii=False)}\n"
@@ -1327,6 +1336,8 @@ def _compact_result_for_reflection(result: dict[str, Any]) -> dict[str, Any]:
         "errors": manifest.get("errors"),
         "matched": validation.get("matched"),
         "validation_reason": validation.get("reason"),
+        "local_gap_summary": result.get("mcagent_gap_summary") if result.get("source") == "mcagent_context" else None,
+        "local_source_count": result.get("mcagent_source_count") if result.get("source") == "mcagent_context" else None,
         "reused_existing": reusable.get("matched"),
         "empty": bool(result.get("empty_result")),
         "off_topic": bool(result.get("off_topic_result")),

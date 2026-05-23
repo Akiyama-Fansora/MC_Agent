@@ -101,8 +101,9 @@ def test_gap_collection_fallback_prefers_generic_web_and_bound_queries() -> None
     )
     tasks = plan["tasks"]
     assert_true("has_tasks", len(tasks) >= 4)
+    assert_equal("asks_mcagent_first", tasks[0]["source"], "mcagent_context")
     first_sources = [task["source"] for task in tasks[:4]]
-    assert_true("generic_first", any(source in first_sources for source in ("web_discovery", "playwright", "modpack_download")))
+    assert_true("generic_first", any(source in first_sources for source in ("mcagent_context", "web_discovery", "playwright", "modpack_download")))
     assert_true("not_mc_only", any(task["source"] in {"web_discovery", "playwright"} for task in tasks))
     queries = [task["query"] for task in tasks]
     assert_true("bound_ftb", "FTB任务" not in queries and any("乌托邦整合包 FTB任务" in query for query in queries))
@@ -132,7 +133,8 @@ def test_llm_plan_gap_collection_is_rebalanced_to_generic_tools() -> None:
         },
     )
     tasks = plan["tasks"]
-    assert_true("generic_first", tasks[0]["source"] in {"web_discovery", "playwright", "modpack_download"})
+    assert_equal("mcagent_context_inserted", tasks[0]["source"], "mcagent_context")
+    assert_true("generic_first", any(task["source"] in {"web_discovery", "playwright", "modpack_download"} for task in tasks[:4]))
     assert_true("mcmod_not_first", tasks[0]["source"] != "mcmod")
     assert_true("bad_query_removed", all(not str(task["query"]).startswith("的相关") for task in tasks))
     assert_true("helper_query_bound", any(task["query"] == "乌托邦整合包 模组列表" for task in tasks))

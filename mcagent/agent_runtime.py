@@ -508,6 +508,14 @@ CRAWLER_COLLECTION_TOOLS = [
         llm_final_answer_required=False,
     ),
     ToolSpec(
+        name="mcagent_context",
+        description="Ask MCagent/RAG for local evidence, coverage, and missing-data gaps for a topic during the CrawlerAgent collection loop.",
+        input_schema={"query": "topic or gap question to inspect in MCagent/RAG local context"},
+        result_schema={"sources": "local evidence report", "gap_summary": "local coverage and gaps", "manifest": "saved inter-agent context artifact"},
+        side_effects="read_local_index_and_write_artifact",
+        llm_final_answer_required=False,
+    ),
+    ToolSpec(
         name="mcmod",
         description="Search and scrape MC百科 pages, preserving markdown, manifest, and raw HTML when available.",
         input_schema={"query": "short source-specific query"},

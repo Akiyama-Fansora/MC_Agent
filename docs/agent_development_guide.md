@@ -3938,6 +3938,74 @@ node --check frontend\static\settings.js
 git diff --check
 ```
 
+## 2026-05-23 Stage 26: Real Inter-Agent Context Tool For Crawler Jobs
+
+The latest live test exposed a different issue from normal delegation:
+
+```text
+问下MCAgent乌托邦整合包还缺哪些东西 你去网上找补给他
+```
+
+The expected behavior is not merely "the chat router does a one-time MCagent lookup before starting Crawler". CrawlerAgent itself needs a callable channel inside its own loop so it can ask MCagent/RAG what local evidence exists, what gaps are known, and what should be collected next.
+
+### Implemented Changes
+
+1. Added `mcagent_context` to the Crawler collection tool set, not only the Crawler route tool set.
+2. Added Crawler planner/reflection awareness for `mcagent_context`:
+   - source is allowed in plans;
+   - fallback gap-fill plans put it first;
+   - LLM planner prompt describes it as an inter-agent local context tool, not a web provider.
+3. Added an executor implementation for `mcagent_context` inside `_run_crawler_job()`:
+   - reads MCagent/RAG local retrieval context;
+   - writes `data/crawler_exports/mcagent_context/.../mcagent_context.md`;
+   - writes a normal `manifest.json`;
+   - returns an objective observation containing local source count and gap summary.
+4. Added accounting so `mcagent_context` counts as a successful planning/context observation but is not re-ingested as new external evidence.
+5. Added UI/provider labels so the job card can show `MCagent/RAG 上下文` as a real current source.
+6. Kept the design generic: Crawler can use the same tool for any "ask MCagent / check RAG / what is missing locally" task, not only the Utopia test sentence.
+
+### Test Plan And Results
+
+New and updated regression coverage:
+
+- planner fallback starts MCagent/RAG gap-fill jobs with `mcagent_context`;
+- sanitized LLM plans insert `mcagent_context` when a gap-fill handoff omitted it;
+- smoke test checks the Crawler collection catalog exposes `mcagent_context`;
+- web-server side-effect test verifies the executor can run the tool, write a manifest, and return a gap summary;
+- result-accounting test suite still passes, confirming Crawler context artifacts do not break normal success/failure counters.
+
+Passed:
+
+```powershell
+python tests\crawler_planner_timeout_scenarios.py
+python tests\web_server_side_effect_guard_scenarios.py
+python tests\smoke_test.py
+python tests\agent_runtime_scenarios.py
+python tests\agent_router_scenarios.py
+python tests\crawler_reflection_decision_scenarios.py
+python tests\crawler_reflection_service_scenarios.py
+python tests\fastapi_backend_scenarios.py
+python tests\agent_five_direction_matrix_scenarios.py
+python tests\crawler_result_accounting_service_scenarios.py
+python tests\crawler_task_preparation_service_scenarios.py
+python tests\generic_local_tool_scenarios.py
+```
+
+Manual planner check:
+
+```text
+问下MCAgent乌托邦整合包还缺哪些东西 你去网上找补给他
+```
+
+Fallback Crawler plan now begins with:
+
+```text
+mcagent_context 乌托邦整合包
+web_discovery 乌托邦整合包 Boss
+playwright 乌托邦整合包 Boss
+...
+```
+
 Manual checks:
 
 - MCagent local question `新手该怎么玩乌托邦` answered from local RAG without starting Crawler.
