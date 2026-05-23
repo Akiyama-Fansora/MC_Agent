@@ -27,8 +27,9 @@ class ToolSpec:
 
     def to_prompt_line(self) -> str:
         effect = f" side_effects={self.side_effects}" if self.side_effects else ""
+        inputs = f" inputs={','.join(self.input_schema.keys())}" if self.input_schema else ""
         final = " final_by_llm" if self.llm_final_answer_required else " objective_tool_result"
-        return f"- {self.name}: {self.description}{effect};{final}"
+        return f"- {self.name}: {self.description}{inputs}{effect};{final}"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -524,7 +525,7 @@ CRAWLER_COLLECTION_TOOLS = [
     ToolSpec(
         name="save_artifact",
         description="Save agent-provided content to a local file in txt, md, json, jsonl, csv, or html format.",
-        input_schema={"content": "string/object/list to persist", "format": "txt|md|json|jsonl|csv|html", "path": "file or directory path", "filename": "optional file name"},
+        input_schema={"content": "string/object/list to persist", "content_ref": "optional prior artifact id such as latest or r1.1", "format": "txt|md|json|jsonl|csv|html", "path": "file or directory path", "filename": "optional file name"},
         result_schema={"path": "saved file", "manifest": "save metadata", "failure_reason": "if serialization or filesystem write failed"},
         side_effects="filesystem",
         llm_final_answer_required=False,

@@ -28,6 +28,8 @@ FORWARDED_TASK_KEYS = (
     "filename",
     "overwrite",
     "metadata",
+    "content_ref",
+    "artifact_ref",
 )
 
 

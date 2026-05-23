@@ -59,6 +59,7 @@ def test_build_payload_preserves_generic_artifact_fields() -> None:
             "filename": "items.csv",
             "overwrite": False,
             "metadata": {"source": "test"},
+            "content_ref": "latest:md",
         },
         question="save collected data",
         task_source="save_artifact",
@@ -69,6 +70,7 @@ def test_build_payload_preserves_generic_artifact_fields() -> None:
     assert_equal("path", built["path"], r"C:\tmp\items")
     assert_equal("filename", built["filename"], "items.csv")
     assert_equal("metadata", built["metadata"], {"source": "test"})
+    assert_equal("content_ref", built["content_ref"], "latest:md")
 
 
 def test_empty_query_result_is_objective_failure_observation() -> None:

@@ -133,6 +133,7 @@ def test_tool_catalog_exposes_agent_capabilities() -> None:
     assert_true("mcagent_local_rag", "local_rag_search" in mcagent_catalog)
     assert_true("crawler_browser", "browser_collect" in crawler_catalog)
     assert_true("crawler_save_artifact", "save_artifact" in crawler_catalog)
+    assert_true("crawler_artifact_ref_schema", "content_ref" in crawler_catalog or "artifact_ref" in crawler_catalog)
     assert_true("crawler_modpack_internal", "modpack_internal" in crawler_catalog)
     assert_true("llm_ownership", "LLM owns interpretation" in mcagent_catalog)
 

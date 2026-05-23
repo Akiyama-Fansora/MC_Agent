@@ -48,6 +48,7 @@ class CrawlerReflectionSnapshotService:
             "coverage_goals": list(plan.get("coverage_goals") or [])[:8],
             "success_criteria": list(plan.get("success_criteria") or [])[:6],
             "sources": list(plan.get("sources") or [])[:12],
+            "artifact_refs": list(plan.get("artifact_refs") or [])[-12:],
         }
 
     def compact_pending(self, index: int, task: dict[str, Any]) -> dict[str, Any]:
@@ -81,6 +82,7 @@ class CrawlerReflectionSnapshotService:
             "off_topic": bool(result.get("off_topic_result")),
             "uncertain": bool(result.get("uncertain_result")),
             "timed_out": bool(result.get("timed_out")),
+            "artifact_refs": list(result.get("artifact_refs") or [])[:6],
         }
 
     def _pressure(self, *, statuses: dict[str, int], pending_count: int, recent_count: int) -> str:

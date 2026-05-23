@@ -26,6 +26,7 @@ from .agent_runtime import (
     classify_crawler_tool_result,
     make_agent_loop_event,
 )
+from .artifact_reference_service import ArtifactReferenceService
 from .agent_execution import build_agent_execution_context
 from .agent_executor import AgentToolExecutor
 from .agent_router import LlmAgentToolRouterService, json_object_from_llm_text
@@ -863,6 +864,14 @@ def _round_command(source: str, payload: dict[str, Any]) -> list[str]:
             command.extend(["--timeout-ms", timeout_ms])
         return command
     if source == "save_artifact":
+        if payload.get("content_ref_error"):
+            message = {
+                "provider": "save_artifact",
+                "status": "failed",
+                "saved_to_local": False,
+                "failure_reason": str(payload.get("content_ref_error") or ""),
+            }
+            return [sys.executable, "-c", "import json, sys; print(json.dumps(" + repr(message) + ", ensure_ascii=False, indent=2)); sys.exit(1)"]
         runtime_dir = PROJECT_ROOT / "runtime" / "tool_payloads"
         runtime_dir.mkdir(parents=True, exist_ok=True)
         payload_path = runtime_dir / f"save_artifact_{uuid.uuid4().hex}.json"
@@ -1836,6 +1845,7 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
     question = str(payload.get("source_question") or payload.get("question") or payload.get("query") or "").strip()
     job_setup = CrawlerJobSetupService()
     runtime_step = CrawlerRuntimeStepService()
+    artifact_refs = ArtifactReferenceService()
     task_preparation = CrawlerTaskPreparationService()
     result_accounting = CrawlerResultAccountingService()
     loop_control = CrawlerLoopControlService()
@@ -1937,6 +1947,7 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
             index += 1
             task_source = _source_alias(str(task.get("source") or "mediawiki"))
             task_payload = task_preparation.build_payload(base_payload=payload, task=task, question=question, task_source=task_source)
+            task_payload = artifact_refs.resolve_payload_refs(task_payload, list(plan.get("artifact_refs") or []))
             if not str(task_payload.get("query") or "").strip():
                 result = task_preparation.empty_query_result(task_source=task_source, task=task)
                 task_results.append(result)
@@ -1961,6 +1972,13 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
             result["query"] = str(task_payload.get("query") or "")
             result["reason"] = str(task.get("reason") or "")
             result["manifest_stats"] = _crawler_manifest_stats(str(result.get("export_dir") or ""))
+            new_artifact_refs = artifact_refs.collect_from_result(result=result, result_index=len(task_results) + 1)
+            if new_artifact_refs:
+                compact_refs = artifact_refs.compact_refs(new_artifact_refs, limit=12)
+                result["artifact_refs"] = compact_refs
+                plan.setdefault("artifact_refs", [])
+                plan["artifact_refs"].extend(compact_refs)
+                plan["artifact_refs"] = plan["artifact_refs"][-60:]
             records_loaded = int(result["manifest_stats"].get("records") or 0)
             existing_evidence = _crawler_reusable_duplicate_evidence(
                 str(result.get("export_dir") or ""),

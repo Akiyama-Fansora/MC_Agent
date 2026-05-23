@@ -38,6 +38,7 @@ jobs:
           mcagent\agent_execution.py
           mcagent\agent_executor.py
           mcagent\agent_router.py
+          mcagent\artifact_reference_service.py
           mcagent\artifact_save_service.py
           mcagent\crawler_delegation_service.py
           mcagent\crawler_job_finalization_service.py
@@ -70,6 +71,7 @@ jobs:
           scripts\public_readiness_check.py
           scripts\save_artifact.py
           scripts\smoke_agent_flows.py
+          tests\artifact_reference_service_scenarios.py
           tests\artifact_save_service_scenarios.py
           tests\crawler_delegation_service_scenarios.py
           tests\crawler_job_finalization_service_scenarios.py
@@ -106,6 +108,7 @@ jobs:
         shell: pwsh
         run: |
           python tests\smoke_test.py
+          python tests\artifact_reference_service_scenarios.py
           python tests\artifact_save_service_scenarios.py
           python tests\crawler_delegation_service_scenarios.py
           python tests\crawler_job_finalization_service_scenarios.py

@@ -3660,3 +3660,63 @@ python scripts\save_artifact.py --content "hello" --format md --path runtime\man
 ### Remaining Direction
 
 `save_artifact` 解决的是“Agent 已经拿到内容以后如何通用保存”。下一步要继续向大厂 Agent 结构靠近，应补一个“工具结果引用/共享 artifact store”能力，让 CrawlerAgent 可以把上一工具的输出用引用传给下一工具，而不是把大段内容塞进 plan JSON。那会让流程变成：`web_fetch/browser_collect -> inspect/result_ref -> save_artifact/ingest_artifact`，更像 OpenClaw 的 `tools.invoke + artifacts` 设计。
+## 2026-05-23 Stage 20: Artifact References Between Tool Calls
+
+上一阶段的 `save_artifact` 已经把“保存到本地”做成通用原语，但还缺一个 Agentic loop 很关键的能力：工具 A 的输出如何稳定交给工具 B。只靠把大段内容塞进 plan JSON 不可靠，也不接近 Hermes / Claude Code / OpenClaw 的工具结构。
+
+### Implemented Changes
+
+1. 新增 `mcagent/artifact_reference_service.py`：
+   - 从每次工具结果的 `manifest.json` 中提取文件引用。
+   - 每个引用包含 `id`、`source`、`query`、`title`、`url`、`path`、`kind`、`format`、`bytes`、`text_like`。
+   - 引用 ID 形如 `r1.1`，表示第 1 个工具结果中的第 1 个可引用文件。
+   - 支持 `latest` 和 `latest:md` 这类轻量解析。
+
+2. Crawler 执行 loop 接入 artifact refs：
+   - 每次工具执行完成并读取 manifest 后，提取 `artifact_refs`。
+   - 引用写入当前 `result["artifact_refs"]`，同时追加到 `plan["artifact_refs"]`。
+   - Crawler reflection snapshot 中会带上最近 artifact refs，让 CrawlerAgent 可以在下一步计划里引用它们。
+
+3. `save_artifact` 支持引用输入：
+   - 后续任务可以传 `content_ref` 或 `artifact_ref`。
+   - 执行器在调用工具前把引用解析为 `content`，并把 resolved ref 写入 metadata。
+   - 如果引用不存在或不是文本文件，返回客观失败原因，不悄悄保存空文件。
+
+### Design Boundary
+
+`artifact_ref` 不是一个新决策规则。它只是工具结果之间的通用数据通道：
+
+```text
+web/page/browser tool -> manifest -> artifact_refs -> CrawlerAgent reflection -> save_artifact(content_ref=...)
+```
+
+LLM 仍决定是否使用引用、引用哪一个、保存成什么格式和保存到哪里。执行器只负责解析引用、读取文件、返回错误。
+
+### Test Plan For This Stage
+
+1. `artifact_reference_service_scenarios.py`
+   - 从 manifest 提取 markdown/raw_html 两类引用。
+   - `latest:md` 能解析为文本内容并写入 payload。
+   - 缺失引用会写入 `content_ref_error`。
+
+2. 回归测试：
+   - `crawler_task_preparation_service_scenarios.py` 确认 `content_ref` 不被转发层丢掉。
+   - `agent_runtime_scenarios.py` 确认工具目录暴露 `save_artifact` 和引用能力。
+   - 完整 smoke、编码检查、公开检查和 CI。
+
+### Test Results
+
+已通过：
+
+```powershell
+python -m py_compile api.py mcagent\agent_execution.py mcagent\agent_executor.py mcagent\agent_router.py mcagent\artifact_reference_service.py mcagent\artifact_save_service.py mcagent\crawler_delegation_service.py mcagent\crawler_job_finalization_service.py mcagent\crawler_job_progress_service.py mcagent\crawler_job_setup_service.py mcagent\crawler_loop_control_service.py mcagent\crawler_planner_wait_service.py mcagent\crawler_reflection_decision_service.py mcagent\crawler_runtime_step_service.py mcagent\crawler_task_materialization_service.py mcagent\crawler_task_preparation_service.py mcagent\crawler_temporary_extract_service.py mcagent\crawler_result_accounting_service.py mcagent\crawler_topic_discovery_service.py mcagent\evidence_service.py mcagent\event_stream.py mcagent\fastapi_app.py mcagent\crawler_reflection_service.py mcagent\job_view_service.py mcagent\rag_service.py mcagent\session_state.py mcagent\web_server.py mcagent\agent_runtime.py mcagent\crawler_llm_planner.py mcagent\provider_registry.py mcagent\crawler_planner.py scripts\browser_collect_seed.py scripts\fetch_mcmod_seed.py scripts\fetch_modpack_archive_seed.py scripts\public_readiness_check.py scripts\save_artifact.py scripts\smoke_agent_flows.py tests\artifact_reference_service_scenarios.py tests\artifact_save_service_scenarios.py tests\crawler_delegation_service_scenarios.py tests\crawler_job_finalization_service_scenarios.py tests\crawler_job_progress_service_scenarios.py tests\crawler_job_setup_service_scenarios.py tests\crawler_loop_control_service_scenarios.py tests\crawler_planner_wait_service_scenarios.py tests\crawler_reflection_decision_scenarios.py tests\crawler_runtime_step_service_scenarios.py tests\crawler_task_materialization_service_scenarios.py tests\crawler_task_preparation_service_scenarios.py tests\crawler_temporary_extract_service_scenarios.py tests\crawler_result_accounting_service_scenarios.py tests\crawler_topic_discovery_service_scenarios.py tests\crawler_reflection_service_scenarios.py tests\agent_execution_scenarios.py tests\agent_executor_scenarios.py tests\agent_five_direction_matrix_scenarios.py tests\agent_router_scenarios.py tests\evidence_service_scenarios.py tests\job_view_service_scenarios.py tests\rag_service_scenarios.py tests\agent_runtime_scenarios.py tests\backend_services_scenarios.py tests\fastapi_backend_scenarios.py
+python tests\smoke_test.py
+python tests\artifact_reference_service_scenarios.py
+python tests\artifact_save_service_scenarios.py
+python tests\crawler_task_preparation_service_scenarios.py
+python tests\agent_runtime_scenarios.py
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+node --check frontend\static\app.js
+node --check frontend\static\settings.js
+```
