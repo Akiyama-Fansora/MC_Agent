@@ -48,7 +48,7 @@ if (-not $python) {
 }
 
 $args = @(
-    "-m", "mcagent.web_server",
+    "api.py",
     "--host", $HostName,
     "--port", "$Port"
 )
