@@ -90,6 +90,7 @@ REQUIRED_FILES = [
     "tests/job_view_service_scenarios.py",
     "tests/rag_service_scenarios.py",
     "tests/agent_runtime_scenarios.py",
+    "tests/web_server_side_effect_guard_scenarios.py",
     "tests/backend_services_scenarios.py",
     "tests/fastapi_backend_scenarios.py",
     "tests/smoke_test.py",

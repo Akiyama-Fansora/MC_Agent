@@ -99,6 +99,7 @@ jobs:
           tests\job_view_service_scenarios.py
           tests\rag_service_scenarios.py
           tests\agent_runtime_scenarios.py
+          tests\web_server_side_effect_guard_scenarios.py
           tests\backend_services_scenarios.py
           tests\fastapi_backend_scenarios.py
 
@@ -137,6 +138,7 @@ jobs:
           python tests\job_view_service_scenarios.py
           python tests\rag_service_scenarios.py
           python tests\agent_runtime_scenarios.py
+          python tests\web_server_side_effect_guard_scenarios.py
           python tests\backend_services_scenarios.py
           python tests\fastapi_backend_scenarios.py
 

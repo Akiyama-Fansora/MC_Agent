@@ -36,8 +36,9 @@ def test_frontend_does_not_show_fixed_three_way_prompt() -> None:
     ]
     for phrase in forbidden:
         assert_true(f"forbidden_frontend_phrase_{phrase}", phrase not in app)
-    assert_true("neutral_mcagent_status", "MCagent 正在理解你的问题。" in app)
-    assert_true("neutral_crawler_status", "CrawlerAgent 正在理解你的任务。" in app)
+    assert_true("neutral_mcagent_status", "MCagent 正在读取你的问题。" in app)
+    assert_true("neutral_crawler_status", "CrawlerAgent 正在读取你的任务。" in app)
+    assert_true("neutral_trace_status", "正在读取你的目标和当前上下文" in app)
 
 
 def test_crawler_tool_catalog_exposes_temporary_and_persistent_paths() -> None:

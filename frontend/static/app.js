@@ -150,36 +150,45 @@ function activityTextForTrace(step) {
 function progressTextForTrace(step) {
   const detail = step?.detail || {};
   const stage = `${step?.stage || ""}:${step?.status || ""}`;
-  if (stage === "observe:received") return "我正在理解你的请求，并准备选择合适的下一步。";
-  if (stage === "observe:contextualized") return "这像是在接着前面的内容追问，我会把当前会话主题一起带上。";
+  const activeName = state.agents.find((item) => item.id === state.activeAgent)?.name || (state.activeAgent === "crawler_agent" ? "CrawlerAgent" : "MCagent");
+  if (stage === "observe:received") return `${activeName} 正在读取你的目标和当前上下文。`;
+  if (stage === "observe:contextualized") return `${activeName} 正在把这轮问题和最近会话上下文合并理解。`;
   if (stage === "decide:tool_selected") {
-    if (detail.tool === "direct_answer") return "MCagent 判断这轮不需要查资料，直接组织回复。";
-    if (detail.tool === "status") return "你在问进度或状态，我直接查看后台采集和入库情况。";
-    if (detail.tool === "delegate_crawler") return "这是采集任务，我会把目标交给 Crawler，由它自己规划搜索和清洗方式。";
-    return "我先查本地资料库，看现有证据能不能稳定回答。";
+    if (detail.tool === "direct_answer") return `${activeName} 认为这轮可以直接回答。`;
+    if (detail.tool === "status") return `${activeName} 正在读取运行状态。`;
+    if (detail.tool === "temporary_extract") return `${activeName} 会临时读取公开网页并直接总结，不写入本地。`;
+    if (detail.tool === "delegate_crawler") return `${activeName} 已决定启动采集任务，并生成明确交接。`;
+    if (detail.tool === "planned_workflow") return `${activeName} 已列出多步工作流。`;
+    return `${activeName} 已选择下一步工具：${detail.tool || "local_rag_search"}。`;
   }
-  if (stage === "retrieve:planning") return "我正在把问题拆成适合本地资料库检索的方向。";
-  if (stage === "retrieve:planned") return "检索方向已经定好，开始从本地 RAG、全文索引和原始网页线索里找证据。";
-  if (stage === "retrieve:searching") return "正在查本地资料库，优先找同主题的正文、表格和 raw HTML 线索。";
+  if (stage === "decide:side_effect_boundary_corrected") return `已按副作用边界调整：这轮改为临时读取，不启动后台保存任务。`;
+  if (stage === "retrieve:planning") return `${activeName} 正在规划本地资料检索问题。`;
+  if (stage === "retrieve:planned") return `检索方向已确定，开始查找可用证据。`;
+  if (stage === "retrieve:searching") return `正在检索本地资料库、全文索引和 raw HTML 线索。`;
   if (stage === "retrieve:done") {
     const count = Number(detail.results || 0);
-    return count ? `找到 ${count} 条候选资料，接下来筛掉跑偏内容。` : "本地暂时没有找到候选资料，我准备换采集路径补资料。";
+    return count ? `找到 ${count} 条候选资料，正在筛选可用证据。` : `本地暂时没有找到候选资料，正在确认下一步。`;
   }
-  if (stage === "decide:selecting_evidence") return "候选资料已经拿到，我在筛哪些是真正能回答这句话的证据。";
+  if (stage === "decide:selecting_evidence") return `正在判断哪些证据真正能回答这轮问题。`;
   if (stage === "decide:evidence_selected") {
-    if (detail.verdict && detail.verdict !== "ok") return "这些资料还不够稳，我准备把缺口交给 Crawler 继续补齐。";
-    return "证据够用了，我来整理成能直接看的回答。";
+    if (detail.verdict && detail.verdict !== "ok") return `现有资料仍不足，正在确认是否需要补充采集。`;
+    return `证据已经筛好，准备组织回答。`;
   }
-  if (stage === "answer:generating" && String(detail.mode || "").startsWith("direct")) return "模型正在直接组织回复。";
-  if (stage === "answer:generating") return "证据已经选好，模型开始思考并组织回答。";
+  if (stage === "extract:next_step_confirmed") return `已确认临时网页读取步骤。`;
+  if (stage === "extract:temporary_url_extracted") return `网页已读取完成，正在总结内容。`;
+  if (stage === "extract:temporary_url_failed") return `临时读取失败，正在整理失败原因。`;
+  if (stage === "delegate:handoff_brief") return `采集任务交接说明已生成。`;
+  if (stage === "delegate:next_step_confirmed") return `已确认采集委托步骤。`;
+  if (stage === "answer:generating" && String(detail.mode || "").startsWith("direct")) return `模型正在直接组织回复。`;
+  if (stage === "answer:generating") return `模型正在基于当前证据组织回答。`;
   if (stage === "answer:thinking") {
     const count = Number(detail.reasoning_events || 0);
     const dots = ".".repeat((Math.floor(count / 8) % 3) + 1);
-    return `模型还在思考和组织答案${dots}`;
+    return `模型还在整理答案${dots}`;
   }
-  if (stage === "delegate:answer_marked_missing") return "刚才的证据仍有缺口，我已经把要补的资料交给 Crawler。";
-  if (stage === "done:response_ready") return "好了，回答整理完了。";
-  return "我还在处理这个问题，马上继续。";
+  if (stage === "delegate:answer_marked_missing") return `回答中仍有缺口，已进入补充采集流程。`;
+  if (stage === "done:response_ready") return `完成。`;
+  return `${activeName} 正在处理这轮请求。`;
 }
 
 function updateComposerState() {
@@ -1155,7 +1164,7 @@ async function sendQuestion(event) {
 
   try {
     if (payload.agent === "mcagent_rag") {
-      const initialText = "MCagent 正在理解你的问题。";
+      const initialText = "MCagent 正在读取你的问题。";
       setActivity(initialText, "thinking");
       session.messages[pendingIndex].text = initialText;
       saveSessions();
@@ -1163,7 +1172,7 @@ async function sendQuestion(event) {
     } else if (payload.agent === "retriever_only") {
       setActivity("仅检索：正在读取本地向量库...", "working");
     } else if (payload.agent === "crawler_agent") {
-      const initialText = "CrawlerAgent 正在理解你的任务。";
+      const initialText = "CrawlerAgent 正在读取你的任务。";
       setActivity(initialText, "crawler");
       session.messages[pendingIndex].text = initialText;
       saveSessions();

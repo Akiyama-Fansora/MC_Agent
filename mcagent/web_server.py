@@ -4207,6 +4207,8 @@ def _build_delegate_handoff_brief(
         resolved = str(value.get("handoff_brief") or "").strip()
         reason = str(value.get("reason") or label).strip()
         if resolved:
+            if requested_by == "user" and re.search(r"MCagent|MCAgent|MC Agent|转交|转达|经 MCagent|来自 MCagent", resolved, flags=re.I):
+                return fallback[:900], "LLM handoff brief conflicted with requested_by=user; used identity-safe fallback."
             return resolved[:900], reason[:300]
     except Exception:
         pass
@@ -4252,6 +4254,68 @@ def _infer_delivery_target(question: str, session_summary: dict[str, Any] | None
     if "mcagent" in lowered or "rag" in lowered or "入库" in text or "知识库" in text or "资料库" in text:
         return "MCagent/RAG"
     return "human"
+
+
+def _request_forbids_persistence(text: str) -> bool:
+    value = str(text or "").lower()
+    patterns = (
+        r"不(?:用|要|必|需)?保存",
+        r"别保存",
+        r"无需保存",
+        r"不要入库",
+        r"不用入库",
+        r"不入库",
+        r"只在聊天",
+        r"直接(?:返回|回答|给我)",
+        r"do not save",
+        r"don't save",
+        r"without saving",
+        r"no save",
+        r"no local",
+        r"no persistence",
+    )
+    return any(re.search(pattern, value, flags=re.I) for pattern in patterns)
+
+
+def _request_wants_persistence(text: str) -> bool:
+    value = str(text or "")
+    lowered = value.lower()
+    if re.search(r"[A-Za-z]:\\|\\\\[^\\/\s]+\\|/[^ \t\r\n]+/[^ \t\r\n]+", value):
+        return True
+    patterns = (
+        r"保存(?:到|为|成|在)?",
+        r"写(?:入|到)",
+        r"导出",
+        r"下载",
+        r"入库",
+        r"补库",
+        r"知识库",
+        r"资料库",
+        r"给\s*MCagent\s*用",
+        r"给\s*RAG\s*用",
+        r"交给\s*MCagent",
+        r"交付(?:给|到)\s*MCagent",
+        r"save",
+        r"write",
+        r"export",
+        r"download",
+        r"persist",
+        r"ingest",
+        r"rag",
+    )
+    return any(re.search(pattern, lowered, flags=re.I) for pattern in patterns)
+
+
+def _should_use_temporary_extract_without_persistence(agent: str, original_question: str, collection_target: str, delivery_target: str) -> bool:
+    if agent != "crawler_agent":
+        return False
+    combined = f"{original_question}\n{collection_target}\n{delivery_target}"
+    lowered = combined.lower()
+    if "mcagent/rag" in lowered:
+        return False
+    if _request_wants_persistence(combined) and not _request_forbids_persistence(combined):
+        return False
+    return bool(CrawlerTemporaryExtractService().extract_url(combined))
 
 
 def _clean_crawler_task_question(question: str) -> str:
@@ -4829,6 +4893,20 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
     rag_focus = route.rag_focus
     planned_workflow = route.planned_workflow
     planned_delegate = route.planned_delegate
+    if route_intent == "delegate_crawler":
+        proposed_collection = str(tool_decision.get("collection_target") or original_question or question).strip()
+        if _should_use_temporary_extract_without_persistence(agent, original_question, proposed_collection, str(tool_decision.get("delivery_target") or "")):
+            route_intent = "temporary_extract"
+            add_trace(
+                "decide",
+                "side_effect_boundary_corrected",
+                {
+                    "from_tool": "delegate_crawler",
+                    "to_tool": "temporary_extract",
+                    "reason": "User requested immediate URL reading/summarization without local persistence; background collection would have filesystem side effects.",
+                    "collection_target": proposed_collection,
+                },
+            )
     if route_intent == "router_error":
         return executor.router_error(run, tool_decision)
     if route_intent == "direct_answer":

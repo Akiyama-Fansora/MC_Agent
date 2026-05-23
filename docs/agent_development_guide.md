@@ -3765,3 +3765,55 @@ node --check frontend\static\app.js
 node --check frontend\static\settings.js
 ```
 
+## 2026-05-23 Stage 21: Direct Crawler No-Persistence Boundary
+
+This stage fixes the user-visible bug where a direct CrawlerAgent request such as "summarize this URL, do not save locally" could still be routed into `delegate_crawler` and displayed as an MCagent handoff.
+
+### Design Boundary
+
+1. Direct CrawlerAgent URL reading is not the same as a background collection job.
+2. `temporary_extract` is the no-persistence path: fetch public page text, summarize it, return to the user, and report `saved_to_local=false`.
+3. `delegate_crawler` is the persistent path: start a background job that may write crawler exports, prepare RAG ingestion, or save files for a delivery target.
+4. Runtime side-effect checks may correct an LLM-selected tool only when the proposed tool would violate the user's persistence contract. This is a generic side-effect boundary, not a site-specific or phrase-specific scraper rule.
+5. A direct user-to-Crawler handoff must keep `requested_by=user`; fallback handoff text must never claim that MCagent transferred the request.
+
+### Implemented Changes
+
+1. Generalized `_should_use_temporary_extract_without_persistence()`:
+   - direct `crawler_agent` + public URL + human delivery uses temporary extraction unless the task asks to save, export, download, write to a path, ingest, or hand off to MCagent/RAG;
+   - explicit no-save wording wins over accidental save-word collisions;
+   - MCagent/RAG delivery remains persistent.
+2. Added `_request_wants_persistence()` so save/ingest/path intent is detected as a side-effect contract instead of being mixed into crawler search planning.
+3. Added an end-to-end regression test where the LLM initially chooses `delegate_crawler`; runtime corrects to `temporary_extract`, returns `agent=crawler_agent`, sets `saved_to_local=false`, and creates no background job.
+4. Cleaned the frontend trace copy:
+   - removed fixed "simple answer/status/Crawler" direction wording;
+   - made trace status text agent-neutral and active-agent aware;
+   - direct Crawler progress no longer appears as "MCagent judged...".
+
+### Test Plan And Results
+
+Passed:
+```powershell
+python -m py_compile mcagent\agent_runtime.py mcagent\agent_router.py mcagent\web_server.py tests\web_server_side_effect_guard_scenarios.py
+node --check frontend\static\app.js
+python tests\web_server_side_effect_guard_scenarios.py
+python tests\agent_router_scenarios.py
+python tests\crawler_temporary_extract_service_scenarios.py
+python tests\smoke_test.py
+python tests\agent_five_direction_matrix_scenarios.py
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+```
+
+Manual network check:
+```powershell
+python - <<'PY'
+from mcagent.crawler_temporary_extract_service import CrawlerTemporaryExtractService
+svc = CrawlerTemporaryExtractService()
+title, text, content_type, status = svc.fetch_text("https://baike.baidu.com/item/%E5%95%86%E5%93%81/1245866")
+print(status, content_type, len(text), title)
+PY
+```
+
+Result: Baidu Baike returned HTTP 200 with about 12.9k extracted text characters, so the long wait was caused by the old background-job route, not by page extraction itself.
+

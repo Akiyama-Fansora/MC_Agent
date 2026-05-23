@@ -471,7 +471,7 @@ CRAWLER_ROUTE_TOOLS = [
     ),
     ToolSpec(
         name="temporary_extract",
-        description="Fetch public URL text for an immediate CrawlerAgent answer when persistence/background collection is not needed.",
+        description="Fetch public URL text for an immediate CrawlerAgent answer when persistence/background collection is not needed; use for direct read/summarize/extract tasks that should not save or ingest.",
         input_schema={"query_or_url": "public URL and extraction/summarization request"},
         result_schema={"extracted_text": "temporary page text", "answer": "LLM-written summary", "saved_to_local": False},
         side_effects="network_only_no_filesystem_persistence",
@@ -480,7 +480,7 @@ CRAWLER_ROUTE_TOOLS = [
     ),
     ToolSpec(
         name="delegate_crawler",
-        description="Accept a human or MCagent collection request and start CrawlerAgent's collection loop.",
+        description="Accept a human or MCagent collection request and start CrawlerAgent's background collection loop; use when persistence, saving, multi-step collection, or RAG handoff is wanted.",
         input_schema={"collection_target": "natural-language goal", "delivery_target": "human|MCagent/RAG|both"},
         result_schema={"job_id": "crawler job", "handoff": "collection contract"},
         side_effects="start_background_job",
