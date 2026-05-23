@@ -5020,10 +5020,23 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
         )
     if route_intent == "mcagent_context":
         route_intent = "answer"
+        proposed_collection = str(tool_decision.get("collection_target") or original_question or question).strip()
+        if _action_plan_has_tool(action_plan, "delegate_crawler") or _asks_for_collection_or_handoff(
+            "\n".join([original_question, proposed_collection, str(tool_decision.get("reason") or "")])
+        ):
+            planned_workflow = True
+            planned_delegate = True
+            if not action_plan:
+                action_plan = _default_mcagent_gap_action_plan()
+            tool_decision["delivery_target"] = str(tool_decision.get("delivery_target") or "MCagent/RAG")
+            tool_decision["collection_target"] = (
+                "根据 MCagent/RAG 本地上下文与缺口，为该主题采集缺失资料并交付给 MCagent/RAG。"
+                f" 用户原始目标：{proposed_collection}"
+            )
         if not rag_focus:
             rag_focus = _mcagent_context_focus(original_question, str(tool_decision.get("collection_target") or ""))
             tool_decision["rag_focus"] = rag_focus
-        add_trace("decide", "mcagent_context_selected", {"rag_focus": rag_focus})
+        add_trace("decide", "mcagent_context_selected", {"rag_focus": rag_focus, "planned_delegate": planned_delegate, "action_plan": action_plan})
     if route_intent == "delegate_crawler":
         proposed_collection = str(tool_decision.get("collection_target") or original_question or question).strip()
         if _should_use_temporary_extract_without_persistence(agent, original_question, proposed_collection, str(tool_decision.get("delivery_target") or "")):

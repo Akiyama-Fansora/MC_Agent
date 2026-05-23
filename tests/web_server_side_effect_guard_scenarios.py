@@ -223,10 +223,58 @@ def test_direct_crawler_mcagent_gap_request_delegates_when_local_empty() -> None
     assert_true("mentions_topic", "乌托邦" in calls[0]["question"])
 
 
+def test_crawler_mcagent_context_with_collection_continues_to_delegate() -> None:
+    tmp = tempfile.TemporaryDirectory()
+    fake_client = SequencedClient(
+        [
+            '{"tool":"mcagent_context","reason":"inspect local gaps first","rag_focus":"乌托邦整合包缺口","collection_target":"问下MCAgent乌托邦整合包还缺哪些东西 你去网上找补给他","delivery_target":"MCagent/RAG","action_plan":[{"step":1,"tool":"mcagent_context","goal":"inspect local gaps"},{"step":2,"tool":"delegate_crawler","goal":"collect missing data"}]}',
+            '{"proceed":true,"tool":"mcagent_context","reason":"context first"}',
+            '{"handoff_brief":"用户直接委托 CrawlerAgent：根据 MCagent/RAG 缺口采集乌托邦整合包资料。","reason":"handoff"}',
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    original_delegate = web_server._delegate_crawler_for_missing_data
+    original_retrieve = web_server.RagRetrievalService.retrieve
+    calls: list[dict[str, Any]] = []
+
+    def fake_delegate(config: AppConfig, payload: dict[str, Any], question: str, plan: dict[str, Any] | None = None):  # noqa: ARG001
+        calls.append({"payload": payload, "question": question, "plan": plan})
+        job = web_server.Job(id="fake-crawler-job-2", kind="crawler", title=question, status="queued", summary="queued")
+        job.result = {"plan": {"topic": question, "delivery_target": payload.get("delivery_target")}}
+        return job, True
+
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake_client, "fake")  # type: ignore[assignment]
+    web_server._delegate_crawler_for_missing_data = fake_delegate  # type: ignore[assignment]
+    web_server.RagRetrievalService.retrieve = (  # type: ignore[assignment]
+        lambda self, *args, **kwargs: SimpleNamespace(retrieval_plan=None, rough_results=[], selected=[])
+    )
+    try:
+        result = web_server._chat_impl(
+            make_temp_config(Path(tmp.name)),
+            {
+                "agent": "crawler_agent",
+                "question": "问下MCAgent乌托邦整合包还缺哪些东西 你去网上找补给他",
+                "session_id": "direct-crawler-mcagent-context-then-delegate-test",
+                "model": "fake-model",
+            },
+        )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._delegate_crawler_for_missing_data = original_delegate  # type: ignore[assignment]
+        web_server.RagRetrievalService.retrieve = original_retrieve  # type: ignore[assignment]
+        tmp.cleanup()
+
+    statuses = [(step["stage"], step["status"]) for step in result.get("trace", [])]
+    assert_true("mcagent_context_trace", ("decide", "mcagent_context_selected") in statuses)
+    assert_true("delegated_after_context", bool(calls))
+    assert_equal("delivery_target", result.get("delegation", {}).get("delivery_target"), "MCagent/RAG")
+
+
 if __name__ == "__main__":
     test_direct_crawler_no_save_url_uses_temporary_extract_boundary()
     test_direct_user_handoff_brief_rejects_wrong_mcagent_identity()
     test_direct_crawler_delegate_choice_is_corrected_to_temporary_extract()
     test_direct_crawler_mcagent_gap_request_forces_planned_workflow()
     test_direct_crawler_mcagent_gap_request_delegates_when_local_empty()
+    test_crawler_mcagent_context_with_collection_continues_to_delegate()
     print("web_server_side_effect_guard_scenarios passed")
