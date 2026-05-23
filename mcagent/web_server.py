@@ -1075,17 +1075,67 @@ def _run_mcagent_context_tool(config: AppConfig, payload: dict[str, Any], plan: 
     query = str(payload.get("query") or payload.get("question") or "").strip()
     collection_target = str(payload.get("collection_target") or payload.get("source_question") or payload.get("question") or "").strip()
     focus = _mcagent_context_focus(query or collection_target, collection_target)
+    inter_agent_request = (
+        "CrawlerAgent -> MCagent: 请你作为 MCagent 使用自己的本地资料库/RAG 能力检查这个主题，"
+        "告诉我本地已有证据、还缺哪些资料，以及 CrawlerAgent 下一步应该去网上补什么。"
+        f"\n主题：{focus}"
+    )
     export_dir = PROJECT_ROOT / "data" / "crawler_exports" / "mcagent_context" / f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{uuid.uuid4().hex[:8]}"
     export_dir.mkdir(parents=True, exist_ok=True)
     report_path = export_dir / "mcagent_context.md"
     manifest_path = export_dir / "manifest.json"
     started = time.time()
     try:
-        rough_k = _adaptive_rough_k(focus, "mcagent_rag")
-        final_k = _adaptive_final_context_k(focus, config, "mcagent_rag")
-        rough_results = Retriever(config).search(focus, top_k=rough_k, session_summary=session_summary or {})
-        selected = _dedupe_results(rough_results, final_k)
-        selected = _supplement_raw_html_results(config, focus, selected, final_k)
+        trace_events: list[dict[str, Any]] = []
+
+        def add_exchange_trace(stage: str, status: str, detail: Any = None) -> dict[str, Any]:
+            event = {"stage": stage, "status": status, "detail": detail}
+            trace_events.append(event)
+            return event
+
+        rag_retrieval = RagRetrievalService(
+            retriever_factory=Retriever,
+            adaptive_rough_k=_adaptive_rough_k,
+            adaptive_final_k=_adaptive_final_context_k,
+            planning_summary=_retrieval_planning_summary,
+            combined_question=_combined_retrieval_question,
+            supplement_results=lambda cfg, q, results, limit: _supplement_raw_html_results(cfg, q, results, limit=limit),
+            dedupe_results=_dedupe_results,
+        )
+        preparation = rag_retrieval.prepare(config, agent="mcagent_rag", question=focus, rag_focus=focus)
+        retrieval_result = rag_retrieval.retrieve(
+            config,
+            agent="mcagent_rag",
+            original_question=inter_agent_request,
+            question=focus,
+            session_summary=session_summary or {},
+            preparation=preparation,
+            use_planner=False,
+            add_trace=add_exchange_trace,
+        )
+        rough_results = retrieval_result.rough_results
+        selected = retrieval_result.selected
+        evidence_report: dict[str, Any] = {}
+        if rough_results:
+            evidence_result = EvidenceWorkflowService(
+                prefer_parent_topic_results=_prefer_parent_topic_results,
+                modpack_manifest_results=_modpack_manifest_results,
+                supplement_local_modpack_manifest_results=_supplement_local_modpack_manifest_results,
+                supplement_project_keyword_results=_supplement_project_keyword_results,
+                supplement_raw_html_results=lambda cfg, q, results, limit: _supplement_raw_html_results(cfg, q, results, limit=limit),
+                ensure_modpack_mod_list_context=_ensure_modpack_mod_list_context,
+                fallback_theme_results=_fallback_theme_results,
+                dedupe_results=_dedupe_results,
+            ).select(
+                config,
+                evidence_question=focus,
+                rough_results=rough_results,
+                retrieval_plan=retrieval_result.retrieval_plan,
+                final_k=preparation.final_k,
+                add_trace=add_exchange_trace,
+            )
+            selected = evidence_result.selected
+            evidence_report = evidence_result.report.to_dict()
         gaps: list[str] = []
         if isinstance(session_summary, dict):
             for item in session_summary.get("gaps") or []:
@@ -1095,17 +1145,52 @@ def _run_mcagent_context_tool(config: AppConfig, payload: dict[str, Any], plan: 
                 value = str(session_summary.get(key) or "").strip()
                 if value:
                     gaps.append(value)
+        for reason in evidence_report.get("reasons") or []:
+            if str(reason).strip():
+                gaps.append(str(reason).strip())
         if not selected:
             gaps.append("MCagent/RAG did not find usable local evidence for this context query; CrawlerAgent should collect public sources that establish the topic, official/project pages, gameplay guide, mod list/dependencies, versions/changelog, and known issues if relevant.")
         elif len(selected) < 4:
             gaps.append("MCagent/RAG returned only limited local evidence; CrawlerAgent should prioritize missing high-signal public sources and avoid repeating low-value duplicates.")
         gap_summary = "\n".join(f"- {item}" for item in list(dict.fromkeys(gaps))[:12]) or "- No explicit gap list was found; use coverage goals and selected local evidence to decide what to collect next."
+        if selected:
+            try:
+                mcagent_answer, _context = _generate_grounded_answer(
+                    config,
+                    (
+                        "CrawlerAgent 正在通过 Agent 通道询问 MCagent："
+                        "请根据本地证据回答本地已有关于该主题的资料、缺口，以及 CrawlerAgent 应补采哪些资料。"
+                        f"\n主题：{focus}"
+                    ),
+                    selected,
+                    str(payload.get("mcagent_model") or ""),
+                    0.0,
+                    1600,
+                    retrieval_note="这不是面向最终用户的回答，而是 MCagent 给 CrawlerAgent 的内部上下文回复；请明确列出现有证据和资料缺口。",
+                    evidence_question=focus,
+                )
+            except Exception as exc:  # noqa: BLE001
+                mcagent_answer = f"MCagent 本地检索已完成，但生成给 CrawlerAgent 的自然语言回复失败：{type(exc).__name__}: {exc}\n\n资料缺口摘要：\n{gap_summary}"
+        else:
+            mcagent_answer = (
+                "MCagent 回复 CrawlerAgent：我已检查本地资料库，但没有找到足够可用证据。"
+                "请你优先补采能确定主题身份、官方/下载页面、模组列表或依赖、玩法/任务线、版本更新和已知问题的公开资料。\n\n"
+                f"资料缺口摘要：\n{gap_summary}"
+            )
         lines = [
-            "# MCagent/RAG Local Context",
+            "# Inter-Agent Context: MCagent -> CrawlerAgent",
             "",
             "<!-- source: mcagent_context -->",
             "",
-            "## Query",
+            "## CrawlerAgent Request",
+            "",
+            inter_agent_request,
+            "",
+            "## MCagent Reply",
+            "",
+            mcagent_answer,
+            "",
+            "## MCagent Local Search Focus",
             "",
             focus,
             "",
@@ -1138,13 +1223,25 @@ def _run_mcagent_context_tool(config: AppConfig, payload: dict[str, Any], plan: 
             "source": "mcagent_context",
             "query": focus,
             "fetched_at": datetime.now().isoformat(timespec="seconds"),
+            "inter_agent": {
+                "from_agent": "CrawlerAgent",
+                "to_agent": "MCagent",
+                "reply_from": "MCagent",
+                "reply_to": "CrawlerAgent",
+                "request": inter_agent_request,
+                "reply": mcagent_answer,
+            },
+            "mcagent_trace": trace_events,
+            "evidence_report": evidence_report,
             "records": [
                 {
-                    "title": "MCagent/RAG Local Context",
+                    "title": "MCagent Reply To CrawlerAgent",
                     "url": None,
                     "path": str(report_path),
                     "snippet": f"local_sources={len(selected)}; gaps={len(gaps)}",
                     "metadata": {
+                        "from_agent": "MCagent",
+                        "to_agent": "CrawlerAgent",
                         "local_source_count": len(selected),
                         "gap_count": len(gaps),
                         "delivery_target": str(plan.get("delivery_target") or payload.get("delivery_target") or ""),
@@ -1166,6 +1263,7 @@ def _run_mcagent_context_tool(config: AppConfig, payload: dict[str, Any], plan: 
             "timed_out": False,
             "export_dir": str(export_dir),
             "mcagent_gap_summary": gap_summary,
+            "mcagent_answer": mcagent_answer,
             "mcagent_source_count": len(selected),
         }
     except Exception as exc:  # noqa: BLE001

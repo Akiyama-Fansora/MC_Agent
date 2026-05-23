@@ -370,12 +370,13 @@ def test_direct_crawler_delegate_choice_runs_as_crawler_context_workflow() -> No
 def test_crawler_job_can_execute_mcagent_context_tool() -> None:
     tmp = tempfile.TemporaryDirectory()
     original_retriever = web_server.Retriever
+    original_generate = web_server._generate_grounded_answer
 
     class FakeRetriever:
         def __init__(self, config: AppConfig):  # noqa: ARG002
             pass
 
-        def search(self, query: str, top_k: int, session_summary: dict[str, Any] | None = None):  # noqa: ARG002
+        def search(self, query: str, top_k: int, plan: Any | None = None, session_summary: dict[str, Any] | None = None):  # noqa: ARG002
             return [
                 SearchResult(
                     rank=1,
@@ -392,6 +393,9 @@ def test_crawler_job_can_execute_mcagent_context_tool() -> None:
             ]
 
     web_server.Retriever = FakeRetriever  # type: ignore[assignment]
+    web_server._generate_grounded_answer = (  # type: ignore[assignment]
+        lambda *args, **kwargs: ("MCagent 回复 CrawlerAgent：本地已有基础介绍，缺少完整模组列表、任务线和 Boss 攻略。", "context")
+    )
     try:
         result = web_server._run_mcagent_context_tool(
             make_temp_config(Path(tmp.name)),
@@ -401,15 +405,20 @@ def test_crawler_job_can_execute_mcagent_context_tool() -> None:
         )
     finally:
         web_server.Retriever = original_retriever  # type: ignore[assignment]
+        web_server._generate_grounded_answer = original_generate  # type: ignore[assignment]
         tmp.cleanup()
 
     try:
         assert_equal("source", result["source"], "mcagent_context")
         assert_equal("returncode", result["returncode"], 0)
+        assert_true("mcagent_answer", "MCagent 回复 CrawlerAgent" in str(result.get("mcagent_answer") or ""))
         assert_true("has_gap_summary", "完整模组列表" in str(result.get("mcagent_gap_summary") or ""))
         export_dir = Path(str(result.get("export_dir") or ""))
         manifest = json.loads((export_dir / "manifest.json").read_text(encoding="utf-8"))
         assert_equal("manifest_source", manifest["source"], "mcagent_context")
+        assert_equal("inter_agent_from", manifest["inter_agent"]["from_agent"], "CrawlerAgent")
+        assert_equal("inter_agent_to", manifest["inter_agent"]["to_agent"], "MCagent")
+        assert_true("reply_persisted", "MCagent 回复 CrawlerAgent" in manifest["inter_agent"]["reply"])
         assert_true("manifest_records", len(manifest.get("records") or []) == 1)
     finally:
         if result.get("export_dir"):

@@ -4006,6 +4006,72 @@ playwright 乌托邦整合包 Boss
 ...
 ```
 
+## 2026-05-23 Stage 27: Crawler-To-MCagent Message Round Trip
+
+Stage 26 still missed an important semantic detail. The `mcagent_context` tool allowed CrawlerAgent to read MCagent/RAG context, but the user's intended workflow was stricter:
+
+```text
+CrawlerAgent -> MCagent: 你本地关于这个主题缺什么？
+MCagent -> local_rag_search / evidence selection / answer generation
+MCagent -> CrawlerAgent: 本地已有这些，缺这些，你去补这些。
+CrawlerAgent -> public collection tools
+```
+
+So the tool must be an inter-Agent message channel, not merely shared direct RAG access.
+
+### Implemented Changes
+
+1. Reworked `mcagent_context` execution into an explicit Agent round trip:
+   - construct a `CrawlerAgent -> MCagent` request;
+   - run MCagent's own local retrieval and evidence-selection workflow;
+   - ask MCagent's assigned LLM profile to produce a reply for CrawlerAgent when evidence exists;
+   - fall back to a deterministic MCagent reply when local evidence is empty or the answer LLM fails.
+2. The generated artifact now records:
+   - `CrawlerAgent Request`;
+   - `MCagent Reply`;
+   - MCagent local search focus;
+   - gap summary;
+   - selected local evidence.
+3. `manifest.json` now contains an `inter_agent` transcript:
+   - `from_agent: CrawlerAgent`;
+   - `to_agent: MCagent`;
+   - `reply_from: MCagent`;
+   - `reply_to: CrawlerAgent`;
+   - request and reply text.
+4. Crawler reflection receives `mcagent_answer`, `mcagent_gap_summary`, and local source counts in the tool observation, so the next Crawler step can be based on MCagent's reply instead of Crawler guessing from shared context.
+5. Updated tool descriptions in the runtime catalog, planner prompt, and provider registry to say this is not direct database access by CrawlerAgent.
+
+### Test Plan And Results
+
+Updated `tests\web_server_side_effect_guard_scenarios.py` so the `mcagent_context` executor test now asserts:
+
+- the tool returns `source == mcagent_context`;
+- MCagent's reply is present in the result;
+- the manifest contains `inter_agent.from_agent == CrawlerAgent`;
+- the manifest contains `inter_agent.to_agent == MCagent`;
+- the persisted reply contains MCagent's response to CrawlerAgent.
+
+Passed:
+
+```powershell
+python tests\web_server_side_effect_guard_scenarios.py
+python tests\crawler_planner_timeout_scenarios.py
+python tests\smoke_test.py
+python tests\agent_runtime_scenarios.py
+python tests\crawler_result_accounting_service_scenarios.py
+python tests\agent_router_scenarios.py
+python tests\crawler_reflection_decision_scenarios.py
+python tests\crawler_reflection_service_scenarios.py
+python tests\fastapi_backend_scenarios.py
+python tests\agent_five_direction_matrix_scenarios.py
+python -m py_compile mcagent\web_server.py mcagent\agent_runtime.py mcagent\crawler_llm_planner.py mcagent\provider_registry.py tests\web_server_side_effect_guard_scenarios.py
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+node --check frontend\static\app.js
+node --check frontend\static\settings.js
+git diff --check
+```
+
 Manual checks:
 
 - MCagent local question `新手该怎么玩乌托邦` answered from local RAG without starting Crawler.

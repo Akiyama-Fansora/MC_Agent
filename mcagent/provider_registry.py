@@ -113,7 +113,7 @@ PROVIDERS: dict[str, ProviderSpec] = {
         capabilities=ProviderCapability(search=True, extract=True),
         default_limit=10,
         timeout_seconds=120,
-        notes="CrawlerAgent 向 MCagent/RAG 读取本地证据、覆盖情况和缺口的跨 Agent 上下文工具；不是公网搜索。",
+        notes="CrawlerAgent 向 MCagent 发送跨 Agent 消息；MCagent 使用自己的本地 RAG/证据流程后回复 CrawlerAgent。不是公网搜索，也不是 Crawler 直接读库。",
     ),
     "web_discovery": ProviderSpec(
         id="web_discovery",

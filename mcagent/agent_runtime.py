@@ -509,9 +509,9 @@ CRAWLER_COLLECTION_TOOLS = [
     ),
     ToolSpec(
         name="mcagent_context",
-        description="Ask MCagent/RAG for local evidence, coverage, and missing-data gaps for a topic during the CrawlerAgent collection loop.",
-        input_schema={"query": "topic or gap question to inspect in MCagent/RAG local context"},
-        result_schema={"sources": "local evidence report", "gap_summary": "local coverage and gaps", "manifest": "saved inter-agent context artifact"},
+        description="Send an inter-agent message from CrawlerAgent to MCagent; MCagent then uses its own local RAG/evidence workflow and replies with local evidence and gaps.",
+        input_schema={"query": "topic or gap question CrawlerAgent asks MCagent"},
+        result_schema={"mcagent_reply": "MCagent's reply to CrawlerAgent", "sources": "local evidence report", "gap_summary": "local coverage and gaps", "manifest": "saved inter-agent transcript artifact"},
         side_effects="read_local_index_and_write_artifact",
         llm_final_answer_required=False,
     ),
