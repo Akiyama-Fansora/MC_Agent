@@ -316,7 +316,7 @@ def _bind_query_to_target(query: str, target: str) -> str:
     target = re.sub(r"\s+", " ", str(target).strip())
     if not value or not target or _query_mentions_target(value, target):
         return value
-    if re.fullmatch(r"(FTB\s*Quests?|FTB任务|任务系统|开局\s*攻略|新手\s*攻略|新手路线|攻略|教程|玩法|Boss|BOSS|boss|模组列表|下载|配置要求)", value, flags=re.I):
+    if re.fullmatch(r"(FTB\s*Quests?|FTB任务|任务系统|开局\s*攻略|新手\s*攻略|新手路线|攻略|教程|玩法|Boss|BOSS|boss|模组列表|mod\s*list|dependencies|依赖列表|任务线|阶段攻略|更新日志|版本差异|changelog|下载|配置要求)", value, flags=re.I):
         return f"{target} {value}"
     if len(value) <= 12 and re.search(r"(任务|攻略|教程|玩法|配置|下载|Boss|boss|模组|配方|问题|bug)", value, flags=re.I):
         return f"{target} {value}"
@@ -338,6 +338,39 @@ def _prefer_general_web_first(context_text: str, delivery_target: str, requested
     if delivery_target == "MCagent/RAG" and any(term in lowered for term in ("缺口", "缺失", "还缺", "本地资料", "本地上下文", "补给", "补充", "补库")):
         return True
     return requested_by in {"user", "mcagent", "user_via_mcagent"} and any(term in lowered for term in ("网上找", "去网上", "public web", "search online"))
+
+
+def _is_gap_analysis_collection_context(context_text: str, delivery_target: str = "") -> bool:
+    lowered = re.sub(r"\s+", "", str(context_text or "").lower())
+    if not lowered:
+        return False
+    has_agent_context = bool(re.search(r"mcagent|rag|本地资料|本地上下文|知识库|localcontext|localevidence", lowered, flags=re.I))
+    has_gap_intent = any(term in lowered for term in ("还缺", "缺什么", "缺哪些", "缺口", "缺失", "缺少", "补给", "补齐", "补充", "找补"))
+    return (delivery_target == "MCagent/RAG" or has_agent_context) and has_gap_intent
+
+
+def _literal_gap_meta_query(query: str) -> bool:
+    compact = re.sub(r"\s+", "", str(query or "").lower())
+    if not compact:
+        return False
+    return any(
+        marker in compact
+        for marker in (
+            "还缺什么",
+            "还缺哪些",
+            "缺哪些东西",
+            "有哪些缺口",
+            "缺少哪些",
+            "缺失哪些",
+            "缺口列表",
+            "缺少模组",
+            "缺失模组",
+            "待添加",
+            "待补充",
+            "待实现",
+            "开发计划",
+        )
+    )
 
 
 def _rebalance_general_web_tasks(tasks: list[dict[str, Any]], *, prefer_general_web: bool) -> None:
@@ -425,6 +458,19 @@ def _coverage_queries(question: str, session_summary: dict[str, Any] | None = No
     for item in ITEM_HINTS:
         if item.lower() in text.lower():
             queries.append(item)
+    gap_text = text.lower()
+    if any(term in gap_text for term in ("模组列表", "mod list", "modlist", "依赖列表", "dependencies")):
+        queries.extend(["模组列表", "mod list", "dependencies"])
+    if any(term in gap_text for term in ("任务线", "任务/阶段", "阶段攻略", "任务系统", "ftb quests", "ftb任务")):
+        queries.extend(["任务线", "任务系统", "FTB Quests", "阶段攻略"])
+    if any(term in gap_text for term in ("新手路线", "新手攻略", "开局攻略", "入门路线")):
+        queries.extend(["新手路线", "新手攻略", "开局 攻略"])
+    if any(term in gap_text for term in ("玩法", "核心玩法", "特色玩法", "机制说明")):
+        queries.extend(["玩法 教程", "核心玩法", "特色机制"])
+    if any(term in gap_text for term in ("版本差异", "更新日志", "changelog", "release notes")):
+        queries.extend(["更新日志", "版本差异", "changelog"])
+    if any(term in gap_text for term in ("官方链接", "下载页", "下载地址", "curseforge", "modrinth")):
+        queries.extend(["官方发布页", "下载地址", "CurseForge", "Modrinth"])
     if subject and re.search(r"\bBoss\b|BOSS|boss|有哪些BOSS|有哪些 Boss|Boss", text, flags=re.I):
         queries.extend([f"{subject} Boss", f"{subject} Boss 清单", f"{subject} Boss 攻略", f"{subject} Boss 打法"])
     return [query for query in dict.fromkeys(queries) if _valid_coverage_query(query, target, text)]
@@ -463,6 +509,8 @@ def _valid_coverage_query(query: str, target: str = "", context_text: str = "") 
     if re.fullmatch(r"boss\s*(攻略|列表|清单|打法)?", value, flags=re.I):
         return False
     if target and value in {"攻略", "教程", "玩法", "Boss", "BOSS", "boss"}:
+        return False
+    if _is_gap_analysis_collection_context(context_text, "MCagent/RAG") and _literal_gap_meta_query(value):
         return False
     return True
 
@@ -883,6 +931,8 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
         if not has_target or any(_looks_like_agent_target(query) for query in queries[:2]):
             queries = [*_target_queries(target_hint), *queries]
     coverage_queries = _coverage_queries(question, session_summary, target_hint or topic)
+    if coverage_queries and (target_hint or topic):
+        coverage_queries = _target_bound_queries(coverage_queries, target_hint or topic)
     if coverage_queries:
         # Coverage queries are helper suggestions. Keep the Crawler LLM's own
         # task order first so a broad entity probe such as "落幕曲" is not
@@ -1068,6 +1118,7 @@ def plan_crawler_tasks_with_llm(question: str, source_dir: Path, *, max_tasks: i
             f"{tool_catalog}\n"
             "Decide target entity, coverage goals, short source-specific queries, and ordered tasks. Tools execute after your JSON plan.\n"
             "The authoritative collection target is the current handoff/task goal. Prior current_topic/topics are background memory only; never let old session topics override collection_target/task_goal.\n"
+            "When a handoff says 'what is missing / 还缺哪些 / 缺口' for MCagent/RAG, treat it as local coverage-gap analysis: read mcagent_gap_summary/gaps, turn each gap into positive coverage queries (mod list, quest line, boss guide, beginner route, changelog, download page), and then collect evidence. Do not search literal phrases like '缺少模组', '还缺什么', or '待添加' unless the user explicitly asks for roadmap/future features/community wish lists.\n"
             "For general data collection tasks that ask for structured fields and a save location, use browser_collect. It can open a browser, collect item rows, and save XLSX/CSV/JSON/report to output_dir. Keep the user's requested output_dir exactly.\n"
             "Use fetch_url for exact public URL extraction when local HTTP plus readable-text parsing is enough. It does not require hosted extraction APIs. If fetch_url fails because the page needs rendering, then choose Playwright/browser tools.\n"
             "Use save_artifact when the useful content is already in the task context, generated by the agent, or available as an artifact_ref/content_ref from earlier objective tool output. It accepts content or content_ref, format, path/filename, overwrite, and metadata; do not use it as a substitute for web extraction.\n"
@@ -1154,6 +1205,7 @@ def reflect_crawler_progress(
             "When action is add_tasks or replan, the tasks array must contain executable next tasks. If you only explain the need to replan without tasks, the executor must ask you again.\n"
             "If enough useful records or reusable evidence has been found for the delivery target, choose finish.\n"
             "Do not use the whole user request as a query. Keep queries short and reusable.\n"
+            "For MCagent/RAG gap handoffs, 'missing / 还缺 / 缺口' is not itself a web topic. Derive positive coverage goals from mcagent_gap_summary/gaps and search those. Avoid literal meta queries such as '缺少模组', '还缺哪些', '待添加', or '开发计划' unless the user explicitly asked for future roadmap/community requests.\n"
             "If the task is for MCagent/RAG, prefer evidence that is citeable and chunkable; raw HTML support is valuable for hard pages.\n"
             "Playwright is a first-class browser tool. Prefer it when lightweight HTTP fetch cannot read enough text, when a page needs rendering, or when project tabs/download pages need browser HTML.\n"
             "For full modpack collection without a local archive, use modpack_download to find and save public .mrpack/.zip archives, and use Playwright/topic_discovery to inspect project/download pages and preserve download-link HTML. Use modpack_internal only after a real local archive/manifest is available.\n"
@@ -1188,8 +1240,39 @@ def reflect_crawler_progress(
         for raw_task in list(raw.get("tasks") or [])[:max_new_tasks]:
             if isinstance(raw_task, dict):
                 task = _normalize_task(raw_task, str(raw.get("reason") or "CrawlerAgent reflection task"), 75)
-                if task:
+                task_query = str(task.get("query") or "") if task else ""
+                if task and (
+                    _is_url_query(task_query)
+                    or _valid_coverage_query(
+                        task_query,
+                        str(plan.get("target_hint") or plan.get("topic") or ""),
+                        _planner_context_text(question, session_summary),
+                    )
+                ):
                     tasks.append(task)
+        if _is_gap_analysis_collection_context(_planner_context_text(question, session_summary), str(plan.get("delivery_target") or "")):
+            selected_index = raw.get("selected_index")
+            try:
+                selected_task = compact_pending[int(selected_index)] if raw.get("action") == "execute_pending" else None
+            except Exception:
+                selected_task = None
+            if selected_task and _literal_gap_meta_query(str(selected_task.get("query") or "")):
+                target = str(plan.get("target_hint") or plan.get("topic") or _session_target_hint(session_summary) or _collection_target_hint(question) or "").strip()
+                replacement_queries = _target_bound_queries(_coverage_queries(question, session_summary, target), target)[:max_new_tasks]
+                replacement_tasks = [
+                    _task("web_discovery" if index == 0 else "playwright", query, "replace literal gap-meta query with positive coverage collection", 95 - index)
+                    for index, query in enumerate(replacement_queries)
+                ]
+                return CrawlerReflectionDecisionService().normalize(
+                    {
+                        "action": "add_tasks",
+                        "reason": "Pending task treats the local gap question as a literal web topic; replace it with positive coverage queries derived from MCagent/RAG gaps.",
+                        "tasks": replacement_tasks,
+                    },
+                    pending_count=len(compact_pending),
+                    normalized_tasks=_select_diverse_tasks(replacement_tasks, max_new_tasks),
+                    planner=label,
+                )
         return CrawlerReflectionDecisionService().normalize(
             raw,
             pending_count=len(compact_pending),

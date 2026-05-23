@@ -4037,6 +4037,23 @@ def _crawler_delegation_note_for(job: Job, question: str, created: bool, *, requ
     return f"\n\n\u91c7\u96c6\u4efb\u52a1\uff1a{prefix}\n- \u5f53\u524d\u4efb\u52a1ID\uff1a{job.id}\n- \u72b6\u6001\uff1a{job.status}"
 
 
+def _crawler_agent_context_delegation_answer(local_summary: str, delegation_note: str) -> str:
+    summary = str(local_summary or "").strip()
+    summary = re.split(r"\n\s*---\s*\n\s*(?:根据你的指示|正在转达|采集任务)", summary, maxsplit=1)[0].strip()
+    summary = re.split(r"(?:正在转达给\s*CrawlerAgent|我正将采集任务转交给\s*CrawlerAgent|请稍候。?补库完成后)", summary, maxsplit=1)[0].strip()
+    summary = summary.replace("我正将采集任务转交给 **CrawlerAgent**", "我会继续执行采集")
+    summary = summary.replace("我正将采集任务转交给 CrawlerAgent", "我会继续执行采集")
+    summary = summary.replace("转交给 **CrawlerAgent**", "进入 Crawler 采集流程")
+    summary = summary.replace("转交给 CrawlerAgent", "进入 Crawler 采集流程")
+    lines = ["我是 CrawlerAgent。已按你的要求先读取 MCagent/RAG 本地上下文。"]
+    if summary:
+        lines.extend(["", "本地上下文初步结论：", summary])
+    lines.extend(["", "接下来我会基于这些缺口继续执行网上采集，并把结果交付给 MCagent/RAG。"])
+    if delegation_note.strip():
+        lines.append(delegation_note.strip())
+    return "\n".join(lines)
+
+
 def _collaboration_dialog(question: str, job: Job, created: bool, plan: dict[str, Any] | None = None, reason: str = "") -> list[dict[str, Any]]:
     return _collaboration_dialog_for(question, job, created, requested_by="mcagent", delivery_target="MCagent/RAG", reason=reason)
 
@@ -4400,7 +4417,7 @@ def _asks_for_collection_or_handoff(text: str) -> bool:
 
 
 def _should_force_crawler_mcagent_gap_workflow(agent: str, original_question: str, route_intent: str, tool_decision: dict[str, Any]) -> bool:
-    if agent != "crawler_agent" or route_intent != "direct_answer":
+    if agent != "crawler_agent" or route_intent not in {"direct_answer", "delegate_crawler", "router_error"}:
         return False
     combined = "\n".join(
         str(item or "")
@@ -5040,7 +5057,7 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
             "decide",
             "inter_agent_workflow_corrected",
             {
-                "from_tool": "direct_answer",
+                "from_tool": route.route_intent,
                 "to_tool": "planned_workflow",
                 "reason": "The user requested MCagent/RAG context inspection plus follow-up collection; a direct answer cannot perform those tool actions.",
                 "rag_focus": rag_focus,
@@ -5200,6 +5217,7 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
             {
                 "answer": answer,
                 "sources": [],
+                "agent": agent,
                 "job": _job_to_dict(job),
                 "collaboration": _collaboration_dialog_for(collection_question, job, created, requested_by=requested_by, delivery_target=delivery_target),
                 "delegation": {"requested_by": requested_by, "delivery_target": delivery_target, "task": collection_question},
@@ -5295,16 +5313,18 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
             )
             add_trace("delegate", "handoff_brief", {"brief": delegation_plan.handoff_brief, "reason": delegation_plan.brief_reason})
             job, created = _delegate_crawler_for_missing_data(config, delegation_plan.delegate_payload, delegation_plan.collection_question)
-            answer = (
-                "MCagent/RAG 本地没有检索到可用证据；我已把这个空缺作为采集上下文交给 CrawlerAgent 继续补资料。"
-            )
-            answer += _crawler_delegation_note_for(
+            base_answer = "MCagent/RAG 本地没有检索到可用证据；这个空缺会作为后续采集上下文。"
+            delegation_note = _crawler_delegation_note_for(
                 job,
                 delegation_plan.collection_question,
                 created,
                 requested_by=delegation_plan.requested_by,
                 delivery_target=delegation_plan.delivery_target,
             )
+            if agent == "crawler_agent":
+                answer = _crawler_agent_context_delegation_answer(base_answer, delegation_note)
+            else:
+                answer = base_answer + delegation_note
             add_trace("delegate", "planned_workflow", {"job_id": job.id, "status": job.status, "task": delegation_plan.collection_question})
             return _with_trace(
                 {
@@ -5490,13 +5510,17 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
             delegated_delivery_target = delegation_plan.delivery_target
             delegated_task = delegation_plan.collection_question
             delegated_handoff_brief = delegation_plan.handoff_brief
-            answer = answer.rstrip() + _crawler_delegation_note_for(
+            delegation_note = _crawler_delegation_note_for(
                 delegated_job,
                 delegation_plan.collection_question,
                 created,
                 requested_by=delegation_plan.requested_by,
                 delivery_target=delegation_plan.delivery_target,
             )
+            if agent == "crawler_agent":
+                answer = _crawler_agent_context_delegation_answer(answer, delegation_note)
+            else:
+                answer = answer.rstrip() + delegation_note
             add_trace("delegate", "planned_workflow", {"job_id": delegated_job.id, "status": delegated_job.status, "task": delegation_plan.collection_question})
     plan_text = _format_action_plan_for_user(action_plan) if planned_workflow else ""
     if plan_text and not answer.lstrip().startswith("执行计划："):

@@ -9,7 +9,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from mcagent.config import load_config  # noqa: E402
-from mcagent.crawler_llm_planner import _sanitize_plan, _session_target_hint, plan_crawler_tasks_rule_fallback  # noqa: E402
+from mcagent.crawler_llm_planner import _sanitize_plan, _session_target_hint, plan_crawler_tasks_rule_fallback, reflect_crawler_progress  # noqa: E402
+import mcagent.crawler_llm_planner as crawler_llm_planner  # noqa: E402
 from mcagent.web_server import Job, _plan_crawler_with_job_timeout  # noqa: E402
 import mcagent.web_server as web_server  # noqa: E402
 
@@ -137,6 +138,76 @@ def test_llm_plan_gap_collection_is_rebalanced_to_generic_tools() -> None:
     assert_true("helper_query_bound", any(task["query"] == "乌托邦整合包 模组列表" for task in tasks))
 
 
+def test_gap_collection_rejects_literal_missing_as_web_topic() -> None:
+    raw = {
+        "topic": "乌托邦整合包",
+        "delivery_target": "MCagent/RAG",
+        "sources": ["web_discovery", "playwright", "mcmod"],
+        "subqueries": ["乌托邦探险之旅 缺少 模组", "乌托邦探险之旅 待添加", "乌托邦探险之旅 还缺什么"],
+        "tasks": [
+            {"source": "web_discovery", "query": "乌托邦探险之旅 缺少 模组", "reason": "wrong literal gap query", "priority": 100},
+            {"source": "web_discovery", "query": "乌托邦探险之旅 待添加", "reason": "wrong roadmap query", "priority": 99},
+            {"source": "playwright", "query": "乌托邦探险之旅 还缺什么", "reason": "wrong meta query", "priority": 98},
+        ],
+    }
+    plan = _sanitize_plan(
+        raw,
+        utopia_question(),
+        ROOT / "data" / "crawler_exports",
+        max_tasks=24,
+        session_summary=utopia_session_summary()
+        | {
+            "mcagent_gap_summary": "本地资料缺口：完整模组列表、任务/阶段攻略、Boss 信息、新手路线、版本差异与更新日志。",
+            "gaps": ["完整模组列表", "任务线", "Boss 信息", "新手路线", "版本差异与更新日志"],
+        },
+    )
+    queries = [task["query"] for task in plan["tasks"]]
+    assert_true("no_literal_missing_query", all("缺少" not in query and "待添加" not in query and "还缺什么" not in query for query in queries))
+    assert_true("positive_modlist_query", any("模组列表" in query for query in queries))
+    assert_true("positive_quest_query", any("任务" in query or "FTB" in query for query in queries))
+    assert_true("positive_changelog_query", any("更新日志" in query or "版本差异" in query or "changelog" in query.lower() for query in queries))
+    assert_true("no_agent_handoff_query", all("MCagent/RAG" not in query and "用户原始目标" not in query for query in queries))
+
+
+def test_reflection_replaces_literal_gap_pending_query() -> None:
+    original_client = crawler_llm_planner._planner_client
+
+    class FakeClient:
+        def chat(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return '{"action":"execute_pending","selected_index":0,"reason":"try literal missing query","tasks":[]}'
+
+    crawler_llm_planner._planner_client = lambda: (FakeClient(), "fake-reflection")  # type: ignore[assignment]
+    try:
+        decision = reflect_crawler_progress(
+            utopia_question(),
+            {
+                "topic": "乌托邦整合包",
+                "target_hint": "乌托邦整合包",
+                "delivery_target": "MCagent/RAG",
+                "coverage_goals": ["完整模组列表", "任务线", "Boss 信息"],
+            },
+            task_results=[
+                {"source": "web_discovery", "query": "乌托邦探险之旅 缺少 模组", "empty_result": True, "returncode": 0}
+            ],
+            pending_tasks=[
+                {"source": "web_discovery", "query": "乌托邦探险之旅 缺少 模组", "reason": "bad literal gap query", "priority": 100}
+            ],
+            session_summary=utopia_session_summary()
+            | {
+                "mcagent_gap_summary": "本地资料缺口：完整模组列表、任务线、Boss 信息、新手路线。",
+                "gaps": ["完整模组列表", "任务线", "Boss 信息", "新手路线"],
+            },
+            max_new_tasks=4,
+        )
+    finally:
+        crawler_llm_planner._planner_client = original_client  # type: ignore[assignment]
+    assert_equal("action", decision["action"], "add_tasks")
+    queries = [task["query"] for task in decision["tasks"]]
+    assert_true("replacement_tasks", len(queries) > 0)
+    assert_true("no_literal_missing_replacement", all("缺少" not in query and "待添加" not in query for query in queries))
+    assert_true("positive_replacement", any("模组列表" in query or "任务" in query or "Boss" in query for query in queries))
+
+
 def test_structured_xlsx_request_uses_browser_collect() -> None:
     plan = plan_crawler_tasks_rule_fallback(
         "从公开商品网站采集 20 个商品名称、价格、链接，保存为 xlsx 到 C:\\Temp\\crawler-products",
@@ -190,6 +261,8 @@ if __name__ == "__main__":
     test_session_target_rejects_generic_relation_phrase()
     test_gap_collection_fallback_prefers_generic_web_and_bound_queries()
     test_llm_plan_gap_collection_is_rebalanced_to_generic_tools()
+    test_gap_collection_rejects_literal_missing_as_web_topic()
+    test_reflection_replaces_literal_gap_pending_query()
     test_structured_xlsx_request_uses_browser_collect()
     test_job_planner_timeout_returns_executable_fallback()
     print("crawler_planner_timeout_scenarios passed")

@@ -3946,3 +3946,64 @@ Manual checks:
 
 Remaining direction: the next improvement should move more of the large Crawler job loop into small services around artifacts, validation, and replan replacement, so bad pending tasks can be removed cleanly during reflection instead of merely deprioritized.
 
+## 2026-05-23 Stage 25: Gap Semantics In Crawler Planning And Reflection
+
+This stage fixes a conceptual agent-loop bug from the live Crawler test:
+
+```text
+问下MCAgent乌托邦整合包还缺哪些东西 你去网上找补给他
+```
+
+The wrong behavior was treating "还缺哪些东西" as a web-search topic, which produced queries such as "乌托邦探险之旅 缺少 模组" or "乌托邦探险之旅 待添加". That is not the user's meaning. In a Crawler handoff to MCagent/RAG, "缺什么" means: inspect the local MCagent/RAG gap summary, convert those gaps into positive coverage goals, then collect evidence for those goals.
+
+### Implemented Changes
+
+1. Added a planner-level distinction between local gap-analysis intent and public web content topics.
+2. Added filtering for literal gap-meta queries such as "还缺什么", "缺少模组", "待添加", "开发计划" when the context is an MCagent/RAG gap-fill task.
+3. Added positive coverage query expansion from `mcagent_gap_summary` / `gaps`:
+   - complete mod list / dependency list;
+   - quest line, FTB Quests, stage guide;
+   - beginner route and opening guide;
+   - core gameplay and mechanisms;
+   - version differences and changelog;
+   - official/download pages.
+4. Updated Crawler planner prompt so the LLM sees "missing/gap" as coverage analysis, not as a literal query.
+5. Updated Crawler reflection prompt and safety layer. If reflection tries to execute a pending literal gap-meta query, the runtime replaces it with positive coverage collection tasks before tools run.
+6. Kept this generic: it is not tied to the Utopia sentence. The same rule applies to any target where MCagent/RAG asks Crawler to fill missing evidence.
+
+### Test Plan And Results
+
+Added regression tests in `tests\crawler_planner_timeout_scenarios.py`:
+
+- direct handoff phrase is not used as target;
+- rule fallback extracts the real domain target from cross-agent handoff text;
+- gap collection prefers generic web/browser/package routes before MC-only routes;
+- LLM plans that contain literal missing/roadmap phrases are sanitized into positive coverage queries;
+- reflection replaces a bad pending literal gap query with executable positive coverage tasks;
+- structured XLSX collection still uses `browser_collect`;
+- planner timeout still returns executable fallback tasks.
+
+Passed:
+
+```powershell
+python tests\crawler_planner_timeout_scenarios.py
+```
+
+Full regression pass for this stage should still include:
+
+```powershell
+python tests\web_server_side_effect_guard_scenarios.py
+python tests\agent_runtime_scenarios.py
+python tests\smoke_test.py
+python tests\agent_router_scenarios.py
+python tests\crawler_reflection_decision_scenarios.py
+python tests\crawler_reflection_service_scenarios.py
+python tests\fastapi_backend_scenarios.py
+python tests\agent_five_direction_matrix_scenarios.py
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+node --check frontend\static\app.js
+node --check frontend\static\settings.js
+git diff --check
+```
+
