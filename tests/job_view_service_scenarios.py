@@ -21,7 +21,7 @@ def assert_true(name: str, condition: bool, detail: str = "") -> None:
 
 
 def label(source: str) -> str:
-    return {"mcmod": "MC百科搜索", "firecrawl": "Firecrawl", "jina": "Jina Reader"}.get(source, source)
+    return {"mcmod": "MC百科搜索", "playwright": "Playwright", "fetch_url": "Local URL Fetch"}.get(source, source)
 
 
 def test_running_job_view_explains_current_action_and_counts() -> None:
@@ -38,11 +38,11 @@ def test_running_job_view_explains_current_action_and_counts() -> None:
             },
             "planned_tasks": [
                 {"source": "mcmod", "query": "乌托邦探险之旅", "reason": "项目页"},
-                {"source": "firecrawl", "query": "乌托邦探险之旅 玩法", "reason": "教程页"},
+                {"source": "playwright", "query": "乌托邦探险之旅 玩法", "reason": "教程页"},
             ],
             "tasks": [
                 {"source": "mcmod", "query": "乌托邦探险之旅", "returncode": 0, "ingest_deferred": True, "manifest_stats": {"records": 2}},
-                {"source": "firecrawl", "query": "乌托邦探险之旅 玩法", "returncode": 1, "output": "HTTP 429 quota exceeded"},
+                {"source": "playwright", "query": "乌托邦探险之旅 玩法", "returncode": 1, "output": "HTTP 429 quota exceeded"},
             ],
             "replan_count": 1,
             "ingest_background": True,
@@ -56,11 +56,11 @@ def test_running_job_view_explains_current_action_and_counts() -> None:
     assert_equal("current_index", view["current_index"], 2)
     assert_equal("total_tasks", view["total_tasks"], 2)
     assert_equal("progress_text", view["progress_text"], "第 2 / 2 个采集动作")
-    assert_equal("current_source", view["current_source"], "Firecrawl")
+    assert_equal("current_source", view["current_source"], "Playwright")
     assert_equal("observation_ok", view["observation_statuses"].get("ok"), 1)
     assert_equal("observation_quota", view["observation_statuses"].get("quota_limited"), 1)
     assert_true("health_quota", "额度不足" in view["health_text"])
-    assert_true("next_action", "Firecrawl" in view["next_action"])
+    assert_true("next_action", "Playwright" in view["next_action"])
     assert_equal("timeline_first", view["timeline"][0]["type"], "plan")
     assert_true("timeline_task", any(item["type"] == "task" and item["status"] == "quota_limited" for item in view["timeline"]))
     assert_true("timeline_reflection", any(item["type"] == "reflection" for item in view["timeline"]))
@@ -81,3 +81,4 @@ if __name__ == "__main__":
     test_running_job_view_explains_current_action_and_counts()
     test_waiting_job_view_is_plain_language()
     print("job_view_service_scenarios: ok")
+

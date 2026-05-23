@@ -32,13 +32,13 @@ def test_replan_session_summary_keeps_goal_and_existing_tasks() -> None:
     summary = service.replan_session_summary(
         question="乌托邦整合包",
         plan={"topic": "乌托邦探险之旅", "delivery_target": "MCagent/RAG", "coverage_goals": ["玩法"]},
-        failure_summary=[{"source": "jina", "reason": "empty"}],
-        existing_tasks=[{"source": "jina", "query": "乌托邦"}],
+        failure_summary=[{"source": "fetch_url", "reason": "empty"}],
+        existing_tasks=[{"source": "fetch_url", "query": "乌托邦"}],
         identity_fn=identity,
     )
     assert_equal("mode", summary["mode"], "mid_job_replan")
     assert_equal("previous_topic", summary["previous_topic"], "乌托邦探险之旅")
-    assert_equal("existing", summary["already_planned_tasks"], [{"source": "jina", "query": "乌托邦"}])
+    assert_equal("existing", summary["already_planned_tasks"], [{"source": "fetch_url", "query": "乌托邦"}])
 
 
 def test_materialize_replan_tasks_normalizes_and_deduplicates() -> None:
@@ -46,12 +46,12 @@ def test_materialize_replan_tasks_normalizes_and_deduplicates() -> None:
     tasks = service.materialize_replan_tasks(
         new_plan={
             "tasks": [
-                {"source": "jina", "query": "乌托邦", "reason": "duplicate"},
+                {"source": "fetch_url", "query": "乌托邦", "reason": "duplicate"},
                 {"source": "web", "query": "乌托邦 探险之旅 boss", "reason": "new route"},
                 {"source": "mcmod", "query": ""},
             ]
         },
-        existing_tasks=[{"source": "jina", "query": "乌托邦"}],
+        existing_tasks=[{"source": "fetch_url", "query": "乌托邦"}],
         identity_fn=identity,
         source_alias_fn=source_alias,
         max_new_tasks=3,
@@ -101,8 +101,8 @@ def test_fallback_topic_tasks_switches_sources_after_first_ten() -> None:
     tasks = service.fallback_topic_tasks(seed_queries=seeds, existing_tasks=[{"source": "mcmod", "query": "query 0"}], identity_fn=identity, max_new_tasks=12)
     assert_equal("deduped_count", len(tasks), 11)
     assert_equal("first_after_duplicate", tasks[0]["source"], "mcmod")
-    assert_equal("tavily_after_ten", tasks[-1]["source"], "tavily")
-    assert_equal("search_depth", tasks[-1]["search_depth"], "advanced")
+    assert_equal("web_discovery_after_ten", tasks[-1]["source"], "web_discovery")
+    assert_equal("max_urls", tasks[-1]["max_urls"], 6)
 
 
 if __name__ == "__main__":
@@ -112,3 +112,4 @@ if __name__ == "__main__":
     test_topic_review_materialization_filters_discovery_and_duplicates()
     test_fallback_topic_tasks_switches_sources_after_first_ten()
     print("crawler_task_materialization_service_scenarios passed")
+

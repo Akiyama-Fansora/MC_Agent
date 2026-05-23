@@ -66,6 +66,9 @@ jobs:
           mcagent\provider_registry.py
           mcagent\crawler_planner.py
           scripts\browser_collect_seed.py
+          scripts\fetch_url_seed.py
+          scripts\read_local_file.py
+          scripts\search_local_files.py
           scripts\fetch_mcmod_seed.py
           scripts\fetch_modpack_archive_seed.py
           scripts\public_readiness_check.py
@@ -90,6 +93,7 @@ jobs:
           tests\agent_execution_scenarios.py
           tests\agent_executor_scenarios.py
           tests\agent_five_direction_matrix_scenarios.py
+          tests\generic_local_tool_scenarios.py
           tests\agent_router_scenarios.py
           tests\evidence_service_scenarios.py
           tests\job_view_service_scenarios.py
@@ -127,6 +131,7 @@ jobs:
           python tests\agent_execution_scenarios.py
           python tests\agent_executor_scenarios.py
           python tests\agent_five_direction_matrix_scenarios.py
+          python tests\generic_local_tool_scenarios.py
           python tests\agent_router_scenarios.py
           python tests\evidence_service_scenarios.py
           python tests\job_view_service_scenarios.py

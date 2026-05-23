@@ -194,9 +194,7 @@ class EvidenceSelector:
                 "crawler_exports/manual_research/",
                 "crawler_exports/followup/",
                 "crawler_exports/web_discovery/",
-                "crawler_exports/tavily/",
-                "crawler_exports/firecrawl/",
-                "crawler_exports/jina/",
+                "crawler_exports/fetch_url/",
                 "crawler_exports/playwright/",
             )
             haystack = item.title.lower() + "\n" + item.text[:1800].lower()

@@ -34,7 +34,7 @@ def test_reflecting_payload_uses_reflection_reason() -> None:
 
 
 def test_empty_query_payload_marks_act_blocked() -> None:
-    payload = CrawlerJobProgressService().empty_query_blocked(source_label="Jina Reader/Search", task_results=[{}], tasks=[{}], plan={})
+    payload = CrawlerJobProgressService().empty_query_blocked(source_label="Local URL Fetch/Extract", task_results=[{}], tasks=[{}], plan={})
     assert "空查询" in payload["summary"]
     assert_equal("act_status", payload["result"]["loop"][2]["status"], "blocked")
 
@@ -69,3 +69,4 @@ if __name__ == "__main__":
     test_executing_payload_mentions_query()
     test_reviewing_and_replanning_payloads_are_running()
     print("crawler_job_progress_service_scenarios passed")
+

@@ -115,33 +115,6 @@ PROVIDERS: dict[str, ProviderSpec] = {
         timeout_seconds=900,
         notes="Bing RSS/HTML/GitHub 搜索兜底。",
     ),
-    "tavily": ProviderSpec(
-        id="tavily",
-        label="Tavily Search/Extract",
-        capabilities=ProviderCapability(search=True, extract=True, crawl=True),
-        requires_env=("TAVILY_API_KEY",),
-        optional_env=("TAVILY_API_URL",),
-        default_limit=8,
-        timeout_seconds=900,
-        notes="外部搜索并返回正文 Markdown。",
-    ),
-    "firecrawl": ProviderSpec(
-        id="firecrawl",
-        label="Firecrawl Search/Scrape",
-        capabilities=ProviderCapability(search=True, extract=True, crawl=True, browser=True),
-        optional_env=("FIRECRAWL_API_KEY", "FIRECRAWL_API_URL"),
-        default_limit=8,
-        timeout_seconds=900,
-        notes="云端需要 FIRECRAWL_API_KEY；自建 FIRECRAWL_API_URL 可不需要 key。",
-    ),
-    "jina": ProviderSpec(
-        id="jina",
-        label="Jina Reader/Search",
-        capabilities=ProviderCapability(search=True, extract=True),
-        default_limit=8,
-        timeout_seconds=900,
-        notes="免费 Reader/Search 兜底，把网页转 Markdown。",
-    ),
     "playwright": ProviderSpec(
         id="playwright",
         label="Playwright Browser Search/Extract",
@@ -158,6 +131,14 @@ PROVIDERS: dict[str, ProviderSpec] = {
         timeout_seconds=900,
         notes="通用结构化浏览器采集，按目标字段保存 CSV/JSON/report/raw HTML/截图到指定目录；不会绕过登录、验证码或安全验证。",
     ),
+    "fetch_url": ProviderSpec(
+        id="fetch_url",
+        label="Local URL Fetch/Extract",
+        capabilities=ProviderCapability(extract=True),
+        default_limit=1,
+        timeout_seconds=180,
+        notes="Generic no-key HTTP URL fetcher. Saves readable text, raw HTML, and manifest; useful before hosted reader APIs when the task already contains an exact public URL.",
+    ),
     "save_artifact": ProviderSpec(
         id="save_artifact",
         label="Save Artifact",
@@ -165,6 +146,22 @@ PROVIDERS: dict[str, ProviderSpec] = {
         default_limit=1,
         timeout_seconds=120,
         notes="Generic local persistence tool for agent-provided content. Saves txt/md/json/jsonl/csv/html plus manifest; it does not fetch web pages or ingest by itself.",
+    ),
+    "read_local_file": ProviderSpec(
+        id="read_local_file",
+        label="Read Local File",
+        capabilities=ProviderCapability(extract=True),
+        default_limit=1,
+        timeout_seconds=120,
+        notes="Generic local file read tool. Converts one local text file into a Markdown artifact and manifest.",
+    ),
+    "search_local_files": ProviderSpec(
+        id="search_local_files",
+        label="Search Local Files",
+        capabilities=ProviderCapability(search=True, extract=True),
+        default_limit=25,
+        timeout_seconds=180,
+        notes="Generic local file search tool. Searches text files under a path and saves matching snippets to a report and manifest.",
     ),
     "modpack_download": ProviderSpec(
         id="modpack_download",
@@ -196,8 +193,6 @@ def env_value(name: str) -> str:
 
 
 def provider_configured(provider: ProviderSpec) -> bool:
-    if provider.id == "firecrawl":
-        return bool(env_value("FIRECRAWL_API_KEY") or env_value("FIRECRAWL_API_URL"))
     return all(env_value(name) for name in provider.requires_env)
 
 
@@ -263,7 +258,7 @@ def content_fingerprint_for_dedupe(text: str) -> str:
     stable = str(text or "")
     stable = re.sub(r"<!--\s*source:\s*[^>]+-->", "", stable, flags=re.I)
     stable = re.sub(r"\n## Metadata\n.*?(?=\n## |\Z)", "\n", stable, flags=re.S)
-    stable = re.sub(r"\n+- \*\*(?:Fetched at|Query|Search query|Provider|Stage|Score|URL|MC百科 URL|Tavily source|Search rank):\*\*.*", "", stable, flags=re.I)
+    stable = re.sub(r"\n+- \*\*(?:Fetched at|Query|Search query|Provider|Stage|Score|URL|MC百科 URL|Web source|Search rank):\*\*.*", "", stable, flags=re.I)
     stable = re.sub(r"\s+", " ", stable).strip().lower()
     return hashlib.sha256(stable.encode("utf-8")).hexdigest()
 

@@ -61,7 +61,7 @@ def content_fingerprint(text: str) -> str:
     stable = str(text or "")
     stable = re.sub(r"<!--\s*source:\s*[^>]+-->", "", stable, flags=re.I)
     stable = re.sub(r"\n## Metadata\n.*?(?=\n## |\Z)", "\n", stable, flags=re.S)
-    stable = re.sub(r"\n+- \*\*(?:Fetched at|Query|Search query|Provider|Stage|Score|URL|MC百科 URL|Tavily source|Search rank):\*\*.*", "", stable, flags=re.I)
+    stable = re.sub(r"\n+- \*\*(?:Fetched at|Query|Search query|Provider|Stage|Score|URL|MC百科 URL|Web source|Search rank):\*\*.*", "", stable, flags=re.I)
     stable = re.sub(r"\s+", " ", stable).strip().lower()
     return hashlib.sha256(stable.encode("utf-8")).hexdigest()
 

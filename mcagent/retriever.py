@@ -768,7 +768,7 @@ def _local_alias_queries(db_path: Path, query: str, plan: RetrievalPlan, *, limi
                 score += 0.2
             if alias.lower() in str(row["title"]).lower():
                 score += 1.1
-            if any(marker in str(row["source_path"]).lower().replace("\\", "/") for marker in ("modrinth_agent", "mcmod", "tavily", "web_discovery")):
+            if any(marker in str(row["source_path"]).lower().replace("\\", "/") for marker in ("modrinth_agent", "mcmod", "fetch_url", "web_discovery", "playwright")):
                 score += 0.35
             aliases[alias] = score + 0.25
     ranked = sorted(aliases.items(), key=lambda item: item[1], reverse=True)

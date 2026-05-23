@@ -35,7 +35,7 @@ FOCUSED_MODPACK_BATCHES = [
 
 
 
-FOCUSED_PROVIDERS = ("mcmod", "modrinth", "tavily", "firecrawl", "jina", "web_discovery")
+FOCUSED_PROVIDERS = ("mcmod", "modrinth", "web_discovery")
 
 
 def log(message: str) -> None:
@@ -130,38 +130,6 @@ def focused_commands(topic: str, args: argparse.Namespace) -> list[list[str]]:
             "--delay",
             str(args.delay),
             "--include-modpack-contents",
-        ],
-        [
-            sys.executable,
-            str(PROJECT_ROOT / "scripts" / "fetch_tavily_seed.py"),
-            "--query",
-            topic,
-            "--max-results",
-            str(args.web_results),
-            "--max-pages",
-            str(args.web_pages),
-            "--search-depth",
-            "advanced",
-        ],
-        [
-            sys.executable,
-            str(PROJECT_ROOT / "scripts" / "fetch_firecrawl_seed.py"),
-            "--query",
-            topic,
-            "--max-results",
-            str(args.web_results),
-            "--max-pages",
-            str(args.web_pages),
-        ],
-        [
-            sys.executable,
-            str(PROJECT_ROOT / "scripts" / "fetch_jina_seed.py"),
-            "--query",
-            topic,
-            "--max-results",
-            str(args.web_results),
-            "--max-pages",
-            str(args.web_pages),
         ],
         [
             sys.executable,

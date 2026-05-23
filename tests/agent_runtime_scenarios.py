@@ -35,16 +35,16 @@ def test_tool_observation_matrix() -> None:
         ("ok", {"source": "mcmod", "returncode": 0, "manifest_stats": {"records": 2}}),
         ("empty", {"source": "mcmod", "returncode": 0, "empty_result": True, "manifest_stats": {"records": 0}}),
         ("off_topic", {"source": "web_discovery", "returncode": 0, "off_topic_result": True, "manifest_stats": {"records": 1}}),
-        ("uncertain", {"source": "jina", "returncode": 0, "uncertain_result": True, "manifest_stats": {"records": 1}}),
+        ("uncertain", {"source": "fetch_url", "returncode": 0, "uncertain_result": True, "manifest_stats": {"records": 1}}),
         ("duplicate_reused", {"source": "mcmod", "returncode": 0, "existing_evidence_reused": {"matched": True}, "manifest_stats": {"records": 0, "skipped": 3}}),
         ("blocked", {"source": "planner", "returncode": 2, "empty_query_result": True}),
         ("stopped", {"source": "browser_collect", "returncode": 130}),
-        ("timeout", {"source": "tavily", "returncode": 124, "timed_out": True}),
-        ("quota_limited", {"source": "firecrawl", "returncode": 1, "output": "HTTP 429 quota exceeded"}),
+        ("timeout", {"source": "web_discovery", "returncode": 124, "timed_out": True}),
+        ("quota_limited", {"source": "playwright", "returncode": 1, "output": "HTTP 429 quota exceeded"}),
         ("captcha_required", {"source": "browser_collect", "returncode": 1, "output": "captcha verification required"}),
         ("login_required", {"source": "browser_collect", "returncode": 1, "output": "please login or sign in"}),
-        ("auth_required", {"source": "firecrawl", "returncode": 1, "output": "HTTP 401 unauthorized"}),
-        ("network_error", {"source": "jina", "returncode": 1, "output": "failed to fetch: DNS connection error"}),
+        ("auth_required", {"source": "playwright", "returncode": 1, "output": "HTTP 401 unauthorized"}),
+        ("network_error", {"source": "fetch_url", "returncode": 1, "output": "failed to fetch: DNS connection error"}),
         ("parse_error", {"source": "playwright", "returncode": 1, "output": "JSONDecodeError invalid json"}),
         ("execution_error", {"source": "unknown", "returncode": 1, "output": "script failed"}),
     ]
@@ -151,7 +151,7 @@ def test_job_readable_summary_surfaces_observations() -> None:
             },
             "planned_tasks": [
                 {"source": "mcmod", "query": "乌托邦探险之旅", "reason": "项目页"},
-                {"source": "firecrawl", "query": "乌托邦探险之旅 玩法", "reason": "教程页"},
+                {"source": "playwright", "query": "乌托邦探险之旅 玩法", "reason": "教程页"},
             ],
             "tasks": [
                 {
@@ -161,7 +161,7 @@ def test_job_readable_summary_surfaces_observations() -> None:
                     "manifest_stats": {"records": 2, "skipped": 0, "errors": 0},
                 },
                 {
-                    "source": "firecrawl",
+                    "source": "playwright",
                     "query": "乌托邦探险之旅 玩法",
                     "returncode": 1,
                     "output": "HTTP 429 quota exceeded",
@@ -241,3 +241,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

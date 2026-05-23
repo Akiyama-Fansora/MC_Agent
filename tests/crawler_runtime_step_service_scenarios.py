@@ -33,7 +33,7 @@ def test_replan_inserts_unique_tasks_before_current_index() -> None:
     service = CrawlerRuntimeStepService()
     tasks = [
         {"source": "mcmod", "query": "乌托邦"},
-        {"source": "jina", "query": "乌托邦探险之旅"},
+        {"source": "fetch_url", "query": "乌托邦探险之旅"},
     ]
     result = service.apply_action(
         tasks=tasks,
@@ -94,3 +94,4 @@ if __name__ == "__main__":
     test_selected_index_swaps_next_pending_task()
     test_finish_returns_finish_reason()
     print("crawler_runtime_step_service_scenarios passed")
+

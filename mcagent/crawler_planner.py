@@ -82,26 +82,12 @@ TOOLSETS: dict[str, Toolset] = {
         default_limit=8,
         timeout_seconds=900,
     ),
-    "tavily": Toolset(
-        id="tavily",
-        label="Tavily Search/Extract",
-        purpose="通过 Tavily 搜索公开网页并提取 Markdown 正文，作为多源补库的高质量搜索/抽取渠道。",
-        default_limit=8,
-        timeout_seconds=900,
-    ),
-    "firecrawl": Toolset(
-        id="firecrawl",
-        label="Firecrawl Search/Scrape",
-        purpose="通过 Firecrawl 云端或自建服务搜索、抓取和清洗网页正文；云端需要 FIRECRAWL_API_KEY，自建需要 FIRECRAWL_API_URL。",
-        default_limit=8,
-        timeout_seconds=900,
-    ),
-    "jina": Toolset(
-        id="jina",
-        label="Jina Reader/Search",
-        purpose="无需 API key 的公开搜索与网页转 Markdown 兜底渠道。",
-        default_limit=8,
-        timeout_seconds=900,
+    "fetch_url": Toolset(
+        id="fetch_url",
+        label="Local URL Fetch/Extract",
+        purpose="Generic HTTP URL fetcher: request one public URL, extract readable text, save Markdown/raw HTML/manifest, and report blocked or too-short pages.",
+        default_limit=1,
+        timeout_seconds=180,
     ),
     "playwright": Toolset(
         id="playwright",
@@ -123,6 +109,20 @@ TOOLSETS: dict[str, Toolset] = {
         purpose="Generic local persistence primitive: save agent-provided txt/md/json/jsonl/csv/html content to a file path or directory and write a manifest. It does not fetch or ingest content by itself.",
         default_limit=1,
         timeout_seconds=120,
+    ),
+    "read_local_file": Toolset(
+        id="read_local_file",
+        label="Read Local File",
+        purpose="Generic local read primitive: read a specific text file into a Markdown artifact so CrawlerAgent can inspect or summarize it.",
+        default_limit=1,
+        timeout_seconds=120,
+    ),
+    "search_local_files": Toolset(
+        id="search_local_files",
+        label="Search Local Files",
+        purpose="Generic local search primitive: search a file or directory for terms and save a report with matching snippets.",
+        default_limit=25,
+        timeout_seconds=180,
     ),
     "modpack_download": Toolset(
         id="modpack_download",
@@ -475,23 +475,10 @@ def plan_crawler_tasks(
                             max_urls=10,
                         )
                     )
-                    tasks.append(
-                        PlannedTask(
-                            source="tavily",
-                            query=recipe_queries[0],
-                            reason="Tavily 可直接搜索并抽取正文 Markdown，补充 MC百科以外的配方、教程和图片线索。",
-                            priority=74,
-                            search_limit=8,
-                            max_urls=8,
-                            params={"search_depth": "advanced"},
-                        )
-                    )
             tasks.append(PlannedTask(source="mcmod", query=query, reason="中文 MC 项目/教程优先查 MC百科，覆盖 Modrinth 缺少的中文资料和教程页。", priority=90, search_limit=8))
             tasks.append(PlannedTask(source="modrinth", query=query, reason="问题像 MC 生态项目，需要先查 Modrinth 项目元数据。", priority=80))
             tasks.append(PlannedTask(source="followup", query=query, reason="若项目元数据不足，跟进公开文档。", priority=45, max_urls=40))
-            tasks.append(PlannedTask(source="tavily", query=query, reason="使用 Tavily 搜索并提取公开网页正文，补充项目文档和教程资料。", priority=55, search_limit=8, max_urls=8, params={"search_depth": "advanced"}))
-            tasks.append(PlannedTask(source="firecrawl", query=query, reason="使用 Firecrawl 搜索/抓取网页正文，补充高质量 Markdown 证据。", priority=54, search_limit=8, max_urls=8))
-            tasks.append(PlannedTask(source="jina", query=query, reason="使用 Jina Reader/Search 免费兜底搜索和抽取网页正文。", priority=48, search_limit=8, max_urls=8))
+            tasks.append(PlannedTask(source="fetch_url", query=query, reason="如果任务包含明确 URL，使用本地 HTTP 读取正文和 raw HTML。", priority=76))
             tasks.append(PlannedTask(source="playwright", query=query, reason="用 Playwright 浏览器采集复杂页面、下载页或需要 raw HTML 的页面。", priority=74, search_limit=8, max_urls=6))
             tasks.append(PlannedTask(source="web_discovery", query=query, reason="若结构化 API 和项目链接仍无资料，使用公开搜索发现候选资料源。", priority=35, max_urls=8))
         elif intent.domain == "vanilla":
@@ -501,8 +488,7 @@ def plan_crawler_tasks(
             tasks.append(PlannedTask(source="mcmod", query=query, reason="主题不明确时先用 MC百科中文搜索发现候选模组、整合包或教程资料。", priority=65, search_limit=8))
             tasks.append(PlannedTask(source="modrinth", query=query, reason="未知 MC 主题，先用 Modrinth 做项目发现。", priority=60))
             tasks.append(PlannedTask(source="mediawiki", query=question, reason="同时检查原版 Wiki 是否有同名机制。", priority=50))
-            tasks.append(PlannedTask(source="tavily", query=query, reason="主题不明确时用 Tavily 做公开网页搜索和正文抽取。", priority=45, search_limit=8, max_urls=8, params={"search_depth": "advanced"}))
-            tasks.append(PlannedTask(source="jina", query=query, reason="主题不明确时用 Jina Reader/Search 做免费搜索抽取兜底。", priority=42, search_limit=8, max_urls=8))
+            tasks.append(PlannedTask(source="fetch_url", query=query, reason="如果发现明确 URL，使用本地 HTTP 直接读取页面。", priority=46))
             tasks.append(PlannedTask(source="playwright", query=query, reason="用 Playwright 浏览器渲染并保存候选页面正文和 raw HTML。", priority=72, search_limit=8, max_urls=6))
             tasks.append(PlannedTask(source="web_discovery", query=query, reason="项目发现不明确时，用公开搜索兜底寻找候选资料源。", priority=35, max_urls=6))
 

@@ -345,7 +345,7 @@ def classify_crawler_tool_result(result: dict[str, Any]) -> ToolObservation:
 
     if returncode != 0:
         if any(token in text for token in ("quota", "429", "rate limit", "insufficient credit", "billing", "credit")):
-            return observation("quota_limited", "Provider quota or rate limit blocked this tool call.", retryable=False, suggested_next="Switch providers or use browser/Jina/local sources.")
+            return observation("quota_limited", "Provider quota or rate limit blocked this tool call.", retryable=False, suggested_next="Use browser extraction, local HTTP fetch, or another public source.")
         if any(token in text for token in ("captcha", "verify you are human", "verification")):
             return observation("captcha_required", "Target appears to require captcha or human verification.", retryable=False, suggested_next="Report the blocker or use an accessible mirror/source.")
         if any(token in text for token in ("login", "sign in", "401", "403", "auth", "permission", "unauthorized", "forbidden")):
@@ -471,7 +471,7 @@ CRAWLER_ROUTE_TOOLS = [
     ),
     ToolSpec(
         name="temporary_extract",
-        description="Fetch public URL text for an immediate CrawlerAgent answer when persistence is not part of the selected plan.",
+        description="Fetch public URL text for an immediate CrawlerAgent answer when persistence/background collection is not needed.",
         input_schema={"query_or_url": "public URL and extraction/summarization request"},
         result_schema={"extracted_text": "temporary page text", "answer": "LLM-written summary", "saved_to_local": False},
         side_effects="network_only_no_filesystem_persistence",
@@ -523,11 +523,35 @@ CRAWLER_COLLECTION_TOOLS = [
         llm_final_answer_required=False,
     ),
     ToolSpec(
+        name="fetch_url",
+        description="Fetch one public URL with local HTTP and extract readable text/raw HTML without API keys.",
+        input_schema={"query_or_url": "public URL or task containing a URL"},
+        result_schema={"markdown": "saved extracted text", "raw_html": "saved raw response", "manifest": "metadata and errors"},
+        side_effects="network_and_filesystem",
+        llm_final_answer_required=False,
+    ),
+    ToolSpec(
         name="save_artifact",
         description="Save agent-provided content to a local file in txt, md, json, jsonl, csv, or html format.",
         input_schema={"content": "string/object/list to persist", "content_ref": "optional prior artifact id such as latest or r1.1", "format": "txt|md|json|jsonl|csv|html", "path": "file or directory path", "filename": "optional file name"},
         result_schema={"path": "saved file", "manifest": "save metadata", "failure_reason": "if serialization or filesystem write failed"},
         side_effects="filesystem",
+        llm_final_answer_required=False,
+    ),
+    ToolSpec(
+        name="read_local_file",
+        description="Read one local text file and expose it as a crawler artifact for later summarization or saving.",
+        input_schema={"path": "absolute or workspace-relative file path", "max_chars": "optional read limit"},
+        result_schema={"markdown": "saved readable copy", "manifest": "metadata and errors"},
+        side_effects="read_filesystem_and_write_artifact",
+        llm_final_answer_required=False,
+    ),
+    ToolSpec(
+        name="search_local_files",
+        description="Search local text files under a directory or file path and return matching snippets as artifacts.",
+        input_schema={"path": "directory or file path", "query": "terms to search", "max_files": "optional match limit"},
+        result_schema={"matches": "matching files and snippets", "manifest": "metadata and errors"},
+        side_effects="read_filesystem_and_write_artifact",
         llm_final_answer_required=False,
     ),
     ToolSpec(
@@ -559,30 +583,6 @@ CRAWLER_COLLECTION_TOOLS = [
         description="Discover public web pages and candidate URLs from broad search.",
         input_schema={"query": "short discovery query"},
         result_schema={"candidates": "URLs and snippets"},
-        side_effects="network_and_filesystem",
-        llm_final_answer_required=False,
-    ),
-    ToolSpec(
-        name="tavily",
-        description="Use Tavily search/extract when configured and quota allows.",
-        input_schema={"query": "short web query"},
-        result_schema={"records": "search/extract markdown"},
-        side_effects="network_and_filesystem",
-        llm_final_answer_required=False,
-    ),
-    ToolSpec(
-        name="firecrawl",
-        description="Use Firecrawl search/scrape when configured and quota allows.",
-        input_schema={"query_or_url": "search query or URL"},
-        result_schema={"records": "clean markdown/scrape results"},
-        side_effects="network_and_filesystem",
-        llm_final_answer_required=False,
-    ),
-    ToolSpec(
-        name="jina",
-        description="Use Jina Reader/Search as a no-key fallback for page text extraction/search.",
-        input_schema={"query_or_url": "search query or URL"},
-        result_schema={"records": "reader/search markdown"},
         side_effects="network_and_filesystem",
         llm_final_answer_required=False,
     ),

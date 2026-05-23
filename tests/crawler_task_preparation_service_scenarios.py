@@ -75,7 +75,7 @@ def test_build_payload_preserves_generic_artifact_fields() -> None:
 
 def test_empty_query_result_is_objective_failure_observation() -> None:
     result = CrawlerTaskPreparationService().empty_query_result(
-        task_source="jina",
+        task_source="fetch_url",
         task={"reason": "LLM returned an empty query"},
     )
     assert_equal("returncode", result["returncode"], 2)
@@ -91,3 +91,4 @@ if __name__ == "__main__":
     test_build_payload_preserves_generic_artifact_fields()
     test_empty_query_result_is_objective_failure_observation()
     print("crawler_task_preparation_service_scenarios passed")
+

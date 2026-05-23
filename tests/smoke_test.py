@@ -53,8 +53,8 @@ def main() -> int:
     assert "save_artifact" in collection_catalog, "Crawler collection catalog missing save artifact tool"
     assert validate_tool_name("crawler_agent", "answer", fallback="delegate_crawler") == "delegate_crawler"
     assert "LLM owns interpretation" in tool_catalog_prompt("mcagent_rag")
-    assert classify_crawler_tool_result({"source": "tavily", "returncode": 124, "timed_out": True}).status == "timeout"
-    assert classify_crawler_tool_result({"source": "firecrawl", "returncode": 1, "output": "HTTP 429 quota exceeded"}).status == "quota_limited"
+    assert classify_crawler_tool_result({"source": "web_discovery", "returncode": 124, "timed_out": True}).status == "timeout"
+    assert classify_crawler_tool_result({"source": "playwright", "returncode": 1, "output": "HTTP 429 quota exceeded"}).status == "quota_limited"
     assert classify_crawler_tool_result({"source": "mcmod", "returncode": 0, "empty_result": True, "manifest_stats": {"records": 0}}).status == "empty"
     assert classify_crawler_tool_result({"source": "mcmod", "returncode": 0, "topic_validation": {"matched": True}, "manifest_stats": {"records": 2}}).status == "ok"
     contract = build_handoff_contract(
@@ -124,3 +124,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

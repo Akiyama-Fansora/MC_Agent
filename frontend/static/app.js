@@ -150,7 +150,7 @@ function activityTextForTrace(step) {
 function progressTextForTrace(step) {
   const detail = step?.detail || {};
   const stage = `${step?.stage || ""}:${step?.status || ""}`;
-  if (stage === "observe:received") return "我先理解你的问题，判断是问答、状态查询，还是要交给 Crawler 采集。";
+  if (stage === "observe:received") return "我正在理解你的请求，并准备选择合适的下一步。";
   if (stage === "observe:contextualized") return "这像是在接着前面的内容追问，我会把当前会话主题一起带上。";
   if (stage === "decide:tool_selected") {
     if (detail.tool === "direct_answer") return "MCagent 判断这轮不需要查资料，直接组织回复。";

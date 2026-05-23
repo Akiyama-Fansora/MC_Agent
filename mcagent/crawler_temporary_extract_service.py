@@ -64,11 +64,6 @@ class CrawlerTemporaryExtractService:
         match = URL_RE.search(str(text or ""))
         return match.group(0).rstrip(".,;:")
 
-    def reader_url(self, url: str) -> str:
-        if url.startswith("https://r.jina.ai/"):
-            return url
-        return "https://r.jina.ai/http://" + url.removeprefix("http://").removeprefix("https://")
-
     def html_to_text(self, raw: str, content_type: str) -> tuple[str, str]:
         if "html" not in str(content_type or "").lower() and "<html" not in raw[:1000].lower():
             text = normalize_text(raw)
@@ -85,15 +80,14 @@ class CrawlerTemporaryExtractService:
     def fetch_text(self, url: str, *, fetch: FetchTextFn | None = None) -> tuple[str, str, str, int]:
         fetcher = fetch or self.default_fetch
         errors: list[str] = []
-        for candidate in (self.reader_url(url), url):
-            try:
-                raw, content_type, status = fetcher(candidate)
-                title, text = self.html_to_text(raw, content_type)
-                if len(text) >= 120:
-                    return title, text, content_type, status
-                errors.append(f"{candidate}: extracted text too short")
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
+        try:
+            raw, content_type, status = fetcher(url)
+            title, text = self.html_to_text(raw, content_type)
+            if len(text) >= 120:
+                return title, text, content_type, status
+            errors.append(f"{url}: extracted text too short")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{url}: {type(exc).__name__}: {exc}")
         raise RuntimeError("; ".join(errors) or "temporary extraction failed")
 
     def run(

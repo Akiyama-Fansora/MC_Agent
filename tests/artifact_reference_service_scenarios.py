@@ -56,7 +56,7 @@ def write_manifest() -> tuple[Path, Path]:
 def test_collect_refs_from_manifest() -> None:
     doc, raw = write_manifest()
     refs = ArtifactReferenceService().collect_from_result(
-        result={"source": "jina", "query": "example", "export_dir": str(TMP), "manifest_stats": {"manifest_path": str(TMP / "manifest.json")}},
+        result={"source": "fetch_url", "query": "example", "export_dir": str(TMP), "manifest_stats": {"manifest_path": str(TMP / "manifest.json")}},
         result_index=1,
     )
     assert_equal("refs_count", len(refs), 2)
@@ -69,7 +69,7 @@ def test_collect_refs_from_manifest() -> None:
 def test_resolve_latest_ref_into_payload_content() -> None:
     write_manifest()
     service = ArtifactReferenceService()
-    refs = service.collect_from_result(result={"source": "jina", "query": "example", "export_dir": str(TMP)}, result_index=2)
+    refs = service.collect_from_result(result={"source": "fetch_url", "query": "example", "export_dir": str(TMP)}, result_index=2)
     payload = service.resolve_payload_refs({"content_ref": "latest:md", "metadata": {"purpose": "copy"}}, refs)
     assert_true("content_loaded", "Useful text" in payload["content"])
     assert_equal("metadata_ref", payload["metadata"]["resolved_artifact_ref"]["id"], "r2.1")
@@ -91,3 +91,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

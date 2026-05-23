@@ -141,7 +141,7 @@ class CrawlerTaskMaterializationService:
             query = str(query_value).strip()
             if not query:
                 continue
-            source = "mcmod" if index < 10 else "tavily"
+            source = "mcmod" if index < 10 else "web_discovery"
             task: dict[str, Any] = {
                 "source": source,
                 "query": query,
@@ -150,8 +150,6 @@ class CrawlerTaskMaterializationService:
                 "search_limit": 8,
                 "max_urls": 6,
             }
-            if source == "tavily":
-                task["search_depth"] = "advanced"
             identity = identity_fn(task)
             if identity in seen:
                 continue

@@ -1,4 +1,4 @@
-﻿# MCagent / CrawlerAgent 开发文档
+# MCagent / CrawlerAgent 开发文档
 
 最后更新：2026-05-22
 
@@ -54,12 +54,12 @@ CrawlerAgent 可用工具：
 
 - mcmod_search/scrape：MC百科搜索与页面抓取。
 - modrinth_search：Modrinth 项目/整合包信息。
-- tavily_search/extract：公网搜索和正文提取。
-- firecrawl_search/scrape：公网搜索、页面正文、JS 页面辅助抓取。
-- jina_search/reader：免费搜索和 URL 转 Markdown。
-- web_discovery：公开搜索发现候选 URL。
-- playwright_fallback：网页需要 JS、交互或页面结构复杂时兜底。
-- raw_html_store：保存原始 HTML，便于后续从原文回查表格、图片和隐藏信息。
+- web_discovery：使用本地 HTTP 和公开搜索发现候选 URL，并保存可读正文与 raw HTML。
+- fetch_url：本地 HTTP 读取单个公开 URL，提取正文、raw HTML 和 manifest，不需要第三方 API key。
+- playwright/browser_collect：用本地浏览器渲染、观察、结构化采集和诊断 JS 页面。
+- read_local_file/search_local_files：读取或搜索本地文件，让 Crawler 能复用下载包体、用户给定文件和已有导出。
+- save_artifact：把 Agent 已有内容按 txt/md/json/jsonl/csv/html 保存到指定路径或默认导出目录。
+- modpack_download/modpack_internal：发现公开整合包包体，并解析 manifest、modlist、任务、配置、脚本和配方。
 - ingest_to_rag：把采集资料清洗入库。
 
 ## 3. MCagent 工作流
@@ -342,7 +342,7 @@ node --check D:\magic\AgentConsole\static\app.js
 
 ## 13. 本轮修复：2026-05-19 02:15
 
-本轮开始前已重新阅读本文档，并阅读 crawler-stack-helper 与 playwright-helper。用户指出 Crawler 仍被过度限制，尤其 Firecrawl 额度不足时不应卡住，应该能主动使用浏览器采集；同时用户明确当前语境中的“乌托邦”指 Minecraft 整合包“乌托邦探险之旅 / Utopian Journey”。
+本轮开始前已重新阅读本文档，并阅读 crawler-stack-helper 与 playwright-helper。用户指出 Crawler 仍被过度限制，尤其 legacy hosted crawler 额度不足时不应卡住，应该能主动使用浏览器采集；同时用户明确当前语境中的“乌托邦”指 Minecraft 整合包“乌托邦探险之旅 / Utopian Journey”。
 
 ### 13.1 真实状态核对
 
@@ -352,7 +352,7 @@ node --check D:\magic\AgentConsole\static\app.js
 
 ### 13.2 代码修复
 
-1. Crawler 工具执行层新增空查询防护：空查询不是可执行动作，工具层会拒绝运行并把客观失败写回任务结果，交给 CrawlerAgent 反思/重规划，而不是启动无意义的 Modrinth/Jina/Playwright 请求。
+1. Crawler 工具执行层新增空查询防护：空查询不是可执行动作，工具层会拒绝运行并把客观失败写回任务结果，交给 CrawlerAgent 反思/重规划，而不是启动无意义的 Modrinth/local URL fetch/Playwright 请求。
 2. Playwright 从“兜底”升级为一等浏览器采集工具：`crawler_llm_planner.py`、`crawler_planner.py`、`provider_registry.py` 和前端工具描述均更新为“浏览器搜索/采集/渲染 + raw HTML 保存”。
 3. Crawler planner 与 reflection 的 token 上限提高，减少 Crawler LLM 输出半截 JSON 导致 fallback 的概率。
 4. 修复 target_hint 抽取：优先使用会话中的 `collection_target`，并能识别“整合包「乌托邦探险之旅 / Utopian Journey」”这类引号目标，避免把目标错误清洗成泛词 Minecraft 或 Utopia。
@@ -381,7 +381,7 @@ node --check D:\magic\AgentConsole\static\app.js
 
 - CrawlerAgent 先反思初始任务有泛查询风险，主动重规划为更短、更准的动作。
 - 它先执行 Playwright 直接抓取 MC百科 modpack/1337 页面。
-- 第一条直接页面与已有 Jina 资料重复，被识别为“可复用重复证据”，没有重复入库。
+- 第一条直接页面与已有 local URL fetch 资料重复，被识别为“可复用重复证据”，没有重复入库。
 - 随后 CrawlerAgent 主动追加并执行 Playwright 抓取 `https://www.mcmod.cn/modpack/1337.html?tab=mods`，用于获取渲染后的模组列表。
 
 当前结论：CrawlerAgent 已经比上一轮更接近“LLM 主导 + 浏览器工具辅助”的形态，但仍需继续观察本轮任务完成后的 collection_summary，确认是否真正拿到模组表、下载链接和教程正文。
@@ -671,11 +671,11 @@ CrawlerAgent 已有的行动循环继续保留：
 
 - 目标：乌托邦探险之旅 / Utopian Journey 整合包。
 - 交付对象：MCagent/RAG。
-- Crawler 计划包含：Playwright、modpack_download、web_discovery、browser_collect、modpack_internal、Tavily、Firecrawl。
+- Crawler 计划包含：Playwright、modpack_download、web_discovery、browser_collect、modpack_internal、legacy hosted search、legacy hosted crawler。
 - 第一步行动前反思：先打开 MC百科页面保存完整 HTML，作为核心页面证据。
 - 第二步行动前反思：尝试寻找并下载公开 `.mrpack/.zip` 包体，若成功再解析内部资料。
 
-当前包体发现工具已能记录“未找到公开包体直链”的客观原因。下一步需要继续观察新任务 `1779198967433-1` 的 collection_summary，并确认它是否通过 web_discovery / Playwright / Tavily 找到足够的玩法、任务线、版本差异和系统资料。
+当前包体发现工具已能记录“未找到公开包体直链”的客观原因。下一步需要继续观察新任务 `1779198967433-1` 的 collection_summary，并确认它是否通过 web_discovery / Playwright / legacy hosted search 找到足够的玩法、任务线、版本差异和系统资料。
 
 ### 19.5 验证
 
@@ -1039,7 +1039,7 @@ python tests\smoke_test.py
 2. `web_server.py` 的工具选择 prompt 改为读取统一 Agent Runtime 工具目录，减少散落硬编码。
 3. `web_server.py` 的下一步确认 prompt 改为读取统一 Agent Runtime 工具目录，让“确认下一步”从同一份工具能力描述出发。
 4. `_fallback_delegate_handoff_brief()` 改为使用 `HandoffContract` 生成通用交接摘要，包含调用关系、用户原话、任务目标、交付对象、上下文、验收标准和失败汇报要求。
-5. `crawler_llm_planner.py` 的 CrawlerAgent 规划 prompt 引入 collection tool catalog，让 Crawler 的规划 LLM 明确知道浏览器、包体下载、包体内部解析、MC百科、Modrinth、Tavily、Firecrawl、Jina 等工具的边界。
+5. `crawler_llm_planner.py` 的 CrawlerAgent 规划 prompt 引入 collection tool catalog，让 Crawler 的规划 LLM 明确知道浏览器、包体下载、包体内部解析、MC百科、Modrinth、legacy hosted search、legacy hosted crawler、local URL fetch 等工具的边界。
 6. `tests/smoke_test.py` 增加 Agent Runtime 基础断言，保证：
    - MCagent 工具目录包含 direct answer、RAG、委托和状态；
    - CrawlerAgent route 工具目录包含 direct answer、委托和状态；
@@ -3500,7 +3500,7 @@ python api.py --host 127.0.0.1 --port 8766
 
 1. 新增 `mcagent/crawler_temporary_extract_service.py`：
    - 从自然语言任务中提取公开 URL；
-   - 优先尝试 Jina Reader 包装 URL，再回退原始 URL；
+   - 使用本地 HTTP 读取公开 URL；
    - 把 HTML 转成简洁文本；
    - 返回 `saved_to_local=False` 的客观结果，并交给 CrawlerAgent LLM 生成最终摘要。
 2. 修改 `mcagent/agent_runtime.py`：
@@ -3532,6 +3532,50 @@ python api.py --host 127.0.0.1 --port 8766
 3. 直接与 Crawler 对话，给公开可访问 URL，检查 Crawler 能获取指定数据、直接返回结果，并在不保存时不写本地。
 4. 让 Crawler 上网找资料并保存给 MCagent/RAG，检查能产生 manifest/markdown，导入后 MCagent 能检索到。
 5. 让 Crawler 获取网页或数据并保存到用户指定本地路径，检查文件存在、格式合理、失败时能说明访问限制或工具错误。
+
+## 62. Crawler 工具原语通用化（2026-05-23）
+
+用户明确要求：不要再把 Crawler 绑在固定托管抓取服务上。CrawlerAgent 应像 Codex、Hermes、Claude Code、OpenClaw 这类 Agent 一样，由 LLM 观察通用工具目录并自由组合工具。工具函数只负责和互联网、本地文件系统、浏览器、RAG 存储交互，不替 LLM 决定目标、流程或最终解释。
+
+### 62.1 参考项目对照
+
+- Hermes 的核心工具形态包括：`web_search/web_extract`、`terminal/process`、`read_file/write_file/patch/search_files`、浏览器动作、todo、memory、session_search、delegate_task。
+- OpenClaw 的工具展示和运行时围绕：bash/process、read/write/edit、attach、browser open/snapshot/screenshot/navigate/click/type、memory_search、web_search、web_fetch。
+- Claude Code 的公开变更记录显示其重点是：Bash/PowerShell、Read/Write、Glob/Grep、WebSearch/WebFetch、MCP 工具发现、subagent、hooks、权限和观测事件。
+
+结论：大型 Agent 的工具不是“某网站专用流程”，而是少量稳定原语：搜索、读取、浏览器观察、点击输入、文件读写、结构化保存、进程/任务状态、记忆/会话检索、委托和失败观测。
+
+### 62.2 本轮代码变更
+
+1. 移除当前活跃 Crawler 链路中的托管抓取依赖：
+   - 删除旧的抓取脚本入口；
+   - `CRAWLER_COLLECTION_TOOLS` 和 LLM planner 不再暴露这些工具；
+   - `web_discovery` 不再把页面包到第三方 Reader，而是直接使用本地 HTTP 抓取候选 URL。
+2. 新增 `scripts/fetch_url_seed.py`：
+   - 输入自然语言或 URL；
+   - 本地 HTTP 请求公开 URL；
+   - 提取正文、保存 raw HTML、Markdown 和 manifest；
+   - 无 API key，失败时记录 `failure_reason`。
+3. 新增本地文件通用工具：
+   - `scripts/read_local_file.py`：读取单个文本文件并转成 Crawler artifact；
+   - `scripts/search_local_files.py`：搜索目录/文件并保存匹配报告。
+4. 更新工具目录：
+   - Crawler collection catalog 现在暴露 `fetch_url`、`web_discovery`、`playwright`、`browser_collect`、`save_artifact`、`read_local_file`、`search_local_files`、`modpack_download`、`modpack_internal`。
+   - 工具说明只描述能力、输入、输出和副作用，不绑定特定测试句式。
+5. 更新测试：
+   - 新增 `tests/generic_local_tool_scenarios.py` 覆盖本地读取与搜索；
+   - 旧测试中的托管抓取源改为通用源；
+   - 五方向测试矩阵已重写为干净 UTF-8 文档。
+
+### 62.3 后续工具方向
+
+下一阶段继续按“通用原语”补齐，而不是写站点特例：
+
+1. 浏览器动作拆分：snapshot、click、type、scroll、screenshot、console/network observation。
+2. HTML/链接解析：从 URL、raw HTML 或 artifact_ref 中提取链接、表格、图片和正文块。
+3. 下载与文件类型识别：对 PDF、CSV、JSON、ZIP/JAR/MRPACK、图片执行不同解析链。
+4. 结构化抽取：给定 schema/字段名，从页面或文件输出 JSON/CSV，并报告缺失字段。
+5. 失败诊断：区分 DNS、TLS、403、登录、验证码、JS 渲染、空正文、字段缺失、超时和重复证据。
 
 ### 61.4 本轮测试方案与结果
 
@@ -3720,3 +3764,4 @@ python scripts\public_readiness_check.py
 node --check frontend\static\app.js
 node --check frontend\static\settings.js
 ```
+

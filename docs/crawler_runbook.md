@@ -129,9 +129,9 @@ Crawler 是独立 Agent，应该形成完整循环：
 | `mcmod` | 中文 MC 模组、整合包、教程、评论、表格、MC百科页面。 |
 | `modrinth` | 项目元数据、整合包 contents、版本、链接。 |
 | `followup` | 从项目元数据发现 Source/Wiki/README/docs 后继续抓。 |
-| `tavily` | 公开网页搜索与正文抽取，适合教程和资料页发现。 |
-| `firecrawl` | 托管搜索/抓取，适合较干净的网页正文。 |
-| `jina` | 免费搜索/Reader 兜底，URL 转 Markdown。 |
+| `web_discovery` | 公开网页搜索与正文抽取，适合教程和资料页发现。 |
+| `playwright` | 托管搜索/抓取，适合较干净的网页正文。 |
+| `fetch_url` | 免费搜索/Reader 兜底，URL 转 Markdown。 |
 | `web_discovery` | 通用发现、raw HTML 保存、GitHub README 扩展。 |
 | `playwright` | JS 页面、复杂表格、渲染页面、raw HTML 兜底。 |
 | `mediawiki` | 原版 Minecraft 机制。 |
@@ -141,7 +141,7 @@ Crawler 是独立 Agent，应该形成完整循环：
 
 - `mcmod` 搜索为空：换短中文名、英文别名，用 web_discovery 找 MC百科直达 URL。
 - `modrinth` 元数据太浅：用 `followup` 跟进 Source/Wiki/README，再用网页源补教程。
-- `tavily/firecrawl` 报错或空：换 Jina 和 web_discovery。
+- `web_discovery/playwright` 报错或空：换 local URL fetch 和 web_discovery。
 - 正文抽取漏表格/图片：查 raw HTML，必要时 Playwright。
 - 多来源重复：保留不同文章/页面，删除完全相同 URL 或内容指纹重复项。
 
@@ -184,7 +184,7 @@ UI 应该让进度可观察：
 - Crawler LLM 有时返回空或非法 JSON，target-aware fallback 必须保持可靠。
 - Crawler LLM 规划偶尔超时或返回非 JSON。当前 fallback 能继续执行，但后续要增强 prompt/JSON 修复与可观察错误。
 - 部分托管搜索源对中文小众主题会返回 0 records 或跑偏结果，需要更强主题校验与短查询重试。
-- 本轮发现 Jina 对 `落幕曲 Closing Song MC百科` 抓到 Kafka/Wikipedia 跑偏页面，必须清理并防止入库。
+- 本轮发现 local URL fetch 对 `落幕曲 Closing Song MC百科` 抓到 Kafka/Wikipedia 跑偏页面，必须清理并防止入库。
 - 停止 Crawler job 目前只设置 stop 标记，还不能中断正在运行的子进程；后续要补真正的子进程取消。
 
 ## 10. 近期变更记录
@@ -198,14 +198,14 @@ UI 应该让进度可观察：
 - LLM 规划失败时增加 target-aware fallback，避免整句搜索。
 - 空结果不再触发 ingest，标记为 `empty_result`。
 - 启动落幕曲继续补库任务：`1779011197830-1`。
-- 发现跑偏入库问题：Jina 产出 Kafka/Wikipedia 噪声记录。下一步必须做主题相关性校验和清理。
+- 发现跑偏入库问题：local URL fetch 产出 Kafka/Wikipedia 噪声记录。下一步必须做主题相关性校验和清理。
 - 已清理 Kafka/Wikipedia 跑偏记录，重建 FTS 与向量索引。
 - Crawler 入库前增加主题相关性校验：有 records 但不命中目标主题时标记 `off_topic_result`，不触发 ingest。
 - 验证任务 `1779013057758-1`：8 个任务全部无有效新增；followup 的 2 条 records 被判定跑偏且未入库。
 - Crawler 执行循环改为队列式，支持连续空/跑偏/失败后的中途重规划。
 - 新增失败摘要、任务去重、重规划记录：`_crawler_failure_summary`、`_crawler_task_identity`、`_replan_crawler_tasks`。
 - 修正失败统计：`empty_result` 与 `off_topic_result` 计入 `failure_count`。
-- 验证任务 `1779013754416-1`：Closing Song 小任务中 MC百科 1 条主题匹配并入库，Modrinth/Tavily/Firecrawl 为空；验证了 query/reason 记录与空结果标记。该任务有成功结果，所以未触发中途重规划，符合规则。
+- 验证任务 `1779013754416-1`：Closing Song 小任务中 MC百科 1 条主题匹配并入库，Modrinth/legacy hosted search/legacy hosted crawler 为空；验证了 query/reason 记录与空结果标记。该任务有成功结果，所以未触发中途重规划，符合规则。
 - 新增 Crawler 采集总结器：读取 job task results 与 manifest，汇总 records、skipped、errors、重复跳过、低相关跳过、raw HTML 数量、可用记录样例和下一步建议。
 - Crawler job 最终 result 增加 `collection_summary`；新增 `/api/crawler/summary` GET/POST，用于查看最近导出 manifest 的汇总。
 - 修正 source alias：`modrinth_agent` 归一为 `modrinth`。
@@ -246,7 +246,7 @@ UI 应该让进度可观察：
 - Crawler 的主观判断必须由 LLM 完成，工具只提供 source、query、正文、URL、候选和统计。
 - 如果资料要给 MCagent/RAG 使用，Crawler 需要保存 Markdown、manifest、raw HTML 路径、来源 URL、清洗策略和可切分正文。
 - 每次 ingest 后必须更新 `crawler_exports` 汇总和数据库统计，状态页能看出新增、重复、跳过、失败。
-- fallback 任务必须读取 `session_summary`、MCagent 缺口、用户交付要求和 Crawler LLM 的上一轮判断，再选择 Tavily、Firecrawl、Jina、web_discovery、Playwright、MC百科或 Modrinth 等工具。
+- fallback 任务必须读取 `session_summary`、MCagent 缺口、用户交付要求和 Crawler LLM 的上一轮判断，再选择 legacy hosted search、legacy hosted crawler、local URL fetch、web_discovery、Playwright、MC百科或 Modrinth 等工具。
 - `_select_diverse_tasks()` 只能做客观多样性选择，不能替代 Crawler LLM 判断哪些主题重要。
 - fallback priority 只能作为执行队列排序提示，不能把某个来源或父主题共现变成硬门控。
 - 后续需要验证：Boss 清单、Boss 地点、Boss 打法、掉落、GitHub README、MC百科教程、B站标题索引等资料能否入库并被 MCagent RAG 使用。
@@ -519,4 +519,5 @@ python scripts\smoke_agent_flows.py
 - Crawler running 阶段的 job progress 还不够细，需要在 planner 产出 source/query/reason 后立即写入 job.result，方便状态页实时显示。
 - `梦想一心怎么做` 已能命中教程，但兜底仍可能只是摘录标题和证据行；后续要做通用“步骤型答案压缩器”，把同来源教程整理成 1、2、3 步。
 
-2026-05-18 补充：用户反馈“落幕曲新手该怎么玩”最终回答仍显示“本地资料中找到以下相关证据”。已修复超时兜底的回答形态：新手/玩法/攻略类问题会组织为可读路线建议，不再把内部证据清单直接作为最终回复；同时过滤 Tavily Query/source、下载站标题、loading 图片等元信息。常规 RAG 检索候选数改为自适应，不再固定 200；检索规划 LLM 默认只在复杂/完整资料/多实体配方等场景启用，普通问答使用快速兜底计划。
+2026-05-18 补充：用户反馈“落幕曲新手该怎么玩”最终回答仍显示“本地资料中找到以下相关证据”。已修复超时兜底的回答形态：新手/玩法/攻略类问题会组织为可读路线建议，不再把内部证据清单直接作为最终回复；同时过滤 legacy hosted search Query/source、下载站标题、loading 图片等元信息。常规 RAG 检索候选数改为自适应，不再固定 200；检索规划 LLM 默认只在复杂/完整资料/多实体配方等场景启用，普通问答使用快速兜底计划。
+

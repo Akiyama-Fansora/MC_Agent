@@ -33,7 +33,7 @@ def test_single_source_task_prefers_payload_query_then_question() -> None:
 
 
 def test_fallback_plan_preserves_tasks_without_planning() -> None:
-    tasks = [{"source": "jina", "query": "乌托邦探险之旅"}]
+    tasks = [{"source": "fetch_url", "query": "乌托邦探险之旅"}]
     plan = CrawlerJobSetupService().fallback_plan(tasks=tasks)
     assert_equal("strategy", plan["strategy"], "fallback_all_source_tasks")
     assert_equal("same_tasks", plan["tasks"], tasks)
@@ -67,3 +67,4 @@ if __name__ == "__main__":
     test_limits_respect_payload_and_total_cap()
     test_stopped_updates_do_not_own_end_time()
     print("crawler_job_setup_service_scenarios passed")
+

@@ -26,12 +26,6 @@ def test_extract_url_from_natural_request() -> None:
     assert_equal("url", url, "https://example.com/a/b?x=1")
 
 
-def test_reader_url_wraps_plain_url() -> None:
-    service = CrawlerTemporaryExtractService()
-    assert_equal("reader", service.reader_url("https://example.com/a"), "https://r.jina.ai/http://example.com/a")
-    assert_equal("already_reader", service.reader_url("https://r.jina.ai/http://example.com/a"), "https://r.jina.ai/http://example.com/a")
-
-
 def test_html_to_text_extracts_title_and_body() -> None:
     service = CrawlerTemporaryExtractService()
     title, text = service.html_to_text("<html><head><title>商品</title></head><body><h1>商品</h1><p>商品是用于交换的劳动产品。</p></body></html>", "text/html")
@@ -65,7 +59,7 @@ def test_run_uses_fetch_and_does_not_save() -> None:
 
 if __name__ == "__main__":
     test_extract_url_from_natural_request()
-    test_reader_url_wraps_plain_url()
     test_html_to_text_extracts_title_and_body()
     test_run_uses_fetch_and_does_not_save()
     print("crawler_temporary_extract_service_scenarios passed")
+

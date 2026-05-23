@@ -640,13 +640,10 @@ def _source_alias(source: str) -> str:
         "modrinth_followup": "followup",
         "search": "web_discovery",
         "public_search": "web_discovery",
-        "reader": "web_discovery",
-        "tavily_api": "tavily",
-        "tavily_search": "tavily",
-        "firecrawl_api": "firecrawl",
-        "firecrawl_search": "firecrawl",
-        "jina_reader": "jina",
-        "jina_search": "jina",
+        "reader": "fetch_url",
+        "http_fetch": "fetch_url",
+        "url_fetch": "fetch_url",
+        "fetch_url": "fetch_url",
         "browser": "playwright",
         "browser_extract": "playwright",
         "browser_collect": "browser_collect",
@@ -656,6 +653,14 @@ def _source_alias(source: str) -> str:
         "save": "save_artifact",
         "artifact": "save_artifact",
         "save_artifact": "save_artifact",
+        "read": "read_local_file",
+        "read_file": "read_local_file",
+        "local_file_read": "read_local_file",
+        "read_local_file": "read_local_file",
+        "grep": "search_local_files",
+        "search_files": "search_local_files",
+        "local_file_search": "search_local_files",
+        "search_local_files": "search_local_files",
         "modpack_download": "modpack_download",
         "pack_download": "modpack_download",
         "archive_download": "modpack_download",
@@ -677,11 +682,11 @@ def _source_label(source: str) -> str:
         "createwiki": "Create Wiki API",
         "followup": "公开项目文档跟进",
         "web_discovery": "公开搜索发现",
-        "tavily": "Tavily Search/Extract",
-        "firecrawl": "Firecrawl Search/Scrape",
-        "jina": "Jina Reader/Search",
+        "fetch_url": "本地 URL 抓取/正文提取",
         "playwright": "Playwright 浏览器采集",
         "browser_collect": "浏览器结构化采集",
+        "read_local_file": "Local file read",
+        "search_local_files": "Local file search",
         "modpack_download": "整合包包体发现/下载",
         "modpack_internal": "整合包内部解析",
         "topic_discovery": "主题种子发现",
@@ -698,11 +703,11 @@ def _save_dir_hint(source: str) -> str:
         "createwiki": r"D:\magic\MC_Agent\data\crawler_exports\createwiki\...",
         "followup": r"D:\magic\MC_Agent\data\crawler_exports\followup\...",
         "web_discovery": r"D:\magic\MC_Agent\data\crawler_exports\web_discovery\...",
-        "tavily": r"D:\magic\MC_Agent\data\crawler_exports\tavily\...",
-        "firecrawl": r"D:\magic\MC_Agent\data\crawler_exports\firecrawl\...",
-        "jina": r"D:\magic\MC_Agent\data\crawler_exports\jina\...",
+        "fetch_url": r"D:\magic\MC_Agent\data\crawler_exports\fetch_url\...",
         "playwright": r"D:\magic\MC_Agent\data\crawler_exports\playwright\...",
         "browser_collect": r"用户指定目录，或 D:\magic\MC_Agent\data\crawler_exports\browser_collect\...",
+        "read_local_file": r"D:\magic\MC_Agent\data\crawler_exports\local_file_read\...",
+        "search_local_files": r"D:\magic\MC_Agent\data\crawler_exports\local_file_search\...",
         "modpack_download": r"D:\magic\MC_Agent\data\crawler_exports\modpack_download\...",
         "modpack_internal": r"D:\magic\MC_Agent\data\crawler_exports\manual_research\...",
         "topic_discovery": r"D:\magic\MC_Agent\data\crawler_exports\topic_discovery\...",
@@ -790,41 +795,24 @@ def _round_command(source: str, payload: dict[str, Any]) -> list[str]:
             "--max-pages",
             str(int(payload.get("max_urls") or 10)),
         ]
-    if source == "tavily":
-        return [
+    if source == "fetch_url":
+        command = [
             sys.executable,
-            str(PROJECT_ROOT / "scripts" / "fetch_tavily_seed.py"),
+            str(PROJECT_ROOT / "scripts" / "fetch_url_seed.py"),
             "--query",
             query,
-            "--max-results",
-            str(int(payload.get("search_limit") or 8)),
-            "--max-pages",
-            str(int(payload.get("max_urls") or 8)),
-            "--search-depth",
-            str(payload.get("search_depth") or "advanced"),
         ]
-    if source == "firecrawl":
-        return [
-            sys.executable,
-            str(PROJECT_ROOT / "scripts" / "fetch_firecrawl_seed.py"),
-            "--query",
-            query,
-            "--max-results",
-            str(int(payload.get("search_limit") or 8)),
-            "--max-pages",
-            str(int(payload.get("max_urls") or 8)),
-        ]
-    if source == "jina":
-        return [
-            sys.executable,
-            str(PROJECT_ROOT / "scripts" / "fetch_jina_seed.py"),
-            "--query",
-            query,
-            "--max-results",
-            str(int(payload.get("search_limit") or 8)),
-            "--max-pages",
-            str(int(payload.get("max_urls") or 8)),
-        ]
+        timeout = str(payload.get("timeout") or payload.get("timeout_ms") or "").strip()
+        user_agent = str(payload.get("user_agent") or "").strip()
+        if timeout:
+            try:
+                seconds = max(1, int(int(timeout) / 1000)) if int(timeout) > 1000 else int(timeout)
+                command.extend(["--timeout", str(seconds)])
+            except ValueError:
+                pass
+        if user_agent:
+            command.extend(["--user-agent", user_agent])
+        return command
     if source == "playwright":
         return [
             sys.executable,
@@ -890,6 +878,33 @@ def _round_command(source: str, payload: dict[str, Any]) -> list[str]:
             "--payload",
             str(payload_path),
         ]
+    if source == "read_local_file":
+        path = str(payload.get("path") or payload.get("file") or payload.get("query") or "").strip()
+        command = [
+            sys.executable,
+            str(PROJECT_ROOT / "scripts" / "read_local_file.py"),
+            "--path",
+            path,
+        ]
+        max_chars = str(payload.get("max_chars") or "").strip()
+        if max_chars:
+            command.extend(["--max-chars", max_chars])
+        return command
+    if source == "search_local_files":
+        path = str(payload.get("path") or payload.get("root") or payload.get("output_dir") or PROJECT_ROOT).strip()
+        search_query = str(payload.get("search_query") or payload.get("pattern") or query).strip()
+        command = [
+            sys.executable,
+            str(PROJECT_ROOT / "scripts" / "search_local_files.py"),
+            "--path",
+            path,
+            "--query",
+            search_query,
+        ]
+        max_files = str(payload.get("max_files") or payload.get("search_limit") or "").strip()
+        if max_files:
+            command.extend(["--max-files", max_files])
+        return command
     if source == "topic_discovery":
         return [
             sys.executable,
@@ -948,7 +963,7 @@ def _round_command(source: str, payload: dict[str, Any]) -> list[str]:
 
 def _command_timeout(source: str) -> int:
     source = _source_alias(source)
-    if source in {"followup", "web_discovery", "tavily", "firecrawl", "jina", "playwright", "browser_collect", "save_artifact", "modpack_download"}:
+    if source in {"followup", "web_discovery", "fetch_url", "playwright", "browser_collect", "save_artifact", "read_local_file", "search_local_files", "modpack_download"}:
         return 360
     if source in {"modrinth", "mcmod"}:
         return 240
@@ -1619,9 +1634,7 @@ def _all_source_tasks(
         ("mcmod", query, "中文 MC 资料、整合包和教程页"),
         ("modrinth", query, "项目元数据、整合包 .mrpack 清单"),
         ("followup", query, "项目 Source/Wiki/README/公开文档"),
-        ("tavily", focused_query, "Tavily 搜索并提取正文 Markdown"),
-        ("firecrawl", focused_query, "Firecrawl 搜索/抓取正文 Markdown"),
-        ("jina", focused_query, "Jina Reader/Search 免费兜底"),
+        ("fetch_url", focused_query, "本地 HTTP 抓取指定 URL 并提取正文/raw HTML"),
         ("playwright", focused_query, "Playwright 浏览器搜索/渲染，保存正文与 raw HTML"),
         ("web_discovery", focused_query, "公开搜索兜底发现资料源"),
     ]
@@ -1644,12 +1657,8 @@ def _all_source_tasks(
                 extra["max_urls"] = 12
             elif source == "web_discovery":
                 extra.update({"search_limit": 8, "max_urls": 8})
-            elif source == "tavily":
-                extra.update({"search_limit": 8, "max_urls": 8, "search_depth": "advanced"})
-            elif source == "firecrawl":
-                extra.update({"search_limit": 8, "max_urls": 8})
-            elif source == "jina":
-                extra.update({"search_limit": 8, "max_urls": 8})
+            elif source == "fetch_url":
+                extra.update({"timeout": 35})
             elif source == "playwright":
                 extra.update({"search_limit": 6, "max_urls": 4})
             elif source in {"mediawiki", "ftbwiki", "createwiki"}:
@@ -1658,7 +1667,7 @@ def _all_source_tasks(
     expanded: list[dict[str, Any]] = []
     for task in tasks:
         source = _source_alias(str(task.get("source") or ""))
-        if source in {"mcmod", "tavily", "firecrawl", "jina", "web_discovery", "playwright"} and short_queries:
+        if source in {"mcmod", "fetch_url", "web_discovery", "playwright"} and short_queries:
             limit = 5 if source == "mcmod" else 2
             for index, short_query in enumerate(short_queries[:limit]):
                 cloned = dict(task)
@@ -1669,7 +1678,7 @@ def _all_source_tasks(
         else:
             expanded.append(task)
     tasks = expanded
-    priority = {"mcmod": 100, "modrinth": 90, "ftbwiki": 85, "createwiki": 85, "playwright": 82, "followup": 74, "jina": 72, "web_discovery": 70, "tavily": 66, "firecrawl": 65, "mediawiki": 50}
+    priority = {"mcmod": 100, "modrinth": 90, "ftbwiki": 85, "createwiki": 85, "fetch_url": 88, "playwright": 82, "followup": 74, "web_discovery": 70, "mediawiki": 50}
     for task in tasks:
         source = _source_alias(str(task.get("source") or ""))
         if source == "mcmod":
@@ -1684,16 +1693,8 @@ def _all_source_tasks(
         elif source == "web_discovery":
             task.setdefault("search_limit", 8)
             task["max_urls"] = min(int(task.get("max_urls") or 8), 8)
-        elif source == "tavily":
-            task.setdefault("search_limit", 8)
-            task["max_urls"] = min(int(task.get("max_urls") or 8), 8)
-            task.setdefault("search_depth", "advanced")
-        elif source == "firecrawl":
-            task.setdefault("search_limit", 8)
-            task["max_urls"] = min(int(task.get("max_urls") or 8), 8)
-        elif source == "jina":
-            task.setdefault("search_limit", 8)
-            task["max_urls"] = min(int(task.get("max_urls") or 8), 8)
+        elif source == "fetch_url":
+            task.setdefault("timeout", 35)
         elif source == "playwright":
             task.setdefault("search_limit", 6)
             task["max_urls"] = min(int(task.get("max_urls") or 4), 4)
@@ -2679,7 +2680,7 @@ def _clean_evidence_line(line: str) -> str:
         return ""
     if clean.startswith(("source:", "score:", "url:", "Fetched", "Created", "Updated", "Search query:", "Search snippet:")):
         return ""
-    if re.match(r"^(Tavily source|Query|Snippet|Search query|Search snippet)\s*[:：*]", clean, flags=re.I):
+    if re.match(r"^(Web source|Query|Snippet|Search query|Search snippet)\s*[:：*]", clean, flags=re.I):
         return ""
     return clean
 
@@ -5400,3 +5401,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

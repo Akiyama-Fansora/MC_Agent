@@ -16,10 +16,9 @@ DEFAULT_REPORT_DIR = PROJECT_ROOT / "data" / "cleanup_reports"
 
 SOURCE_PRIORITY = {
     "mcmod": 100,
-    "tavily": 90,
-    "jina": 80,
-    "firecrawl": 75,
-    "web_discovery": 65,
+    "fetch_url": 90,
+    "playwright": 85,
+    "web_discovery": 75,
     "modrinth_agent": 60,
     "followup": 55,
     "ftbwiki": 50,

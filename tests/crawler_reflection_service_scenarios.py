@@ -27,11 +27,11 @@ def test_snapshot_counts_observations_and_pressure() -> None:
             "delivery_target": "MCagent/RAG",
             "coverage_goals": ["完整模组列表"],
             "success_criteria": ["可引用"],
-            "sources": ["mcmod", "firecrawl"],
+            "sources": ["mcmod", "playwright"],
         },
         task_results=[
             {"source": "mcmod", "query": "乌托邦", "returncode": 0, "manifest_stats": {"records": 0}, "empty_result": True},
-            {"source": "firecrawl", "query": "乌托邦 玩法", "returncode": 1, "output": "HTTP 429 quota exceeded"},
+            {"source": "playwright", "query": "乌托邦 玩法", "returncode": 1, "output": "HTTP 429 quota exceeded"},
         ],
         pending_tasks=[{"source": "playwright", "query": "乌托邦探险之旅", "reason": "render project page"}],
     )
@@ -49,9 +49,9 @@ def test_snapshot_detects_poor_yield_replan_pressure() -> None:
     snapshot = CrawlerReflectionSnapshotService().build(
         plan={"topic": "落幕曲"},
         task_results=[
-            {"source": "jina", "returncode": 0, "empty_result": True, "manifest_stats": {"records": 0}},
+            {"source": "fetch_url", "returncode": 0, "empty_result": True, "manifest_stats": {"records": 0}},
             {"source": "web_discovery", "returncode": 0, "off_topic_result": True, "manifest_stats": {"records": 1}},
-            {"source": "tavily", "returncode": 0, "empty_result": True, "manifest_stats": {"records": 0}},
+            {"source": "web_discovery", "returncode": 0, "empty_result": True, "manifest_stats": {"records": 0}},
         ],
         pending_tasks=[{"source": "mcmod", "query": "落幕曲 Boss"}],
     )
@@ -64,3 +64,4 @@ if __name__ == "__main__":
     test_snapshot_counts_observations_and_pressure()
     test_snapshot_detects_poor_yield_replan_pressure()
     print("crawler_reflection_service_scenarios: ok")
+

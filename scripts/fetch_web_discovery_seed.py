@@ -266,10 +266,6 @@ def github_readme_candidates(url: str) -> list[tuple[str, str, str]]:
     return candidates
 
 
-def reader_url(url: str) -> str:
-    return "https://r.jina.ai/http://" + url.removeprefix("http://").removeprefix("https://")
-
-
 def page_to_markdown(result: dict[str, Any], url: str, content: str, content_type: str, fetched_at: str) -> tuple[str, str]:
     title = str(result.get("title") or url)
     tables = ""
@@ -433,28 +429,18 @@ def fetch_web_discovery(
 
     for item in expanded_candidates[: max(1, max_pages)]:
         url = str(item["fetch_url"])
-        fetch_url = reader_url(url)
         content = ""
         content_type = ""
         status_code = 0
         raw_html = ""
         try:
-            content, content_type, status_code = request_text(fetch_url, user_agent=user_agent, timeout=40, retries=1)
-            try:
-                direct_content, direct_type, _direct_status = request_text(url, user_agent=user_agent, timeout=30, retries=1)
-                if "html" in direct_type.lower() or re.search(r"<html|<body|<article|<main", direct_content[:2000], flags=re.I):
-                    raw_html = direct_content
-            except Exception:
-                raw_html = ""
-        except Exception as reader_exc:  # noqa: BLE001
-            try:
-                content, content_type, status_code = request_text(url, user_agent=user_agent, timeout=30, retries=1)
-                if "html" in content_type.lower() or re.search(r"<html|<body|<article|<main", content[:2000], flags=re.I):
-                    raw_html = content
-            except Exception as direct_exc:  # noqa: BLE001
-                if "HTTP Error 404" not in str(direct_exc):
-                    errors.append({"stage": "fetch", "url": url, "reader_error": str(reader_exc), "direct_error": str(direct_exc)})
-                continue
+            content, content_type, status_code = request_text(url, user_agent=user_agent, timeout=30, retries=1)
+            if "html" in content_type.lower() or re.search(r"<html|<body|<article|<main", content[:2000], flags=re.I):
+                raw_html = content
+        except Exception as direct_exc:  # noqa: BLE001
+            if "HTTP Error 404" not in str(direct_exc):
+                errors.append({"stage": "fetch", "url": url, "direct_error": str(direct_exc)})
+            continue
         if len(content.strip()) < 200:
             skipped.append({"url": url, "reason": "too_short", "status_code": status_code})
             continue

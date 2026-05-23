@@ -35,7 +35,7 @@ QUERIES = [
 ]
 
 
-PROVIDERS = ("mcmod", "tavily", "firecrawl", "jina", "web_discovery")
+PROVIDERS = ("mcmod", "web_discovery")
 
 
 def now() -> str:
@@ -109,41 +109,6 @@ def provider_command(provider: str, query: str, args: argparse.Namespace) -> lis
             str(args.mcmod_limit),
             "--delay",
             str(args.delay),
-        ]
-    if provider == "tavily":
-        return [
-            sys.executable,
-            str(PROJECT_ROOT / "scripts" / "fetch_tavily_seed.py"),
-            "--query",
-            query,
-            "--max-results",
-            str(args.web_results),
-            "--max-pages",
-            str(args.web_pages),
-            "--search-depth",
-            "advanced",
-        ]
-    if provider == "firecrawl":
-        return [
-            sys.executable,
-            str(PROJECT_ROOT / "scripts" / "fetch_firecrawl_seed.py"),
-            "--query",
-            query,
-            "--max-results",
-            str(args.web_results),
-            "--max-pages",
-            str(args.web_pages),
-        ]
-    if provider == "jina":
-        return [
-            sys.executable,
-            str(PROJECT_ROOT / "scripts" / "fetch_jina_seed.py"),
-            "--query",
-            query,
-            "--max-results",
-            str(args.web_results),
-            "--max-pages",
-            str(args.web_pages),
         ]
     if provider == "web_discovery":
         return [

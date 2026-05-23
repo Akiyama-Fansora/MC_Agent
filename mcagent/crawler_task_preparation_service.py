@@ -15,6 +15,7 @@ FORWARDED_TASK_KEYS = (
     "search_depth",
     "max_files",
     "max_queries",
+    "max_chars",
     "max_items",
     "output_dir",
     "start_url",
@@ -24,12 +25,17 @@ FORWARDED_TASK_KEYS = (
     "format",
     "artifact_format",
     "path",
+    "root",
+    "file",
+    "search_query",
+    "pattern",
     "output_path",
     "filename",
     "overwrite",
     "metadata",
     "content_ref",
     "artifact_ref",
+    "user_agent",
 )
 
 
