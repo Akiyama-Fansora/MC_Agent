@@ -99,7 +99,7 @@ TOOLSETS: dict[str, Toolset] = {
     "browser_collect": Toolset(
         id="browser_collect",
         label="Browser Structured Collect",
-        purpose="通用浏览器结构化采集：按用户目标提取列表、商品、表格等字段，并保存 CSV、JSON、report、raw HTML 和截图到指定目录；不绕过登录、验证码或安全验证。",
+        purpose="通用浏览器结构化采集：按用户目标提取列表、商品、表格等字段，并保存 XLSX、CSV、JSON、report、raw HTML 和截图到指定目录；不绕过登录、验证码或安全验证。",
         default_limit=50,
         timeout_seconds=900,
     ),

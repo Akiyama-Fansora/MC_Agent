@@ -138,6 +138,25 @@ def json_object_from_llm_text(text: str) -> dict[str, Any]:
     return value
 
 
+def repair_json_object_from_llm_text(client: Any, text: str, *, schema_hint: str, max_tokens: int = 700) -> dict[str, Any]:
+    prompt = (
+        "The previous model output was intended to be one JSON object, but it was invalid. "
+        "Repair it into exactly one valid JSON object matching this schema. "
+        "Do not add Markdown, comments, or explanations.\n"
+        f"Schema hint: {schema_hint}\n"
+        f"Broken output:\n{str(text or '')[:6000]}"
+    )
+    repaired = client.chat(
+        [
+            {"role": "system", "content": "Output only valid JSON."},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.0,
+        max_tokens=max_tokens,
+    )
+    return json_object_from_llm_text(repaired)
+
+
 class LlmAgentToolRouterService(AgentToolRouterService):
     def __init__(self, *, select_client: ClientSelectorFn, action_plan_has_tool: ActionPlanHasToolFn) -> None:
         self._select_client = select_client
@@ -203,7 +222,15 @@ class LlmAgentToolRouterService(AgentToolRouterService):
                 temperature=0.0,
                 max_tokens=900,
             )
-            value = json_object_from_llm_text(raw_text)
+            try:
+                value = json_object_from_llm_text(raw_text)
+            except Exception:
+                value = repair_json_object_from_llm_text(
+                    client,
+                    raw_text,
+                    schema_hint='{"tool":"allowed tool name","reason":"why","rag_focus":"","collection_target":"","delivery_target":"human|MCagent/RAG|","action_plan":[]}',
+                    max_tokens=900,
+                )
             return normalize_agent_tool_decision(
                 value,
                 agent_id=agent,
@@ -265,7 +292,15 @@ class LlmAgentToolRouterService(AgentToolRouterService):
                 temperature=0.0,
                 max_tokens=700,
             )
-            value = json_object_from_llm_text(raw_text)
+            try:
+                value = json_object_from_llm_text(raw_text)
+            except Exception:
+                value = repair_json_object_from_llm_text(
+                    client,
+                    raw_text,
+                    schema_hint='{"proceed":true,"tool":"tool name","suggested_tool":"","goal":"confirmed next step","reason":"why","concern":""}',
+                    max_tokens=700,
+                )
             tool = str(value.get("tool") or proposed_tool).strip() or proposed_tool
             suggested = str(value.get("suggested_tool") or "").strip()
             return {

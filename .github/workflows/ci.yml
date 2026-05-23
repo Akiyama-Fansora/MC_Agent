@@ -76,12 +76,14 @@ jobs:
           scripts\smoke_agent_flows.py
           tests\artifact_reference_service_scenarios.py
           tests\artifact_save_service_scenarios.py
+          tests\browser_collect_output_scenarios.py
           tests\crawler_delegation_service_scenarios.py
           tests\crawler_job_finalization_service_scenarios.py
           tests\crawler_job_progress_service_scenarios.py
           tests\crawler_job_setup_service_scenarios.py
           tests\crawler_loop_control_service_scenarios.py
           tests\crawler_planner_wait_service_scenarios.py
+          tests\crawler_planner_timeout_scenarios.py
           tests\crawler_reflection_decision_scenarios.py
           tests\crawler_runtime_step_service_scenarios.py
           tests\crawler_task_materialization_service_scenarios.py
@@ -113,6 +115,7 @@ jobs:
         shell: pwsh
         run: |
           python tests\smoke_test.py
+          python tests\browser_collect_output_scenarios.py
           python tests\artifact_reference_service_scenarios.py
           python tests\artifact_save_service_scenarios.py
           python tests\crawler_delegation_service_scenarios.py
@@ -121,6 +124,7 @@ jobs:
           python tests\crawler_job_setup_service_scenarios.py
           python tests\crawler_loop_control_service_scenarios.py
           python tests\crawler_planner_wait_service_scenarios.py
+          python tests\crawler_planner_timeout_scenarios.py
           python tests\crawler_reflection_decision_scenarios.py
           python tests\crawler_runtime_step_service_scenarios.py
           python tests\crawler_task_materialization_service_scenarios.py

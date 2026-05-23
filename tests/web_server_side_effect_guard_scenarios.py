@@ -174,6 +174,13 @@ def test_direct_crawler_mcagent_gap_request_forces_planned_workflow() -> None:
     assert_equal("plan_second_tool", plan[1]["tool"], "delegate_crawler")
 
 
+def test_mcagent_context_focus_expands_minecraft_utopia_aliases() -> None:
+    focus = web_server._mcagent_context_focus("问下MCAgent乌托邦整合包还缺哪些东西，你去网上找补给他")
+    assert_true("focus_keeps_user_topic", "乌托邦" in focus)
+    assert_true("focus_adds_full_pack_name", "乌托邦探险之旅" in focus)
+    assert_true("focus_adds_english_alias", "Utopian Journey" in focus)
+
+
 def test_direct_crawler_mcagent_gap_request_delegates_when_local_empty() -> None:
     tmp = tempfile.TemporaryDirectory()
     fake_client = SequencedClient(
@@ -275,6 +282,7 @@ if __name__ == "__main__":
     test_direct_user_handoff_brief_rejects_wrong_mcagent_identity()
     test_direct_crawler_delegate_choice_is_corrected_to_temporary_extract()
     test_direct_crawler_mcagent_gap_request_forces_planned_workflow()
+    test_mcagent_context_focus_expands_minecraft_utopia_aliases()
     test_direct_crawler_mcagent_gap_request_delegates_when_local_empty()
     test_crawler_mcagent_context_with_collection_continues_to_delegate()
     print("web_server_side_effect_guard_scenarios passed")

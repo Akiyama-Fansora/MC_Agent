@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from mcagent.config import load_config  # noqa: E402
-from mcagent.crawler_llm_planner import plan_crawler_tasks_rule_fallback  # noqa: E402
+from mcagent.crawler_llm_planner import _sanitize_plan, _session_target_hint, plan_crawler_tasks_rule_fallback  # noqa: E402
 from mcagent.web_server import Job, _plan_crawler_with_job_timeout  # noqa: E402
 import mcagent.web_server as web_server  # noqa: E402
 
@@ -39,6 +39,28 @@ def utopia_session_summary() -> dict[str, str]:
     }
 
 
+def test_direct_crawler_delegate_phrase_is_not_target() -> None:
+    summary = {
+        "delivery_target": "MCagent/RAG",
+        "requested_by": "mcagent",
+        "collection_target": "叫Crawler帮你采集乌托邦缺失的资料",
+        "task_goal": "针对乌托邦探险之旅3.0整合包采集缺失资料并交付给 MCagent/RAG。",
+        "mcagent_gap_summary": "本地资料确认主题是乌托邦探险之旅3.0整合包，缺少模组清单、任务线、Boss 攻略和新手路线。",
+    }
+    assert_equal("specific_target", _session_target_hint(summary), "乌托邦探险之旅3.0整合包")
+    plan = plan_crawler_tasks_rule_fallback(
+        "叫Crawler帮你采集乌托邦缺失的资料",
+        ROOT / "data" / "crawler_exports",
+        max_tasks=8,
+        planner_error="unit timeout",
+        session_summary=summary,
+    )
+    queries = [task["query"] for task in plan["tasks"]]
+    assert_true("no_delegate_phrase_query", all("叫Crawler" not in query and "缺失" not in query for query in queries))
+    assert_true("no_stale_specific_pack", all("落幕曲" not in query for query in queries))
+    assert_true("specific_alias_query", any("乌托邦探险之旅3.0整合包" in query or "乌托邦探险之旅" in query for query in queries))
+
+
 def test_rule_fallback_extracts_domain_target_from_agent_handoff() -> None:
     plan = plan_crawler_tasks_rule_fallback(
         utopia_question(),
@@ -53,6 +75,88 @@ def test_rule_fallback_extracts_domain_target_from_agent_handoff() -> None:
     assert_true("has_tasks", len(queries) > 0)
     assert_true("no_agent_query", all("MCagent/RAG" not in query and "用户原始目标" not in query for query in queries))
     assert_true("no_duplicate_pack_suffix", all("整合包 整合包" not in query for query in queries))
+    assert_true("includes_known_alias", any("乌托邦探险之旅" in query or "Utopian Journey" in query for query in queries))
+
+
+def test_session_target_rejects_generic_relation_phrase() -> None:
+    summary = {
+        "collection_target": "的相关整合包",
+        "task_goal": "问下MCAgent乌托邦整合包还缺哪些东西，你去网上找补给他",
+    }
+    assert_equal("target", _session_target_hint(summary), "乌托邦整合包")
+
+
+def test_gap_collection_fallback_prefers_generic_web_and_bound_queries() -> None:
+    plan = plan_crawler_tasks_rule_fallback(
+        utopia_question(),
+        ROOT / "data" / "crawler_exports",
+        max_tasks=10,
+        planner_error="unit timeout",
+        session_summary=utopia_session_summary()
+        | {
+            "mcagent_gap_summary": "本地资料缺口：新手路线、FTB任务、任务系统、玩法攻略、Boss 信息都不足，需要去网上找补给 MCagent/RAG。",
+            "gaps": ["FTB任务", "任务系统", "新手攻略"],
+        },
+    )
+    tasks = plan["tasks"]
+    assert_true("has_tasks", len(tasks) >= 4)
+    first_sources = [task["source"] for task in tasks[:4]]
+    assert_true("generic_first", any(source in first_sources for source in ("web_discovery", "playwright", "modpack_download")))
+    assert_true("not_mc_only", any(task["source"] in {"web_discovery", "playwright"} for task in tasks))
+    queries = [task["query"] for task in tasks]
+    assert_true("bound_ftb", "FTB任务" not in queries and any("乌托邦整合包 FTB任务" in query for query in queries))
+    assert_true("no_non_url_fetch", all(task["source"] != "fetch_url" or task["query"].startswith(("http://", "https://")) for task in tasks))
+
+
+def test_llm_plan_gap_collection_is_rebalanced_to_generic_tools() -> None:
+    raw = {
+        "topic": "乌托邦整合包",
+        "delivery_target": "MCagent/RAG",
+        "sources": ["mcmod", "web_discovery", "playwright", "modpack_download"],
+        "subqueries": ["乌托邦探险之旅", "的相关整合包 Boss"],
+        "tasks": [
+            {"source": "mcmod", "query": "乌托邦探险之旅", "reason": "project page", "priority": 100},
+            {"source": "web_discovery", "query": "模组列表", "reason": "public web", "priority": 80},
+            {"source": "playwright", "query": "https://www.curseforge.com/minecraft/modpacks/utopian-journey", "reason": "render", "priority": 95},
+        ],
+    }
+    plan = _sanitize_plan(
+        raw,
+        utopia_question(),
+        ROOT / "data" / "crawler_exports",
+        max_tasks=8,
+        session_summary=utopia_session_summary()
+        | {
+            "mcagent_gap_summary": "本地资料缺口：模组列表、任务系统、Boss 信息，需要去网上找补给 MCagent/RAG。",
+        },
+    )
+    tasks = plan["tasks"]
+    assert_true("generic_first", tasks[0]["source"] in {"web_discovery", "playwright", "modpack_download"})
+    assert_true("mcmod_not_first", tasks[0]["source"] != "mcmod")
+    assert_true("bad_query_removed", all(not str(task["query"]).startswith("的相关") for task in tasks))
+    assert_true("helper_query_bound", any(task["query"] == "乌托邦整合包 模组列表" for task in tasks))
+
+
+def test_structured_xlsx_request_uses_browser_collect() -> None:
+    plan = plan_crawler_tasks_rule_fallback(
+        "从公开商品网站采集 20 个商品名称、价格、链接，保存为 xlsx 到 C:\\Temp\\crawler-products",
+        ROOT / "data" / "crawler_exports",
+        max_tasks=5,
+        planner_error="unit timeout",
+        session_summary={
+            "delivery_target": "human",
+            "requested_by": "user",
+            "collection_target": "从公开商品网站采集 20 个商品名称、价格、链接，保存为 xlsx 到 C:\\Temp\\crawler-products",
+            "output_dir": "C:\\Temp\\crawler-products",
+            "fields": ["name", "price", "url"],
+            "max_items": 20,
+        },
+    )
+    assert_equal("strategy", plan["strategy"], "structured_browser_fallback_after_llm_planner_error")
+    assert_equal("source", plan["tasks"][0]["source"], "browser_collect")
+    assert_equal("output_dir", plan["tasks"][0]["output_dir"], "C:\\Temp\\crawler-products")
+    assert_equal("max_items", plan["tasks"][0]["max_items"], 20)
+    assert_true("xlsx_policy", "XLSX" in plan["cleaning_policy"])
 
 
 def test_job_planner_timeout_returns_executable_fallback() -> None:
@@ -81,6 +185,11 @@ def test_job_planner_timeout_returns_executable_fallback() -> None:
 
 
 if __name__ == "__main__":
+    test_direct_crawler_delegate_phrase_is_not_target()
     test_rule_fallback_extracts_domain_target_from_agent_handoff()
+    test_session_target_rejects_generic_relation_phrase()
+    test_gap_collection_fallback_prefers_generic_web_and_bound_queries()
+    test_llm_plan_gap_collection_is_rebalanced_to_generic_tools()
+    test_structured_xlsx_request_uses_browser_collect()
     test_job_planner_timeout_returns_executable_fallback()
     print("crawler_planner_timeout_scenarios passed")

@@ -51,7 +51,7 @@ ITEM_HINTS = {
     "TACZ",
 }
 GOAL_QUERY_HINTS = {
-    "新手路线": ["落幕曲 新手路线", "FTB任务", "开局 攻略"],
+    "新手路线": ["新手路线", "FTB任务", "开局 攻略"],
     "FTB任务": ["FTB任务", "FTB Quests", "任务系统"],
     "拔刀剑": ["拔刀剑 获取步骤", "拔刀剑 合成 配方", "SlashBlade"],
     "梦想一心": ["梦想一心 获取步骤", "梦想一心 MC百科"],
@@ -73,10 +73,11 @@ def _collection_target_hint(question: str) -> str:
     for pattern in quoted_patterns:
         match = re.search(pattern, text, flags=re.I)
         if match:
-            target = re.sub(r"\s+", " ", match.group(1)).strip(" ：:，,。；;")
-            if 2 <= len(target) <= 60 and not _looks_like_agent_target(target):
+            target = _clean_target_hint(match.group(1))
+            if target:
                 return target
     package_patterns = [
+        r"(?:针对|为|关于|有关)?\s*([\u4e00-\u9fffA-Za-z0-9_ （）()+.-]{2,60}?)(整合包|modpack)(?:的)?(?:采集|收集|获取|补充|补齐|整理)?(?:缺失|缺少|缺口|完整|详细|相关)?(?:资料|数据|内容|知识库)",
         r"(?:关于|有关)?\s*(?:Minecraft|MC)?\s*(整合包|modpack)\s*([\u4e00-\u9fffA-Za-z0-9_ （）()+-]{2,60}?)(?:的)?(?:完整数据|完整资料|详细资料|资料|数据|内容|知识库|模组列表|玩法指南|包括)",
         r"([\u4e00-\u9fffA-Za-z0-9_ （）()+-]{2,60}?)(整合包|modpack)(?:还)?(?:缺|缺少|缺哪些|有哪些缺口|还差|需要补|补全|补充)",
         r"([\u4e00-\u9fffA-Za-z0-9_ （）()+-]{2,60}?)(?:整合包|modpack)(?:的)?(?:完整数据|完整资料|资料|数据|内容|知识库)",
@@ -95,10 +96,10 @@ def _collection_target_hint(question: str) -> str:
         target = re.split(r"[,，。；;：:]|流程手册|采集流程|教学复跑|请回忆|重新检查", target, maxsplit=1)[-1]
         target = re.sub(r"^(?:(?:一下|这个|那个|关于|有关|请|帮我|帮忙|问下|问问|询问|咨询|你去|去|把|将|对|并|重新|开始|复跑|检查|补齐|补充|采集|收集|获取|整理|教学复跑|请回忆)\s*)+", "", target.strip())
         target = re.sub(r"^(?:MCagent|MCAgent|MC Agent|CrawlerAgent|Crawler|RAG|本地资料库|知识库)\s*", "", target, flags=re.I)
-        target = re.sub(r"\s+", " ", target).strip(" ：:，,。；;")
         if suffix and suffix.lower() in {"整合包", "modpack"} and not re.search(r"(整合包|modpack)$", target, flags=re.I):
             target = f"{target}{suffix}"
-        if 2 <= len(target) <= 40 and not _looks_like_agent_target(target):
+        target = _clean_target_hint(target)
+        if target:
             return target
     patterns = [
         r"(?:获取|采集|爬取|补充|补齐|建立|做|整理)(.+?)(?:的)?(?:完整数据|完整资料|资料包|数据包|本地资料|知识库|相关资料)",
@@ -112,8 +113,8 @@ def _collection_target_hint(question: str) -> str:
         target = match.group(1)
         target = re.split(r"[,，。；;]|保存到|让\s*MCagent|给\s*MCagent|供\s*MCagent|用于\s*RAG|使\s*RAG", target, maxsplit=1)[0]
         target = re.sub(r"^(?:(?:一下|这个|那个|关于|有关|请|帮我|你去|去|把|将|对|并|重新|开始|复跑|检查|补齐|补充|采集|收集|获取|整理)\s*)+", "", target.strip())
-        target = re.sub(r"\s+", " ", target).strip(" ：:，,。；;")
-        if 2 <= len(target) <= 40 and not _looks_like_agent_target(target):
+        target = _clean_target_hint(target)
+        if target:
             return target
     return ""
 
@@ -121,18 +122,87 @@ def _collection_target_hint(question: str) -> str:
 def _session_target_hint(session_summary: dict[str, Any] | None = None) -> str:
     if not isinstance(session_summary, dict):
         return ""
-    for key in ("authoritative_task_goal", "task_goal", "collection_target", "goal", "target", "current_topic"):
+    candidates: list[tuple[int, str]] = []
+    weighted_keys = [
+        ("authoritative_task_goal", 80),
+        ("task_goal", 70),
+        ("collection_target", 65),
+        ("mcagent_gap_summary", 55),
+        ("missing_evidence", 50),
+        ("known_context", 30),
+        ("handoff_brief", 30),
+        ("goal", 25),
+        ("target", 20),
+        ("current_topic", 5),
+    ]
+    for key, weight in weighted_keys:
         value = str(session_summary.get(key) or "").strip()
         if not value:
             continue
         extracted = _collection_target_hint(value) or _question_subject_hint(value)
         if extracted:
-            return extracted
+            cleaned = _clean_target_hint(extracted, max_len=80) or extracted
+            candidates.append((weight, cleaned))
+            continue
         value = _strip_delivery_recipient(value)
-        value = re.sub(r"\s+", " ", value).strip(" ：:，,。；;")
-        if 2 <= len(value) <= 80 and not _looks_like_agent_target(value):
-            return value
-    return ""
+        value = _clean_target_hint(value, max_len=80)
+        if value:
+            candidates.append((weight, value))
+    if not candidates:
+        return ""
+    deduped: dict[str, int] = {}
+    for weight, candidate in candidates:
+        deduped[candidate] = max(deduped.get(candidate, 0), weight)
+    return sorted(deduped, key=lambda item: (deduped[item], *_target_specificity_score(item)), reverse=True)[0]
+
+
+GENERIC_TARGET_PATTERNS = (
+    r"^(?:的)?相关(?:整合包|资料|数据|内容|网页|信息)?$",
+    r"^(?:缺失|缺少|缺口|不足|待补)(?:整合包|资料|数据|内容|网页|信息)?$",
+    r"^(?:该|此|这个|那个|上述|刚才)(?:主题|目标|整合包|资料|数据|内容)?$",
+    r"^(?:资料|数据|内容|信息|缺口|缺失|本地资料|知识库)$",
+    r"^(?:MCagent|MCAgent|MC Agent|CrawlerAgent|Crawler|RAG|human)$",
+)
+
+
+def _clean_target_hint(value: Any, *, max_len: int = 60) -> str:
+    target = re.sub(r"\s+", " ", str(value or "")).strip(" ：:，,。；;？?！!")
+    if not target:
+        return ""
+    target = re.sub(r"^.*?(?:主题|目标|对象|名称)\s*(?:是|为|[:：])\s*", "", target)
+    target = re.sub(r"^(?:针对|为|给)\s*", "", target)
+    target = re.split(r"[,，。；;：:]|缺少|缺失|缺口|不足|还缺|需要补", target, maxsplit=1)[0]
+    target = re.sub(r"^(?:的|关于|有关)\s*", "", target)
+    target = re.sub(r"^(?:MCagent|MCAgent|MC Agent|CrawlerAgent|Crawler|RAG|本地资料库|知识库)\s*", "", target, flags=re.I).strip()
+    target = re.sub(r"(?:缺失|缺少|缺的|缺口|还缺|不足|待补|需要补(?:充|齐)?)(?:的)?(?:资料|数据|内容|信息)?$", "", target, flags=re.I)
+    target = re.sub(r"(?:缺失|缺少|缺的|缺口|还缺|不足|待补|需要补(?:充|齐)?)(?:的)?$", "", target, flags=re.I)
+    target = re.sub(r"(?:的)?(?:资料|数据|内容|信息)$", "", target, flags=re.I)
+    target = re.sub(r"\s+", " ", target).strip(" ：:，,。；;？?！!")
+    compact = re.sub(r"\s+", "", target)
+    if not (2 <= len(target) <= max_len):
+        return ""
+    if _looks_like_agent_target(target):
+        return ""
+    if any(re.fullmatch(pattern, compact, flags=re.I) for pattern in GENERIC_TARGET_PATTERNS):
+        return ""
+    if not re.search(r"[\u4e00-\u9fffA-Za-z0-9]", target):
+        return ""
+    return target
+
+
+def _target_specificity_score(value: str) -> tuple[int, int]:
+    text = str(value or "")
+    lowered = text.lower()
+    score = 0
+    if re.search(r"探险之旅|journey|closing song|落幕曲", text, flags=re.I):
+        score += 6
+    if re.search(r"整合包|modpack|minecraft|mc", text, flags=re.I):
+        score += 4
+    if re.search(r"\d+(?:\.\d+)*", text):
+        score += 2
+    if text in {"乌托邦", "Utopia"}:
+        score -= 3
+    return score, min(len(text), 80)
 
 
 def _crawler_memory_digest(limit: int = 8) -> dict[str, Any]:
@@ -201,6 +271,9 @@ def _looks_like_agent_target(text: str) -> bool:
 
 def _target_core_terms(target: str) -> list[str]:
     terms = [target.strip()]
+    lowered = target.lower()
+    if "乌托邦" in target and ("整合包" in target or "modpack" in lowered or "minecraft" in lowered):
+        terms.extend(["乌托邦探险之旅", "Utopian Journey"])
     cleaned = re.sub(r"(整合包|模组|MOD|modpack|mod|资料|数据)$", "", target.strip(), flags=re.I).strip()
     if cleaned and cleaned != target:
         terms.append(cleaned)
@@ -211,8 +284,8 @@ def _target_queries(target: str) -> list[str]:
     if not target:
         return []
     base_terms = _target_core_terms(target)
-    queries: list[str] = []
-    for base in base_terms[:2]:
+    queries: list[str] = list(base_terms[:4])
+    for base in base_terms[:4]:
         pack_query = base if re.search(r"(整合包|modpack)$", base, flags=re.I) else f"{base} 整合包"
         queries.extend(
             [
@@ -226,6 +299,68 @@ def _target_queries(target: str) -> list[str]:
             ]
         )
     return list(dict.fromkeys(query for query in queries if 2 <= len(query) <= 80))
+
+
+def _query_mentions_target(query: str, target: str) -> bool:
+    query_compact = re.sub(r"\s+", "", str(query).lower())
+    target_terms = [term for term in _target_core_terms(target) if term]
+    for term in target_terms:
+        compact = re.sub(r"\s+", "", term.lower())
+        if compact and compact in query_compact:
+            return True
+    return False
+
+
+def _bind_query_to_target(query: str, target: str) -> str:
+    value = re.sub(r"\s+", " ", str(query).strip())
+    target = re.sub(r"\s+", " ", str(target).strip())
+    if not value or not target or _query_mentions_target(value, target):
+        return value
+    if re.fullmatch(r"(FTB\s*Quests?|FTB任务|任务系统|开局\s*攻略|新手\s*攻略|新手路线|攻略|教程|玩法|Boss|BOSS|boss|模组列表|下载|配置要求)", value, flags=re.I):
+        return f"{target} {value}"
+    if len(value) <= 12 and re.search(r"(任务|攻略|教程|玩法|配置|下载|Boss|boss|模组|配方|问题|bug)", value, flags=re.I):
+        return f"{target} {value}"
+    return value
+
+
+def _target_bound_queries(queries: list[str], target: str) -> list[str]:
+    return list(dict.fromkeys(_bind_query_to_target(query, target) for query in queries if str(query).strip()))
+
+
+def _is_url_query(query: str) -> bool:
+    return bool(re.search(r"https?://", str(query or ""), flags=re.I))
+
+
+def _prefer_general_web_first(context_text: str, delivery_target: str, requested_by: str) -> bool:
+    lowered = context_text.lower()
+    if any(term in lowered for term in ("mc百科重复", "mcmod duplicate", "重复页", "重复多", "换源", "外部", "非 mc百科", "non-duplicate", "external sources")):
+        return True
+    if delivery_target == "MCagent/RAG" and any(term in lowered for term in ("缺口", "缺失", "还缺", "本地资料", "本地上下文", "补给", "补充", "补库")):
+        return True
+    return requested_by in {"user", "mcagent", "user_via_mcagent"} and any(term in lowered for term in ("网上找", "去网上", "public web", "search online"))
+
+
+def _rebalance_general_web_tasks(tasks: list[dict[str, Any]], *, prefer_general_web: bool) -> None:
+    if not prefer_general_web:
+        return
+    bump = {
+        "web_discovery": 140,
+        "playwright": 136,
+        "browser_collect": 132,
+        "modpack_download": 128,
+        "followup": 118,
+        "fetch_url": 116,
+        "modrinth": 96,
+        "mcmod": 88,
+    }
+    for task in tasks:
+        source = str(task.get("source") or "")
+        if source in bump:
+            current = int(task.get("priority") or 0)
+            if source in {"mcmod", "modrinth"}:
+                task["priority"] = min(current, bump[source])
+            else:
+                task["priority"] = max(current, bump[source])
 
 
 def _planner_context_text(question: str, session_summary: dict[str, Any] | None = None) -> str:
@@ -263,6 +398,12 @@ def _planner_context_text(question: str, session_summary: dict[str, Any] | None 
 def _strip_delivery_recipient(text: str) -> str:
     value = str(text).strip()
     value = re.sub(
+        r"^\s*(?:请|麻烦|帮我|帮忙)?\s*(?:告诉|叫|让|派|通知)?\s*(?:CrawlerAgent|Crawler|爬虫Agent|爬虫)\s*(?:帮(?:我|你|忙)?|去|来)?\s*(?:收集|采集|获取|抓取|爬取|补充|补库|更新资料)?\s*",
+        "",
+        value,
+        flags=re.I,
+    )
+    value = re.sub(
         r"^\s*(?:请)?\s*(?:帮|给|为)\s*(?:MCagent|MCAgent|MC Agent|RAG|本地资料库|知识库)\s*(?:去|来)?\s*(?:收集|采集|获取|抓取|爬取|补充|补库|更新资料)\s*",
         "",
         value,
@@ -275,7 +416,7 @@ def _strip_delivery_recipient(text: str) -> str:
 def _coverage_queries(question: str, session_summary: dict[str, Any] | None = None, target: str = "") -> list[str]:
     question = _strip_delivery_recipient(question)
     text = _planner_context_text(question, session_summary)
-    subject = target or _collection_target_hint(question) or _question_subject_hint(question)
+    subject = _clean_target_hint(target or _collection_target_hint(question) or _question_subject_hint(question), max_len=80)
     queries: list[str] = []
     queries.extend(_known_components(session_summary))
     for hint, hint_queries in GOAL_QUERY_HINTS.items():
@@ -311,6 +452,10 @@ def _valid_coverage_query(query: str, target: str = "", context_text: str = "") 
     if not (2 <= len(value) <= 80):
         return False
     compact = re.sub(r"\s+", "", value).lower()
+    if any(re.fullmatch(pattern, compact, flags=re.I) for pattern in GENERIC_TARGET_PATTERNS):
+        return False
+    if compact.startswith("的相关") or compact.startswith("相关"):
+        return False
     if compact in GENERIC_COLLECTION_TERMS:
         return False
     if compact in {"boss", "bosses"}:
@@ -333,7 +478,7 @@ def _known_components(session_summary: dict[str, Any] | None = None) -> list[str
 
 def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, planner_error: str = "", session_summary: dict[str, Any] | None = None) -> dict[str, Any]:
     question = _strip_delivery_recipient(question)
-    target = _session_target_hint(session_summary) or _collection_target_hint(question) or _question_subject_hint(question)
+    target = _clean_target_hint(_session_target_hint(session_summary) or _collection_target_hint(question) or _question_subject_hint(question), max_len=80)
     coverage_only_queries = _coverage_queries(question, session_summary, target)
     context_text = _planner_context_text(question, session_summary)
     explicit_delivery_target = ""
@@ -355,7 +500,7 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
         max_items = session_summary.get("max_items") or 50
         structured_goal = bool(output_dir or fields) or any(
             term in context_text.lower()
-            for term in ("csv", "json", "table", "structured", "price", "link", "商品", "价格", "链接", "表格", "字段", "保存到")
+            for term in ("csv", "json", "xlsx", "xls", "excel", "table", "structured", "price", "link", "商品", "价格", "链接", "表格", "字段", "保存到")
         )
         if structured_goal:
             structured_target = target or str(session_summary.get("collection_target") or question)[:80]
@@ -380,12 +525,12 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
                 "target_hint": target,
                 "package_type": "unknown",
                 "delivery_target": delivery_target,
-                "cleaning_policy": "Structured browser output with CSV, JSON, report, raw HTML, screenshot, and manifest.",
+                "cleaning_policy": "Structured browser output with XLSX, CSV, JSON, report, raw HTML, screenshot, and manifest.",
                 "requested_by": requested_by,
                 "handoff_from": handoff_from,
                 "coverage_goals": ["按用户要求采集结构化字段", "保存到指定目录", "遇到登录或验证时保存证据并说明限制"],
                 "known_components": _known_components(session_summary),
-                "success_criteria": ["保存 CSV/JSON/report", "保留来源 URL、raw HTML 和截图", "不绕过登录、验证码或安全验证"],
+                "success_criteria": ["保存 XLSX/CSV/JSON/report", "保留来源 URL、raw HTML 和截图", "不绕过登录、验证码或安全验证"],
                 "subqueries": [structured_target],
                 "sources": ["browser_collect"],
                 "reason": "Crawler LLM planner timed out or failed, so Crawler preserved the structured collection goal and used the browser_collect tool.",
@@ -399,7 +544,7 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
         plan_reason = "Crawler LLM planner timed out or failed, so Crawler used a conservative target-aware plan for a direct human Crawler task."
     else:
         plan_reason = "Crawler LLM planner timed out or failed, so Crawler used a conservative target-aware plan."
-    prefer_external = any(term in context_text.lower() for term in ("mc百科重复", "mcmod duplicate", "重复页", "重复多", "换源", "外部", "非 mc百科", "non-duplicate", "external sources"))
+    prefer_external = _prefer_general_web_first(context_text, delivery_target, requested_by)
     if not target:
         if "落幕曲" in context_text or "Closing Song" in context_text:
             target = "落幕曲 Closing Song"
@@ -412,20 +557,23 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
             if planner_error:
                 fallback["planner_error"] = planner_error
             return fallback
+    coverage_only_queries = _target_bound_queries(coverage_only_queries, target)
     queries = [*coverage_only_queries, *_target_queries(target)]
     queries = list(dict.fromkeys(query for query in queries if query))
     if prefer_external:
-        sources = ["fetch_url", "web_discovery", "playwright", "modpack_download", "followup", "mcmod", "modrinth"]
+        sources = ["web_discovery", "playwright", "modpack_download", "fetch_url", "followup", "mcmod", "modrinth"]
     else:
-        sources = ["mcmod", "modrinth", "modpack_download", "fetch_url", "web_discovery", "followup", "playwright"]
+        sources = ["web_discovery", "playwright", "fetch_url", "modpack_download", "followup", "mcmod", "modrinth"]
     if any(term in _planner_context_text(question, session_summary) for term in ("完整", "完整资料", "完整数据", "全量", "发现", "未知主题")):
         sources.insert(0, "topic_discovery")
-    if any(term.lower() in _planner_context_text(question, session_summary).lower() for term in ("安装包", "内部文件", "ftb", "kubejs", "openloader", "modlist", "manifest", "整合包完整")):
+    if any(term.lower() in _planner_context_text(question, session_summary).lower() for term in ("本地安装包", "本地包体", "已下载", "内部文件", "kubejs", "openloader", "modlist", "manifest", "整合包完整")):
         sources.insert(0, "modpack_internal")
     tasks: list[dict[str, Any]] = []
     for source in sources:
         if source in {"modrinth", "followup", "modpack_internal", "modpack_download"}:
             source_queries = [target]
+        elif source == "fetch_url":
+            source_queries = [query for query in queries[:6] if _is_url_query(query)]
         elif source == "playwright":
             source_queries = queries[:2]
         elif source == "mcmod":
@@ -433,7 +581,7 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
                 source_queries = [target, *queries[:2]]
             else:
                 source_queries = queries[:12]
-        elif prefer_external and source in {"fetch_url", "web_discovery"}:
+        elif prefer_external and source in {"web_discovery"}:
             source_queries = queries[:5]
         else:
             source_queries = queries[:12]
@@ -441,13 +589,14 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
             defaults = SOURCE_DEFAULTS.get(source, {})
             if prefer_external:
                 priority_base = {
-                    "fetch_url": 122,
-                    "web_discovery": 108,
-                    "playwright": 104,
-                    "followup": 98,
+                    "web_discovery": 126,
+                    "playwright": 124,
+                    "modpack_download": 120,
+                    "fetch_url": 112,
+                    "followup": 102,
                     "mcmod": 88,
-                    "modrinth": 82,
-                    "topic_discovery": 125,
+                    "modrinth": 84,
+                    "topic_discovery": 118,
                 }.get(source, int(defaults.get("priority") or 50))
             else:
                 priority_base = int(defaults.get("priority") or 50)
@@ -695,7 +844,7 @@ def _select_diverse_tasks(tasks: list[dict[str, Any]], max_tasks: int) -> list[d
 
 def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tasks: int, session_summary: dict[str, Any] | None = None) -> dict[str, Any]:
     question = _strip_delivery_recipient(question)
-    target_hint = _session_target_hint(session_summary) or _collection_target_hint(question) or _question_subject_hint(question)
+    target_hint = _clean_target_hint(_session_target_hint(session_summary) or _collection_target_hint(question) or _question_subject_hint(question), max_len=80)
     topic = str(raw.get("topic") or "").strip()
     if target_hint and (not topic or _looks_like_agent_target(topic)):
         topic = target_hint
@@ -750,7 +899,9 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
     queries = [
         query
         for query in list(dict.fromkeys(queries))
-        if not (_query_is_delivery_target(query, target_hint)) and not _generic_standalone_query(query)
+        if not (_query_is_delivery_target(query, target_hint))
+        and not _generic_standalone_query(query)
+        and _valid_coverage_query(query, target_hint or topic, _planner_context_text(question, session_summary))
     ][:16]
 
     raw_sources = raw.get("sources")
@@ -770,13 +921,24 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
         for index, raw_task in enumerate(raw_tasks):
             if not isinstance(raw_task, dict):
                 continue
+            if target_hint:
+                raw_query = str(raw_task.get("query") or "").strip()
+                if raw_query and not _is_url_query(raw_query) and not _query_mentions_target(raw_query, target_hint):
+                    raw_task = dict(raw_task)
+                    raw_task["query"] = _bind_query_to_target(raw_query, target_hint)
             task = _normalize_task(raw_task, str(raw.get("reason") or ""), 80 - index)
             if task:
+                query = str(task.get("query") or "").strip()
+                if target_hint and query and not _is_url_query(query) and not _query_mentions_target(query, target_hint):
+                    task["query"] = _bind_query_to_target(query, target_hint)
+                    query = str(task.get("query") or "").strip()
+                if not _is_url_query(query) and not _valid_coverage_query(query, target_hint or topic, _planner_context_text(question, session_summary)):
+                    continue
                 tasks.append(task)
     if coverage_queries and len(tasks) < max_tasks:
         for offset, query in enumerate(coverage_queries[: max(0, max_tasks - len(tasks))]):
             supplemental = _task(
-                "mcmod",
+                "web_discovery" if _prefer_general_web_first(_planner_context_text(question, session_summary), delivery_target, str((session_summary or {}).get("requested_by") or "")) else "mcmod",
                 query,
                 "supplemental coverage query suggested by Crawler helper; Crawler LLM tasks remain primary",
                 58 - offset,
@@ -829,6 +991,14 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
                 task["max_items"] = max_items
             if fields and not task.get("fields"):
                 task["fields"] = fields
+    _rebalance_general_web_tasks(
+        tasks,
+        prefer_general_web=_prefer_general_web_first(
+            _planner_context_text(question, session_summary),
+            delivery_target,
+            str((session_summary or {}).get("requested_by") or ""),
+        ),
+    )
     tasks.sort(key=lambda item: int(item.get("priority") or 0), reverse=True)
     if not tasks:
         fallback = plan_crawler_tasks(question, source_dir, max_tasks=max_tasks, include_completed=True)
@@ -857,7 +1027,7 @@ def plan_crawler_tasks_with_llm(question: str, source_dir: Path, *, max_tasks: i
     question = _strip_delivery_recipient(question)
     client, label = _planner_client()
     fallback = decompose_crawler_queries(question)
-    target_hint = _session_target_hint(session_summary) or _collection_target_hint(question)
+    target_hint = _clean_target_hint(_session_target_hint(session_summary) or _collection_target_hint(question), max_len=80)
     learned_memory = _crawler_memory_digest(limit=8)
     schema = {
         "topic": "short target entity, e.g. 落幕曲 Closing Song or Utopia",
@@ -898,7 +1068,7 @@ def plan_crawler_tasks_with_llm(question: str, source_dir: Path, *, max_tasks: i
             f"{tool_catalog}\n"
             "Decide target entity, coverage goals, short source-specific queries, and ordered tasks. Tools execute after your JSON plan.\n"
             "The authoritative collection target is the current handoff/task goal. Prior current_topic/topics are background memory only; never let old session topics override collection_target/task_goal.\n"
-            "For general data collection tasks that ask for structured fields and a save location, use browser_collect. It can open a browser, collect item rows, and save CSV/JSON/report to output_dir. Keep the user's requested output_dir exactly.\n"
+            "For general data collection tasks that ask for structured fields and a save location, use browser_collect. It can open a browser, collect item rows, and save XLSX/CSV/JSON/report to output_dir. Keep the user's requested output_dir exactly.\n"
             "Use fetch_url for exact public URL extraction when local HTTP plus readable-text parsing is enough. It does not require hosted extraction APIs. If fetch_url fails because the page needs rendering, then choose Playwright/browser tools.\n"
             "Use save_artifact when the useful content is already in the task context, generated by the agent, or available as an artifact_ref/content_ref from earlier objective tool output. It accepts content or content_ref, format, path/filename, overwrite, and metadata; do not use it as a substitute for web extraction.\n"
             "For full Minecraft modpack collection, cover: basic info, official/download/community links, mod list, quests/beginner route, key systems, items/recipes/acquisition, bosses, tutorials, known issues.\n"
@@ -1118,7 +1288,8 @@ def review_topic_discovery_candidates(
         "ACCEPT|source|query|reason\n"
         "REJECT|topic|reason\n"
         "Allowed source values: mcmod, fetch_url, web_discovery, playwright, modpack_download.\n"
-        "Prefer mcmod for Chinese MC百科/tutorial content; use fetch_url for exact public URLs and web_discovery for video/community indexes. "
+        "Choose generic public web/browser routes for broad discovery; choose mcmod only when the candidate is clearly an MC百科 project page or MC百科-specific query. "
+        "Use fetch_url only for exact public URLs and web_discovery/playwright for video/community indexes or rendered pages. "
         "Do not choose generic homepage queries if specific candidates exist.\n"
         f"Target/question: {question}\n"
         f"Candidate seed queries: {json.dumps(compact_candidates[:24], ensure_ascii=False)}\n"
@@ -1134,7 +1305,7 @@ def review_topic_discovery_candidates(
     except Exception:
         short_prompt = (
             "Output only ACCEPT/REJECT lines. Format: ACCEPT|source|query|reason. "
-            "Allowed sources: mcmod,fetch_url,web_discovery,playwright,modpack_download. Pick useful topics for the target. "
+            "Allowed sources: mcmod,fetch_url,web_discovery,playwright,modpack_download. Pick useful topics for the target and prefer generic public web/browser routes unless the candidate is clearly MC百科-specific. "
             f"Target: {question}\n"
             f"Candidates: {json.dumps(compact_candidates[:12], ensure_ascii=False)}"
         )
@@ -1197,7 +1368,7 @@ def review_topic_discovery_candidates(
         )
         short_prompt = (
             "Output only ACCEPT lines. Format: ACCEPT|source|query|reason. "
-            "Allowed sources: mcmod,fetch_url,web_discovery,playwright,modpack_download. "
+            "Allowed sources: mcmod,fetch_url,web_discovery,playwright,modpack_download. Prefer generic public web/browser routes unless the candidate is clearly MC百科-specific. "
             f"Target: {question}\n"
             f"Candidates: {json.dumps(compact_candidates[:10], ensure_ascii=False)}"
         )
@@ -1224,7 +1395,7 @@ def review_topic_discovery_candidates(
             query = parts[2]
             reason = "|".join(parts[3:])
             if source not in allowed_sources:
-                source = "mcmod"
+                source = "web_discovery"
             task = _normalize_task({"source": source, "query": query, "reason": reason, "priority": 100 - len(tasks)}, "Crawler LLM reviewed topic discovery candidates", 100 - len(tasks))
             if task:
                 accepted_topics.append(query)

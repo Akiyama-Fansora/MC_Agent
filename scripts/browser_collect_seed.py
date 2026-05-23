@@ -182,6 +182,7 @@ def write_outputs(out_dir: Path, records: list[dict[str, str]], manifest: dict[s
     out_dir.mkdir(parents=True, exist_ok=True)
     json_path = out_dir / "items.json"
     csv_path = out_dir / "items.csv"
+    xlsx_path = out_dir / "items.xlsx"
     report_path = out_dir / "report.md"
     manifest_path = out_dir / "manifest.json"
     json_path.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -189,6 +190,22 @@ def write_outputs(out_dir: Path, records: list[dict[str, str]], manifest: dict[s
         writer = csv.DictWriter(handle, fieldnames=["name", "price", "url", "source"])
         writer.writeheader()
         writer.writerows(records)
+    try:
+        from openpyxl import Workbook
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "items"
+        headers = ["name", "price", "url", "source"]
+        sheet.append(headers)
+        for record in records:
+            sheet.append([record.get(header, "") for header in headers])
+        for column_cells in sheet.columns:
+            max_len = max(len(str(cell.value or "")) for cell in column_cells)
+            sheet.column_dimensions[column_cells[0].column_letter].width = min(max(max_len + 2, 10), 80)
+        workbook.save(xlsx_path)
+    except Exception as exc:  # noqa: BLE001
+        manifest.setdefault("errors", []).append({"stage": "write_xlsx", "error": f"{type(exc).__name__}: {exc}"})
     lines = [
         "# Browser Collect Report",
         "",
@@ -208,6 +225,7 @@ def write_outputs(out_dir: Path, records: list[dict[str, str]], manifest: dict[s
     manifest["files"] = {
         "json": str(json_path),
         "csv": str(csv_path),
+        "xlsx": str(xlsx_path) if xlsx_path.exists() else "",
         "report": str(report_path),
         "manifest": str(manifest_path),
     }
@@ -325,6 +343,8 @@ def main() -> int:
     print(f"Records: {manifest['record_count']}")
     print(f"JSON: {manifest['files']['json']}")
     print(f"CSV: {manifest['files']['csv']}")
+    if manifest["files"].get("xlsx"):
+        print(f"XLSX: {manifest['files']['xlsx']}")
     print(f"Report: {manifest['files']['report']}")
     if manifest.get("failure_reason"):
         print(f"Reason: {manifest['failure_reason']}")

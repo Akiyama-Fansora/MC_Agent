@@ -129,7 +129,7 @@ PROVIDERS: dict[str, ProviderSpec] = {
         capabilities=ProviderCapability(search=True, extract=True, browser=True),
         default_limit=50,
         timeout_seconds=900,
-        notes="通用结构化浏览器采集，按目标字段保存 CSV/JSON/report/raw HTML/截图到指定目录；不会绕过登录、验证码或安全验证。",
+        notes="通用结构化浏览器采集，按目标字段保存 XLSX/CSV/JSON/report/raw HTML/截图到指定目录；不会绕过登录、验证码或安全验证。",
     ),
     "fetch_url": ProviderSpec(
         id="fetch_url",

@@ -4419,7 +4419,23 @@ def _mcagent_context_focus(question: str, collection_target: str = "") -> str:
     value = re.sub(r"(?i)\bMCagent\b|\bMC Agent\b|\bRAG\b", " ", value)
     value = re.sub(r"(问下|查询|检查|本地资料库|本地资料|知识库|资料库|你去|网上|联网|找|补给他|补给|补库|补充|采集|爬取|抓取|获取)", " ", value)
     value = re.sub(r"\s+", " ", value).strip(" ，。；;:：")
+    value = _expand_mcagent_context_aliases(value)
     return value or str(question or "").strip()
+
+
+def _expand_mcagent_context_aliases(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return text
+    lowered = text.lower()
+    minecraft_hint = any(term in lowered for term in ("minecraft", "modpack", "mc", "fabric")) or any(term in text for term in ("整合包", "模组", "玩法", "新手", "版本", "任务", "Boss", "boss"))
+    if "乌托邦" in text and minecraft_hint:
+        aliases = ["乌托邦探险之旅", "Utopian Journey", "MC 1.20.1 Fabric 整合包"]
+        for alias in aliases:
+            if alias.lower() not in lowered:
+                text = f"{text} {alias}"
+                lowered = text.lower()
+    return text
 
 
 def _default_mcagent_gap_action_plan() -> list[dict[str, Any]]:

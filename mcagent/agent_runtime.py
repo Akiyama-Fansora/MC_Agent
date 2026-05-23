@@ -525,7 +525,7 @@ CRAWLER_COLLECTION_TOOLS = [
     ),
     ToolSpec(
         name="browser_collect",
-        description="Use a browser for general structured collection, saving CSV/JSON/report/raw HTML/screenshot.",
+        description="Use a browser for general structured collection, saving XLSX/CSV/JSON/report/raw HTML/screenshot.",
         input_schema={"query_or_url": "target", "fields": "requested fields", "output_dir": "save path"},
         result_schema={"files": "saved structured outputs", "failure_reason": "if blocked"},
         side_effects="browser_network_filesystem",

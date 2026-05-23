@@ -134,6 +134,18 @@ class FakeClient:
         return self.text
 
 
+class SequencedFakeClient:
+    def __init__(self, responses: list[str]) -> None:
+        self.responses = responses
+        self.calls: list[dict[str, Any]] = []
+
+    def chat(self, messages, *, temperature=None, max_tokens=None):  # noqa: ANN001
+        self.calls.append({"messages": messages, "temperature": temperature, "max_tokens": max_tokens})
+        if not self.responses:
+            raise AssertionError("No fake responses left")
+        return self.responses.pop(0)
+
+
 def test_llm_router_owns_prompt_and_json_parsing() -> None:
     tmp, run = make_run("你好")
     fake = FakeClient('```json\n{"tool":"direct_answer","reason":"greeting"}\n```')
@@ -158,6 +170,36 @@ def test_llm_router_owns_prompt_and_json_parsing() -> None:
     assert_equal("llm_router_planner", decision["planner"], "fake-router")
     assert_true("llm_router_prompt_mentions_catalog", "Agent Runtime" in fake.calls[0]["messages"][1]["content"])
     assert_equal("json_parser", json_object_from_llm_text("prefix {\"ok\": true} suffix"), {"ok": True})
+
+
+def test_llm_router_repairs_malformed_json_before_router_error() -> None:
+    tmp, run = make_run("hello")
+    fake = SequencedFakeClient(
+        [
+            '{"tool":"planned_workflow","reason":"needs two steps" "action_plan":[{"step":1,"tool":"mcagent_context","goal":"inspect gaps"},{"step":2,"tool":"delegate_crawler","goal":"collect"}]}',
+            '{"tool":"planned_workflow","reason":"needs two steps","action_plan":[{"step":1,"tool":"mcagent_context","goal":"inspect gaps"},{"step":2,"tool":"delegate_crawler","goal":"collect"}],"delivery_target":"MCagent/RAG"}',
+        ]
+    )
+    try:
+        service = LlmAgentToolRouterService(
+            select_client=lambda _config, _model, _temperature: (fake, "fake-router"),
+            action_plan_has_tool=lambda _plan, _tool: False,
+        )
+        decision = service.decide_tool(
+            run.config,
+            run.payload,
+            agent=run.agent,
+            original_question=run.original_question,
+            contextual_question=run.question,
+            session_summary={},
+            model=run.model,
+        )
+    finally:
+        tmp.cleanup()
+
+    assert_equal("repaired_tool", decision["tool"], "planned_workflow")
+    assert_equal("repair_call_count", len(fake.calls), 2)
+    assert_true("repair_prompt", "Repair it" in fake.calls[1]["messages"][1]["content"])
 
 
 def test_llm_router_error_does_not_choose_fallback_tool() -> None:
@@ -193,6 +235,7 @@ def main() -> int:
     test_router_error_stops_before_confirmation()
     test_router_marks_planned_delegate_without_executing_it()
     test_llm_router_owns_prompt_and_json_parsing()
+    test_llm_router_repairs_malformed_json_before_router_error()
     test_llm_router_error_does_not_choose_fallback_tool()
     print("AGENT ROUTER SCENARIOS PASSED")
     return 0

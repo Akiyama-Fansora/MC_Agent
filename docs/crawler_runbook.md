@@ -130,10 +130,9 @@ Crawler 是独立 Agent，应该形成完整循环：
 | `modrinth` | 项目元数据、整合包 contents、版本、链接。 |
 | `followup` | 从项目元数据发现 Source/Wiki/README/docs 后继续抓。 |
 | `web_discovery` | 公开网页搜索与正文抽取，适合教程和资料页发现。 |
-| `playwright` | 托管搜索/抓取，适合较干净的网页正文。 |
-| `fetch_url` | 免费搜索/Reader 兜底，URL 转 Markdown。 |
-| `web_discovery` | 通用发现、raw HTML 保存、GitHub README 扩展。 |
-| `playwright` | JS 页面、复杂表格、渲染页面、raw HTML 兜底。 |
+| `fetch_url` | 本地 HTTP 读取指定公开 URL，保存正文、raw HTML 和 manifest，无需第三方 API key。 |
+| `browser_collect` | 浏览器结构化采集列表/商品/表格，输出 XLSX/CSV/JSON/report/manifest。 |
+| `playwright` | JS 页面、复杂表格、渲染页面、raw HTML 和截图兜底。 |
 | `mediawiki` | 原版 Minecraft 机制。 |
 | `ftbwiki/createwiki` | 已知大型模组生态的专门 Wiki。 |
 

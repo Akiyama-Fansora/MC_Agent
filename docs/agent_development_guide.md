@@ -3900,3 +3900,49 @@ Then sent the live CrawlerAgent request:
 
 Result: the backend created job `1779510399121-1`, target recovered as `乌托邦整合包`, planned 20 executable tasks, and progressed from planning into actual collection. The job reused existing MC百科 evidence for the first action and moved on to package discovery/download.
 
+## 2026-05-23 Stage 24: Generic Crawler Fallback, JSON Repair, And Target Hygiene
+
+This stage addressed the latest five-direction live test. The core issue was not one missing source; it was planner hygiene. A Crawler job must not turn handoff prose such as "叫 Crawler 帮你采集 X 缺失的资料" into a search target, and a malformed LLM JSON response must not abort the agent loop before a safe repair attempt.
+
+### Implemented Changes
+
+1. Crawler fallback planning now treats "缺失/缺口/不足/待补" as metadata, not entity text. Queries such as `叫Crawler帮你采集乌托邦缺失 Boss` and `的相关整合包 Boss` are filtered or rebound to a real target.
+2. Session target recovery now ranks candidates by source authority:
+   - `authoritative_task_goal` / `task_goal` / `collection_target` beat stale `current_topic`;
+   - MCagent gap summaries and handoff briefs can provide a more specific target such as `乌托邦探险之旅3.0整合包`;
+   - stale context from an older topic no longer overrides the current collection target.
+3. Generic gap collection now prefers public web/browser/package discovery before MC百科-specific routes when the task says to find missing data online for MCagent/RAG.
+4. The stale `落幕曲 新手路线` helper query was replaced with a generic `新手路线` helper that gets bound to the active target.
+5. `browser_collect` can now save `items.xlsx` alongside CSV/JSON/report/manifest for structured product/list/table collection.
+6. Agent router JSON parsing now has a repair loop. If the tool-selection or next-step confirmation LLM returns malformed JSON, the router asks the same model to repair the JSON once before falling back to `router_error`.
+7. The crawler runbook table now describes active local tools (`fetch_url`, `browser_collect`, `playwright`) instead of old hosted-reader wording.
+
+### Test Plan And Results
+
+Passed:
+
+```powershell
+python -m py_compile mcagent\agent_router.py mcagent\crawler_llm_planner.py mcagent\web_server.py mcagent\agent_runtime.py mcagent\provider_registry.py mcagent\crawler_planner.py scripts\browser_collect_seed.py tests\agent_router_scenarios.py tests\crawler_planner_timeout_scenarios.py tests\browser_collect_output_scenarios.py
+python tests\crawler_planner_timeout_scenarios.py
+python tests\agent_router_scenarios.py
+python tests\browser_collect_output_scenarios.py
+python tests\web_server_side_effect_guard_scenarios.py
+python tests\agent_runtime_scenarios.py
+python tests\agent_five_direction_matrix_scenarios.py
+python tests\smoke_test.py
+python tests\fastapi_backend_scenarios.py
+python scripts\check_text_encoding.py
+python scripts\public_readiness_check.py
+node --check frontend\static\app.js
+node --check frontend\static\settings.js
+git diff --check
+```
+
+Manual checks:
+
+- MCagent local question `新手该怎么玩乌托邦` answered from local RAG without starting Crawler.
+- MCagent request `叫Crawler帮你采集乌托邦缺失的资料` reached planned workflow and created a Crawler job instead of failing on malformed router JSON.
+- Crawler structured collection against `https://webscraper.io/test-sites/e-commerce/allinone/computers/laptops` saved `items.xlsx`, `items.csv`, `items.json`, `report.md`, and `manifest.json`.
+
+Remaining direction: the next improvement should move more of the large Crawler job loop into small services around artifacts, validation, and replan replacement, so bad pending tasks can be removed cleanly during reflection instead of merely deprioritized.
+
