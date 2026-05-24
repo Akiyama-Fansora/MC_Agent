@@ -41,6 +41,14 @@ def test_frontend_does_not_show_fixed_three_way_prompt() -> None:
     assert_true("neutral_trace_status", "正在读取你的目标和当前上下文" in app)
 
 
+def test_frontend_uses_compact_job_card_instead_of_default_trace_noise() -> None:
+    app = (ROOT / "frontend" / "static" / "app.js").read_text(encoding="utf-8")
+    assert_true("compact_job_renderer", "function renderUsefulOutputs" in app)
+    assert_true("compact_summary", "plain_summary" in app)
+    assert_true("trace_not_rendered_by_default", "renderTrace(message.trace" not in app)
+    assert_true("inter_agent_folded", "Agent 间通信" in app and "renderInterAgentMessages" in app)
+
+
 def test_crawler_tool_catalog_exposes_temporary_and_persistent_paths() -> None:
     runtime = (ROOT / "mcagent" / "agent_runtime.py").read_text(encoding="utf-8")
     assert_true("temporary_extract_tool", 'name="temporary_extract"' in runtime)
@@ -65,6 +73,7 @@ def test_router_prompt_does_not_hardcode_url_no_save_rule() -> None:
 def main() -> int:
     test_matrix_document_covers_five_directions_with_examples()
     test_frontend_does_not_show_fixed_three_way_prompt()
+    test_frontend_uses_compact_job_card_instead_of_default_trace_noise()
     test_crawler_tool_catalog_exposes_temporary_and_persistent_paths()
     test_router_prompt_does_not_hardcode_url_no_save_rule()
     print("agent_five_direction_matrix_scenarios passed")

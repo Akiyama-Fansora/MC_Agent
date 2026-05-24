@@ -463,7 +463,6 @@ function renderMessages(forceScroll = false) {
         <span>${fmtTime(message.time)}</span>
       </div>
       ${renderAssistantContent(message, session.id, index)}
-      ${renderTrace(message.trace, sectionKey(session.id, index, "trace"))}
     </article>
   `).join("");
   bindExpandableSections();
@@ -519,34 +518,52 @@ function observationLabel(status) {
     uncertain: "相关性待确认",
     blocked: "被工具层拦截",
     stopped: "已停止",
+    warning: "注意",
+    retry: "重试",
   };
   return labels[status] || status || "未知";
 }
 
-function renderObservationStatus(readable) {
-  const counts = readable?.observation_statuses || {};
-  const entries = Object.entries(counts).filter(([, count]) => Number(count || 0) > 0);
-  if (!entries.length) return "";
+function renderUsefulOutputs(readable) {
+  const items = readable?.useful_outputs || [];
+  if (!items.length) return `<div class="compact-empty">本轮暂无新的外部资料摘要。</div>`;
   return `
-    <div class="job-readable-statuses">
-      ${entries.map(([status, count]) => `<span class="observation-pill ${escapeHtml(status)}">${escapeHtml(observationLabel(status))} ${escapeHtml(count)}</span>`).join("")}
+    <div class="compact-list">
+      ${items.map((item) => `
+        <div class="compact-row">
+          <strong>${escapeHtml(item.source || "资料")}</strong>
+          <span>${escapeHtml(item.status_label || observationLabel(item.status))}${item.records && item.records !== "0" ? ` · ${escapeHtml(item.records)} 条` : ""}</span>
+          ${item.query ? `<small>${escapeHtml(item.query)}</small>` : ""}
+        </div>
+      `).join("")}
     </div>
   `;
 }
 
-function renderLatestObservation(readable) {
-  const observation = readable?.latest_observation || {};
-  if (!observation.status) return "";
-  const retryText = observation.retryable ? "可换策略重试" : "不建议原路重试";
-  const next = observation.suggested_next ? `；建议：${observation.suggested_next}` : "";
-  return `<div class="source-meta">最近工具结果：${escapeHtml(observationLabel(observation.status))}，${escapeHtml(observation.summary || retryText)}${escapeHtml(next)}</div>`;
+function renderBlockedOutputs(readable) {
+  const items = readable?.blocked_outputs || [];
+  if (!items.length) return "";
+  return `
+    <details class="compact-details">
+      <summary>未补到/受限来源 ${items.length} 项</summary>
+      <div class="compact-list muted-list">
+        ${items.map((item) => `
+          <div class="compact-row">
+            <strong>${escapeHtml(item.source || "来源")}</strong>
+            <span>${escapeHtml(observationLabel(item.status))}</span>
+            ${item.query ? `<small>${escapeHtml(item.query)}</small>` : ""}
+          </div>
+        `).join("")}
+      </div>
+    </details>
+  `;
 }
 
-function renderInterAgentMessages(readable) {
+function renderInterAgentMessages(readable, key = "") {
   const messages = readable?.inter_agent_messages || [];
   if (!messages.length) return "";
   return `
-    <details class="message-section collab-panel" open>
+    <details class="message-section collab-panel compact-details" ${detailsAttrs(key || "inter-agent")}>
       <summary>
         <span>Agent 间通信</span>
         <span>${messages.length} 条</span>
@@ -566,22 +583,28 @@ function renderInterAgentMessages(readable) {
   `;
 }
 
-function renderJobTimeline(readable) {
+function renderJobTimeline(readable, key = "") {
   const timeline = readable?.timeline || [];
   if (!timeline.length) return "";
   return `
-    <div class="job-timeline">
-      ${timeline.slice(-10).map((item) => `
-        <div class="job-timeline-row ${escapeHtml(item.type || "")}">
-          <span class="job-timeline-label">${escapeHtml(item.label || item.type || "")}</span>
-          <div>
-            <strong>${escapeHtml(item.title || "")}</strong>
-            ${item.status ? `<span class="source-meta"> · ${escapeHtml(observationLabel(item.status))}</span>` : ""}
-            ${item.text ? `<div class="source-meta">${escapeHtml(item.text)}</div>` : ""}
+    <details class="message-section trace-panel compact-details" ${detailsAttrs(key || "timeline")}>
+      <summary>
+        <span>采集过程详情</span>
+        <span>${timeline.length} 条</span>
+      </summary>
+      <div class="job-timeline">
+        ${timeline.map((item) => `
+          <div class="job-timeline-row ${escapeHtml(item.type || "")}">
+            <span class="job-timeline-label">${escapeHtml(item.label || item.type || "")}</span>
+            <div>
+              <strong>${escapeHtml(item.title || "")}</strong>
+              ${item.status ? `<span class="source-meta"> · ${escapeHtml(observationLabel(item.status))}</span>` : ""}
+              ${item.text ? `<div class="source-meta">${escapeHtml(item.text)}</div>` : ""}
+            </div>
           </div>
-        </div>
-      `).join("")}
-    </div>
+        `).join("")}
+      </div>
+    </details>
   `;
 }
 
@@ -592,8 +615,6 @@ function renderJobReadable(readable, key = "") {
   const percent = readable.progress_percent != null
     ? Math.max(0, Math.min(100, Number(readable.progress_percent || 0)))
     : total ? Math.max(0, Math.min(100, (current / total) * 100)) : 0;
-  const goals = readable.coverage_goals || [];
-  const reflection = readable.agent_reflection || {};
   const statusText = readable.status === "running" ? "运行中"
     : readable.status === "queued" ? "排队中"
     : readable.status === "succeeded" ? "已完成"
@@ -601,38 +622,43 @@ function renderJobReadable(readable, key = "") {
     : readable.status === "stopped" ? "已停止"
     : readable.status || "";
   const displayStatus = readable.status_label || statusText;
-  const headline = readable.headline || readable.target || readable.title || "Crawler 采集任务";
+  const headline = readable.target || readable.title || "Crawler 采集任务";
   const progressText = readable.progress_text || `第 ${current || 0} / ${total} 个采集动作`;
   return `
-    <details class="message-section job-readable" ${detailsAttrs(key || "job", true)}>
-      <summary>
-        <span>${escapeHtml(headline)}</span>
-        <span>${escapeHtml(displayStatus)}</span>
-      </summary>
+    <section class="message-section job-readable compact-job">
       <div class="job-readable-head">
         <strong>${escapeHtml(headline)}</strong>
         <span>${escapeHtml(displayStatus)}</span>
       </div>
-      ${total ? progressBar("当前任务", percent, progressText) : `<div class="source-meta">${escapeHtml(progressText)}</div>`}
-      <div class="job-readable-grid">
-        ${readable.delivery_target ? statRow("交付对象", readable.delivery_target) : ""}
-        ${readable.current_source ? statRow("当前来源", readable.current_source) : ""}
-        ${readable.current_query ? statRow("当前搜索", readable.current_query) : ""}
-        ${statRow("成功入库候选", String(readable.success_count || 0))}
-        ${statRow("空结果", String(readable.empty_count || 0))}
-        ${statRow("跑偏", String(readable.off_topic_count || 0))}
-      </div>
-      ${renderObservationStatus(readable)}
-      ${renderLatestObservation(readable)}
+      ${total ? progressBar("进度", percent, progressText) : `<div class="source-meta">${escapeHtml(progressText)}</div>`}
+      ${readable.plain_summary ? `<div class="compact-summary">${escapeHtml(readable.plain_summary)}</div>` : ""}
       ${readable.planner_warning ? `<div class="source-meta warning-text">规划警告：${escapeHtml(readable.planner_warning)}</div>` : ""}
-      ${readable.health_text ? `<div class="source-meta">状态判断：${escapeHtml(readable.health_text)}</div>` : ""}
-      ${readable.current_reason ? `<div class="source-meta">当前动作理由：${escapeHtml(readable.current_reason)}</div>` : ""}
-      ${reflection.reason ? `<div class="source-meta">CrawlerAgent 判断：${escapeHtml(reflection.reason)}</div>` : ""}
-      ${goals.length ? `<div class="job-readable-goals">${goals.map((goal) => `<span>${escapeHtml(goal)}</span>`).join("")}</div>` : ""}
-      <div class="source-meta">${escapeHtml(readable.next_action || readable.summary || "")}</div>
-      ${renderInterAgentMessages(readable)}
-      ${renderJobTimeline(readable)}
-    </details>
+      <div class="compact-columns">
+        <div>
+          <div class="compact-title">补到/复用的资料</div>
+          ${renderUsefulOutputs(readable)}
+        </div>
+        <div>
+          <div class="compact-title">限制与缺口</div>
+          ${renderBlockedOutputs(readable) || `<div class="compact-empty">暂无明显限制。</div>`}
+        </div>
+      </div>
+      <details class="compact-details" ${detailsAttrs(`${key || "job"}:meta`)}>
+        <summary>任务元信息</summary>
+        <div class="job-readable-grid compact-grid">
+          ${readable.delivery_target ? statRow("交付对象", readable.delivery_target) : ""}
+          ${readable.current_source ? statRow("最后来源", readable.current_source) : ""}
+          ${readable.current_query ? statRow("最后搜索", readable.current_query) : ""}
+          ${statRow("成功候选", String(readable.success_count || 0))}
+          ${statRow("空结果", String(readable.empty_count || 0))}
+          ${statRow("跑偏", String(readable.off_topic_count || 0))}
+        </div>
+        ${readable.health_text ? `<div class="source-meta">状态判断：${escapeHtml(readable.health_text)}</div>` : ""}
+        ${readable.next_action ? `<div class="source-meta">下一步：${escapeHtml(readable.next_action)}</div>` : ""}
+      </details>
+      ${renderInterAgentMessages(readable, `${key || "job"}:inter-agent`)}
+      ${renderJobTimeline(readable, `${key || "job"}:timeline`)}
+    </section>
   `;
 }
 
@@ -744,28 +770,20 @@ function crawlerProgressText(job) {
   const statusText = status === "running" ? "正在采集"
     : status === "queued" ? "正在排队"
     : status === "succeeded" ? "采集完成"
-    : status === "failed" ? "这轮采集没拿到可用新增资料"
+    : status === "failed" ? "采集失败"
     : status === "stopped" ? "采集已停止"
     : "采集任务更新";
   const total = Number(readable.total_tasks || 0);
   const current = Number(readable.current_index || 0);
   const progress = total ? `第 ${current || 0}/${total} 个动作` : "等待规划动作";
+  const summary = readable.plain_summary || readable.health_text || readable.summary || "";
   const lines = [
     `CrawlerAgent ${statusText}：${readable.target || job.title || "采集任务"}`,
     `进度：${progress}`,
   ];
-  if (readable.current_source || readable.current_query) {
-    lines.push(`当前：${[readable.current_source, readable.current_query].filter(Boolean).join(" · ")}`);
-  }
-  if (readable.latest_observation?.status) {
-    lines.push(`最近结果：${observationLabel(readable.latest_observation.status)}${readable.latest_observation.summary ? `，${readable.latest_observation.summary}` : ""}`);
-  }
-  if (readable.agent_reflection?.reason) {
-    lines.push(`判断：${readable.agent_reflection.reason}`);
-  }
-  if (readable.next_action) {
-    lines.push(`下一步：${readable.next_action}`);
-  }
+  if (summary) lines.push(summary);
+  if (readable.useful_outputs?.length) lines.push(`补到/复用：${readable.useful_outputs.map((item) => item.source).join("、")}`);
+  if (readable.blocked_outputs?.length) lines.push(`未补到/受限：${readable.blocked_outputs.length} 项已折叠到详情。`);
   return lines.join("\n");
 }
 

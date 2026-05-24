@@ -70,6 +70,8 @@ class JobReadableViewService:
         planner_error = str(plan.get("planner_error") or "").strip()
         fallback_used = bool(planner_error or "fallback_after_llm_planner_error" in str(plan.get("strategy") or ""))
         inter_agent_messages = self._inter_agent_messages(tasks)
+        useful_outputs = self._useful_outputs(tasks)
+        blocked_outputs = self._blocked_outputs(tasks)
         timeline = self._timeline(
             plan=plan,
             tasks=tasks,
@@ -119,6 +121,16 @@ class JobReadableViewService:
                 else ("Crawler LLM 规划失败，当前使用兜底计划。" if fallback_used else "")
             ),
             "inter_agent_messages": inter_agent_messages,
+            "useful_outputs": useful_outputs,
+            "blocked_outputs": blocked_outputs,
+            "plain_summary": self._plain_summary(
+                status=status,
+                success_count=success_count,
+                useful_outputs=useful_outputs,
+                blocked_outputs=blocked_outputs,
+                empty=empty,
+                off_topic=off_topic,
+            ),
             "timeline": timeline,
         }
 
@@ -206,6 +218,71 @@ class JobReadableViewService:
                         }
                     )
         return messages[-8:]
+
+    def _useful_outputs(self, tasks: list[Any]) -> list[dict[str, str]]:
+        outputs: list[dict[str, str]] = []
+        for item in tasks:
+            if not isinstance(item, dict):
+                continue
+            source = str(item.get("source") or "").strip()
+            observation = item.get("observation") if isinstance(item.get("observation"), dict) else {}
+            status = str(observation.get("status") or "").strip()
+            if source == "mcagent_context" or status not in {"ok", "duplicate_reused"}:
+                continue
+            stats = item.get("manifest_stats") if isinstance(item.get("manifest_stats"), dict) else {}
+            records = int(stats.get("records") or 0)
+            outputs.append(
+                {
+                    "source": self.source_label(source),
+                    "status": status,
+                    "status_label": "新增可用资料" if status == "ok" else "复用已有资料",
+                    "query": str(item.get("query") or "").strip(),
+                    "records": str(records),
+                    "export_dir": str(item.get("export_dir") or "").strip(),
+                }
+            )
+        return outputs[:8]
+
+    def _blocked_outputs(self, tasks: list[Any]) -> list[dict[str, str]]:
+        outputs: list[dict[str, str]] = []
+        important = {"auth_required", "login_required", "captcha_required", "quota_limited", "empty", "off_topic"}
+        for item in tasks:
+            if not isinstance(item, dict):
+                continue
+            observation = item.get("observation") if isinstance(item.get("observation"), dict) else {}
+            status = str(observation.get("status") or "").strip()
+            if status not in important:
+                continue
+            outputs.append(
+                {
+                    "source": self.source_label(str(item.get("source") or "")),
+                    "status": status,
+                    "status_label": status,
+                    "query": str(item.get("query") or "").strip(),
+                    "summary": str(observation.get("summary") or "").strip(),
+                }
+            )
+        return outputs[-6:]
+
+    def _plain_summary(
+        self,
+        *,
+        status: str,
+        success_count: int,
+        useful_outputs: list[dict[str, str]],
+        blocked_outputs: list[dict[str, str]],
+        empty: int,
+        off_topic: int,
+    ) -> str:
+        if status in {"queued", "running"}:
+            return "Crawler 正在采集。默认只显示关键进展，完整过程已折叠到详情。"
+        if useful_outputs:
+            return f"本轮拿到/复用了 {len(useful_outputs)} 类可用资料；另有 {empty} 个空结果、{off_topic} 个跑偏结果已折叠。"
+        if success_count:
+            return f"本轮记录到 {success_count} 个可用候选，但没有形成新的外部资料摘要。"
+        if blocked_outputs:
+            return "本轮没有稳定补到新资料，主要受空结果、跑偏或访问限制影响。"
+        return "本轮采集已结束。"
 
     def _timeline(
         self,

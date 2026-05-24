@@ -163,6 +163,7 @@ def test_job_readable_summary_surfaces_observations() -> None:
                     "query": "乌托邦探险之旅",
                     "returncode": 0,
                     "manifest_stats": {"records": 2, "skipped": 0, "errors": 0},
+                    "observation": {"status": "ok", "summary": "Tool produced usable records."},
                     "agent_message_exchange": {
                         "request": {"from_agent": "CrawlerAgent", "to_agent": "MCagent", "content": "ask gaps", "intent": "mcagent_context_request"},
                         "reply": {"from_agent": "MCagent", "to_agent": "CrawlerAgent", "content": "gap reply", "intent": "mcagent_context_reply"},
@@ -174,6 +175,7 @@ def test_job_readable_summary_surfaces_observations() -> None:
                     "returncode": 1,
                     "output": "HTTP 429 quota exceeded",
                     "manifest_stats": {"records": 0, "skipped": 0, "errors": 1},
+                    "observation": {"status": "quota_limited", "summary": "HTTP 429 quota exceeded"},
                 },
             ],
         },
@@ -186,6 +188,9 @@ def test_job_readable_summary_surfaces_observations() -> None:
     assert_equal("latest_status", readable["latest_observation"].get("status"), "quota_limited")
     assert_true("fallback_visible", readable["fallback_used"] and "unit planner failure" in readable["planner_warning"])
     assert_equal("inter_agent_visible", len(readable["inter_agent_messages"]), 2)
+    assert_true("plain_summary", bool(readable["plain_summary"]))
+    assert_equal("useful_outputs", len(readable["useful_outputs"]), 1)
+    assert_true("blocked_outputs", len(readable["blocked_outputs"]) >= 1)
 
 
 def test_crawler_delegation_requires_explicit_agent_route() -> None:
