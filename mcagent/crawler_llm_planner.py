@@ -1061,8 +1061,9 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
         tasks = list(fallback.get("tasks") or [])
     return {
         "question": question,
-        "strategy": "crawler_llm_planner",
+        "strategy": str(raw.get("strategy") or "crawler_llm_planner"),
         "planner_model": raw.get("_planner_model", ""),
+        "planner_recovered_from_error": str(raw.get("planner_recovered_from_error") or ""),
         "topic": topic,
         "target_hint": target_hint,
         "package_type": package_type,
@@ -1164,9 +1165,58 @@ def plan_crawler_tasks_resilient(question: str, source_dir: Path, *, max_tasks: 
     try:
         return plan_crawler_tasks_with_llm(question, source_dir, max_tasks=max_tasks, session_summary=session_summary)
     except Exception as exc:  # noqa: BLE001
-        fallback = _fallback_plan_with_target(question, source_dir, max_tasks, planner_error=f"{type(exc).__name__}: {exc}", session_summary=session_summary)
+        first_error = f"{type(exc).__name__}: {exc}"
+        try:
+            return _quick_recovery_plan_with_llm(
+                question,
+                source_dir,
+                max_tasks=max_tasks,
+                session_summary=session_summary,
+                planner_error=first_error,
+            )
+        except Exception as recovery_exc:  # noqa: BLE001
+            fallback_error = f"{first_error}; quick recovery failed: {type(recovery_exc).__name__}: {recovery_exc}"
+        fallback = _fallback_plan_with_target(question, source_dir, max_tasks, planner_error=fallback_error, session_summary=session_summary)
         fallback.setdefault("strategy", "rule_fallback_after_llm_planner_error")
         return fallback
+
+
+def _quick_recovery_plan_with_llm(
+    question: str,
+    source_dir: Path,
+    *,
+    max_tasks: int,
+    session_summary: dict[str, Any] | None,
+    planner_error: str,
+) -> dict[str, Any]:
+    client, label = _planner_client()
+    context = _planner_context_text(question, session_summary)
+    target = _clean_target_hint(_session_target_hint(session_summary) or _collection_target_hint(question) or _question_subject_hint(question), max_len=80)
+    prompt = (
+        "You are CrawlerAgent. The previous long planner prompt failed. Produce a small executable JSON plan only.\n"
+        "Do not answer the user. Do not use literal meta queries like 'what is missing'. Convert gaps into positive coverage tasks.\n"
+        "Allowed sources: mcagent_context, fetch_url, browser_collect, web_discovery, playwright, mcmod, modrinth, modpack_download, modpack_internal, followup, save_artifact, read_local_file, search_local_files.\n"
+        "For a request that says Crawler should ask MCagent what is missing and then collect, task 1 must be mcagent_context. Later tasks should collect concrete public evidence.\n"
+        "Return JSON with: topic, delivery_target, coverage_goals, tasks. Each task has source, query, reason, priority.\n"
+        f"Previous planner error: {planner_error}\n"
+        f"Question: {question}\n"
+        f"Target hint: {target}\n"
+        f"Session summary: {json.dumps(session_summary or {}, ensure_ascii=False)[:2500]}\n"
+        f"Context: {context[:2000]}\n"
+    )
+    raw_text = client.chat(
+        [
+            {"role": "system", "content": "Return valid JSON only."},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.0,
+        max_tokens=1800,
+    )
+    raw = _json_from_text(raw_text)
+    raw["_planner_model"] = label
+    raw["strategy"] = "quick_recovery_llm_plan_after_planner_error"
+    raw["planner_recovered_from_error"] = planner_error
+    return _sanitize_plan(raw, question, source_dir, max_tasks, session_summary=session_summary)
 
 
 def plan_crawler_tasks_rule_fallback(question: str, source_dir: Path, *, max_tasks: int = 8, planner_error: str = "", session_summary: dict[str, Any] | None = None) -> dict[str, Any]:

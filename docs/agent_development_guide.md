@@ -4285,3 +4285,32 @@ Updated tests verify:
 - `/api/agent-message` returns a structured Agent reply message;
 - SSE final `response` contains `agent_message` while keeping `response` and `done` events.
 
+## 2026-05-24 Stage 31: Observable Inter-Agent Context And Strict Fallback Testing
+
+The five-direction live tests previously accepted D4 as long as a Crawler job eventually succeeded. That was too weak: a job could pass while the initial Crawler planner had failed and the executor used a fallback target plan. This stage makes that visible and changes tests so fallback is not silently counted as success.
+
+### Implemented Changes
+
+1. `mcagent_context` no longer calls the long final-answer LLM to phrase MCagent's reply. It now uses MCagent's local retrieval/evidence result to build a fast structured reply for CrawlerAgent. This keeps the inter-agent round trip explicit and avoids multi-minute stalls during the first Crawler task.
+2. Crawler job readable status now exposes:
+   - `planner_error`;
+   - `fallback_used`;
+   - `planner_warning`;
+   - `inter_agent_messages` extracted from `agent_message_exchange`.
+3. The frontend renders `inter_agent_messages` as an open "Agent 间通信" panel inside the job card, so users can see `CrawlerAgent -> MCagent` and `MCagent -> CrawlerAgent` instead of digging through raw trace JSON.
+4. If Crawler planner fallback is used, the job card shows a visible planning warning. It is not presented as normal Agent reasoning.
+5. The crawler planner now attempts a compact LLM recovery plan if the full planner prompt fails. Only if that also fails does it create the rule fallback plan.
+6. The default initial Crawler planner timeout was raised from 35s to 90s so a slow planning answer is less likely to be cut off prematurely. Fallback remains explicit when it happens.
+7. `mcagent_context` is treated as diagnostic context, not final collected evidence. It increments candidate context and schedules/continues external collection instead of marking the job successful by itself.
+
+### Updated Test Standard
+
+Five-direction live testing must now check not only final success, but also process quality:
+
+1. D4 must use `mcagent_context`.
+2. D4 must expose an `agent_message_exchange`.
+3. D4 must not pass if the final job plan contains `planner_error` or a `fallback_after_llm_planner_error` strategy.
+4. D4 `mcagent_context` should complete quickly enough for interactive use; current live test threshold is under 60 seconds.
+5. D4 must continue to at least one non-`mcagent_context` external collection task after the MCagent reply.
+6. UI testing must confirm the job card shows the Agent-to-Agent exchange and any fallback warning clearly.
+

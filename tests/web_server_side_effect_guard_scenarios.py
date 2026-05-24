@@ -543,18 +543,27 @@ def test_crawler_job_can_execute_mcagent_context_tool() -> None:
     try:
         assert_equal("source", result["source"], "mcagent_context")
         assert_equal("returncode", result["returncode"], 0)
-        assert_true("mcagent_answer", "MCagent 回复 CrawlerAgent" in str(result.get("mcagent_answer") or ""))
+        assert_true("mcagent_answer", "CrawlerAgent" in str(result.get("mcagent_answer") or ""))
         assert_true("has_gap_summary", "完整模组列表" in str(result.get("mcagent_gap_summary") or ""))
         export_dir = Path(str(result.get("export_dir") or ""))
         manifest = json.loads((export_dir / "manifest.json").read_text(encoding="utf-8"))
         assert_equal("manifest_source", manifest["source"], "mcagent_context")
         assert_equal("inter_agent_from", manifest["inter_agent"]["from_agent"], "CrawlerAgent")
         assert_equal("inter_agent_to", manifest["inter_agent"]["to_agent"], "MCagent")
-        assert_true("reply_persisted", "MCagent 回复 CrawlerAgent" in manifest["inter_agent"]["reply"])
+        assert_true("reply_persisted", "CrawlerAgent" in manifest["inter_agent"]["reply"])
         assert_true("manifest_records", len(manifest.get("records") or []) == 1)
     finally:
         if result.get("export_dir"):
             shutil.rmtree(str(result["export_dir"]), ignore_errors=True)
+
+
+def test_mcagent_context_tool_uses_fast_structured_reply_instead_of_second_answer_llm() -> None:
+    source = (ROOT / "mcagent" / "web_server.py").read_text(encoding="utf-8")
+    start = source.index("def _run_mcagent_context_tool")
+    end = source.index("\ndef _crawler_reusable_duplicate_evidence", start)
+    body = source[start:end]
+    assert_true("no_second_grounded_answer_call", "_generate_grounded_answer(" not in body)
+    assert_true("fast_context_trace", "structured_fast_context" in body)
 
 
 if __name__ == "__main__":
@@ -574,4 +583,5 @@ if __name__ == "__main__":
     test_crawler_mcagent_context_with_collection_continues_to_delegate()
     test_direct_crawler_delegate_choice_runs_as_crawler_context_workflow()
     test_crawler_job_can_execute_mcagent_context_tool()
+    test_mcagent_context_tool_uses_fast_structured_reply_instead_of_second_answer_llm()
     print("web_server_side_effect_guard_scenarios passed")

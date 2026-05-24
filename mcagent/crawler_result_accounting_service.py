@@ -43,7 +43,13 @@ class CrawlerResultAccountingService:
             return accounting
 
         if task_source == "mcagent_context" and returncode == 0:
-            accounting["success_delta"] = 1
+            accounting["candidate_delta"] = 1
+            accounting["followup_task"] = {
+                "source": "web_discovery",
+                "query": followup_query,
+                "reason": "MCagent/RAG gap analysis is available; collect public web evidence that fills those gaps instead of treating the diagnostic exchange as final material.",
+                "priority": 128,
+            }
             result["ingest_skipped"] = "MCagent/RAG context is an inter-agent diagnostic artifact; Crawler uses it for planning but does not re-ingest it as new external evidence."
             return accounting
 

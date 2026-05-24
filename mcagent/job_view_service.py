@@ -67,6 +67,9 @@ class JobReadableViewService:
         )
         progress_percent = round((current_index / len(planned)) * 100, 1) if planned else 0.0
         health_text = self._health_text(success_count=success_count, empty=empty, off_topic=off_topic, failure_count=failure_count, latest_observation=latest_observation)
+        planner_error = str(plan.get("planner_error") or "").strip()
+        fallback_used = bool(planner_error or "fallback_after_llm_planner_error" in str(plan.get("strategy") or ""))
+        inter_agent_messages = self._inter_agent_messages(tasks)
         timeline = self._timeline(
             plan=plan,
             tasks=tasks,
@@ -108,6 +111,14 @@ class JobReadableViewService:
             "headline": self._headline(status, target, str(job.get("title") or "")),
             "health_text": health_text,
             "next_action": next_action,
+            "planner_error": planner_error,
+            "fallback_used": fallback_used,
+            "planner_warning": (
+                f"Crawler LLM 规划失败，当前使用兜底计划。失败原因：{planner_error}"
+                if fallback_used and planner_error
+                else ("Crawler LLM 规划失败，当前使用兜底计划。" if fallback_used else "")
+            ),
+            "inter_agent_messages": inter_agent_messages,
             "timeline": timeline,
         }
 
@@ -170,6 +181,32 @@ class JobReadableViewService:
             return f"暂未拿到稳定候选：空结果 {empty}，跑偏 {off_topic}，失败 {failure_count}。"
         return "Crawler 正在规划或刚开始执行。"
 
+    def _inter_agent_messages(self, tasks: list[Any]) -> list[dict[str, str]]:
+        messages: list[dict[str, str]] = []
+        for item in tasks:
+            if not isinstance(item, dict):
+                continue
+            exchange = item.get("agent_message_exchange")
+            if not isinstance(exchange, dict):
+                continue
+            for key in ("request", "reply"):
+                message = exchange.get(key)
+                if not isinstance(message, dict):
+                    continue
+                from_agent = str(message.get("from_agent") or "").strip()
+                to_agent = str(message.get("to_agent") or "").strip()
+                content = str(message.get("content") or "").strip()
+                if from_agent and to_agent and content:
+                    messages.append(
+                        {
+                            "from_agent": from_agent,
+                            "to_agent": to_agent,
+                            "content": content,
+                            "intent": str(message.get("intent") or "").strip(),
+                        }
+                    )
+        return messages[-8:]
+
     def _timeline(
         self,
         *,
@@ -184,13 +221,20 @@ class JobReadableViewService:
         events: list[dict[str, Any]] = []
         topic = str(plan.get("topic") or plan.get("target_hint") or plan.get("question") or "").strip()
         if topic or planned:
+            planner_error = str(plan.get("planner_error") or "").strip()
+            strategy = str(plan.get("strategy") or "").strip()
+            fallback_used = bool(planner_error or "fallback_after_llm_planner_error" in strategy)
             events.append(
                 {
                     "type": "plan",
                     "label": "规划",
-                    "status": "ok" if planned else "pending",
+                    "status": "warning" if fallback_used else ("ok" if planned else "pending"),
                     "title": topic or "CrawlerAgent 正在规划任务",
-                    "text": f"已规划 {len(planned)} 个采集动作。" if planned else "等待 CrawlerAgent 规划可执行采集动作。",
+                    "text": (
+                        f"Crawler LLM 规划失败，当前使用兜底计划。失败原因：{planner_error}"
+                        if fallback_used and planner_error
+                        else (f"已规划 {len(planned)} 个采集动作。" if planned else "等待 CrawlerAgent 规划可执行采集动作。")
+                    ),
                 }
             )
 

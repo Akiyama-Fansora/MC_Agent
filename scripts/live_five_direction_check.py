@@ -174,7 +174,7 @@ def require(name: str, condition: bool, detail: str = "") -> None:
 def run_direction_1(session: str) -> None:
     print("\nD1 MCagent local RAG answer", flush=True)
     q = "\u6839\u636e\u672c\u5730\u8d44\u6599\uff0c\u4e4c\u6258\u90a6\u63a2\u9669\u4e4b\u65c53.0 \u6709\u54ea\u4e9b\u73a9\u6cd5\u6807\u7b7e\u548c\u7279\u8272\uff1f"
-    events, final = chat(session + "-d1", "mcagent_rag", q, timeout=180, show_context=True, max_tokens=1000)
+    events, final = chat(session + "-d1", "mcagent_rag", q, timeout=300, show_context=True, max_tokens=1000)
     text = answer_text(final)
     require("d1_answer_present", bool(text.strip()), text[:300])
     require("d1_no_crawler_job", not final.get("job") and not final.get("delegation"), json.dumps(final.get("delegation"), ensure_ascii=False))
@@ -223,9 +223,29 @@ def run_direction_4(session: str, wait_seconds: int) -> None:
     completed = wait_job(str(job["id"]), wait_seconds, "d4")
     require("d4_job_completed", completed.get("status") in {"completed", "succeeded"}, json.dumps(completed, ensure_ascii=False, default=str)[:1200])
     result = completed.get("result") if isinstance(completed.get("result"), dict) else {}
-    loop = result.get("loop") if isinstance(result.get("loop"), list) else []
-    saw_context = any(isinstance(item, dict) and item.get("source") == "mcagent_context" for item in loop)
-    require("d4_job_used_mcagent_context", saw_context, json.dumps(loop[-5:], ensure_ascii=False, default=str))
+    plan = result.get("plan") if isinstance(result.get("plan"), dict) else {}
+    require(
+        "d4_no_planner_fallback",
+        not plan.get("planner_error") and "fallback_after_llm_planner_error" not in str(plan.get("strategy") or ""),
+        json.dumps({"strategy": plan.get("strategy"), "planner_error": plan.get("planner_error")}, ensure_ascii=False, default=str),
+    )
+    task_results = result.get("tasks") if isinstance(result.get("tasks"), list) else []
+    saw_context = any(isinstance(item, dict) and item.get("source") == "mcagent_context" for item in task_results)
+    require("d4_job_used_mcagent_context", saw_context, json.dumps(task_results[-5:], ensure_ascii=False, default=str))
+    context_steps = [item for item in task_results if isinstance(item, dict) and item.get("source") == "mcagent_context"]
+    if context_steps:
+        require(
+            "d4_mcagent_context_fast_enough",
+            float(context_steps[0].get("elapsed_seconds") or 9999) < 60,
+            json.dumps(context_steps[0], ensure_ascii=False, default=str)[:1200],
+        )
+        require(
+            "d4_agent_exchange_visible",
+            bool(context_steps[0].get("agent_message_exchange")),
+            json.dumps(context_steps[0], ensure_ascii=False, default=str)[:1200],
+        )
+    external_steps = [item for item in task_results if isinstance(item, dict) and item.get("source") != "mcagent_context"]
+    require("d4_continued_after_mcagent_context", bool(external_steps), json.dumps(task_results, ensure_ascii=False, default=str)[:1200])
     require("d4_has_usable_material", int(completed.get("success_count") or result.get("success_count") or 0) > 0 or "usable" in json.dumps(result, ensure_ascii=False).lower(), json.dumps(result, ensure_ascii=False, default=str)[:1200])
     _events, final_check = chat(
         session + "-d4-check",

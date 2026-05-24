@@ -150,6 +150,8 @@ def test_job_readable_summary_surfaces_observations() -> None:
                 "topic": "乌托邦探险之旅",
                 "delivery_target": "MCagent/RAG",
                 "coverage_goals": ["完整模组列表", "任务线", "玩法机制"],
+                "strategy": "target_fallback_after_llm_planner_error",
+                "planner_error": "unit planner failure",
             },
             "planned_tasks": [
                 {"source": "mcmod", "query": "乌托邦探险之旅", "reason": "项目页"},
@@ -161,6 +163,10 @@ def test_job_readable_summary_surfaces_observations() -> None:
                     "query": "乌托邦探险之旅",
                     "returncode": 0,
                     "manifest_stats": {"records": 2, "skipped": 0, "errors": 0},
+                    "agent_message_exchange": {
+                        "request": {"from_agent": "CrawlerAgent", "to_agent": "MCagent", "content": "ask gaps", "intent": "mcagent_context_request"},
+                        "reply": {"from_agent": "MCagent", "to_agent": "CrawlerAgent", "content": "gap reply", "intent": "mcagent_context_reply"},
+                    },
                 },
                 {
                     "source": "playwright",
@@ -178,6 +184,8 @@ def test_job_readable_summary_surfaces_observations() -> None:
     assert_equal("ok_count", readable["observation_statuses"].get("ok"), 1)
     assert_equal("quota_count", readable["observation_statuses"].get("quota_limited"), 1)
     assert_equal("latest_status", readable["latest_observation"].get("status"), "quota_limited")
+    assert_true("fallback_visible", readable["fallback_used"] and "unit planner failure" in readable["planner_warning"])
+    assert_equal("inter_agent_visible", len(readable["inter_agent_messages"]), 2)
 
 
 def test_crawler_delegation_requires_explicit_agent_route() -> None:

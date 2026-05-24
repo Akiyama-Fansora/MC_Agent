@@ -917,6 +917,11 @@ textarea {
   word-break: break-all;
 }
 
+.warning-text {
+  color: #9a4b00;
+  font-weight: 600;
+}
+
 .source-text {
   max-height: 160px;
   overflow: auto;

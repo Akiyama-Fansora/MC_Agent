@@ -62,10 +62,24 @@ def test_topic_discovery_counts_candidate_only() -> None:
     assert_equal("candidate_only", result["candidate_only"], True)
 
 
+def test_mcagent_context_is_diagnostic_and_adds_external_followup() -> None:
+    result = {"returncode": 0, "manifest_stats": {"records": 1}}
+    accounting = apply(result, source="mcagent_context")
+    assert_equal("not_final_success", accounting["success_delta"], 0)
+    assert_equal("candidate", accounting["candidate_delta"], 1)
+    assert_equal("followup_source", accounting["followup_task"]["source"], "web_discovery")
+    assert_equal(
+        "ingest_skipped",
+        result["ingest_skipped"],
+        "MCagent/RAG context is an inter-agent diagnostic artifact; Crawler uses it for planning but does not re-ingest it as new external evidence.",
+    )
+
+
 if __name__ == "__main__":
     test_matched_records_are_success_and_need_ingest()
     test_browser_collect_for_human_skips_ingest()
     test_modpack_download_creates_internal_followup()
     test_off_topic_records_are_failure()
     test_topic_discovery_counts_candidate_only()
+    test_mcagent_context_is_diagnostic_and_adds_external_followup()
     print("crawler_result_accounting_service_scenarios passed")

@@ -80,7 +80,7 @@ MAX_SOURCE_CONTEXT_CHARS = 1500
 MAX_DEEP_EVIDENCE_CHARS = 900
 DEFAULT_ANSWER_MAX_TOKENS = 3000
 ANSWER_MAX_TOKENS_CAP = 6000
-DEFAULT_CRAWLER_PLANNER_TIMEOUT_SECONDS = 35
+DEFAULT_CRAWLER_PLANNER_TIMEOUT_SECONDS = 90
 MAX_JOBS = 40
 GROW_PROGRESS_PATH = PROJECT_ROOT / "runtime" / "grow_knowledge_base_progress.json"
 GROW_LOG_CANDIDATES = (
@@ -1162,26 +1162,25 @@ def _run_mcagent_context_tool(config: AppConfig, payload: dict[str, Any], plan: 
             gaps.append("MCagent/RAG returned only limited local evidence; CrawlerAgent should prioritize missing high-signal public sources and avoid repeating low-value duplicates.")
         gap_summary = "\n".join(f"- {item}" for item in list(dict.fromkeys(gaps))[:12]) or "- No explicit gap list was found; use coverage goals and selected local evidence to decide what to collect next."
         if selected:
-            try:
-                answer_question = (
-                    "CrawlerAgent 正在通过 Agent 通道询问 MCagent："
-                    "请根据本地证据回答本地已有关于该主题的资料、缺口，以及 CrawlerAgent 应补采哪些资料。"
-                    f"\n主题：{focus}"
-                )
-                add_exchange_trace("answer", "mcagent_reply_generating", {"local_sources": len(selected)})
-                mcagent_answer, _context = _generate_grounded_answer(
-                    config,
-                    answer_question,
-                    selected,
-                    str(payload.get("mcagent_model") or ""),
-                    0.0,
-                    1600,
-                    retrieval_note="这不是面向最终用户的回答，而是 MCagent 给 CrawlerAgent 的内部上下文回复；请明确列出现有证据和资料缺口。",
-                    evidence_question=focus,
-                )
-                add_exchange_trace("answer", "mcagent_reply_ready", {"local_sources": len(selected)})
-            except Exception as exc:  # noqa: BLE001
-                mcagent_answer = f"MCagent 本地检索已完成，但生成给 CrawlerAgent 的自然语言回复失败：{type(exc).__name__}: {exc}\n\n资料缺口摘要：\n{gap_summary}"
+            evidence_lines = []
+            for index, item in enumerate(selected[:8], start=1):
+                source_line = item.url or item.source_path or "local"
+                snippet = normalize_text(item.text)[:180]
+                evidence_lines.append(f"{index}. {item.title} | {source_line}\n   摘要：{snippet}")
+            add_exchange_trace(
+                "answer",
+                "mcagent_reply_ready",
+                {"local_sources": len(selected), "mode": "structured_fast_context"},
+            )
+            mcagent_answer = (
+                f"好的，CrawlerAgent。我已用 MCagent 本地 RAG 检查主题：{focus}\n\n"
+                "## 本地已有证据\n"
+                + "\n".join(evidence_lines)
+                + "\n\n## 本地资料缺口\n"
+                + gap_summary
+                + "\n\n## 建议 CrawlerAgent 下一步\n"
+                "优先补充能被 MCagent/RAG 引用的公开资料：官方/项目页、下载页、完整模组列表或依赖列表、版本与更新日志、新手路线/教程、关键系统与已知问题。"
+            )
         else:
             mcagent_answer = (
                 "MCagent 回复 CrawlerAgent：我已检查本地资料库，但没有找到足够可用证据。"

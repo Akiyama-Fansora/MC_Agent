@@ -542,6 +542,30 @@ function renderLatestObservation(readable) {
   return `<div class="source-meta">最近工具结果：${escapeHtml(observationLabel(observation.status))}，${escapeHtml(observation.summary || retryText)}${escapeHtml(next)}</div>`;
 }
 
+function renderInterAgentMessages(readable) {
+  const messages = readable?.inter_agent_messages || [];
+  if (!messages.length) return "";
+  return `
+    <details class="message-section collab-panel" open>
+      <summary>
+        <span>Agent 间通信</span>
+        <span>${messages.length} 条</span>
+      </summary>
+      <div class="collab-log">
+        ${messages.map((item) => `
+          <div class="collab-row ${escapeHtml((item.from_agent || "").toLowerCase())}">
+            <div class="collab-speaker">${escapeHtml(item.from_agent || "Agent")} → ${escapeHtml(item.to_agent || "Agent")}</div>
+            <div class="collab-bubble">
+              <div class="collab-state">${escapeHtml(item.intent || "message")}</div>
+              <div class="collab-text">${escapeHtml(item.content || "")}</div>
+            </div>
+          </div>
+        `).join("")}
+      </div>
+    </details>
+  `;
+}
+
 function renderJobTimeline(readable) {
   const timeline = readable?.timeline || [];
   if (!timeline.length) return "";
@@ -600,11 +624,13 @@ function renderJobReadable(readable, key = "") {
       </div>
       ${renderObservationStatus(readable)}
       ${renderLatestObservation(readable)}
+      ${readable.planner_warning ? `<div class="source-meta warning-text">规划警告：${escapeHtml(readable.planner_warning)}</div>` : ""}
       ${readable.health_text ? `<div class="source-meta">状态判断：${escapeHtml(readable.health_text)}</div>` : ""}
       ${readable.current_reason ? `<div class="source-meta">当前动作理由：${escapeHtml(readable.current_reason)}</div>` : ""}
       ${reflection.reason ? `<div class="source-meta">CrawlerAgent 判断：${escapeHtml(reflection.reason)}</div>` : ""}
       ${goals.length ? `<div class="job-readable-goals">${goals.map((goal) => `<span>${escapeHtml(goal)}</span>`).join("")}</div>` : ""}
       <div class="source-meta">${escapeHtml(readable.next_action || readable.summary || "")}</div>
+      ${renderInterAgentMessages(readable)}
       ${renderJobTimeline(readable)}
     </details>
   `;
