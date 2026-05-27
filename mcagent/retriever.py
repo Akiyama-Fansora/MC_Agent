@@ -207,6 +207,62 @@ def _literal_recall_chunk_ids(conn: Any, query: str, limit: int) -> list[int]:
     return output
 
 
+def _is_modpack_fact_query(query: str) -> bool:
+    lowered = query.lower()
+    return any(
+        term in lowered
+        for term in (
+            "minecraft 版本",
+            "mc 版本",
+            "game version",
+            "minecraft version",
+            "loader",
+            "modloader",
+            "mod loader",
+            "forge",
+            "fabric",
+            "neoforge",
+        )
+    ) or any(term in query for term in ("版本", "加载器", "模组加载器", "整合包版本"))
+
+
+def _modpack_manifest_fact_chunk_ids(conn: Any, query: str, limit: int) -> list[int]:
+    if not _is_modpack_fact_query(query):
+        return []
+    rows = conn.execute(
+        """
+        SELECT
+            chunks.id AS chunk_id,
+            chunks.text AS text,
+            documents.title AS title,
+            documents.source_path AS source_path
+        FROM chunks
+        JOIN documents ON documents.id = chunks.document_id
+        WHERE documents.metadata_json LIKE '%modpack_manifest_facts%'
+           OR chunks.text LIKE '%整合包 manifest 结构化事实%'
+           OR documents.source_path LIKE '%modpack_manifests%'
+           OR documents.source_path LIKE '%modpack_archive_summary%'
+        LIMIT 240
+        """
+    ).fetchall()
+    if not rows:
+        return []
+    query_tokens = set(_tokenize_sparse(query))
+    scored: list[tuple[float, int]] = []
+    for row in rows:
+        haystack = f"{row['title']}\n{row['source_path']}\n{row['text']}".lower()
+        row_tokens = set(_tokenize_sparse(haystack))
+        overlap = len(query_tokens & row_tokens)
+        score = float(overlap)
+        if "minecraft 版本" in str(row["text"]) or "minecraft.version" in str(row["text"]).lower():
+            score += 4.0
+        if "加载器" in str(row["text"]) or "modloaders" in str(row["text"]).lower():
+            score += 3.0
+        scored.append((score, int(row["chunk_id"])))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [chunk_id for score, chunk_id in scored[: max(limit, 1)] if score > 0]
+
+
 def _fts_query(terms: list[str]) -> str:
     parts: list[str] = []
     for term in terms:
@@ -296,6 +352,15 @@ def _source_intent_boost(row: Any, query: str) -> float:
 
 def _source_channel(row: Any) -> str:
     path = str(row["source_path"]).lower().replace("\\", "/")
+    filename = path.rsplit("/", 1)[-1]
+    if "crawler_exports/" in path and (
+        filename.startswith("modpack_archive_summary")
+        or filename.startswith("modpack_manifests")
+        or filename.startswith("modpack_text_evidence")
+        or filename.startswith("modpack_route_evidence")
+        or filename.startswith("route_draft")
+    ):
+        return "pack_internal"
     if "crawler_exports/manual_research/" in path:
         if any(marker in path for marker in ("pack_internal", "pack_internals", "pack_high_signal", "ftbquests", "kubejs", "openloader", "raw_text")):
             return "pack_internal"
@@ -440,6 +505,19 @@ def _primary_entity_boost(row: Any, query: str, intent: Any | None) -> float:
     return boost
 
 
+def _manifest_fact_boost(row: Any, query: str) -> float:
+    if not _is_modpack_fact_query(query):
+        return 0.0
+    raw_metadata = str(row["document_metadata_json"] or "")
+    text = str(row["text"])
+    if "modpack_manifest_facts" in raw_metadata or "整合包 manifest 结构化事实" in text:
+        return 5.0
+    path = str(row["source_path"]).lower().replace("\\", "/")
+    if "modpack_manifests" in path or "modpack_archive_summary" in path:
+        return 1.6
+    return 0.0
+
+
 def _bm25_scores(rows: Iterable[Any], query: str) -> dict[int, float]:
     query_terms = _important_query_terms(query)
     if not query_terms:
@@ -582,6 +660,12 @@ class Retriever:
                 if chunk_id not in vector_scores:
                     candidate_ids.append(chunk_id)
                     vector_scores[chunk_id] = 0.0
+            manifest_fact_ids = _modpack_manifest_fact_chunk_ids(conn, query, limit=max(top_k * 3, 12))
+            manifest_fact_id_set = set(manifest_fact_ids)
+            for chunk_id in manifest_fact_ids:
+                if chunk_id not in vector_scores:
+                    candidate_ids.append(chunk_id)
+                    vector_scores[chunk_id] = 0.0
             rows_by_id = fetch_chunks_by_ids(conn, candidate_ids)
         finally:
             conn.close()
@@ -607,9 +691,11 @@ class Retriever:
                 + _source_authority_boost(row, query, intent)
                 + _multi_term_coverage_boost(row, query, intent)
                 + _primary_entity_boost(row, query, intent)
+                + _manifest_fact_boost(row, query)
                 + _retrieval_plan_boost(row, plan)
                 + (0.80 if chunk_id in fts_id_set else 0.0)
                 + (0.95 if chunk_id in literal_id_set else 0.0)
+                + (1.30 if chunk_id in manifest_fact_id_set else 0.0)
                 + 0.42 * bm25_scores.get(chunk_id, 0.0)
             )
             reranked.append((score, chunk_id))
