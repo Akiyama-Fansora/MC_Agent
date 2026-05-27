@@ -311,6 +311,125 @@ def _json_value_to_text(value: Any, parent_key: str = "") -> str:
     return normalize_text(str(value))
 
 
+def _manifest_loader_name(loader_id: str) -> str:
+    lowered = loader_id.lower()
+    if "neoforge" in lowered:
+        return "NeoForge"
+    if "forge" in lowered:
+        return "Forge"
+    if "fabric" in lowered:
+        return "Fabric"
+    if "quilt" in lowered:
+        return "Quilt"
+    return loader_id.split("-", 1)[0] if "-" in loader_id else loader_id
+
+
+def _modpack_manifest_aliases(path: Path) -> list[str]:
+    aliases: list[str] = []
+    for sibling in sorted(path.parent.glob("route_draft*.md"))[:3]:
+        try:
+            title = markdown_title(read_text_file(sibling), sibling.stem)
+        except OSError:
+            continue
+        if title and title not in aliases:
+            aliases.append(title)
+    for sibling in sorted(path.parent.glob("modpack_archive_summary*.json"))[:3]:
+        try:
+            data = json.loads(read_text_file(sibling))
+        except (OSError, json.JSONDecodeError):
+            continue
+        archive_path = str(data.get("archive_path") or "").strip() if isinstance(data, dict) else ""
+        if archive_path:
+            archive_name = Path(archive_path).name
+            if archive_name and archive_name not in aliases:
+                aliases.append(archive_name)
+    return aliases[:6]
+
+
+def _extract_modpack_manifest_records(value: Any) -> list[dict[str, Any]]:
+    records = value if isinstance(value, list) else [value]
+    output: list[dict[str, Any]] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        parsed = record.get("parsed") if isinstance(record.get("parsed"), dict) else record
+        minecraft = parsed.get("minecraft") if isinstance(parsed.get("minecraft"), dict) else {}
+        minecraft_version = (
+            minecraft.get("version")
+            or parsed.get("minecraft_version")
+            or parsed.get("minecraftVersion")
+            or parsed.get("gameVersion")
+        )
+        modloaders = minecraft.get("modLoaders") or parsed.get("modloaders") or parsed.get("modLoaders") or []
+        if isinstance(modloaders, dict):
+            modloaders = [modloaders]
+        loader_ids = [
+            str(item.get("id") or item.get("loader") or item.get("name") or "").strip()
+            for item in modloaders
+            if isinstance(item, dict) and str(item.get("id") or item.get("loader") or item.get("name") or "").strip()
+        ]
+        manifest_type = parsed.get("manifestType") or parsed.get("manifest_type")
+        if minecraft_version or loader_ids or manifest_type == "minecraftModpack":
+            output.append({"record": record, "parsed": parsed, "minecraft_version": minecraft_version, "loader_ids": loader_ids})
+    return output
+
+
+def _modpack_manifest_fact_documents(path: Path, root: Path, parsed_json: Any) -> list[RawDocument]:
+    records = _extract_modpack_manifest_records(parsed_json)
+    if not records:
+        return []
+    relative = path.relative_to(root).as_posix() if path.is_relative_to(root) else path.name
+    aliases = _modpack_manifest_aliases(path)
+    docs: list[RawDocument] = []
+    for index, item in enumerate(records):
+        parsed = item["parsed"]
+        name = str(parsed.get("name") or "Minecraft modpack").strip()
+        minecraft_version = str(item.get("minecraft_version") or "").strip()
+        loader_ids = [value for value in item.get("loader_ids") or [] if value]
+        loader_names = sorted({_manifest_loader_name(value) for value in loader_ids})
+        files = parsed.get("files") if isinstance(parsed.get("files"), list) else parsed.get("curseforge_files")
+        file_count = len(files) if isinstance(files, list) else None
+        lines = [
+            "# 整合包 manifest 结构化事实",
+            "",
+            f"整合包名称: {name}",
+        ]
+        if aliases:
+            lines.append("整合包别名/同目录证据标题: " + "；".join(aliases))
+        if minecraft_version:
+            lines.append(f"Minecraft 版本: {minecraft_version}")
+            lines.append(f"minecraft.version: {minecraft_version}")
+        if loader_ids:
+            lines.append("模组加载器: " + "、".join(loader_ids))
+            lines.append("加载器名称: " + "、".join(loader_names))
+            lines.append("minecraft.modLoaders.id: " + "、".join(loader_ids))
+        if parsed.get("manifestType") or parsed.get("manifest_type"):
+            lines.append(f"manifest 类型: {parsed.get('manifestType') or parsed.get('manifest_type')}")
+        if parsed.get("manifestVersion") or parsed.get("manifest_version"):
+            lines.append(f"manifest 格式版本: {parsed.get('manifestVersion') or parsed.get('manifest_version')}")
+        if parsed.get("version"):
+            lines.append(f"整合包发布版本: {parsed.get('version')}")
+        if file_count is not None:
+            lines.append(f"CurseForge 文件条目数: {file_count}")
+        lines.extend(
+            [
+                "",
+                "证据优先级说明: 回答整合包的 Minecraft 版本或加载器时，必须优先使用 manifest.json 中的 minecraft.version 与 minecraft.modLoaders 字段。",
+                "不要从压缩包文件名、Release 编号或 FIX 编号推断 Minecraft 版本。",
+            ]
+        )
+        docs.append(
+            RawDocument(
+                source_ref=f"{relative}#modpack-manifest-facts-{index}",
+                source_path=path,
+                title=f"{name} manifest 结构化事实",
+                text=normalize_text("\n".join(lines)),
+                metadata={"format": "json", "record": f"modpack-manifest-facts-{index}", "source_kind": "modpack_manifest_facts"},
+            )
+        )
+    return docs
+
+
 def _document_from_json_record(
     path: Path,
     root: Path,
@@ -418,7 +537,7 @@ def load_documents_from_path(path: Path, root: Path) -> list[RawDocument]:
 
     if suffix == ".json":
         parsed = json.loads(raw)
-        docs = []
+        docs = _modpack_manifest_fact_documents(path, root, parsed)
         for record_key, record in _iter_json_records(parsed):
             doc = _document_from_json_record(path, root, record_key, record)
             if doc:
