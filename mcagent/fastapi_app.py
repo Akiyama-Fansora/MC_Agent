@@ -65,7 +65,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
-        return FileResponse(WEB_DIR / "index.html", media_type="text/html; charset=utf-8")
+        return FileResponse(WEB_DIR / "index.html", media_type="text/html; charset=utf-8", headers={"Cache-Control": "no-store"})
 
     @app.get("/index.html", include_in_schema=False)
     def index_html() -> FileResponse:
@@ -73,7 +73,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
     @app.get("/settings", include_in_schema=False)
     def settings() -> FileResponse:
-        return FileResponse(WEB_DIR / "settings.html", media_type="text/html; charset=utf-8")
+        return FileResponse(WEB_DIR / "settings.html", media_type="text/html; charset=utf-8", headers={"Cache-Control": "no-store"})
 
     @app.get("/settings.html", include_in_schema=False)
     def settings_html() -> FileResponse:

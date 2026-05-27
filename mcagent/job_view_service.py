@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any, Callable
 
 from .agent_runtime import classify_crawler_tool_result
@@ -52,7 +53,7 @@ class JobReadableViewService:
         off_topic = sum(1 for item in tasks if isinstance(item, dict) and item.get("off_topic_result"))
         empty = sum(1 for item in tasks if isinstance(item, dict) and item.get("empty_result"))
         status = str(job.get("status") or "")
-        target = str(plan.get("topic") or plan.get("target_hint") or plan.get("question") or "")
+        target = self._display_target(plan, str(job.get("title") or ""))
         goals = [str(item) for item in (plan.get("coverage_goals") or []) if str(item).strip()]
         current_query = str(current_task.get("query") or "") if current_task else ""
         current_source = self.source_label(str(current_task.get("source") or "")) if current_task else ""
@@ -178,6 +179,40 @@ class JobReadableViewService:
     def _headline(self, status: str, target: str, title: str) -> str:
         subject = target or title or "Crawler 采集任务"
         return f"{subject} · {self._status_label(status)}"
+
+    def _display_target(self, plan: dict[str, Any], title: str) -> str:
+        raw = str(plan.get("topic") or plan.get("target_hint") or "").strip()
+        question = str(plan.get("question") or "").strip()
+        if self._looks_like_target_fragment(raw):
+            extracted = self._extract_named_target(question)
+            return extracted or title or raw
+        return raw or self._extract_named_target(question) or title
+
+    def _looks_like_target_fragment(self, value: str) -> bool:
+        text = str(value or "").strip()
+        if not text:
+            return True
+        if len(text) <= 14 and any(mark in text for mark in ("）", ")", "；", ";", "：", ":")):
+            return True
+        if text in {"具体名称与功能简介）", "具体名称与功能简介)", "latest downloaded modpack"}:
+            return True
+        return False
+
+    def _extract_named_target(self, question: str) -> str:
+        text = re.sub(r"\s+", " ", str(question or "")).strip()
+        quoted = re.search(r"[“\"'「『](.{2,80}?)[”\"'」』]", text)
+        if quoted:
+            target = quoted.group(1).strip()
+            if target:
+                return target
+        if "乌托邦探险之旅" in text:
+            return "乌托邦探险之旅（Utopian Journey）"
+        match = re.search(r"([\u4e00-\u9fffA-Za-z0-9 _.-]{2,40}?)(?:整合包|modpack)", text, flags=re.I)
+        if match:
+            target = match.group(1).strip(" ，,。；;：:")
+            if target:
+                return f"{target}整合包"
+        return ""
 
     def _health_text(self, *, success_count: int, empty: int, off_topic: int, failure_count: int, latest_observation: dict[str, Any]) -> str:
         latest = str(latest_observation.get("status") or "")

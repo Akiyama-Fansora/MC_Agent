@@ -187,6 +187,15 @@ class LlmAgentToolRouterService(AgentToolRouterService):
             client, label = self._select_client(config, model, 0.0)
             catalog = tool_catalog_prompt(agent)
             allowed_tools = "|".join(tool_names_for_agent(agent))
+            mcagent_identity_note = ""
+            if agent == "mcagent_rag":
+                mcagent_identity_note = (
+                    "\nMCagent self-check before choosing a tool:\n"
+                    "1. Interpret the message as a Minecraft knowledge assistant first.\n"
+                    "2. Decide whether the user is asking about Minecraft content, modpacks, mods, items, Bosses, gameplay, servers, versions, guides, or the local Minecraft knowledge base.\n"
+                    "3. If yes, consider local_rag_search/evidence workflow before Crawler delegation. Delegate only when evidence is missing or the user explicitly asks for collection.\n"
+                    "4. If no, use direct_answer or explain the boundary. This is semantic role reasoning, not keyword matching.\n"
+                )
             prompt = (
                 "你是当前对话里的 Agent 工具选择器，只决定下一步使用哪个工具，不回答用户问题。\n"
                 "参与者：用户、MCagent、CrawlerAgent。任意一轮沟通都可以表示为 AgentMessage(from_agent, content, to_agent)。\n"
@@ -194,6 +203,7 @@ class LlmAgentToolRouterService(AgentToolRouterService):
                 f"{catalog}\n"
                 "角色与工具关系：active_agent 只能从自己的工具目录中选择下一步；工具目录描述能力与副作用，不提供关键词触发规则。\n"
                 "交付对象判断：delivery_target 是任务语义的一部分。根据用户目标、会话上下文和工具副作用判断交付给 human、MCagent/RAG 或两者，而不是按固定句式判断。\n"
+                "如果 active_agent 是 MCagent：你不是通用关键词路由器，而是 Minecraft 资料 Agent。第一步先按语义判断用户是否在问 Minecraft 相关内容，包括整合包、模组、物品、Boss、玩法、服务器、版本、教程、MC百科/Modrinth/CurseForge、或本地 Minecraft 资料库。若是 MC 相关，优先考虑本地 RAG 证据是否能回答；若资料不足再规划委托 Crawler。若明确不是 MC 相关，可 direct_answer 或说明能力边界。不要把这个领域判断写成关键词触发规则，要结合会话上下文和用户真实意图。\n"
                 "重要原则：不要用关键词触发。必须按语义判断。不要把游戏内“获取某物/如何获得”误判成 Crawler 采集任务。\n"
                 "MCagent 的本地 RAG 当前主要服务 Minecraft 资料库；CrawlerAgent 不限于 Minecraft，应按用户给定目标采集合法、可访问的公开资料或本地资料。\n"
                 "CrawlerAgent 工具边界：temporary_extract 是即时读取、抽取、总结且不保存；delegate_crawler 会启动后台采集循环，通常会产生本地导出或补库。若用户目标明确是只读/只总结且不保存，应选择没有持久化副作用的工具。\n"
@@ -204,6 +214,7 @@ class LlmAgentToolRouterService(AgentToolRouterService):
                 "只输出 JSON，不要 Markdown，不要解释隐藏思考。\n"
                 "额外工具 direct_answer：当用户只是问候、闲聊、询问系统能力、要求解释当前行为，或任何不需要本地资料/状态/Crawler 的问题时选择 direct_answer；选择它就不要触发 local_rag_search。\n"
                 f"active_agent: {agent}\n"
+                f"{mcagent_identity_note}"
                 f"original_user_message: {original_question}\n"
                 f"contextualized_for_retrieval: {contextual_question}\n"
                 f"session_summary: {json.dumps(session_summary or {}, ensure_ascii=False)}\n"

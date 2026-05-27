@@ -137,7 +137,11 @@ def test_tool_catalog_exposes_agent_capabilities() -> None:
     assert_true("crawler_save_artifact", "save_artifact" in crawler_catalog)
     assert_true("crawler_artifact_ref_schema", "content_ref" in crawler_catalog or "artifact_ref" in crawler_catalog)
     assert_true("crawler_modpack_internal", "modpack_internal" in crawler_catalog)
+    assert_true("crawler_research_method", "source graph" in crawler_catalog and "broad keyword blasting" in crawler_catalog)
+    assert_true("crawler_source_nodes", "dependency/relation pages" in crawler_catalog and "changelogs/releases" in crawler_catalog)
     assert_true("llm_ownership", "LLM owns interpretation" in mcagent_catalog)
+    assert_true("mcagent_identity", "Minecraft-focused knowledge agent" in mcagent_catalog)
+    assert_true("mcagent_local_kb", "local Minecraft knowledge base" in mcagent_catalog)
 
 
 def test_job_readable_summary_surfaces_observations() -> None:
@@ -193,6 +197,26 @@ def test_job_readable_summary_surfaces_observations() -> None:
     assert_true("blocked_outputs", len(readable["blocked_outputs"]) >= 1)
 
 
+def test_job_readable_recovers_target_from_long_question() -> None:
+    job = {
+        "title": "Crawler 多源补库 -> RAG",
+        "status": "running",
+        "result": {
+            "plan": {
+                "topic": "具体名称与功能简介）",
+                "target_hint": "具体名称与功能简介）",
+                "question": "请针对Minecraft整合包“乌托邦探险之旅（Utopian Journey）”进行信息采集。目前缺少模组列表。",
+                "delivery_target": "MCagent/RAG",
+            },
+            "planned_tasks": [{"source": "web_discovery", "query": "乌托邦探险之旅 模组列表"}],
+            "tasks": [],
+        },
+    }
+    readable = _job_readable_summary(job)
+    assert_equal("recovered_target", readable["target"], "乌托邦探险之旅（Utopian Journey）")
+    assert_true("headline_uses_recovered_target", "乌托邦探险之旅" in readable["headline"])
+
+
 def test_crawler_delegation_requires_explicit_agent_route() -> None:
     source = (ROOT / "mcagent" / "web_server.py").read_text(encoding="utf-8")
     router_source = (ROOT / "mcagent" / "agent_router.py").read_text(encoding="utf-8")
@@ -214,6 +238,12 @@ def test_crawler_delegation_requires_explicit_agent_route() -> None:
     assert_true("no_doc_final_answer_auto_delegate", "若最终回答中 LLM 判断证据不足，才把缺口交给 CrawlerAgent" not in doc)
     assert_true("planned_delegate_branch_exists", "if planned_delegate:" in source)
     assert_true("insufficient_evidence_no_auto_delegate", '"delegated": False' in source)
+    assert_true("status_reports_latest_crawler_job", "最近 Crawler 任务" in source and "补到/复用" in source and "受限/低价值" in source)
+    assert_true("jobs_persist_across_restart", "JOBS_HISTORY_PATH" in source and "_persist_jobs_locked" in source and "_restore_jobs_locked" in source)
+    assert_true("mcagent_semantic_identity_prompt", "Minecraft 资料 Agent" in router_source and "语义判断" in router_source and "不是通用关键词路由器" in router_source)
+    planner_source = (ROOT / "mcagent" / "crawler_llm_planner.py").read_text(encoding="utf-8")
+    assert_true("crawler_method_prompt", "Research method: avoid broad keyword blasting" in planner_source and "build a source graph" in planner_source)
+    assert_true("crawler_pressure_replan_prompt", "When collection pressure rises, replan by source graph" in planner_source)
 
 
 def test_crawler_handoff_target_overrides_old_session_topic() -> None:
@@ -248,6 +278,7 @@ def main() -> int:
     test_handoff_contract_preserves_context()
     test_tool_catalog_exposes_agent_capabilities()
     test_job_readable_summary_surfaces_observations()
+    test_job_readable_recovers_target_from_long_question()
     test_crawler_delegation_requires_explicit_agent_route()
     test_crawler_handoff_target_overrides_old_session_topic()
     print("AGENT RUNTIME SCENARIOS PASSED")

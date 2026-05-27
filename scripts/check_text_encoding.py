@@ -38,6 +38,20 @@ EXCLUDE_PARTS = {
 }
 
 MOJIBAKE_TOKENS = (
+    "\u93b7\u57ae",
+    "\u7a0c\u7a7a",
+    "\u74ba\u621d",
+    "\u95c7\u20ac",
+    "\u7470\u52e7",
+    "\u6769\u68a9",
+    "\u95b2\u56ec",
+    "\u5bb8\u63d2",
+    "\u6fbe\u8fab",
+    "\u9359\u53cd",
+    "\u9429\u52ef",
+    "\u59dd\u30e6",
+    "\u7eef\u31bd",
+    "\u7ef1\u30e4",
     "\u6d63",
     "\u93c4",
     "\u93c8",

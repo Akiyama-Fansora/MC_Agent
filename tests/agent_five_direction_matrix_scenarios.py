@@ -47,6 +47,12 @@ def test_frontend_uses_compact_job_card_instead_of_default_trace_noise() -> None
     assert_true("compact_summary", "plain_summary" in app)
     assert_true("trace_not_rendered_by_default", "renderTrace(message.trace" not in app)
     assert_true("inter_agent_folded", "Agent 间通信" in app and "renderInterAgentMessages" in app)
+    assert_true("job_details_folded_by_default", "查看采集详情" in app and 'detailsAttrs(key || "job")' in app)
+    assert_true("job_relink_after_reload", "function relinkTrackedJobs" in app and "message?.jobId" in app)
+    assert_true("main_progress_mentions_current_step", "当前进度：" in app and "第 ${current || 0}/${total} 步" in app)
+    assert_true("right_panel_folds_agent_judgement", "<summary>展开技术细节</summary>" in app)
+    assert_true("job_actor_panel_visible", "function renderJobActorPanel" in app and "job-actor-panel" in app)
+    assert_true("job_actor_panel_names_subject", "CrawlerAgent" in app and "当前动作" in app and "成果" in app)
 
 
 def test_crawler_tool_catalog_exposes_temporary_and_persistent_paths() -> None:

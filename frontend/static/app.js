@@ -273,7 +273,7 @@ function renderAgents() {
   $("agentList").innerHTML = state.agents.map((agent) => `
     <button type="button" class="agent-option ${agent.id === state.activeAgent ? "active" : ""}" data-agent="${agent.id}">
       <strong>${escapeHtml(agent.name)}</strong>
-      <span>${escapeHtml(agent.description || "")}</span>
+      <span>${escapeHtml(agentHelpText(agent))}</span>
     </button>
   `).join("");
   document.querySelectorAll("[data-agent]").forEach((button) => {
@@ -290,6 +290,12 @@ function renderAgents() {
       renderLlmSettings();
     });
   });
+}
+
+function agentHelpText(agent) {
+  if (agent.id === "mcagent_rag") return "问 MC 资料、整合包、模组和玩法";
+  if (agent.id === "crawler_agent") return "去公开网页采集、保存或补库";
+  return agent.description || "";
 }
 
 function activeProfileAgentId() {
@@ -526,7 +532,7 @@ function observationLabel(status) {
 
 function renderUsefulOutputs(readable) {
   const items = readable?.useful_outputs || [];
-  if (!items.length) return `<div class="compact-empty">本轮暂无新的外部资料摘要。</div>`;
+  if (!items.length) return `<div class="compact-empty">本轮还没有形成新的可用资料。</div>`;
   return `
     <div class="compact-list">
       ${items.map((item) => `
@@ -608,6 +614,70 @@ function renderJobTimeline(readable, key = "") {
   `;
 }
 
+function renderObservationStatus(readable) {
+  const statuses = readable?.observation_statuses || {};
+  const entries = Object.entries(statuses)
+    .filter(([, count]) => Number(count || 0) > 0)
+    .map(([status, count]) => `${observationLabel(status)} ${count}`);
+  if (!entries.length) return "";
+  return `<div class="source-meta">结果概况：${escapeHtml(entries.join(" · "))}</div>`;
+}
+
+function renderJobActorPanel(readable, headline, displayStatus, progressText) {
+  const useful = readable?.useful_outputs || [];
+  const blocked = readable?.blocked_outputs || [];
+  const usefulText = useful.length
+    ? `已补到/复用 ${useful.length} 类资料：${useful.map((item) => item.source || "资料").slice(0, 4).join("、")}`
+    : (readable.status === "running" || readable.status === "queued" ? "还在采集中，暂未形成新的可用资料。" : "本轮没有形成新的可用资料。");
+  const blockedText = blocked.length
+    ? `${blocked.length} 条空结果、跑偏或受限来源已放到详情里。`
+    : "暂无明显限制。";
+  const currentText = readable.current_source || readable.current_query
+    ? `${readable.current_source || "当前来源"}${readable.current_query ? `：${readable.current_query}` : ""}`
+    : (readable.next_action || "等待下一步动作。");
+  return `
+    <section class="message-section job-actor-panel">
+      <div class="collab-log">
+        <div class="collab-row crawleragent">
+          <div class="collab-speaker">CrawlerAgent</div>
+          <div class="collab-bubble">
+            <div class="collab-state">${escapeHtml(displayStatus)}</div>
+            <div class="collab-text">${escapeHtml(headline)}</div>
+          </div>
+        </div>
+        <div class="collab-row crawleragent">
+          <div class="collab-speaker">CrawlerAgent</div>
+          <div class="collab-bubble">
+            <div class="collab-state">进度</div>
+            <div class="collab-text">${escapeHtml(progressText)}</div>
+          </div>
+        </div>
+        <div class="collab-row crawleragent">
+          <div class="collab-speaker">CrawlerAgent</div>
+          <div class="collab-bubble">
+            <div class="collab-state">当前动作</div>
+            <div class="collab-text">${escapeHtml(currentText)}</div>
+          </div>
+        </div>
+        <div class="collab-row crawleragent">
+          <div class="collab-speaker">CrawlerAgent</div>
+          <div class="collab-bubble">
+            <div class="collab-state">成果</div>
+            <div class="collab-text">${escapeHtml(usefulText)}</div>
+          </div>
+        </div>
+        <div class="collab-row crawleragent">
+          <div class="collab-speaker">CrawlerAgent</div>
+          <div class="collab-bubble">
+            <div class="collab-state">限制</div>
+            <div class="collab-text">${escapeHtml(blockedText)}</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
 function renderJobReadable(readable, key = "") {
   if (!readable) return "";
   const total = Number(readable.total_tasks || 0);
@@ -622,43 +692,51 @@ function renderJobReadable(readable, key = "") {
     : readable.status === "stopped" ? "已停止"
     : readable.status || "";
   const displayStatus = readable.status_label || statusText;
-  const headline = readable.target || readable.title || "Crawler 采集任务";
+  const headline = readable.headline || readable.target || readable.title || "Crawler 采集任务";
   const progressText = readable.progress_text || `第 ${current || 0} / ${total} 个采集动作`;
+  const detailCount = Number(readable.blocked_outputs?.length || 0) + Number(readable.timeline?.length || 0);
   return `
-    <section class="message-section job-readable compact-job">
-      <div class="job-readable-head">
-        <strong>${escapeHtml(headline)}</strong>
-        <span>${escapeHtml(displayStatus)}</span>
+    ${renderJobActorPanel(readable, headline, displayStatus, progressText)}
+    <details class="message-section job-readable compact-job" ${detailsAttrs(key || "job")}>
+      <summary>
+        <span>查看采集详情</span>
+        <span>${escapeHtml(displayStatus)}${detailCount ? ` · ${detailCount} 条细节` : ""}</span>
+      </summary>
+      <div class="compact-job-body">
+        <div class="job-readable-head">
+          <strong>${escapeHtml(headline)}</strong>
+          <span>${escapeHtml(displayStatus)}</span>
+        </div>
+        ${total ? progressBar("进度", percent, progressText) : `<div class="source-meta">${escapeHtml(progressText)}</div>`}
+        ${readable.plain_summary ? `<div class="compact-summary">${escapeHtml(readable.plain_summary)}</div>` : ""}
+        ${readable.planner_warning ? `<div class="source-meta warning-text">规划警告：${escapeHtml(readable.planner_warning)}</div>` : ""}
+        <div class="compact-columns">
+          <div>
+            <div class="compact-title">补到/复用的资料</div>
+            ${renderUsefulOutputs(readable)}
+          </div>
+          <div>
+            <div class="compact-title">限制与缺口</div>
+            ${renderBlockedOutputs(readable) || `<div class="compact-empty">暂无明显限制。</div>`}
+          </div>
+        </div>
+        <details class="compact-details" ${detailsAttrs(`${key || "job"}:meta`)}>
+          <summary>任务元信息</summary>
+          <div class="job-readable-grid compact-grid">
+            ${readable.delivery_target ? statRow("交付对象", readable.delivery_target) : ""}
+            ${readable.current_source ? statRow("最后来源", readable.current_source) : ""}
+            ${readable.current_query ? statRow("最后搜索", readable.current_query) : ""}
+            ${statRow("成功候选", String(readable.success_count || 0))}
+            ${statRow("空结果", String(readable.empty_count || 0))}
+            ${statRow("跑偏", String(readable.off_topic_count || 0))}
+          </div>
+          ${readable.health_text ? `<div class="source-meta">状态判断：${escapeHtml(readable.health_text)}</div>` : ""}
+          ${readable.next_action ? `<div class="source-meta">下一步：${escapeHtml(readable.next_action)}</div>` : ""}
+        </details>
+        ${renderInterAgentMessages(readable, `${key || "job"}:inter-agent`)}
+        ${renderJobTimeline(readable, `${key || "job"}:timeline`)}
       </div>
-      ${total ? progressBar("进度", percent, progressText) : `<div class="source-meta">${escapeHtml(progressText)}</div>`}
-      ${readable.plain_summary ? `<div class="compact-summary">${escapeHtml(readable.plain_summary)}</div>` : ""}
-      ${readable.planner_warning ? `<div class="source-meta warning-text">规划警告：${escapeHtml(readable.planner_warning)}</div>` : ""}
-      <div class="compact-columns">
-        <div>
-          <div class="compact-title">补到/复用的资料</div>
-          ${renderUsefulOutputs(readable)}
-        </div>
-        <div>
-          <div class="compact-title">限制与缺口</div>
-          ${renderBlockedOutputs(readable) || `<div class="compact-empty">暂无明显限制。</div>`}
-        </div>
-      </div>
-      <details class="compact-details" ${detailsAttrs(`${key || "job"}:meta`)}>
-        <summary>任务元信息</summary>
-        <div class="job-readable-grid compact-grid">
-          ${readable.delivery_target ? statRow("交付对象", readable.delivery_target) : ""}
-          ${readable.current_source ? statRow("最后来源", readable.current_source) : ""}
-          ${readable.current_query ? statRow("最后搜索", readable.current_query) : ""}
-          ${statRow("成功候选", String(readable.success_count || 0))}
-          ${statRow("空结果", String(readable.empty_count || 0))}
-          ${statRow("跑偏", String(readable.off_topic_count || 0))}
-        </div>
-        ${readable.health_text ? `<div class="source-meta">状态判断：${escapeHtml(readable.health_text)}</div>` : ""}
-        ${readable.next_action ? `<div class="source-meta">下一步：${escapeHtml(readable.next_action)}</div>` : ""}
-      </details>
-      ${renderInterAgentMessages(readable, `${key || "job"}:inter-agent`)}
-      ${renderJobTimeline(readable, `${key || "job"}:timeline`)}
-    </section>
+    </details>
   `;
 }
 
@@ -726,7 +804,23 @@ function rememberJobMessage(job, sessionId, messageIndex) {
   };
 }
 
+function relinkTrackedJobs(jobs) {
+  const jobIds = new Set((jobs || []).filter((job) => job?.id).map((job) => job.id));
+  if (!jobIds.size) return;
+  for (const [agentId, sessions] of Object.entries(state.sessionsByAgent || {})) {
+    void agentId;
+    for (const session of sessions || []) {
+      for (const [index, message] of (session.messages || []).entries()) {
+        if (message?.jobId && jobIds.has(message.jobId) && !state.trackedJobs[message.jobId]) {
+          rememberJobMessage({ id: message.jobId, status: message.jobStatus || "" }, session.id, index);
+        }
+      }
+    }
+  }
+}
+
 function applyJobUpdatesToMessages(jobs) {
+  relinkTrackedJobs(jobs);
   let changed = false;
   for (const job of jobs || []) {
     if (!job || !job.id || !state.trackedJobs[job.id]) continue;
@@ -741,6 +835,8 @@ function applyJobUpdatesToMessages(jobs) {
     }
     if (job.readable) {
       message.jobReadable = job.readable;
+      message.jobId = job.id;
+      message.jobStatus = job.status || "";
       if (!message.isStreamingAnswer && !result.mcagent_recheck) {
         message.text = crawlerProgressText(job);
       }
@@ -775,15 +871,21 @@ function crawlerProgressText(job) {
     : "采集任务更新";
   const total = Number(readable.total_tasks || 0);
   const current = Number(readable.current_index || 0);
-  const progress = total ? `第 ${current || 0}/${total} 个动作` : "等待规划动作";
+  const progress = total ? `第 ${current || 0}/${total} 步` : "正在规划";
   const summary = readable.plain_summary || readable.health_text || readable.summary || "";
-  const lines = [
-    `CrawlerAgent ${statusText}：${readable.target || job.title || "采集任务"}`,
-    `进度：${progress}`,
-  ];
-  if (summary) lines.push(summary);
-  if (readable.useful_outputs?.length) lines.push(`补到/复用：${readable.useful_outputs.map((item) => item.source).join("、")}`);
-  if (readable.blocked_outputs?.length) lines.push(`未补到/受限：${readable.blocked_outputs.length} 项已折叠到详情。`);
+  const target = readable.headline || readable.target || job.title || "采集任务";
+  const lines = [`CrawlerAgent ${statusText}：${target}`];
+  lines.push(summary || `当前进度：${progress}。`);
+  if (status === "running" || status === "queued") lines.push(`当前进度：${progress}。`);
+  const useful = readable.useful_outputs || [];
+  const blocked = readable.blocked_outputs || [];
+  if (status === "succeeded" && useful.length) {
+    const sources = useful.map((item) => item.source).filter(Boolean).slice(0, 3).join("、");
+    lines.push(`本轮补到或复用了 ${useful.length} 类资料${sources ? `：${sources}` : ""}。`);
+  }
+  if (blocked.length) {
+    lines.push(`${blocked.length} 条受限或低价值结果已放进“采集详情”。`);
+  }
   return lines.join("\n");
 }
 
@@ -839,13 +941,13 @@ function renderSources(sources) {
   state.lastSources = sources || [];
   $("sourceCount").textContent = String(state.lastSources.length);
   if (!state.lastSources.length) {
-    $("sources").innerHTML = `<div class="source-item"><div class="source-meta">暂无来源。当前资料库可能为空，或本次回答来自爬虫agent/监控。</div></div>`;
+    $("sources").innerHTML = `<div class="source-item empty-state"><strong>还没有引用来源</strong><div class="source-meta">本轮可能是闲聊、状态回复，或 Crawler 正在后台采集。</div></div>`;
     return;
   }
   $("sources").innerHTML = state.lastSources.map((source) => `
     <div class="source-item">
       <strong>[S${source.rank}] ${escapeHtml(source.title)}</strong>
-      <div class="source-meta">score ${Number(source.score).toFixed(4)} · ${escapeHtml(source.url || source.source_path)}</div>
+      <div class="source-meta">匹配度 ${Number(source.score).toFixed(3)} · ${escapeHtml(source.url || source.source_path)}</div>
       <div class="source-text">${escapeHtml(source.text)}</div>
     </div>
   `).join("");
@@ -853,6 +955,17 @@ function renderSources(sources) {
 
 function statRow(label, value) {
   return `<div class="stat-row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`;
+}
+
+function jobStatusLabel(status) {
+  return {
+    queued: "排队中",
+    running: "运行中",
+    succeeded: "已完成",
+    failed: "失败",
+    stopped: "已停止",
+    finished: "已结束",
+  }[status] || status || "未知";
 }
 
 function findSessionById(sessionId) {
@@ -893,7 +1006,7 @@ function progressBar(label, percent, meta = "") {
 
 function renderCrawlerProgress(progress) {
   if (!progress || (!progress.active && !progress.status)) {
-    return `<div class="source-meta">批量采集脚本：当前没有运行。</div>`;
+    return `<div class="source-meta">全面补库：当前没有运行。</div>`;
   }
   const status = progress.active ? (progress.status || "running") : (progress.status || "idle");
   const cycle = Number(progress.cycle || 0);
@@ -905,10 +1018,12 @@ function renderCrawlerProgress(progress) {
   const command = shortCommand(progress.current_command);
   const processes = (progress.processes || []).map((item) => `PID ${item.pid}`).join(" / ");
   return `
-    <div class="crawler-progress">
+    <details class="compact-details crawler-progress-details">
+      <summary>全面补库：${escapeHtml(jobStatusLabel(status))}</summary>
+      <div class="crawler-progress">
       <div class="progress-status">
-        <strong>批量采集脚本：${escapeHtml(status)}</strong>
-        <span>${progress.active ? escapeHtml(processes || "running") : "not running"}</span>
+        <strong>批量脚本</strong>
+        <span>${progress.active ? escapeHtml(processes || "运行中") : "未运行"}</span>
       </div>
       ${progress.target_percent ? progressBar("容量目标", progress.target_percent, `${formatMb(progress.current_mb)} / ${formatMb(progress.target_mb)}`) : ""}
       ${progress.cycle_percent ? progressBar("任务进度", progress.cycle_percent, cyclesTotal ? `第 ${cycle || 0} / ${cyclesTotal} 轮，当前轮 ${commandDone} / ${commandTotal || "?"} 个任务` : "") : ""}
@@ -918,7 +1033,8 @@ function renderCrawlerProgress(progress) {
       ${progress.low_yield_streak ? `<div class="source-meta">低收益连续轮数：${escapeHtml(progress.low_yield_streak)}</div>` : ""}
       ${progress.stopped_reason ? `<div class="source-meta">停止原因：${escapeHtml(progress.stopped_reason)}</div>` : ""}
       ${progress.updated_at ? `<div class="source-meta">更新时间：${escapeHtml(progress.updated_at)}</div>` : ""}
-    </div>
+      </div>
+    </details>
   `;
 }
 
@@ -927,34 +1043,35 @@ function renderActiveCrawlerOverview(jobs) {
   const active = items.find((job) => job.status === "queued" || job.status === "running");
   const latest = active || items[0];
   if (!latest) {
-    return `<div class="crawler-progress"><div class="progress-status"><strong>当前 Crawler 任务：无</strong><span>可从会话或右侧按钮启动</span></div></div>`;
+    return `<div class="crawler-progress empty-state"><div class="progress-status"><strong>当前没有 Crawler 任务</strong><span>需要补资料时再启动</span></div></div>`;
   }
   const readable = latest.readable || {};
-  const current = readable.current_query ? `当前：${readable.current_query}` : (latest.status === "running" ? "正在等待 CrawlerAgent 规划可执行查询" : "");
   const target = readable.headline || readable.target || latest.title || latest.kind;
-  const reflection = readable.agent_reflection?.reason ? `<div class="source-meta">CrawlerAgent 判断：${escapeHtml(readable.agent_reflection.reason).slice(0, 220)}</div>` : "";
-  const latestObservation = readable.latest_observation?.status
-    ? `<div class="source-meta">最近工具结果：${escapeHtml(observationLabel(readable.latest_observation.status))}${readable.latest_observation.summary ? ` · ${escapeHtml(readable.latest_observation.summary)}` : ""}</div>`
-    : "";
+  const total = Number(readable.total_tasks || 0);
+  const currentIndex = Number(readable.current_index || 0);
+  const progress = total ? `第 ${currentIndex || 0}/${total} 步` : "等待规划";
   const counts = [
-    `成功 ${readable.success_count || 0}`,
-    `空结果 ${readable.empty_count || 0}`,
-    `跑偏 ${readable.off_topic_count || 0}`,
+    `可用 ${readable.success_count || 0}`,
+    `受限/空 ${Number(readable.empty_count || 0) + Number(readable.off_topic_count || 0)}`,
   ].join(" · ");
   return `
     <div class="crawler-progress active-job-overview">
       <div class="progress-status">
-        <strong>当前 Crawler 任务：${escapeHtml(latest.status || "unknown")}</strong>
+        <strong>Crawler：${escapeHtml(jobStatusLabel(latest.status))}</strong>
         <span>${escapeHtml(fmtDateTime(latest.started_at || latest.created_at))}</span>
       </div>
       <div class="source-meta">目标：${escapeHtml(target)}</div>
-      ${current ? `<div class="source-meta">${escapeHtml(current)}</div>` : ""}
-      <div class="source-meta">${escapeHtml(counts)}</div>
-      ${readable.progress_text ? `<div class="source-meta">${escapeHtml(readable.progress_text)}</div>` : ""}
-      ${readable.health_text ? `<div class="source-meta">${escapeHtml(readable.health_text)}</div>` : ""}
-      ${renderObservationStatus(readable)}
-      ${latestObservation}
-      ${reflection}
+      <div class="source-meta">${escapeHtml(progress)} · ${escapeHtml(counts)}</div>
+      ${readable.plain_summary ? `<div class="source-meta">${escapeHtml(readable.plain_summary)}</div>` : ""}
+      <details class="compact-details">
+        <summary>展开技术细节</summary>
+        ${readable.current_query ? `<div class="source-meta">当前查询：${escapeHtml(readable.current_query)}</div>` : ""}
+        ${readable.progress_text ? `<div class="source-meta">${escapeHtml(readable.progress_text)}</div>` : ""}
+        ${readable.health_text ? `<div class="source-meta">${escapeHtml(readable.health_text)}</div>` : ""}
+        ${renderObservationStatus(readable)}
+        ${readable.latest_observation?.status ? `<div class="source-meta">最近工具结果：${escapeHtml(observationLabel(readable.latest_observation.status))}${readable.latest_observation.summary ? ` · ${escapeHtml(readable.latest_observation.summary)}` : ""}</div>` : ""}
+        ${readable.agent_reflection?.reason ? `<div class="source-meta">Agent 判断：${escapeHtml(readable.agent_reflection.reason).slice(0, 220)}</div>` : ""}
+      </details>
       ${latest.stop_requested && latest.status === "running" ? `<div class="source-meta stop-note">已请求提前结束，等待当前动作退出。</div>` : ""}
     </div>
   `;
@@ -981,42 +1098,50 @@ function renderJobs(jobs) {
   }
   $("runIngest").disabled = state.jobs.some((job) => job.kind === "ingest" && (job.status === "queued" || job.status === "running"));
   $("runCrawler").disabled = state.jobs.some((job) => job.kind === "crawler" && (job.status === "queued" || job.status === "running"));
-  $("runIngest").textContent = $("runIngest").disabled ? "导入运行中" : "后台导入";
-  $("runCrawler").textContent = $("runCrawler").disabled ? "补库中" : `启动补库（${$("crawlerRounds")?.value || 1}轮）`;
+  $("runIngest").textContent = $("runIngest").disabled ? "正在导入" : "导入新资料";
+  $("runCrawler").textContent = $("runCrawler").disabled ? "采集中" : `启动采集（${$("crawlerRounds")?.value || 1}轮）`;
   if (!state.jobs.length) {
-    $("jobList").innerHTML = `<div class="source-meta">暂无后台任务。</div>`;
+    $("jobList").innerHTML = `<div class="empty-state source-meta">暂无后台任务。</div>`;
     return active;
   }
   $("jobList").innerHTML = state.jobs.slice(0, 6).map((job) => {
     const isActiveCrawler = job.kind === "crawler" && (job.status === "queued" || job.status === "running");
     const canStop = isActiveCrawler && !job.stop_requested;
     const readable = job.readable || {};
-    const readableLine = readable.headline || readable.target
-      ? `<div class="source-meta">目标：${escapeHtml(readable.headline || readable.target)}${readable.current_query ? ` · 当前：${escapeHtml(readable.current_query)}` : ""}</div>`
-      : "";
-    const reflectionLine = readable.agent_reflection?.reason
-      ? `<div class="source-meta">Agent 判断：${escapeHtml(readable.agent_reflection.reason).slice(0, 180)}</div>`
-      : "";
-    const observationLine = readable.latest_observation?.status
-      ? `<div class="source-meta">最近结果：${escapeHtml(observationLabel(readable.latest_observation.status))}${readable.latest_observation.summary ? ` · ${escapeHtml(readable.latest_observation.summary).slice(0, 180)}` : ""}</div>`
+    const readableLine = isActiveCrawler && (readable.headline || readable.target)
+      ? `<div class="source-meta">目标：${escapeHtml(readable.headline || readable.target)}</div>`
       : "";
     const roundInfo = job.result && job.result.rounds_total
       ? `<div class="source-meta">轮次：${escapeHtml(job.result.rounds_completed || (job.result.rounds || []).length || 0)} / ${escapeHtml(job.result.rounds_total)}</div>`
       : "";
+    const foldedDetails = readable.current_query || readable.latest_observation?.status || readable.agent_reflection?.reason || readable.health_text
+      ? `
+        <details class="compact-details">
+          <summary>展开技术细节</summary>
+          ${!isActiveCrawler && (readable.headline || readable.target) ? `<div class="source-meta">目标：${escapeHtml(readable.headline || readable.target)}</div>` : ""}
+          ${readable.progress_text ? `<div class="source-meta">${escapeHtml(readable.progress_text)}</div>` : ""}
+          ${readable.plain_summary ? `<div class="source-meta">${escapeHtml(readable.plain_summary)}</div>` : ""}
+          ${readable.current_query ? `<div class="source-meta">当前查询：${escapeHtml(readable.current_query)}</div>` : ""}
+          ${readable.latest_observation?.status ? `<div class="source-meta">最近结果：${escapeHtml(observationLabel(readable.latest_observation.status))}${readable.latest_observation.summary ? ` · ${escapeHtml(readable.latest_observation.summary).slice(0, 180)}` : ""}</div>` : ""}
+          ${readable.agent_reflection?.reason ? `<div class="source-meta">Agent 判断：${escapeHtml(readable.agent_reflection.reason).slice(0, 180)}</div>` : ""}
+          ${readable.health_text ? `<div class="source-meta">${escapeHtml(readable.health_text)}</div>` : ""}
+          ${job.summary ? `<div class="source-meta">${escapeHtml(job.summary).slice(0, 220)}</div>` : ""}
+        </details>
+      `
+      : "";
     return `
       <div class="job-item">
         <strong>${escapeHtml(job.title || job.kind)}</strong>
-        <span class="job-status ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span>
+        <span class="job-status ${escapeHtml(job.status)}">${escapeHtml(jobStatusLabel(job.status))}</span>
         <div class="source-meta">${fmtDateTime(job.started_at || job.created_at)}${job.ended_at ? ` - ${fmtDateTime(job.ended_at)}` : ""}</div>
         ${readableLine}
-        ${observationLine}
-        ${reflectionLine}
-        ${readable.progress_text ? `<div class="source-meta">${escapeHtml(readable.progress_text)}</div>` : ""}
-        ${readable.health_text ? `<div class="source-meta">${escapeHtml(readable.health_text)}</div>` : ""}
+        ${isActiveCrawler && readable.progress_text ? `<div class="source-meta">${escapeHtml(readable.progress_text)}</div>` : ""}
+        ${isActiveCrawler && readable.plain_summary ? `<div class="source-meta">${escapeHtml(readable.plain_summary)}</div>` : ""}
+        ${foldedDetails}
         ${roundInfo}
         ${job.stop_requested && isActiveCrawler ? `<div class="source-meta stop-note">已收到提前结束请求，当前轮完成后停止。</div>` : ""}
-        ${job.summary ? `<div class="source-meta">${escapeHtml(job.summary).slice(0, 220)}</div>` : ""}
-        ${canStop ? `<div class="job-actions"><button class="mini-button danger-outline" type="button" data-stop-job="${escapeHtml(job.id)}">提前结束</button></div>` : ""}
+        ${isActiveCrawler && job.summary ? `<div class="source-meta">${escapeHtml(job.summary).slice(0, 220)}</div>` : ""}
+        ${canStop ? `<div class="job-actions"><button class="mini-button danger-outline" type="button" data-stop-job="${escapeHtml(job.id)}">停止采集</button></div>` : ""}
       </div>
     `;
   }).join("");
@@ -1048,18 +1173,18 @@ function renderStatus(status) {
   const db = status.database;
   state.lastDatabase = db;
   $("indexStats").innerHTML = [
-    statRow("documents", db.documents),
-    statRow("chunks", db.chunks),
-    statRow("index", db.index_exists ? `${Math.round(db.index_size / 1024)} KB` : "missing"),
-    statRow("exports", status.sources.files),
+    statRow("资料文档", db.documents),
+    statRow("可检索片段", db.chunks),
+    statRow("向量索引", db.index_exists ? `${Math.round(db.index_size / 1024)} KB` : "未建立"),
+    statRow("采集文件", status.sources.files),
   ].join("");
 
   const ledger = status.ledger || {};
   $("ledgerStats").innerHTML = [
-    statRow("unique", ledger.unique || 0),
-    statRow("entries", ledger.entries || 0),
-    statRow("new", (ledger.by_status && ledger.by_status.new) || 0),
-    statRow("skipped", (ledger.by_status && ledger.by_status.skipped_unchanged) || 0),
+    statRow("去重后资料", ledger.unique || 0),
+    statRow("账本记录", ledger.entries || 0),
+    statRow("新增", (ledger.by_status && ledger.by_status.new) || 0),
+    statRow("跳过重复", (ledger.by_status && ledger.by_status.skipped_unchanged) || 0),
     ledger.latest && ledger.latest.length
       ? `<div class="source-meta">最近：${escapeHtml(ledger.latest[0].title || ledger.latest[0].key || "")}</div>`
       : `<div class="source-meta">账本还没有记录。</div>`,
@@ -1069,21 +1194,23 @@ function renderStatus(status) {
   const jobs = status.jobs || [];
   const activeCrawler = jobs.find((job) => job.kind === "crawler" && (job.status === "queued" || job.status === "running"));
   $("crawlerState").textContent = activeCrawler
-    ? `当前任务：${activeCrawler.status}`
-    : `当前无任务 · ${status.sources.files} files`;
+    ? `当前任务：${jobStatusLabel(activeCrawler.status)}`
+    : `当前无任务 · ${status.sources.files} 个采集文件`;
   const latest = status.sources.latest_files || [];
   const runs = status.agenttest_runs || [];
   $("crawlerInfo").innerHTML = [
     renderActiveCrawlerOverview(jobs),
     renderCrawlerProgress(progress),
-    statRow("source", status.sources.source_dir),
-    statRow("manifest", status.sources.manifests),
-    statRow("reports", status.sources.reports),
-    statRow("recent runs", runs.length),
-    status.knowledge_map && status.knowledge_map.exists ? statRow("map", `${status.knowledge_map.documents || 0} docs`) : statRow("map", "not built"),
-    status.toolsets ? statRow("toolsets", status.toolsets.length) : "",
-    status.memory ? statRow("memory", `${status.memory.events || 0} events`) : "",
     latest.length ? `<div class="source-meta">最近文件：${escapeHtml(latest[0].path)}</div>` : `<div class="source-meta">没有可用采集文件。</div>`,
+    `<details class="compact-details"><summary>展开存储细节</summary>
+      ${statRow("采集目录", status.sources.source_dir)}
+      ${statRow("manifest", status.sources.manifests)}
+      ${statRow("报告", status.sources.reports)}
+      ${statRow("测试记录", runs.length)}
+      ${status.knowledge_map && status.knowledge_map.exists ? statRow("知识图谱", `${status.knowledge_map.documents || 0} docs`) : statRow("知识图谱", "未建立")}
+      ${status.toolsets ? statRow("工具集", status.toolsets.length) : ""}
+      ${status.memory ? statRow("Agent 记忆", `${status.memory.events || 0} events`) : ""}
+    </details>`,
   ].join("");
   renderAgenttestRuns(runs);
   renderJobs(status.jobs || []);
@@ -1276,6 +1403,11 @@ async function sendQuestion(event) {
         session.messages[pendingIndex].collaboration = partial.collaboration || [];
         session.messages[pendingIndex].sources = partial.sources || [];
         session.messages[pendingIndex].jobReadable = partial.job?.readable || session.messages[pendingIndex].jobReadable;
+        if (partial.job?.id) {
+          session.messages[pendingIndex].jobId = partial.job.id;
+          session.messages[pendingIndex].jobStatus = partial.job.status || "";
+          rememberJobMessage(partial.job, session.id, pendingIndex);
+        }
         saveSessions();
         renderMessages();
       },
@@ -1290,6 +1422,10 @@ async function sendQuestion(event) {
     session.messages[pendingIndex].collaboration = data.collaboration || [];
     session.messages[pendingIndex].sources = data.sources || [];
     session.messages[pendingIndex].jobReadable = data.job?.readable || session.messages[pendingIndex].jobReadable;
+    if (data.job?.id) {
+      session.messages[pendingIndex].jobId = data.job.id;
+      session.messages[pendingIndex].jobStatus = data.job.status || "";
+    }
     renderSources(data.sources || []);
     if (data.job && (data.job.status === "queued" || data.job.status === "running")) {
       rememberJobMessage(data.job, session.id, pendingIndex);

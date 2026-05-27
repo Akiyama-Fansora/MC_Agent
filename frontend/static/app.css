@@ -149,6 +149,23 @@ button:disabled {
   margin-top: 18px;
 }
 
+.side-details {
+  border-top: 1px solid #e7edf1;
+  padding-top: 12px;
+}
+
+.side-details > summary {
+  cursor: pointer;
+  color: var(--text);
+  font-weight: 700;
+  font-size: 15px;
+  list-style-position: outside;
+}
+
+.side-details[open] > summary {
+  margin-bottom: 10px;
+}
+
 .control-block h2,
 .section-title {
   margin-bottom: 8px;
@@ -167,6 +184,7 @@ button:disabled {
   color: var(--text);
   border-color: var(--line);
   padding: 9px 10px;
+  transition: border-color .15s ease, background .15s ease;
 }
 
 .agent-option.active {
@@ -287,6 +305,14 @@ textarea {
   font-size: 12px;
 }
 
+.empty-state {
+  color: var(--muted);
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  padding: 9px;
+  background: #fbfcfd;
+}
+
 .job-list,
 .run-list {
   gap: 8px;
@@ -397,6 +423,12 @@ textarea {
   gap: 10px;
   border-bottom: 1px solid #edf1f3;
   padding-bottom: 4px;
+}
+
+.stat-row strong {
+  color: var(--text);
+  text-align: right;
+  overflow-wrap: anywhere;
 }
 
 .main {
@@ -769,6 +801,23 @@ textarea {
   background: #f3fbf5;
 }
 
+.collab-row.crawleragent .collab-bubble {
+  border-color: #c7dccf;
+  background: #f3fbf5;
+}
+
+.job-actor-panel {
+  padding: 0;
+}
+
+.job-actor-panel .collab-log {
+  padding: 0;
+}
+
+.job-actor-panel .collab-bubble {
+  min-height: 34px;
+}
+
 .collab-state {
   color: var(--accent);
   font-size: 11px;
@@ -927,6 +976,22 @@ textarea {
   gap: 10px;
 }
 
+.compact-job > summary {
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.compact-job-body {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+
 .compact-summary {
   border: 1px solid #d8e7ee;
   background: #f5fbfd;
@@ -1005,6 +1070,17 @@ textarea {
 
 .compact-grid {
   padding: 8px;
+}
+
+.crawler-progress-details .crawler-progress {
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 8px 8px;
+}
+
+.compact-details .stat-row {
+  margin: 0 8px;
+  padding: 6px 0;
 }
 
 @media (max-width: 760px) {

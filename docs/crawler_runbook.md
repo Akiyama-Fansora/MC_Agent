@@ -520,3 +520,37 @@ python scripts\smoke_agent_flows.py
 
 2026-05-18 补充：用户反馈“落幕曲新手该怎么玩”最终回答仍显示“本地资料中找到以下相关证据”。已修复超时兜底的回答形态：新手/玩法/攻略类问题会组织为可读路线建议，不再把内部证据清单直接作为最终回复；同时过滤 legacy hosted search Query/source、下载站标题、loading 图片等元信息。常规 RAG 检索候选数改为自适应，不再固定 200；检索规划 LLM 默认只在复杂/完整资料/多实体配方等场景启用，普通问答使用快速兜底计划。
 
+## 2026-05-24 MCagent Role Identity Fix
+
+User feedback: MCagent should not behave like a generic keyword router. Its first reaction should come from its role identity: a Minecraft-focused knowledge agent. It should semantically decide whether the user is asking about Minecraft, modpacks, mods, items, bosses, gameplay, servers, versions, guides, MC reference sites, or the local Minecraft knowledge base.
+
+Principles:
+
+- This is role reasoning, not keyword-trigger routing. The LLM still owns semantic judgment, tool choice, and final wording.
+- If MCagent judges the request as Minecraft-related, it should consider local RAG/evidence workflow first. It delegates to Crawler only when evidence is missing or collection is explicitly requested.
+- If MCagent judges the request as not Minecraft-related, it may use direct_answer, chat normally, or explain its boundary. It should not force the request into RAG or Crawler.
+- AgentMessage only delivers content to the target agent. The receiving agent then decides its next step from its own role and tool catalog.
+
+Implemented:
+
+- `agent_runtime.py` now describes MCagent as a Minecraft-focused knowledge agent.
+- `agent_router.py` adds an MCagent self-check before tool selection: interpret as a Minecraft knowledge assistant first, then choose RAG, delegation, status, or direct answer.
+- Tool catalog descriptions now make `local_rag_search` the local Minecraft knowledge base and `delegate_crawler` the Minecraft evidence-gap handoff.
+
+## 2026-05-24 Crawler Research Method
+
+User feedback: collection pressure was high because Crawler sometimes kept trying broad searches instead of doing deliberate research. The fix is not a topic-specific rule. It is a general research method the Crawler LLM must apply.
+
+Method:
+
+- Identify the target entity first: aliases, language variants, official names, version scope, and likely source ecosystem.
+- Build a source graph before scaling: official/project pages, documentation, repositories, package indexes, download/file pages, dependency/relation pages, changelogs/releases, wiki pages, forum posts, video indexes, and community mirrors.
+- Use broad discovery only to find candidate source nodes. Once a node is found, crawl exact URLs or source-specific pages directly.
+- When a result is empty, duplicate, blocked, off-topic, or low-yield, switch source class or graph node instead of repeating similar generic searches.
+- For MCagent/RAG delivery, persist markdown, manifest, source URL, metadata, raw text/raw HTML when available, and an explicit coverage/gap summary.
+
+Implemented:
+
+- `agent_runtime.py` now exposes this Crawler research method in the collection tool catalog.
+- `crawler_llm_planner.py` teaches the planner and reflection loop to use source-graph replanning under collection pressure.
+- Tests assert that the Crawler catalog and planner prompt contain the general source-graph method, without encoding a single-topic special case.

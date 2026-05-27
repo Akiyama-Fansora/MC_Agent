@@ -10,9 +10,19 @@ LLM_OWNERSHIP_PRINCIPLES = [
     "LLM owns interpretation, tool choice, reflection, and final answer wording.",
     "Tools provide objective observations only; tools must not invent final answers or subjective decisions.",
     "Agent behavior must be general. Do not encode one-off user test phrases as routing rules.",
+    "Each Agent must reason from its role identity before choosing tools; role identity is not a keyword trigger.",
     "All User/MCagent/CrawlerAgent communication should be representable as AgentMessage(from_agent, content, to_agent); message delivery does not decide the receiver's next tool.",
     "Every non-trivial action should be observable as: observe -> deliberate -> choose_action -> preflight -> execute_tool -> observe_result -> reflect -> continue_or_finish.",
     "If a task is delegated between agents, pass caller, target, known context, acceptance criteria, delivery target, and failure-reporting expectations.",
+]
+
+
+CRAWLER_RESEARCH_METHOD = [
+    "Research method for CrawlerAgent: do not start with broad keyword blasting. First identify the target entity, aliases, language variants, official names, version scope, and likely source ecosystem.",
+    "Build a source graph before scaling: official/project pages, documentation, repositories, package indexes, download/file pages, dependency/relation pages, changelogs/releases, wiki pages, forum posts, videos, and community mirrors.",
+    "Prefer exact URLs and source-specific queries after identity is known. Use broad web discovery only to find candidate source nodes, then crawl those nodes directly.",
+    "When a result is empty, duplicate, off-topic, blocked, or low-yield, change the source class or graph node instead of repeating similar generic searches.",
+    "For MCagent/RAG delivery, save citeable artifacts with markdown, manifest, source URL, metadata, raw text or raw HTML when available, and a clear coverage/gap summary.",
 ]
 
 
@@ -370,10 +380,15 @@ AGENT_ROLES = {
         agent_id="mcagent_rag",
         display_name="MCagent",
         responsibility=(
-            "Talks with the user first-hand, understands conversation context, "
-            "uses local/RAG/status/delegation tools when useful, and writes final answers."
+            "A Minecraft-focused knowledge agent. It talks with the user first-hand, first asks "
+            "whether the message is about Minecraft, modpacks, mods, gameplay, items, servers, "
+            "MC documentation, or this local Minecraft knowledge base, then uses local/RAG/status/"
+            "delegation tools when useful and writes final answers."
         ),
-        relationship="May ask CrawlerAgent for missing evidence; must not turn every message into retrieval.",
+        relationship=(
+            "May ask CrawlerAgent for missing Minecraft evidence; must not turn every message into retrieval. "
+            "If the message is not Minecraft-related, it can still answer as a normal assistant or explain its boundary."
+        ),
     ),
     "crawler_agent": AgentRole(
         agent_id="crawler_agent",
@@ -396,14 +411,14 @@ AGENT_ROLES = {
 MCAGENT_TOOLS = [
     ToolSpec(
         name="direct_answer",
-        description="Answer directly with the LLM when no external tool is needed.",
+        description="Answer directly with the LLM when no external tool is needed, including greetings, capability explanations, and clearly non-Minecraft chat.",
         input_schema={"question": "original user message", "session_summary": "conversation memory"},
         result_schema={"answer": "LLM-written final answer"},
         terminal=True,
     ),
     ToolSpec(
         name="local_rag_search",
-        description="Search local documents, chunks, raw HTML, and manifests for evidence.",
+        description="Search the local Minecraft knowledge base documents, chunks, raw HTML, and manifests for evidence.",
         input_schema={"question": "topic-focused search question"},
         result_schema={"sources": "ranked citeable evidence", "context": "formatted evidence"},
         side_effects="read_local_index",
@@ -435,7 +450,7 @@ MCAGENT_TOOLS = [
     ),
     ToolSpec(
         name="delegate_crawler",
-        description="Send a natural-language data collection task to CrawlerAgent with context and delivery target.",
+        description="Send a natural-language Minecraft data collection task or evidence gap to CrawlerAgent with context and delivery target.",
         input_schema={"handoff_contract": "caller, goal, context, acceptance criteria"},
         result_schema={"job_id": "crawler job", "handoff": "agent-to-agent message"},
         side_effects="start_background_job",
@@ -651,6 +666,8 @@ def crawler_collection_catalog_prompt(*, include_principles: bool = True) -> str
     if include_principles:
         lines.append("Runtime principles:")
         lines.extend(f"- {item}" for item in LLM_OWNERSHIP_PRINCIPLES)
+        lines.append("Crawler research method:")
+        lines.extend(f"- {item}" for item in CRAWLER_RESEARCH_METHOD)
     return "\n".join(lines)
 
 

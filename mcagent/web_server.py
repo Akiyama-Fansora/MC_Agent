@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import contextlib
 from datetime import datetime
@@ -83,6 +83,7 @@ ANSWER_MAX_TOKENS_CAP = 6000
 DEFAULT_CRAWLER_PLANNER_TIMEOUT_SECONDS = 90
 MAX_JOBS = 40
 GROW_PROGRESS_PATH = PROJECT_ROOT / "runtime" / "grow_knowledge_base_progress.json"
+JOBS_HISTORY_PATH = PROJECT_ROOT / "runtime" / "jobs_history.json"
 GROW_LOG_CANDIDATES = (
     PROJECT_ROOT / "runtime" / "grow_knowledge_base_broad_safe_20260516.log",
     PROJECT_ROOT / "runtime" / "grow_knowledge_base_broad_20260516.log",
@@ -175,10 +176,12 @@ def _send_json(handler: BaseHTTPRequestHandler, data: Any, status: int = 200) ->
     handler.wfile.write(body)
 
 
-def _send_text(handler: BaseHTTPRequestHandler, text: str, content_type: str, status: int = 200) -> None:
+def _send_text(handler: BaseHTTPRequestHandler, text: str, content_type: str, status: int = 200, cache_control: str = "") -> None:
     body = text.encode("utf-8")
     handler.send_response(status)
     handler.send_header("Content-Type", content_type)
+    if cache_control:
+        handler.send_header("Cache-Control", cache_control)
     handler.send_header("Content-Length", str(len(body)))
     handler.end_headers()
     handler.wfile.write(body)
@@ -208,6 +211,45 @@ def _job_to_dict(job: Job) -> dict[str, Any]:
 
 def _job_readable_summary(job: dict[str, Any]) -> dict[str, Any]:
     return JobReadableViewService(source_label=_source_label).build(job)
+
+
+def _persist_jobs_locked() -> None:
+    try:
+        JOBS_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": 1,
+            "jobs_order": JOBS_ORDER[:MAX_JOBS],
+            "jobs": [asdict(JOBS[job_id]) for job_id in JOBS_ORDER if job_id in JOBS],
+        }
+        tmp = JOBS_HISTORY_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, default=_json_default, indent=2), encoding="utf-8")
+        tmp.replace(JOBS_HISTORY_PATH)
+    except Exception:
+        return
+
+
+def _restore_jobs_locked() -> None:
+    if JOBS or not JOBS_HISTORY_PATH.exists():
+        return
+    try:
+        payload = json.loads(JOBS_HISTORY_PATH.read_text(encoding="utf-8"))
+        items = payload.get("jobs") if isinstance(payload, dict) else []
+        if not isinstance(items, list):
+            return
+        for item in items[:MAX_JOBS]:
+            if not isinstance(item, dict) or not item.get("id") or not item.get("kind"):
+                continue
+            allowed = {field.name for field in fields(Job)}
+            job = Job(**{key: value for key, value in item.items() if key in allowed})
+            if job.status in {"queued", "running"}:
+                job.status = "stopped"
+                job.ended_at = job.ended_at or time.time()
+                job.summary = job.summary or "服务重启后恢复历史记录；原任务已不再运行。"
+            JOBS[job.id] = job
+            JOBS_ORDER.append(job.id)
+    except Exception:
+        JOBS.clear()
+        JOBS_ORDER.clear()
 
 
 def _refresh_job_ingest_state(job: Job) -> None:
@@ -259,6 +301,7 @@ def _refresh_job_ingest_state(job: Job) -> None:
 
 def _jobs_payload() -> dict[str, Any]:
     with JOBS_LOCK:
+        _restore_jobs_locked()
         return {"jobs": [_job_to_dict(JOBS[job_id]) for job_id in JOBS_ORDER if job_id in JOBS]}
 
 
@@ -276,12 +319,14 @@ def _append_job(job: Job) -> None:
     for stale_id in list(JOBS):
         if stale_id not in JOBS_ORDER:
             JOBS.pop(stale_id, None)
+    _persist_jobs_locked()
 
 
 def _update_job(job: Job, **changes: Any) -> None:
     with JOBS_LOCK:
         for key, value in changes.items():
             setattr(job, key, value)
+        _persist_jobs_locked()
 
 
 def _start_job(kind: str, title: str, target: Any) -> tuple[Job, bool]:
@@ -506,7 +551,7 @@ def _source_status_payload(source_dir: Path) -> dict[str, Any]:
     key = str(source_dir)
     with SOURCE_STATUS_LOCK:
         cached = SOURCE_STATUS_CACHE.get("payload")
-        if cached and SOURCE_STATUS_CACHE.get("source_dir") == key and now - float(SOURCE_STATUS_CACHE.get("time") or 0) < 5:
+        if cached and SOURCE_STATUS_CACHE.get("source_dir") == key and now - float(SOURCE_STATUS_CACHE.get("time") or 0) < 60:
             return dict(cached)
 
     file_count = 0
@@ -514,9 +559,14 @@ def _source_status_payload(source_dir: Path) -> dict[str, Any]:
     report_count = 0
     total_bytes = 0
     latest: list[dict[str, Any]] = []
+    partial = False
     if source_dir.exists():
         latest_heap: list[tuple[float, str, int]] = []
+        deadline = time.time() + 2.5
         for path in source_dir.rglob("*"):
+            if time.time() > deadline:
+                partial = True
+                break
             if not path.is_file():
                 continue
             try:
@@ -542,6 +592,7 @@ def _source_status_payload(source_dir: Path) -> dict[str, Any]:
         "total_bytes": total_bytes,
         "total_mb": round(total_bytes / 1024 / 1024, 2),
         "latest_files": latest,
+        "partial": partial,
     }
     with SOURCE_STATUS_LOCK:
         SOURCE_STATUS_CACHE.update({"time": now, "source_dir": key, "payload": dict(payload)})
@@ -5306,6 +5357,32 @@ def _crawler_monitor_answer(config: AppConfig) -> dict[str, Any]:
     else:
         lines.append("")
         lines.append("当前后台任务：没有正在运行的 Crawler job。")
+        latest_job = next((job for job in jobs if job.get("kind") == "crawler"), None)
+        if latest_job:
+            readable = latest_job.get("readable") if isinstance(latest_job.get("readable"), dict) else {}
+            lines.append("")
+            lines.append("最近 Crawler 任务：")
+            lines.append(f"- 主体：CrawlerAgent")
+            lines.append(f"- 任务ID：{latest_job.get('id')}")
+            lines.append(f"- 状态：{latest_job.get('status')}，{latest_job.get('summary') or '没有总结'}")
+            if readable.get("headline") or readable.get("target"):
+                lines.append(f"- 目标：{readable.get('headline') or readable.get('target')}")
+            if readable.get("progress_text"):
+                lines.append(f"- 进度：{readable.get('progress_text')}")
+            useful_outputs = readable.get("useful_outputs") if isinstance(readable.get("useful_outputs"), list) else []
+            blocked_outputs = readable.get("blocked_outputs") if isinstance(readable.get("blocked_outputs"), list) else []
+            if useful_outputs:
+                useful_sources = "、".join(str(item.get("source") or "资料") for item in useful_outputs[:5] if isinstance(item, dict))
+                lines.append(f"- 补到/复用：{len(useful_outputs)} 类{('，' + useful_sources) if useful_sources else ''}")
+            if blocked_outputs:
+                lines.append(f"- 受限/低价值：{len(blocked_outputs)} 条，已记录在采集详情中。")
+        elif sources.get("latest_files"):
+            lines.append("")
+            lines.append("最近采集文件：")
+            for item in sources["latest_files"][:3]:
+                lines.append(f"- 主体：CrawlerAgent")
+                lines.append(f"  动作：已写入采集导出文件")
+                lines.append(f"  路径：{item.get('path')}")
     if progress:
         lines.append("")
         lines.append("批量采集进度：")
@@ -6156,10 +6233,10 @@ class MCagentHandler(BaseHTTPRequestHandler):
     def _do_get(self) -> None:
         request_path = self.path.split("?", 1)[0]
         if request_path in {"/", "/index.html"}:
-            _send_text(self, (WEB_DIR / "index.html").read_text(encoding="utf-8"), "text/html; charset=utf-8")
+            _send_text(self, (WEB_DIR / "index.html").read_text(encoding="utf-8"), "text/html; charset=utf-8", cache_control="no-store")
             return
         if request_path in {"/settings", "/settings.html"}:
-            _send_text(self, (WEB_DIR / "settings.html").read_text(encoding="utf-8"), "text/html; charset=utf-8")
+            _send_text(self, (WEB_DIR / "settings.html").read_text(encoding="utf-8"), "text/html; charset=utf-8", cache_control="no-store")
             return
         if request_path.startswith("/static/"):
             name = request_path.removeprefix("/static/")
@@ -6168,7 +6245,7 @@ class MCagentHandler(BaseHTTPRequestHandler):
                 _send_json(self, {"error": "not found"}, status=404)
                 return
             content_type = "text/css; charset=utf-8" if path.suffix == ".css" else "application/javascript; charset=utf-8"
-            _send_text(self, path.read_text(encoding="utf-8"), content_type)
+            _send_text(self, path.read_text(encoding="utf-8"), content_type, cache_control="no-store")
             return
         if request_path == "/api/status":
             _send_json(self, _status_payload(self._config()))
