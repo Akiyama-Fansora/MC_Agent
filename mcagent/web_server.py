@@ -1195,6 +1195,7 @@ def _run_mcagent_context_tool(config: AppConfig, payload: dict[str, Any], plan: 
             )
             selected = evidence_result.selected
             evidence_report = evidence_result.report.to_dict()
+        selected = _filter_mcagent_context_evidence(focus, selected, evidence_report)
         gaps: list[str] = []
         if isinstance(session_summary, dict):
             for item in session_summary.get("gaps") or []:
@@ -3064,6 +3065,8 @@ def _clean_evidence_line(line: str) -> str:
     clean = re.sub(r"\s+", " ", line).strip(" \t-#>*")
     if not clean or len(clean) < 2:
         return ""
+    if clean.startswith(("<!--", "-->")):
+        return ""
     if clean.startswith(("source:", "score:", "url:", "Fetched", "Created", "Updated", "Search query:", "Search snippet:")):
         return ""
     if re.match(r"^(Web source|Query|Snippet|Search query|Search snippet)\s*[:：*]", clean, flags=re.I):
@@ -3293,9 +3296,10 @@ def _build_grounded_messages(
     evidence_question = evidence_question or question
     context = context_override if context_override is not None else _format_context_with_deep_evidence(evidence_question, results)
     relation_note = _relation_answer_note(evidence_question, results)
+    version_note = _version_install_extraction_note(evidence_question, results)
     extraction_note = _list_extraction_note(evidence_question, results)
     recipe_note = _recipe_extraction_note(evidence_question, results)
-    merged_note = "\n".join(part for part in (retrieval_note, relation_note, extraction_note, recipe_note) if part)
+    merged_note = "\n".join(part for part in (retrieval_note, relation_note, version_note, extraction_note, recipe_note) if part)
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": _build_answer_prompt(question, context, merged_note)},
@@ -3529,6 +3533,296 @@ def _relation_answer_note(question: str, results: list[SearchResult]) -> str:
     if parent_hits:
         lines.append(f"父主题关联证据标题示例：{'; '.join(parent_hits[:3])}")
     return "\n".join(lines)
+
+
+def _version_install_extraction_note(question: str, results: list[SearchResult]) -> str:
+    if not _is_version_install_question(question):
+        return ""
+    fact_lines: list[str] = []
+    for item in results[:8]:
+        text = _read_result_full_text(item)
+        if not text:
+            continue
+        extracted = _extract_version_install_lines(text)
+        for line in extracted:
+            entry = f"[S{item.rank}] {line}"
+            if entry not in fact_lines:
+                fact_lines.append(entry)
+            if len(fact_lines) >= 18:
+                break
+        if len(fact_lines) >= 18:
+            break
+    if not fact_lines:
+        return ""
+    return (
+        "检索器从同一来源全文里抽取到的版本/安装/配置事实行如下；"
+        "回答版本、加载器、Java、启动器、内存时必须优先核对这些行，不要说资料未提及：\n"
+        + "\n".join(f"- {line}" for line in fact_lines)
+    )
+
+
+def _u(codepoints: str) -> str:
+    return "".join(chr(int(part, 16)) for part in codepoints.split())
+
+
+_VERSION_INSTALL_LABELS = (
+    _u("6574 5408 5305 7248 672C"),
+    "Minecraft " + _u("7248 672C"),
+    _u("52A0 8F7D 5668 002F 5E73 53F0"),
+    "Java " + _u("8981 6C42"),
+    _u("5B89 88C5 65B9 5F0F"),
+    _u("5185 5B58 5EFA 8BAE"),
+    _u("4E0B 8F7D 5730 5740"),
+    _u("8FD0 884C 73AF 5883"),
+)
+
+
+_VERSION_INSTALL_TEXT = {
+    "heading": _u("6839 636E 672C 5730 8D44 6599 FF0C 5F53 524D 80FD 786E 8BA4 7684 7248 672C 4E0E 5B89 88C5 8981 6C42 5982 4E0B FF1A"),
+    "missing_prefix": _u("4ECD 7F3A 53E3 FF1A"),
+    "full_install_steps": _u("5B8C 6574 5B89 88C5 6B65 9AA4"),
+    "full_compat_table": _u("5B8C 6574 4F9D 8D56 002F 6A21 7EC4 517C 5BB9 8868"),
+    "colon": _u("FF1A"),
+    "semicolon": _u("FF1B"),
+    "comma": _u("3001"),
+    "period": _u("3002"),
+}
+
+
+_VI = {
+    "latest_version": _u("6700 65B0 7248 672C"),
+    "history_version": _u("5386 53F2 7248 672C"),
+    "mc_java_version": _u("6211 7684 4E16 754C 004A 0061 0076 0061 7248 672C"),
+    "resource_version": _u("8D44 6E90 7248 672C"),
+    "java_requirement": _u("004A 0061 0076 0061 7248 672C 9700 6C42"),
+    "platform": _u("5E73 53F0"),
+    "core": _u("6838 5FC3"),
+    "loader": _u("52A0 8F7D 5668"),
+    "install": _u("5B89 88C5"),
+    "memory": _u("5185 5B58"),
+    "download_url": _u("4E0B 8F7D 5730 5740"),
+    "runtime": _u("8FD0 884C 73AF 5883"),
+    "client": _u("5BA2 6237 7AEF"),
+    "server": _u("670D 52A1 7AEF"),
+    "api_requirement": "API" + _u("9700 6C42"),
+    "related_links": _u("76F8 5173 94FE 63A5"),
+}
+
+
+def _local_version_install_answer(question: str, results: list[SearchResult]) -> str:
+    if not _is_version_install_question(question):
+        return ""
+    labels = _version_install_fact_labels()
+    facts: dict[str, list[str]] = {label: [] for label in labels}
+    for item in results[:8]:
+        extracted = _extract_version_install_fact_map(_read_result_full_text(item))
+        for label, values in extracted.items():
+            _append_fact_values(facts[label], values, item.rank)
+
+    facts = {key: _dedupe_strings(values)[:3] for key, values in facts.items() if values}
+    if not facts:
+        return ""
+    lines = [_VERSION_INSTALL_TEXT["heading"]]
+    for label in labels:
+        values = facts.get(label) or []
+        if values:
+            lines.append(f"- {label}{_VERSION_INSTALL_TEXT['colon']}" + _VERSION_INSTALL_TEXT["semicolon"].join(values))
+    missing = [
+        label
+        for label in (_VERSION_INSTALL_TEXT["full_install_steps"], _VERSION_INSTALL_TEXT["full_compat_table"])
+        if label not in facts
+    ]
+    if missing:
+        lines.append(_VERSION_INSTALL_TEXT["missing_prefix"] + _VERSION_INSTALL_TEXT["comma"].join(missing) + _VERSION_INSTALL_TEXT["period"])
+    return "\n".join(lines)
+
+
+def _version_install_fact_labels() -> tuple[str, ...]:
+    return _VERSION_INSTALL_LABELS
+
+
+def _append_fact_values(target: list[str], values: list[str], rank: int) -> None:
+    for value in values:
+        clean = _normalize_version_install_fact_line(value)
+        if clean:
+            target.append(f"{clean} [S{rank}]")
+
+
+def _extract_version_install_fact_map(text: str) -> dict[str, list[str]]:
+    labels = _version_install_fact_labels()
+    facts: dict[str, list[str]] = {label: [] for label in labels}
+    body = str(text or "")
+    labels_to_patterns: tuple[tuple[str, tuple[str, ...]], ...] = (
+        (
+            labels[0],
+            (
+                rf"{re.escape(_VI['latest_version'])}[：:]\s*([0-9][0-9A-Za-z_.-]*)",
+                rf"{re.escape(_VI['history_version'])}[：:]\s*([0-9][0-9A-Za-z_.-]*)",
+                r"(?i)latest version[：:]\s*([0-9][0-9A-Za-z_.-]*)",
+            ),
+        ),
+        (
+            labels[1],
+            (
+                rf"{re.escape(_VI['mc_java_version'])}\s*[\r\n/ ]+\s*(1\.\d+(?:\.\d+)?)",
+                rf"{re.escape(_VI['resource_version'])}\s*[\r\n/ ]+\s*(1\.\d+(?:\.\d+)?)",
+                r"(?i)minecraft(?: java)? version\s*[\r\n: /]+\s*(1\.\d+(?:\.\d+)?)",
+            ),
+        ),
+        (
+            labels[3],
+            (
+                rf"{re.escape(_VI['java_requirement'])}[：:]\s*([0-9][0-9A-Za-z_. -]*)",
+                r"(?i)java requirement[：:]\s*([0-9][0-9A-Za-z_. -]*)",
+                rf"{re.escape(_u('63A8 8350'))}Java{re.escape(_u('7248 672C'))}[：:]\s*(Java\s*[0-9A-Za-z_. -]+)",
+            ),
+        ),
+        (
+            labels[6],
+            (rf"{re.escape(_VI['download_url'])}[：:]\s*(https?://\S+)",),
+        ),
+    )
+    for label, patterns in labels_to_patterns:
+        for pattern in patterns:
+            for match in re.finditer(pattern, body):
+                facts[label].append(match.group(1).strip(" ,;，；。"))
+
+    for loader in re.findall(r"(?i)\b(?:fabric|forge|quilt)\b", body):
+        facts[labels[2]].append(loader)
+    launcher_hits = [name.upper() for name in re.findall(r"(?i)(?:pcl2?|hmcl)", body)]
+    if launcher_hits:
+        facts[labels[4]].append("/".join(_dedupe_strings(launcher_hits)))
+    for pattern in (
+        rf"{re.escape(_VI['memory'])}(?:{re.escape(_u('9700 6C42'))}|{re.escape(_u('5EFA 8BAE'))}|{re.escape(_u('8BBE 7F6E'))})?(?:{re.escape(_u('FF1A'))}|:)\s*([^\r\n]+)",
+        rf"(?i)memory (?:requirement|recommendation|setting)?(?:{re.escape(_u('FF1A'))}|:)\s*([^\r\n]+)",
+    ):
+        for match in re.finditer(pattern, body):
+            memory_hits = re.findall(r"(?i)(?:8|10|12|16|32)\s*g(?:b)?", match.group(1))
+            if memory_hits:
+                facts[labels[5]].append(", ".join(_dedupe_strings(memory_hits)))
+    for line in _extract_version_install_lines(body):
+        if _VI["install"] in line and not facts[labels[4]]:
+            facts[labels[4]].append(line)
+        if _VI["memory"] in line:
+            memory_hits = re.findall(r"(?i)(?:8|10|12|16|32)\s*g(?:b)?", line)
+            if memory_hits:
+                facts[labels[5]].append(", ".join(_dedupe_strings(memory_hits)))
+        if _VI["runtime"] in line or _VI["client"] in line or _VI["server"] in line:
+            normalized_runtime = _normalize_version_install_fact_line(line)
+            if normalized_runtime and len(normalized_runtime) <= 100:
+                facts[labels[7]].append(normalized_runtime)
+    return {label: _clean_version_install_values(label, values) for label, values in facts.items() if values}
+
+
+def _clean_version_install_values(label: str, values: list[str]) -> list[str]:
+    cleaned = _dedupe_strings(values)
+    labels = _version_install_fact_labels()
+    if label == labels[0]:
+        dotted = [value for value in cleaned if "." in value]
+        if dotted:
+            cleaned = dotted
+    if label == labels[4]:
+        launcher = [value for value in cleaned if re.search(r"(?i)pcl|hmcl", value)]
+        if launcher:
+            cleaned = launcher
+    return cleaned
+
+
+def _normalize_version_install_fact_line(line: str) -> str:
+    value = re.sub(r"\s+", " ", str(line or "")).strip(" /")
+    if not value:
+        return ""
+    parts = [part.strip(" /") for part in value.split(" / ") if part.strip(" /")]
+    useful: list[str] = []
+    for part in parts or [value]:
+        lowered = part.lower()
+        if _version_install_neighbor_is_noise(part):
+            continue
+        if lowered.startswith(_VI["api_requirement"].lower()) or lowered.startswith(_VI["related_links"].lower()):
+            continue
+        if "[image:" in lowered or "static/image/" in lowered:
+            continue
+        if len(part) > 180:
+            part = part[:180].rstrip() + "..."
+        useful.append(part)
+    return " / ".join(_dedupe_strings(useful))[:260]
+
+def _is_version_install_question(question: str) -> bool:
+    lowered = question.lower()
+    return any(
+        token in question
+        for token in ("版本", "安装", "配置", "加载器", "内存", "运行环境", "要求", "兼容")
+    ) or any(token in lowered for token in ("version", "install", "fabric", "forge", "java", "memory", "requirement"))
+
+
+def _extract_version_install_lines(text: str) -> list[str]:
+    wanted = (
+        "minecraft",
+        "java",
+        "fabric",
+        "forge",
+        "quilt",
+        "pcl",
+        "hmcl",
+        "版本",
+        "资源版本",
+        "最新版本",
+        "历史版本",
+        "我的世界java版本",
+        "平台",
+        "核心",
+        "加载器",
+        "安装",
+        "内存",
+        "运行环境",
+        "客户端",
+        "服务端",
+        "下载地址",
+    )
+    lines = [line.strip() for line in text.splitlines()]
+    output: list[str] = []
+    for index, line in enumerate(lines):
+        clean = _clean_evidence_line(line)
+        if not clean:
+            continue
+        lowered = clean.lower()
+        if not any(token in lowered for token in wanted):
+            continue
+        compact_clean = re.sub(r"\s+", "", clean.lower())
+        window: list[str] = []
+        if index > 0:
+            previous = _clean_evidence_line(lines[index - 1])
+            if previous and len(previous) <= 120 and not _version_install_neighbor_is_noise(previous):
+                window.append(previous)
+        window.append(clean)
+        for offset in (1, 2):
+            if index + offset >= len(lines):
+                continue
+            following = _clean_evidence_line(lines[index + offset])
+            if following and len(following) <= 120 and not _version_install_neighbor_is_noise(following):
+                window.append(following)
+            if (
+                "我的世界java版本" in compact_clean
+                or clean.lower() in {"minecraft java version", "minecraft version", "platform", "平台"}
+            ) and following:
+                break
+        entry = " / ".join(_dedupe_strings(window))
+        if entry and entry not in output:
+            output.append(entry[:260])
+        if len(output) >= 18:
+            break
+    return output
+
+
+def _version_install_neighbor_is_noise(line: str) -> bool:
+    lowered = line.lower()
+    if "<!--" in lowered or "-->" in lowered:
+        return True
+    if "｜" in line or "|" in line:
+        return True
+    if lowered.startswith(("web source", "query", "snippet", "search ")):
+        return True
+    return False
 
 
 def _answer_is_garbled(answer: str) -> bool:
@@ -4850,6 +5144,21 @@ def _should_force_mcagent_planned_delegate(agent: str, original_question: str, r
     return _mentions_crawler_agent(combined) and _asks_for_collection_or_handoff(combined) and not _forbids_crawler_handoff(combined)
 
 
+def _should_use_deterministic_local_fact_rag_route(agent: str, original_question: str, payload: dict[str, Any]) -> bool:
+    if agent != "mcagent_rag":
+        return False
+    if bool(payload.get("no_llm")):
+        return False
+    if bool(payload.get("force_llm_router")) or bool(payload.get("force_llm_planner")):
+        return False
+    text = str(original_question or "").strip()
+    if not text:
+        return False
+    if _asks_for_collection_or_handoff(text) or _request_wants_persistence(text):
+        return False
+    return _is_version_install_question(text)
+
+
 def _mcagent_context_focus(question: str, collection_target: str = "") -> str:
     value = str(collection_target or question or "").strip()
     value = re.sub(r"(?i)MC\s*Agent|MCagent|RAG", " ", value)
@@ -4858,6 +5167,63 @@ def _mcagent_context_focus(question: str, collection_target: str = "") -> str:
     value = re.sub(r"\s+", " ", value).strip(" ，。；;:：")
     value = _expand_mcagent_context_aliases(value)
     return value or str(question or "").strip()
+
+
+def _filter_mcagent_context_evidence(
+    focus: str,
+    selected: list[SearchResult],
+    evidence_report: dict[str, Any],
+) -> list[SearchResult]:
+    """Keep only evidence that is safe to describe as local context for Crawler."""
+    if not selected:
+        return []
+    if str(evidence_report.get("verdict") or "").lower() not in {"ok", ""}:
+        return []
+    terms = _mcagent_context_required_terms(focus)
+    if not terms:
+        return selected
+    filtered: list[SearchResult] = []
+    for item in selected:
+        haystack = f"{item.title}\n{item.source_path}\n{item.url or ''}\n{item.text[:2400]}".lower()
+        if any(term.lower() in haystack for term in terms):
+            filtered.append(item)
+    return filtered
+
+
+def _filter_answer_evidence_by_required_terms(focus: str, selected: list[SearchResult]) -> list[SearchResult]:
+    if not selected:
+        return []
+    terms = _mcagent_context_required_terms(focus)
+    if not terms:
+        return selected
+    filtered: list[SearchResult] = []
+    for item in selected:
+        haystack = f"{item.title}\n{item.source_path}\n{item.url or ''}\n{item.text[:3000]}".lower()
+        if any(term.lower() in haystack for term in terms):
+            filtered.append(item)
+    for index, item in enumerate(filtered, start=1):
+        item.rank = index
+    return filtered
+
+
+def _mcagent_context_required_terms(focus: str) -> list[str]:
+    text = str(focus or "")
+    lowered = text.lower()
+    terms: list[str] = []
+    if "\u4e4c\u6258\u90a6" in text or "utopia" in lowered or "utopian journey" in lowered:
+        terms.extend(["\u4e4c\u6258\u90a6", "utopia", "utopian journey"])
+    if "\u9999\u8349\u7eaa\u5143" in text or "vanillaera" in lowered or "fareschron" in lowered:
+        terms.extend(["\u9999\u8349\u7eaa\u5143", "vanillaera", "fareschron", "fares chron"])
+    if "\u843d\u5e55\u66f2" in text or "closing song" in lowered:
+        terms.extend(["\u843d\u5e55\u66f2", "closing song"])
+    extracted = [
+        item
+        for item in re.findall(r"[A-Za-z][A-Za-z0-9_+-]{3,}|[\u4e00-\u9fff]{3,}", text)
+        if item.lower() not in {"minecraft", "modpack", "crawleragent"}
+        and item not in {"\u6574\u5408\u5305", "\u5b8c\u6574\u8d44\u6599", "\u914d\u7f6e\u6587\u4ef6", "\u7248\u672c\u517c\u5bb9\u6027\u4fe1\u606f", "\u793e\u533a\u66f4\u65b0\u65e5\u5fd7"}
+    ]
+    terms.extend(extracted[:6])
+    return _dedupe_strings(terms)
 
 
 def _clean_inter_agent_collection_target(original_question: str, proposed_collection: str = "") -> str:
@@ -5627,17 +5993,45 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
             },
         )
         return executor.status(run)
+    deterministic_local_fact_route = _should_use_deterministic_local_fact_rag_route(agent, original_question, payload)
     router = LlmAgentToolRouterService(
         select_client=_selected_llm_client,
         action_plan_has_tool=_action_plan_has_tool,
     )
-    route = router.route(run, session_summary=session_summary)
-    tool_decision = route.tool_decision
-    route_intent = route.route_intent
-    action_plan = route.action_plan
-    rag_focus = route.rag_focus
-    planned_workflow = route.planned_workflow
-    planned_delegate = route.planned_delegate
+    if deterministic_local_fact_route:
+        tool_decision = {
+            "tool": "answer",
+            "reason": "Narrow version/install fact question; use local RAG and deterministic fact extraction before any remote planning.",
+            "rag_focus": original_question,
+            "collection_target": "",
+            "delivery_target": "human",
+            "planner": "runtime",
+        }
+        route_intent = "answer"
+        action_plan = []
+        rag_focus = original_question
+        planned_workflow = False
+        planned_delegate = False
+        add_trace("decide", "tool_selected", {"tool": "answer", "original_question": original_question, "decision": tool_decision})
+        add_trace(
+            "decide",
+            "next_step_confirmed",
+            {
+                "proceed": True,
+                "tool": "local_rag_search",
+                "goal": f"Search local evidence and extract version/install facts: {original_question}",
+                "reason": "Runtime-confirmed deterministic local fact route.",
+                "planner": "runtime",
+            },
+        )
+    else:
+        route = router.route(run, session_summary=session_summary)
+        tool_decision = route.tool_decision
+        route_intent = route.route_intent
+        action_plan = route.action_plan
+        rag_focus = route.rag_focus
+        planned_workflow = route.planned_workflow
+        planned_delegate = route.planned_delegate
     if _should_force_mcagent_planned_delegate(agent, original_question, route_intent, tool_decision, action_plan):
         proposed_collection = _clean_inter_agent_collection_target(original_question, str(tool_decision.get("collection_target") or ""))
         route_intent = "answer"
@@ -5916,23 +6310,32 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
     final_k = retrieval_preparation.final_k
     use_retrieval_planner = False
     if agent == "mcagent_rag":
-        retrieval_confirmation = router.confirm_next_step(
-            config,
-            payload,
-            agent=agent,
-            model=model,
-            original_question=original_question,
-            session_summary=session_summary,
-            proposed_tool="local_rag_search",
-            proposed_goal=f"检索本地资料库以回答：{evidence_question}",
-            context={"evidence_question": evidence_question, "rough_k": rough_k, "final_context_k": final_k},
-        )
+        if deterministic_local_fact_route:
+            retrieval_confirmation = {
+                "proceed": True,
+                "tool": "local_rag_search",
+                "goal": f"Search local evidence and extract version/install facts: {evidence_question}",
+                "reason": "Runtime-confirmed deterministic local fact route.",
+                "planner": "runtime",
+            }
+        else:
+            retrieval_confirmation = router.confirm_next_step(
+                config,
+                payload,
+                agent=agent,
+                model=model,
+                original_question=original_question,
+                session_summary=session_summary,
+                proposed_tool="local_rag_search",
+                proposed_goal=f"Search local evidence to answer: {evidence_question}",
+                context={"evidence_question": evidence_question, "rough_k": rough_k, "final_context_k": final_k},
+            )
         add_trace("retrieve", "next_step_confirmed", retrieval_confirmation)
         if not bool(retrieval_confirmation.get("proceed", True)):
             suggested_tool = str(retrieval_confirmation.get("suggested_tool") or retrieval_confirmation.get("tool") or "").strip()
             if suggested_tool in {"answer", "direct_answer", "final_answer_llm"}:
                 return executor.direct_answer(run, session_summary=session_summary, mode="direct_after_retrieval_cancelled")
-        use_retrieval_planner = True
+        use_retrieval_planner = not deterministic_local_fact_route
 
     retrieval_result = rag_retrieval.retrieve(
         config,
@@ -6020,7 +6423,7 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
         return _with_trace({"answer": answer, "sources": [], "context": "", "agent": agent}, trace)
 
     evidence_report = None
-    if agent == "mcagent_rag" and not bool(payload.get("no_llm")):
+    if agent == "mcagent_rag":
         evidence_result = EvidenceWorkflowService(
             prefer_parent_topic_results=_prefer_parent_topic_results,
             modpack_manifest_results=_modpack_manifest_results,
@@ -6040,6 +6443,42 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
         )
         selected = evidence_result.selected
         evidence_report = evidence_result.report
+        selected = _filter_answer_evidence_by_required_terms(evidence_question, selected)
+        if evidence_report.selected_count != len(selected):
+            evidence_report.selected_count = len(selected)
+            if not selected:
+                evidence_report.verdict = "insufficient"
+                evidence_report.reasons = _dedupe_strings(
+                    [*evidence_report.reasons, "Filtered retrieved evidence because it did not match the requested subject entity."]
+                )
+        if evidence_report.verdict != "ok" and deterministic_local_fact_route:
+            local_fact_answer = _local_version_install_answer(original_question, selected)
+            if local_fact_answer:
+                source_dicts = [_result_to_dict(item) for item in selected]
+                context = format_context(selected)
+                add_trace(
+                    "answer",
+                    "local_fact_answer",
+                    {
+                        "reason": "version_install_evidence_before_general_evidence_threshold",
+                        "sources": len(selected),
+                        "evidence_verdict": evidence_report.verdict,
+                    },
+                )
+                sources = format_sources(selected)
+                if sources and not local_fact_answer.rstrip().endswith(sources):
+                    local_fact_answer = local_fact_answer.rstrip() + "\n\nSources:\n" + sources
+                _append_session(payload, original_question, local_fact_answer, source_dicts)
+                return _with_trace(
+                    {
+                        "answer": local_fact_answer,
+                        "sources": source_dicts,
+                        "context": context,
+                        "agent": agent,
+                        "evidence": evidence_report.to_dict(),
+                    },
+                    trace,
+                )
         if evidence_report.verdict != "ok":
             if planned_delegate:
                 collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
@@ -6122,27 +6561,31 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
     if agent == "retriever_only" or bool(payload.get("no_llm")):
         answer, context = executor.retriever_only_answer(context)
     else:
-        answer_question = _answer_question_for_user(original_question, question, retrieval_note)
-        answer_confirmation = router.confirm_next_step(
-            config,
-            payload,
-            agent=agent,
-            model=model,
-            original_question=original_question,
-            session_summary=session_summary,
-            proposed_tool="final_answer_llm",
-            proposed_goal=f"基于已筛选证据组织最终回答：{answer_question}",
-            context={"selected_sources": len(selected), "evidence_question": evidence_question},
-        )
-        add_trace("answer", "next_step_confirmed", answer_confirmation)
-        answer, context = executor.grounded_answer(
-            run,
-            answer_question=answer_question,
-            selected=selected,
-            retrieval_note=retrieval_note,
-            evidence_question=evidence_question,
-            repair_question=question,
-        )
+        answer = _local_version_install_answer(original_question, selected)
+        if answer:
+            add_trace("answer", "local_fact_answer", {"reason": "version_install_evidence", "sources": len(selected)})
+        if not answer:
+            answer_question = _answer_question_for_user(original_question, question, retrieval_note)
+            answer_confirmation = router.confirm_next_step(
+                config,
+                payload,
+                agent=agent,
+                model=model,
+                original_question=original_question,
+                session_summary=session_summary,
+                proposed_tool="final_answer_llm",
+                proposed_goal=f"基于已筛选证据组织最终回答：{answer_question}",
+                context={"selected_sources": len(selected), "evidence_question": evidence_question},
+            )
+            add_trace("answer", "next_step_confirmed", answer_confirmation)
+            answer, context = executor.grounded_answer(
+                run,
+                answer_question=answer_question,
+                selected=selected,
+                retrieval_note=retrieval_note,
+                evidence_question=evidence_question,
+                repair_question=question,
+            )
         if planned_delegate:
             collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
             planning_instruction = ""
@@ -6414,4 +6857,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

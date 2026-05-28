@@ -557,6 +557,310 @@ def test_crawler_job_can_execute_mcagent_context_tool() -> None:
             shutil.rmtree(str(result["export_dir"]), ignore_errors=True)
 
 
+def test_mcagent_context_filters_off_topic_local_evidence() -> None:
+    off_topic = SearchResult(
+        rank=1,
+        score=9.5,
+        chunk_id=1,
+        document_id=1,
+        chunk_index=0,
+        title="\u843d\u5e55\u66f2\uff08Closing Song\uff09\u6574\u5408\u5305\u8d44\u6599\u6c47\u603b",
+        source_path="D:/magic/MC_Agent/data/crawler_exports/manual_research/closing_song.md",
+        url="https://example.test/closing-song",
+        text="\u8fd9\u91cc\u662f\u843d\u5e55\u66f2\u7684 Boss \u548c\u65b0\u624b\u8def\u7ebf\u8d44\u6599\u3002",
+        metadata={},
+    )
+    on_topic = SearchResult(
+        rank=2,
+        score=8.0,
+        chunk_id=2,
+        document_id=2,
+        chunk_index=0,
+        title="\u4e4c\u6258\u90a6\u63a2\u9669\u4e4b\u65c5\uff08Utopian Journey\uff09\u6574\u5408\u5305",
+        source_path="D:/magic/MC_Agent/data/crawler_exports/web_discovery/utopia.md",
+        url="https://example.test/utopia",
+        text="\u4e4c\u6258\u90a6\u63a2\u9669\u4e4b\u65c5\u6574\u5408\u5305\u7684\u7248\u672c\u548c\u73a9\u6cd5\u8d44\u6599\u3002",
+        metadata={},
+    )
+
+    focus = "\u4e4c\u6258\u90a6\u63a2\u9669\u4e4b\u65c5\u6574\u5408\u5305 Utopian Journey"
+    assert_equal(
+        "off_topic_filtered",
+        web_server._filter_mcagent_context_evidence(focus, [off_topic], {"verdict": "ok"}),
+        [],
+    )
+    assert_equal(
+        "insufficient_filtered",
+        web_server._filter_mcagent_context_evidence(focus, [on_topic], {"verdict": "insufficient"}),
+        [],
+    )
+    assert_equal(
+        "on_topic_kept",
+        web_server._filter_mcagent_context_evidence(focus, [off_topic, on_topic], {"verdict": "ok"}),
+        [on_topic],
+    )
+
+
+def test_no_llm_mcagent_path_still_runs_evidence_selection() -> None:
+    off_topic = SearchResult(
+        rank=1,
+        score=9.0,
+        chunk_id=1,
+        document_id=1,
+        chunk_index=0,
+        title="Boss直聘（2014年上线的在线招聘平台）_百度百科",
+        source_path="D:/magic/MC_Agent/data/crawler_exports/jina/boss.md",
+        url="https://example.test/boss",
+        text="在线招聘平台资料。",
+        metadata={},
+    )
+    on_topic = SearchResult(
+        rank=2,
+        score=4.0,
+        chunk_id=2,
+        document_id=2,
+        chunk_index=0,
+        title="乌托邦探险之旅 | XyeBBS",
+        source_path="D:/magic/MC_Agent/data/crawler_exports/web_discovery/utopia.md",
+        url="https://example.test/utopia",
+        text="乌托邦探险之旅整合包，1.20.1 Fabric，包含更新日志和下载信息。",
+        metadata={},
+    )
+
+    assert_equal(
+        "required_term_filter",
+        web_server._filter_answer_evidence_by_required_terms(
+            "本地资料里乌托邦还有哪些缺口？",
+            [off_topic, on_topic],
+        ),
+        [on_topic],
+    )
+    class FakeRun:
+        original_question = "本地资料里乌托邦还有哪些缺口？"
+        question = original_question
+        agent = "mcagent_rag"
+        model = ""
+        temperature = 0.0
+        max_tokens = 400
+
+        def __init__(self) -> None:
+            self.trace = SimpleNamespace(steps=[])
+
+        def add_trace(self, stage, status, detail=None):
+            self.trace.steps.append({"stage": stage, "status": status, "detail": detail})
+            return self.trace.steps[-1]
+
+        def response(self, payload):
+            payload["trace"] = self.trace.steps
+            return payload
+
+    class FakeRouter:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def route(self, run, session_summary=None):
+            return SimpleNamespace(
+                tool_decision={},
+                route_intent="answer",
+                action_plan=[],
+                rag_focus="",
+                planned_workflow=False,
+                planned_delegate=False,
+            )
+
+        def confirm_next_step(self, *args, **kwargs):
+            return {"proceed": True, "planner": "test"}
+
+    class FakeRag:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def prepare(self, *args, **kwargs):
+            return SimpleNamespace(evidence_question="本地资料里乌托邦还有哪些缺口？", rough_k=8, final_k=6)
+
+        def retrieve(self, *args, **kwargs):
+            return SimpleNamespace(
+                retrieval_plan=None,
+                rough_results=[off_topic, on_topic],
+                selected=[off_topic, on_topic],
+            )
+
+    original_context = web_server.build_agent_execution_context
+    original_router = web_server.LlmAgentToolRouterService
+    original_rag = web_server.RagRetrievalService
+    original_project_keywords = web_server._supplement_project_keyword_results
+    original_raw_html = web_server._supplement_raw_html_results
+    original_modpack_context = web_server._ensure_modpack_mod_list_context
+    try:
+        web_server.build_agent_execution_context = lambda *args, **kwargs: FakeRun()  # type: ignore[assignment]
+        web_server.LlmAgentToolRouterService = FakeRouter  # type: ignore[assignment]
+        web_server.RagRetrievalService = FakeRag  # type: ignore[assignment]
+        web_server._supplement_project_keyword_results = lambda _config, _question, selected, _limit: selected  # type: ignore[assignment]
+        web_server._supplement_raw_html_results = lambda _config, _question, selected, limit=8: selected  # type: ignore[assignment]
+        web_server._ensure_modpack_mod_list_context = lambda _config, _question, selected, _rough, _limit: selected  # type: ignore[assignment]
+        result = web_server._chat_impl(
+            SimpleNamespace(),
+            {
+                "agent": "mcagent_rag",
+                "question": "本地资料里乌托邦还有哪些缺口？",
+                "no_llm": True,
+            },
+        )
+    finally:
+        web_server.build_agent_execution_context = original_context  # type: ignore[assignment]
+        web_server.LlmAgentToolRouterService = original_router  # type: ignore[assignment]
+        web_server.RagRetrievalService = original_rag  # type: ignore[assignment]
+        web_server._supplement_project_keyword_results = original_project_keywords  # type: ignore[assignment]
+        web_server._supplement_raw_html_results = original_raw_html  # type: ignore[assignment]
+        web_server._ensure_modpack_mod_list_context = original_modpack_context  # type: ignore[assignment]
+
+    titles = [item["title"] for item in result.get("sources") or []]
+    assert_true("kept_on_topic", any("乌托邦" in title for title in titles), str(titles))
+    assert_true("filtered_off_topic", not any("Boss直聘" in title for title in titles), str(titles))
+
+
+def test_version_install_note_extracts_modpack_requirements() -> None:
+    source = SearchResult(
+        rank=1,
+        score=9.0,
+        chunk_id=1,
+        document_id=1,
+        chunk_index=0,
+        title="乌托邦探险之旅下载页",
+        source_path="D:/magic/MC_Agent/data/crawler_exports/web_discovery/utopia_download.md",
+        url="https://example.test/utopia-download",
+        text=(
+            "整合包下载：乌托邦探险之旅（Utopian Journey）\n"
+            "最新版本：3.5.1\n"
+            "历史版本：3.2-3.5.1\n"
+            "Java版本需求：17-21\n"
+            "安装方式：PCL启动器或HMCL启动器安装。\n"
+            "内存需求：16G分配8G（关闭无关后台占用）\n"
+            "32G分配10G。\n"
+            "我的世界Java版本\n"
+            "1.20.1\n"
+            "平台\n"
+            "Fabric\n"
+        ),
+        metadata={},
+    )
+
+    note = web_server._version_install_extraction_note("乌托邦探险之旅的版本和安装要求是什么？", [source])
+    assert_true("has_pack_version", "3.5.1" in note, note)
+    assert_true("has_java_requirement", "17-21" in note, note)
+    assert_true("has_launcher", "PCL" in note and "HMCL" in note, note)
+    assert_true("has_memory", "16G" in note and "8G" in note, note)
+    assert_true("has_mc_version_loader", "1.20.1" in note and "Fabric" in note, note)
+
+    answer = web_server._local_version_install_answer("乌托邦探险之旅的版本和安装要求是什么？", [source])
+    assert_true("answer_has_pack_version", "3.5.1" in answer, answer)
+    assert_true("answer_has_java_requirement", "17-21" in answer, answer)
+    assert_true("answer_has_launcher", "PCL" in answer and "HMCL" in answer, answer)
+    assert_true("answer_has_memory", "16G" in answer and "8G" in answer, answer)
+    assert_true("answer_has_mc_version_loader", "1.20.1" in answer and "Fabric" in answer, answer)
+
+
+def test_version_install_fact_question_bypasses_llm_router() -> None:
+    question = "What are the version and install requirements for Utopian Journey?"
+    source = SearchResult(
+        rank=1,
+        score=9.0,
+        chunk_id=1,
+        document_id=1,
+        chunk_index=0,
+        title="Utopian Journey download page",
+        source_path="D:/magic/MC_Agent/data/crawler_exports/web_discovery/utopia_download.md",
+        url="https://example.test/utopia-download",
+        text=(
+            "Utopian Journey\n"
+            "Latest version: 3.5.1\n"
+            "Java requirement: 17-21\n"
+            "Install method: PCL or HMCL launcher\n"
+            "Memory requirement: 16G RAM, allocate 8G\n"
+            "Minecraft Java version\n"
+            "1.20.1\n"
+            "Platform\n"
+            "Fabric\n"
+        ),
+        metadata={},
+    )
+
+    class FakeRun:
+        original_question = "What are the version and install requirements for Utopian Journey?"
+        question = original_question
+        agent = "mcagent_rag"
+        model = ""
+        temperature = 0.0
+        max_tokens = 400
+
+        def __init__(self) -> None:
+            self.trace = SimpleNamespace(steps=[])
+
+        def add_trace(self, stage, status, detail=None):
+            self.trace.steps.append({"stage": stage, "status": status, "detail": detail})
+            return self.trace.steps[-1]
+
+        def response(self, payload):
+            payload["trace"] = self.trace.steps
+            return payload
+
+    class RouterMustNotRun:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def route(self, *args, **kwargs):
+            raise AssertionError("version/install local fact route should bypass LLM router")
+
+        def confirm_next_step(self, *args, **kwargs):
+            raise AssertionError("version/install local fact route should bypass LLM confirmations")
+
+    class FakeRag:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def prepare(self, *args, **kwargs):
+            return SimpleNamespace(evidence_question=question, rough_k=8, final_k=6)
+
+        def retrieve(self, *args, **kwargs):
+            assert_true("planner_disabled", kwargs.get("use_planner") is False)
+            return SimpleNamespace(retrieval_plan=None, rough_results=[source], selected=[source])
+
+    original_context = web_server.build_agent_execution_context
+    original_router = web_server.LlmAgentToolRouterService
+    original_rag = web_server.RagRetrievalService
+    original_project_keywords = web_server._supplement_project_keyword_results
+    original_raw_html = web_server._supplement_raw_html_results
+    original_modpack_context = web_server._ensure_modpack_mod_list_context
+    try:
+        web_server.build_agent_execution_context = lambda *args, **kwargs: FakeRun()  # type: ignore[assignment]
+        web_server.LlmAgentToolRouterService = RouterMustNotRun  # type: ignore[assignment]
+        web_server.RagRetrievalService = FakeRag  # type: ignore[assignment]
+        web_server._supplement_project_keyword_results = lambda _config, _question, selected, _limit: selected  # type: ignore[assignment]
+        web_server._supplement_raw_html_results = lambda _config, _question, selected, limit=8: selected  # type: ignore[assignment]
+        web_server._ensure_modpack_mod_list_context = lambda _config, _question, selected, _rough, _limit: selected  # type: ignore[assignment]
+        result = web_server._chat_impl(
+            SimpleNamespace(),
+            {
+                "agent": "mcagent_rag",
+                "question": question,
+            },
+        )
+    finally:
+        web_server.build_agent_execution_context = original_context  # type: ignore[assignment]
+        web_server.LlmAgentToolRouterService = original_router  # type: ignore[assignment]
+        web_server.RagRetrievalService = original_rag  # type: ignore[assignment]
+        web_server._supplement_project_keyword_results = original_project_keywords  # type: ignore[assignment]
+        web_server._supplement_raw_html_results = original_raw_html  # type: ignore[assignment]
+        web_server._ensure_modpack_mod_list_context = original_modpack_context  # type: ignore[assignment]
+
+    answer = result.get("answer") or ""
+    assert_true("answer_has_pack_version", "3.5.1" in answer, answer)
+    assert_true("answer_has_mc_version", "1.20.1" in answer, answer)
+    assert_true("answer_has_loader", "Fabric" in answer, answer)
+    statuses = [(item.get("stage"), item.get("status")) for item in result.get("trace") or []]
+    assert_true("local_fact_trace", ("answer", "local_fact_answer") in statuses, str(statuses))
+
+
 def test_mcagent_context_tool_uses_fast_structured_reply_instead_of_second_answer_llm() -> None:
     source = (ROOT / "mcagent" / "web_server.py").read_text(encoding="utf-8")
     start = source.index("def _run_mcagent_context_tool")
@@ -583,5 +887,9 @@ if __name__ == "__main__":
     test_crawler_mcagent_context_with_collection_continues_to_delegate()
     test_direct_crawler_delegate_choice_runs_as_crawler_context_workflow()
     test_crawler_job_can_execute_mcagent_context_tool()
+    test_mcagent_context_filters_off_topic_local_evidence()
+    test_no_llm_mcagent_path_still_runs_evidence_selection()
+    test_version_install_note_extracts_modpack_requirements()
+    test_version_install_fact_question_bypasses_llm_router()
     test_mcagent_context_tool_uses_fast_structured_reply_instead_of_second_answer_llm()
     print("web_server_side_effect_guard_scenarios passed")
