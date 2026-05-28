@@ -60,8 +60,83 @@ def test_snapshot_detects_poor_yield_replan_pressure() -> None:
     assert_equal("pending_source", snapshot["pending_tasks"][0]["source"], "mcmod")
 
 
+def test_snapshot_surfaces_crawler_review_actions() -> None:
+    snapshot = CrawlerReflectionSnapshotService().build(
+        plan={"topic": "Utopian Journey"},
+        task_results=[
+            {
+                "source": "playwright",
+                "query": "https://modrinth.com/project/utopia-exploration-modpack",
+                "returncode": 0,
+                "manifest_stats": {"records": 1},
+                "topic_validation": {
+                    "matched": False,
+                    "reason": "not_found",
+                    "cleanup_action": "retry_other_source",
+                    "next_action": "Search community mirrors instead.",
+                    "rejected_examples": [{"title": "Modrinth", "url": "https://modrinth.com/project/utopia-exploration-modpack"}],
+                },
+                "off_topic_result": True,
+            }
+        ],
+        pending_tasks=[],
+    )
+    recent = snapshot["recent_results"][0]
+    assert_equal("review_action", recent["crawler_review_action"], "retry_other_source")
+    assert_equal("review_next", recent["crawler_review_next_action"], "Search community mirrors instead.")
+    assert_equal("rejected_title", recent["rejected_examples"][0]["title"], "Modrinth")
+
+
+def test_snapshot_surfaces_rejected_duplicate_review() -> None:
+    snapshot = CrawlerReflectionSnapshotService().build(
+        plan={"topic": "Utopian Journey"},
+        task_results=[
+            {
+                "source": "playwright",
+                "query": "Utopian Journey Modrinth",
+                "returncode": 0,
+                "manifest_stats": {"records": 0, "skipped": 1},
+                "existing_evidence_review": {
+                    "matched": False,
+                    "reason": "not_found",
+                    "cleanup_action": "retry_other_source",
+                    "next_action": "Do not reuse the duplicate 404 page; search exact aliases elsewhere.",
+                },
+                "empty_result": True,
+            }
+        ],
+        pending_tasks=[],
+    )
+    recent = snapshot["recent_results"][0]
+    assert_equal("duplicate_reason", recent["duplicate_review_reason"], "not_found")
+    assert_equal("duplicate_action", recent["duplicate_review_action"], "retry_other_source")
+    assert_equal("duplicate_next", recent["duplicate_review_next_action"], "Do not reuse the duplicate 404 page; search exact aliases elsewhere.")
+
+
+def test_snapshot_marks_unreviewed_records() -> None:
+    snapshot = CrawlerReflectionSnapshotService().build(
+        plan={"topic": "Utopian Journey"},
+        task_results=[
+            {
+                "source": "browser_collect",
+                "query": "Utopian Journey",
+                "returncode": 0,
+                "manifest_stats": {"records": 4},
+                "records_pending_review": True,
+            }
+        ],
+        pending_tasks=[],
+    )
+    recent = snapshot["recent_results"][0]
+    assert_equal("pending_review", recent["records_pending_review"], True)
+    assert_equal("observation_status", recent["observation_status"], "records_pending_review")
+
+
 if __name__ == "__main__":
     test_snapshot_counts_observations_and_pressure()
     test_snapshot_detects_poor_yield_replan_pressure()
+    test_snapshot_surfaces_crawler_review_actions()
+    test_snapshot_surfaces_rejected_duplicate_review()
+    test_snapshot_marks_unreviewed_records()
     print("crawler_reflection_service_scenarios: ok")
 

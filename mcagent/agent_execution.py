@@ -76,6 +76,8 @@ def resolve_agent_model(config: AppConfig, payload: dict[str, Any], agent: str) 
     if profile_id:
         return f"profile:{profile_id}"
     raw_model = str(payload.get("model") or "").strip()
+    if raw_model.lower() in {"auto", "default", "assigned", "agent-default"}:
+        raw_model = ""
     if raw_model:
         return raw_model
     assignment_key = "crawler_agent" if agent == "crawler_agent" else "mcagent_rag"

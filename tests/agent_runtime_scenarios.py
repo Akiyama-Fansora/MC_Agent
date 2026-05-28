@@ -32,7 +32,7 @@ def assert_true(name: str, condition: bool, detail: str = "") -> None:
 
 def test_tool_observation_matrix() -> None:
     cases = [
-        ("ok", {"source": "mcmod", "returncode": 0, "manifest_stats": {"records": 2}}),
+        ("ok", {"source": "mcmod", "returncode": 0, "manifest_stats": {"records": 2}, "topic_validation": {"matched": True}}),
         ("empty", {"source": "mcmod", "returncode": 0, "empty_result": True, "manifest_stats": {"records": 0}}),
         ("off_topic", {"source": "web_discovery", "returncode": 0, "off_topic_result": True, "manifest_stats": {"records": 1}}),
         ("uncertain", {"source": "fetch_url", "returncode": 0, "uncertain_result": True, "manifest_stats": {"records": 1}}),
@@ -47,12 +47,15 @@ def test_tool_observation_matrix() -> None:
         ("network_error", {"source": "fetch_url", "returncode": 1, "output": "failed to fetch: DNS connection error"}),
         ("parse_error", {"source": "playwright", "returncode": 1, "output": "JSONDecodeError invalid json"}),
         ("execution_error", {"source": "unknown", "returncode": 1, "output": "script failed"}),
+        ("records_pending_review", {"source": "playwright", "returncode": 0, "manifest_stats": {"records": 1}, "output": "Project not found. You may have mistyped the project's URL."}),
     ]
     for expected, result in cases:
         observation = classify_crawler_tool_result(result)
         assert_true(f"known_status_{expected}", observation.status in TOOL_RESULT_STATUSES)
         assert_equal(f"classify_{expected}", observation.status, expected)
         assert_true(f"summary_{expected}", bool(observation.summary))
+        if expected == "records_pending_review":
+            assert_true("pending_review_not_ok", observation.bad)
 
 
 def test_agent_loop_event_keeps_trace_shape() -> None:
@@ -287,4 +290,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -75,6 +75,8 @@ def test_model_resolution_precedence() -> None:
         config = make_temp_config(Path(tmp))
         assert_equal("profile_override", resolve_agent_model(config, {"model_profile_id": "abc"}, "mcagent_rag"), "profile:abc")
         assert_equal("raw_model_override", resolve_agent_model(config, {"model": "raw"}, "mcagent_rag"), "raw")
+        assert_true("auto_uses_assignment_profile", resolve_agent_model(config, {"model": "auto"}, "mcagent_rag").startswith("profile:"))
+        assert_true("default_uses_assignment_profile", resolve_agent_model(config, {"model": "default"}, "crawler_agent").startswith("profile:"))
         assert_true("default_assignment_profile", resolve_agent_model(config, {}, "mcagent_rag").startswith("profile:"))
 
 

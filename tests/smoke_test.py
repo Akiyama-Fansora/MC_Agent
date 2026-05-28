@@ -57,6 +57,9 @@ def main() -> int:
     assert classify_crawler_tool_result({"source": "web_discovery", "returncode": 124, "timed_out": True}).status == "timeout"
     assert classify_crawler_tool_result({"source": "playwright", "returncode": 1, "output": "HTTP 429 quota exceeded"}).status == "quota_limited"
     assert classify_crawler_tool_result({"source": "mcmod", "returncode": 0, "empty_result": True, "manifest_stats": {"records": 0}}).status == "empty"
+    pending_review = classify_crawler_tool_result({"source": "playwright", "returncode": 0, "manifest_stats": {"records": 1}})
+    assert pending_review.status == "records_pending_review"
+    assert pending_review.bad is True
     assert classify_crawler_tool_result({"source": "mcmod", "returncode": 0, "topic_validation": {"matched": True}, "manifest_stats": {"records": 2}}).status == "ok"
     contract = build_handoff_contract(
         requested_by="user_via_mcagent",
@@ -98,6 +101,19 @@ def main() -> int:
         assert stats.documents_loaded == 1, stats
         assert stats.index_vectors >= 1, stats
 
+        accepted = source / "accepted"
+        rejected = source / "rejected"
+        accepted.mkdir()
+        rejected.mkdir()
+        (accepted / "accepted.md").write_text("# Accepted\n\nCrawlerAgent accepted this evidence.", encoding="utf-8")
+        (rejected / "rejected.md").write_text("# Rejected\n\nCrawlerAgent rejected this evidence.", encoding="utf-8")
+        limited_stats = ingest_exports(config, allowed_roots=[accepted])
+        assert limited_stats.files_seen == 1, limited_stats
+        limited_results = Retriever(config).search("CrawlerAgent rejected", top_k=3)
+        assert not any("rejected this evidence" in item.text for item in limited_results), [item.text for item in limited_results]
+        accepted_results = Retriever(config).search("CrawlerAgent accepted", top_k=3)
+        assert any("accepted this evidence" in item.text for item in accepted_results), [item.text for item in accepted_results]
+
         results = Retriever(config).search("红石粉怎么获得？", top_k=1)
         assert results, "no search results"
         assert "红石矿石" in results[0].text, results[0].text
@@ -125,4 +141,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -1377,6 +1377,7 @@ def _compact_result_for_reflection(result: dict[str, Any]) -> dict[str, Any]:
     manifest = result.get("manifest_stats") if isinstance(result.get("manifest_stats"), dict) else {}
     validation = result.get("topic_validation") if isinstance(result.get("topic_validation"), dict) else {}
     reusable = result.get("existing_evidence_reused") if isinstance(result.get("existing_evidence_reused"), dict) else {}
+    duplicate_review = result.get("existing_evidence_review") if isinstance(result.get("existing_evidence_review"), dict) else {}
     observation = result.get("observation") if isinstance(result.get("observation"), dict) else classify_crawler_tool_result(result).to_dict()
     return {
         "source": result.get("source"),
@@ -1391,12 +1392,19 @@ def _compact_result_for_reflection(result: dict[str, Any]) -> dict[str, Any]:
         "errors": manifest.get("errors"),
         "matched": validation.get("matched"),
         "validation_reason": validation.get("reason"),
+        "crawler_review_action": result.get("crawler_review_action") or validation.get("cleanup_action"),
+        "crawler_review_next_action": result.get("crawler_review_next_action") or validation.get("next_action"),
+        "rejected_examples": list(validation.get("rejected_examples") or [])[:3],
         "local_gap_summary": result.get("mcagent_gap_summary") if result.get("source") == "mcagent_context" else None,
         "local_source_count": result.get("mcagent_source_count") if result.get("source") == "mcagent_context" else None,
         "reused_existing": reusable.get("matched"),
+        "duplicate_review_reason": duplicate_review.get("reason"),
+        "duplicate_review_action": duplicate_review.get("cleanup_action"),
+        "duplicate_review_next_action": duplicate_review.get("next_action"),
         "empty": bool(result.get("empty_result")),
         "off_topic": bool(result.get("off_topic_result")),
         "uncertain": bool(result.get("uncertain_result")),
+        "records_pending_review": bool(result.get("records_pending_review")),
         "timed_out": bool(result.get("timed_out")),
     }
 

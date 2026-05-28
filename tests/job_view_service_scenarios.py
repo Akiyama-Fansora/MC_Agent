@@ -41,7 +41,7 @@ def test_running_job_view_explains_current_action_and_counts() -> None:
                 {"source": "playwright", "query": "乌托邦探险之旅 玩法", "reason": "教程页"},
             ],
             "tasks": [
-                {"source": "mcmod", "query": "乌托邦探险之旅", "returncode": 0, "ingest_deferred": True, "manifest_stats": {"records": 2}},
+                {"source": "mcmod", "query": "乌托邦探险之旅", "returncode": 0, "ingest_deferred": True, "manifest_stats": {"records": 2}, "topic_validation": {"matched": True}},
                 {"source": "playwright", "query": "乌托邦探险之旅 玩法", "returncode": 1, "output": "HTTP 429 quota exceeded"},
             ],
             "replan_count": 1,

@@ -870,6 +870,91 @@ def test_mcagent_context_tool_uses_fast_structured_reply_instead_of_second_answe
     assert_true("fast_context_trace", "structured_fast_context" in body)
 
 
+def test_crawler_topic_match_decision_comes_from_crawler_llm() -> None:
+    with tempfile.TemporaryDirectory(prefix="mcagent-topic-review-") as tmp:
+        export_dir = Path(tmp)
+        page = export_dir / "playwright_Modrinth.md"
+        page.write_text("# Modrinth\n\nProject not found. You may have mistyped the project's URL.", encoding="utf-8")
+        (export_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "records": [
+                        {
+                            "title": "Modrinth",
+                            "url": "https://modrinth.com/project/utopia-exploration-modpack",
+                            "path": str(page),
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        original = web_server._crawler_llm_record_relevance
+        try:
+            web_server._crawler_llm_record_relevance = lambda *args, **kwargs: {  # type: ignore[assignment]
+                "matched": False,
+                "reason": "not_found",
+                "matched_indexes": [],
+                "rejected_indexes": [0],
+                "cleanup_action": "retry_other_source",
+                "next_action": "Find another source.",
+                "notes": "Wrong Modrinth URL.",
+                "judge": "Crawler LLM",
+            }
+            result = web_server._crawler_topic_match(str(export_dir), "Utopian Journey", "Utopian Journey Modrinth", {})
+        finally:
+            web_server._crawler_llm_record_relevance = original  # type: ignore[assignment]
+        assert_equal("matched", result["matched"], False)
+        assert_equal("reason", result["reason"], "not_found")
+        assert_equal("cleanup_action", result["cleanup_action"], "retry_other_source")
+        assert_equal("rejected_title", result["rejected_examples"][0]["title"], "Modrinth")
+
+
+def test_duplicate_reuse_requires_crawler_llm_acceptance() -> None:
+    with tempfile.TemporaryDirectory(prefix="mcagent-dup-review-") as tmp:
+        root = Path(tmp)
+        previous = root / "previous.md"
+        previous.write_text("# Modrinth\n\nProject not found. You may have mistyped the project's URL.", encoding="utf-8")
+        export_dir = root / "export"
+        export_dir.mkdir()
+        (export_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "records": [],
+                    "skipped": [
+                        {
+                            "title": "Modrinth",
+                            "url": "https://modrinth.com/project/utopia-exploration-modpack",
+                            "previous_path": str(previous),
+                            "reason": "url_or_content_duplicate",
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        original = web_server._crawler_llm_record_relevance
+        try:
+            web_server._crawler_llm_record_relevance = lambda *args, **kwargs: {  # type: ignore[assignment]
+                "matched": False,
+                "reason": "not_found",
+                "matched_indexes": [],
+                "rejected_indexes": [0],
+                "cleanup_action": "retry_other_source",
+                "next_action": "Do not reuse this duplicate 404 page.",
+                "judge": "Crawler LLM",
+            }
+            result = web_server._crawler_reusable_duplicate_evidence(str(export_dir), "Utopian Journey", "Utopian Journey Modrinth", {})
+        finally:
+            web_server._crawler_llm_record_relevance = original  # type: ignore[assignment]
+        assert_equal("matched", result["matched"], False)
+        assert_equal("reason", result["reason"], "not_found")
+        assert_equal("cleanup_action", result["cleanup_action"], "retry_other_source")
+        assert_equal("records", result["records"], [])
+
+
 if __name__ == "__main__":
     test_direct_crawler_no_save_url_uses_temporary_extract_boundary()
     test_direct_user_handoff_brief_rejects_wrong_mcagent_identity()
@@ -892,4 +977,6 @@ if __name__ == "__main__":
     test_version_install_note_extracts_modpack_requirements()
     test_version_install_fact_question_bypasses_llm_router()
     test_mcagent_context_tool_uses_fast_structured_reply_instead_of_second_answer_llm()
+    test_crawler_topic_match_decision_comes_from_crawler_llm()
+    test_duplicate_reuse_requires_crawler_llm_acceptance()
     print("web_server_side_effect_guard_scenarios passed")

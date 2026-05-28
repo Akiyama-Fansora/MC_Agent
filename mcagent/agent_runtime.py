@@ -199,6 +199,7 @@ def make_agent_loop_event(stage: str, status: str, detail: Any = None) -> AgentL
 TOOL_RESULT_STATUSES = frozenset(
     {
         "ok",
+        "records_pending_review",
         "empty",
         "off_topic",
         "duplicate_reused",
@@ -296,6 +297,10 @@ def _result_text_for_classification(result: dict[str, Any]) -> str:
         manifest.get("note"),
         manifest.get("status"),
     ]
+    for key in ("records", "search_results", "errors", "skipped"):
+        value = result.get(key) or manifest.get(key)
+        if value:
+            parts.append(json.dumps(value, ensure_ascii=False, default=str)[:4000])
     return " ".join(str(item) for item in parts if item).lower()
 
 
@@ -368,8 +373,15 @@ def classify_crawler_tool_result(result: dict[str, Any]) -> ToolObservation:
             return observation("parse_error", "Tool fetched data but failed while parsing it.", retryable=True, suggested_next="Save raw HTML/text and use a more tolerant parser or browser extraction.")
         return observation("execution_error", "Tool command failed.", retryable=True, suggested_next="Inspect output_tail, then retry with adjusted parameters or a different tool.")
 
+    if records > 0 and bool(result.get("topic_validation", {}).get("matched")):
+        return observation("ok", "CrawlerAgent reviewed and accepted records as useful evidence.")
     if records > 0:
-        return observation("ok", "Tool produced usable records.")
+        return observation(
+            "records_pending_review",
+            "Tool produced records for CrawlerAgent review; usefulness is not decided by the tool.",
+            retryable=True,
+            suggested_next="Ask CrawlerAgent to inspect the saved records and choose accept, reject, retry, ignore, or delete for this job.",
+        )
     if skipped > 0:
         return observation("empty", "Tool produced no new records; output was skipped or already filtered.", retryable=True, suggested_next="Inspect skipped reasons and decide whether existing evidence is enough or a new source is needed.")
     return observation("empty", "Tool completed but produced no records.", retryable=True, suggested_next="Try a different source, alias, broader/narrower query, browser search, or direct URL.")

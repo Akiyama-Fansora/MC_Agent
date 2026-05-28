@@ -53,15 +53,6 @@ class CrawlerResultAccountingService:
             result["ingest_skipped"] = "MCagent/RAG context is an inter-agent diagnostic artifact; Crawler uses it for planning but does not re-ingest it as new external evidence."
             return accounting
 
-        if task_source == "browser_collect" and returncode == 0 and records_loaded > 0:
-            accounting["success_delta"] = 1
-            if "rag" in delivery_target.lower() or "mcagent" in delivery_target.lower():
-                accounting["needs_ingest"] = True
-                result["ingest_deferred"] = "Crawler will ingest structured browser output for MCagent/RAG after the collection loop finishes."
-            else:
-                result["ingest_skipped"] = "Structured browser output was saved to the requested directory for the human user."
-            return accounting
-
         if task_source == "topic_discovery" and returncode == 0 and records_loaded > 0:
             accounting["candidate_delta"] = 1
             result["candidate_only"] = True
@@ -75,14 +66,25 @@ class CrawlerResultAccountingService:
 
         if returncode == 0 and records_loaded > 0 and bool(result.get("topic_validation", {}).get("matched")):
             accounting["success_delta"] = 1
-            accounting["needs_ingest"] = True
-            result["ingest_deferred"] = "Crawler will ingest once after the collection loop finishes."
+            if "rag" in delivery_target.lower() or "mcagent" in delivery_target.lower():
+                accounting["needs_ingest"] = True
+                result["ingest_deferred"] = "CrawlerAgent accepted these records; ingest this accepted export after the collection loop finishes."
+            else:
+                result["ingest_skipped"] = "CrawlerAgent accepted these records for the human-facing task; RAG ingest was not requested."
             return accounting
 
         if returncode == 0:
             if records_loaded > 0:
                 topic_reason = str(result.get("topic_validation", {}).get("reason") or "")
-                if topic_reason in {"llm_judge_error_uncertain", "uncertain"}:
+                validation = result.get("topic_validation") if isinstance(result.get("topic_validation"), dict) else {}
+                cleanup_action = str(validation.get("cleanup_action") or "").strip()
+                if cleanup_action:
+                    result["crawler_review_action"] = cleanup_action
+                if validation.get("next_action"):
+                    result["crawler_review_next_action"] = str(validation.get("next_action") or "")
+                if not validation:
+                    result["records_pending_review"] = True
+                elif topic_reason in {"llm_judge_error_uncertain", "uncertain"}:
                     result["uncertain_result"] = True
                 else:
                     result["off_topic_result"] = True

@@ -38,6 +38,7 @@ def ingest_exports(
     source_dir: Path | None = None,
     rebuild_index: bool = True,
     limit_files: int | None = None,
+    allowed_roots: list[Path] | None = None,
 ) -> IngestStats:
     source = source_dir or config.paths.source_dir
     if not source.exists():
@@ -45,6 +46,7 @@ def ingest_exports(
             f"Source directory does not exist: {source}. "
             "Create it and put crawler export files there."
         )
+    resolved_allowed_roots = [path.resolve() for path in allowed_roots or []]
 
     stats = IngestStats()
     conn = connect(config.paths.db_path)
@@ -52,6 +54,10 @@ def ingest_exports(
         init_db(conn)
         seen_source_refs: set[str] = set()
         for path in iter_source_files(source):
+            if resolved_allowed_roots:
+                resolved_path = path.resolve()
+                if not any(resolved_path.is_relative_to(root) for root in resolved_allowed_roots):
+                    continue
             if limit_files is not None and stats.files_seen >= limit_files:
                 break
             stats.files_seen += 1
@@ -74,7 +80,11 @@ def ingest_exports(
                 stats.documents_loaded += 1
                 stats.chunks_written += len(chunks)
         if limit_files is None and stats.errors == 0:
-            stats.documents_removed = delete_source_documents_not_in(conn, source, seen_source_refs)
+            if resolved_allowed_roots:
+                for root in resolved_allowed_roots:
+                    stats.documents_removed += delete_source_documents_not_in(conn, root, seen_source_refs)
+            else:
+                stats.documents_removed = delete_source_documents_not_in(conn, source, seen_source_refs)
         conn.commit()
         stats.fts_rows = rebuild_fts_index(conn)
         conn.commit()

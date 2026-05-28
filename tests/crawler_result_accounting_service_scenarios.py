@@ -29,15 +29,24 @@ def test_matched_records_are_success_and_need_ingest() -> None:
     accounting = apply(result)
     assert_equal("success", accounting["success_delta"], 1)
     assert_equal("needs_ingest", accounting["needs_ingest"], True)
-    assert_equal("ingest_deferred", result["ingest_deferred"], "Crawler will ingest once after the collection loop finishes.")
+    assert_equal("ingest_deferred", result["ingest_deferred"], "CrawlerAgent accepted these records; ingest this accepted export after the collection loop finishes.")
 
 
-def test_browser_collect_for_human_skips_ingest() -> None:
+def test_browser_collect_waits_for_crawler_review() -> None:
     result = {"returncode": 0, "manifest_stats": {"records": 50}}
+    accounting = apply(result, source="browser_collect", delivery="human")
+    assert_equal("success", accounting["success_delta"], 0)
+    assert_equal("failure", accounting["failure_delta"], 1)
+    assert_equal("needs_ingest", accounting["needs_ingest"], False)
+    assert_equal("pending_review", result["records_pending_review"], True)
+
+
+def test_browser_collect_accepted_for_human_skips_ingest() -> None:
+    result = {"returncode": 0, "manifest_stats": {"records": 50}, "topic_validation": {"matched": True}}
     accounting = apply(result, source="browser_collect", delivery="human")
     assert_equal("success", accounting["success_delta"], 1)
     assert_equal("needs_ingest", accounting["needs_ingest"], False)
-    assert_equal("ingest_skipped", result["ingest_skipped"], "Structured browser output was saved to the requested directory for the human user.")
+    assert_equal("ingest_skipped", result["ingest_skipped"], "CrawlerAgent accepted these records for the human-facing task; RAG ingest was not requested.")
 
 
 def test_modpack_download_creates_internal_followup() -> None:
@@ -53,6 +62,24 @@ def test_off_topic_records_are_failure() -> None:
     accounting = apply(result)
     assert_equal("failure", accounting["failure_delta"], 1)
     assert_equal("off_topic", result["off_topic_result"], True)
+
+
+def test_crawler_review_rejection_records_action() -> None:
+    result = {
+        "returncode": 0,
+        "manifest_stats": {"records": 1},
+        "topic_validation": {
+            "matched": False,
+            "reason": "not_found",
+            "cleanup_action": "retry_other_source",
+            "next_action": "Search community mirrors instead of reusing this wrong Modrinth URL.",
+        },
+    }
+    accounting = apply(result)
+    assert_equal("failure", accounting["failure_delta"], 1)
+    assert_equal("off_topic", result["off_topic_result"], True)
+    assert_equal("review_action", result["crawler_review_action"], "retry_other_source")
+    assert_equal("review_next_action", result["crawler_review_next_action"], "Search community mirrors instead of reusing this wrong Modrinth URL.")
 
 
 def test_topic_discovery_counts_candidate_only() -> None:
@@ -77,9 +104,11 @@ def test_mcagent_context_is_diagnostic_and_adds_external_followup() -> None:
 
 if __name__ == "__main__":
     test_matched_records_are_success_and_need_ingest()
-    test_browser_collect_for_human_skips_ingest()
+    test_browser_collect_waits_for_crawler_review()
+    test_browser_collect_accepted_for_human_skips_ingest()
     test_modpack_download_creates_internal_followup()
     test_off_topic_records_are_failure()
+    test_crawler_review_rejection_records_action()
     test_topic_discovery_counts_candidate_only()
     test_mcagent_context_is_diagnostic_and_adds_external_followup()
     print("crawler_result_accounting_service_scenarios passed")

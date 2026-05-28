@@ -49,7 +49,7 @@ from .crawler_job_progress_service import CrawlerJobProgressService
 from .crawler_job_setup_service import CrawlerJobSetupService
 from .crawler_planner_wait_service import CrawlerPlannerWaitService
 from .evidence_service import EvidenceWorkflowService
-from .ingest import ingest_exports
+from .ingest import IngestStats, ingest_exports
 from .job_view_service import JobReadableViewService
 from .llm import OllamaOpenAIClient, OpenAICompatibleClient
 from .llm_profiles import (
@@ -630,14 +630,18 @@ def _refresh_knowledge_map() -> dict[str, Any]:
     return {"updated": completed.returncode == 0, "returncode": completed.returncode, "output": _tail_text(completed.stdout or "", 1200)}
 
 
-def _ingest_after_crawl(config: AppConfig) -> dict[str, Any]:
+def _ingest_after_crawl(config: AppConfig, source_dirs: list[str | Path] | None = None) -> dict[str, Any]:
     last_error: Exception | None = None
     for attempt in range(4):
         stdout = io.StringIO()
         stderr = io.StringIO()
         try:
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                stats = ingest_exports(config)
+                if source_dirs is None:
+                    stats = ingest_exports(config)
+                else:
+                    allowed_roots = list(dict.fromkeys(Path(source_dir).resolve() for source_dir in source_dirs if Path(source_dir).exists()))
+                    stats = ingest_exports(config, allowed_roots=allowed_roots) if allowed_roots else IngestStats()
             output = "\n".join(part for part in [stdout.getvalue(), stderr.getvalue()] if part)
             return {"stats": asdict(stats), "output": _tail_text(output, 1200), "knowledge_map": _refresh_knowledge_map(), "attempts": attempt + 1}
         except sqlite3.OperationalError as exc:
@@ -648,10 +652,10 @@ def _ingest_after_crawl(config: AppConfig) -> dict[str, Any]:
     raise last_error or RuntimeError("ingest failed")
 
 
-def _run_background_ingest(job_id: str, config: AppConfig) -> None:
+def _run_background_ingest(job_id: str, config: AppConfig, accepted_export_dirs: list[str] | None = None) -> None:
     with INGEST_LOCK:
         try:
-            result = _ingest_after_crawl(config)
+            result = _ingest_after_crawl(config, source_dirs=accepted_export_dirs)
             with JOBS_LOCK:
                 job = JOBS.get(job_id)
                 if job and isinstance(job.result, dict):
@@ -1417,6 +1421,10 @@ def _crawler_reusable_duplicate_evidence(export_dir: str, question: str, task_qu
         "matched": bool(judgement.get("matched")) if isinstance(judgement, dict) else False,
         "reason": str(judgement.get("reason") or "") if isinstance(judgement, dict) else "",
         "notes": str(judgement.get("notes") or "") if isinstance(judgement, dict) else "",
+        "cleanup_action": str(judgement.get("cleanup_action") or "") if isinstance(judgement, dict) else "",
+        "next_action": str(judgement.get("next_action") or "") if isinstance(judgement, dict) else "",
+        "rejected_indexes": list(judgement.get("rejected_indexes") or [])[:8] if isinstance(judgement, dict) else [],
+        "judge": str(judgement.get("judge") or "Crawler LLM") if isinstance(judgement, dict) else "Crawler LLM",
         "records": matched_records,
     }
 
@@ -1542,6 +1550,13 @@ def _crawler_result_summary(task_results: list[dict[str, Any]], plan: dict[str, 
         if result.get("uncertain_result"):
             entry["uncertain"] += 1
             uncertain_tasks.append(task_brief | {"topic_validation": result.get("topic_validation")})
+        if result.get("records_pending_review"):
+            entry["uncertain"] += 1
+            uncertain_tasks.append(task_brief | {"pending_review": True})
+        duplicate_review = result.get("existing_evidence_review")
+        if isinstance(duplicate_review, dict) and duplicate_review:
+            entry["off_topic"] += 1
+            off_topic_tasks.append(task_brief | {"duplicate_review": duplicate_review})
         if int(result.get("returncode") or 0) != 0:
             entry["failed"] += 1
             failed_tasks.append(task_brief | {"output_tail": _tail_text(str(result.get("output") or ""), 500)})
@@ -1554,11 +1569,12 @@ def _crawler_result_summary(task_results: list[dict[str, Any]], plan: dict[str, 
                     duplicate_count += int(count)
                 if "relevance" in lowered or "low" in lowered:
                     low_relevance_count += int(count)
-            for sample in brief.get("record_samples", []):
-                if sample.get("raw_html_path"):
-                    raw_html_count += 1
-                if len(useful_records) < 12:
-                    useful_records.append({"source": source, "query": result.get("query"), **sample})
+            if bool(result.get("topic_validation", {}).get("matched")):
+                for sample in brief.get("record_samples", []):
+                    if sample.get("raw_html_path"):
+                        raw_html_count += 1
+                    if len(useful_records) < 12:
+                        useful_records.append({"source": source, "query": result.get("query"), **sample})
         reused = result.get("existing_evidence_reused")
         if isinstance(reused, dict) and reused.get("matched"):
             for sample in reused.get("records") or []:
@@ -1587,6 +1603,14 @@ def _crawler_result_summary(task_results: list[dict[str, Any]], plan: dict[str, 
         next_actions.append("Some tools returned empty results; CrawlerAgent should reflect on aliases, source choice, and whether browser/manual discovery is needed.")
     if off_topic_tasks:
         next_actions.append("Some results were off-topic; CrawlerAgent should inspect examples and adjust source/query/URL strategy.")
+        review_actions = [
+            str(item.get("duplicate_review", {}).get("next_action") or item.get("topic_validation", {}).get("next_action") or "").strip()
+            for item in off_topic_tasks
+            if isinstance(item, dict)
+        ]
+        review_actions = [item for item in review_actions if item]
+        if review_actions:
+            next_actions.append("CrawlerAgent review requested: " + review_actions[0])
     if uncertain_tasks:
         next_actions.append("Some relevance judgments are uncertain; CrawlerAgent should re-read samples before keeping, expanding, or discarding them.")
     if duplicate_count:
@@ -1778,11 +1802,14 @@ def _crawler_llm_record_relevance(
     config = load_config()
     client, _label = client_for_agent(config, "crawler_agent", temperature=0.0, timeout_seconds=90)
     prompt = (
-        "You are CrawlerAgent judging crawler evidence for a RAG knowledge base.\n"
+        "You are CrawlerAgent auditing crawler evidence for a RAG knowledge base.\n"
+        "Tools only fetched objective page text/metadata. You, CrawlerAgent, must decide whether each record is useful, junk, blocked, or needs retry.\n"
+        "Reject not-found pages, login/captcha/access-denied pages, generic navigation shells, unrelated noise, and pages that only prove a wrong URL exists.\n"
+        "If a record is rejected, state whether Crawler should retry with another URL/source/query, reuse no evidence, or ignore/delete the artifact from this job's accepted outputs.\n"
         "Important: a modpack can include component mods/items/systems. A useful page does NOT need to mention the modpack name if the task query or context indicates it is a component to collect.\n"
         "If the task query is a known or plausible component name such as TACZ, FTB Quests, SlashBlade, a boss name, an item name, or a system name, judge the page by whether it explains that component. Do not require the page to also contain the modpack name.\n"
         "Classify records as useful if they are direct project pages OR plausible component/system/tutorial pages for the target. Reject broad unrelated noise.\n"
-        "Output only compact JSON: {\"matched\": true/false, \"reason\": \"direct|component|noise|uncertain\", \"matched_indexes\": [0], \"notes\": \"...\"}\n"
+        "Output only compact JSON: {\"matched\": true/false, \"reason\": \"direct|component|not_found|login_required|blocked|shell|noise|uncertain\", \"matched_indexes\": [0], \"rejected_indexes\": [1], \"cleanup_action\": \"keep|ignore_for_job|delete_artifact|retry_other_source\", \"next_action\": \"...\", \"notes\": \"...\"}\n"
         f"Target/question: {question}\n"
         f"Task query: {task_query}\n"
         f"Plan topic: {plan.get('topic') or plan.get('target_hint') or ''}\n"
@@ -1812,10 +1839,16 @@ def _crawler_llm_record_relevance(
     matched_indexes = value.get("matched_indexes")
     if not isinstance(matched_indexes, list):
         matched_indexes = []
+    rejected_indexes = value.get("rejected_indexes")
+    if not isinstance(rejected_indexes, list):
+        rejected_indexes = []
     return {
         "matched": bool(value.get("matched")),
         "reason": str(value.get("reason") or "llm_judged"),
         "matched_indexes": [int(item) for item in matched_indexes if str(item).isdigit()][:8],
+        "rejected_indexes": [int(item) for item in rejected_indexes if str(item).isdigit()][:8],
+        "cleanup_action": str(value.get("cleanup_action") or "").strip()[:80],
+        "next_action": str(value.get("next_action") or "").strip()[:300],
         "notes": str(value.get("notes") or "")[:500],
         "judge": "Crawler LLM",
     }
@@ -1828,29 +1861,7 @@ def _crawler_topic_match(export_dir: str, question: str, task_query: str, plan: 
     if not records:
         return {"matched": False, "reason": "no_records", "matched_records": 0, "records": 0}
     terms = _topic_terms_for_validation(question, task_query, plan)
-    if not terms:
-        return {"matched": True, "reason": "no_terms_available", "matched_records": len(records), "records": len(records), "terms": []}
-    matched_records = 0
-    examples: list[dict[str, str]] = []
     task_terms = _task_query_terms_for_validation(task_query)
-    for record in records:
-        raw_text = _record_text_for_validation(record)
-        text = raw_text.lower()
-        hits = [term for term in terms if term.lower() in text]
-        direct_target = any(term in {"落幕曲", "Closing", "Song"} for term in hits) and len(hits) >= 2
-        if direct_target:
-            matched_records += 1
-            if len(examples) < 3:
-                examples.append({"title": str(record.get("title") or ""), "url": str(record.get("url") or ""), "hits": ", ".join(hits[:6])})
-    if matched_records:
-        return {
-            "matched": True,
-            "reason": "topic_match",
-            "matched_records": matched_records,
-            "records": len(records),
-            "terms": terms,
-            "examples": examples,
-        }
     llm_judgement: dict[str, Any] | None = None
     try:
         llm_judgement = _crawler_llm_record_relevance(question, task_query, plan, records, terms)
@@ -1863,6 +1874,13 @@ def _crawler_topic_match(export_dir: str, question: str, task_query: str, plan: 
             if isinstance(index, int) and 0 <= index < len(records):
                 record = records[index]
                 llm_examples.append({"title": str(record.get("title") or ""), "url": str(record.get("url") or ""), "hits": "Crawler LLM component/direct judgement"})
+    rejected_indexes = llm_judgement.get("rejected_indexes") if isinstance(llm_judgement, dict) else []
+    rejected_examples: list[dict[str, str]] = []
+    if isinstance(rejected_indexes, list):
+        for index in rejected_indexes[:3]:
+            if isinstance(index, int) and 0 <= index < len(records):
+                record = records[index]
+                rejected_examples.append({"title": str(record.get("title") or ""), "url": str(record.get("url") or ""), "reason": str(llm_judgement.get("reason") or "")})
     component_candidates: list[dict[str, str]] = []
     if task_terms:
         for record in records:
@@ -1885,13 +1903,16 @@ def _crawler_topic_match(export_dir: str, question: str, task_query: str, plan: 
     return {
         "matched": bool(llm_judgement.get("matched")) if isinstance(llm_judgement, dict) else False,
         "reason": str(llm_judgement.get("reason") or "uncertain") if isinstance(llm_judgement, dict) else "uncertain",
-        "matched_records": matched_records,
+        "matched_records": len(llm_examples),
         "records": len(records),
         "terms": terms,
         "task_terms": task_terms,
         "examples": llm_examples,
         "component_candidates": component_candidates,
-        "note": "Component candidates are observable hints only. Crawler LLM must judge whether they belong to the target collection before ingest.",
+        "rejected_examples": rejected_examples,
+        "cleanup_action": str(llm_judgement.get("cleanup_action") or "") if isinstance(llm_judgement, dict) else "",
+        "next_action": str(llm_judgement.get("next_action") or "") if isinstance(llm_judgement, dict) else "",
+        "note": "Tool output is objective evidence only. Crawler LLM judgement decides whether records are accepted, rejected, retried, or ignored for this job.",
         "llm_judgement": llm_judgement,
     }
 
@@ -2193,6 +2214,7 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
         bad_streak = 0
         replan_count = 0
         needs_ingest = False
+        accepted_export_dirs: list[str] = []
         limits = job_setup.limits(payload=payload, tasks=tasks)
         max_replans = limits["max_replans"]
         max_total_tasks = limits["max_total_tasks"]
@@ -2316,6 +2338,8 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
             ) if result["returncode"] == 0 and records_loaded == 0 and int(result["manifest_stats"].get("skipped") or 0) > 0 else {"matched": False, "records": []}
             if existing_evidence.get("matched"):
                 result["existing_evidence_reused"] = existing_evidence
+            elif existing_evidence.get("reason") or existing_evidence.get("notes") or existing_evidence.get("cleanup_action"):
+                result["existing_evidence_review"] = existing_evidence
             if result["returncode"] == 0 and records_loaded > 0:
                 result["topic_validation"] = _crawler_topic_match(
                     str(result.get("export_dir") or ""),
@@ -2333,6 +2357,8 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
             candidate_count += int(accounting.get("candidate_delta") or 0)
             failure_count += int(accounting.get("failure_delta") or 0)
             needs_ingest = needs_ingest or bool(accounting.get("needs_ingest"))
+            if accounting.get("needs_ingest") and result.get("export_dir"):
+                accepted_export_dirs.append(str(result.get("export_dir") or ""))
             followup_task = accounting.get("followup_task") if isinstance(accounting.get("followup_task"), dict) else None
             if followup_task and _crawler_task_identity(followup_task) not in {_crawler_task_identity(existing) for existing in tasks} and len(tasks) < max_total_tasks:
                 tasks.insert(index, followup_task)
@@ -2450,7 +2476,7 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
             result=final_update["result"],
         )
         if needs_ingest and not job.stop_requested:
-            threading.Thread(target=_run_background_ingest, args=(job.id, config), daemon=True).start()
+            threading.Thread(target=_run_background_ingest, args=(job.id, config, accepted_export_dirs), daemon=True).start()
         append_memory_event("crawler_plan_completed", {"job_id": job.id, "question": question, "success_count": success_count, "candidate_count": candidate_count, "failure_count": failure_count, "summary": collection_summary, "tasks": task_results})
     except Exception as exc:  # noqa: BLE001
         _update_job(job, status="failed", ended_at=time.time(), summary=_tail_text(traceback.format_exc()), error=f"{type(exc).__name__}: {exc}")
