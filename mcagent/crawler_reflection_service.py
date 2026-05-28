@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+from pathlib import Path
 from typing import Any
 
 from .agent_runtime import classify_crawler_tool_result
@@ -91,7 +93,54 @@ class CrawlerReflectionSnapshotService:
             "records_pending_review": bool(result.get("records_pending_review")),
             "timed_out": bool(result.get("timed_out")),
             "artifact_refs": list(result.get("artifact_refs") or [])[:6],
+            "manifest_preview": self._manifest_preview(manifest),
         }
+
+    def _manifest_preview(self, manifest: dict[str, Any]) -> dict[str, Any]:
+        manifest_path = Path(str(manifest.get("manifest_path") or ""))
+        if not manifest_path.is_file():
+            return {}
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return {
+            "query": data.get("query") or data.get("search_query") or "",
+            "records": self._compact_items(data.get("records"), limit=3),
+            "candidates": self._compact_items(data.get("candidates"), limit=5),
+            "search_results": self._compact_items(data.get("search_results"), limit=5),
+            "skipped": self._compact_items(data.get("skipped"), limit=5),
+            "downloads": self._compact_items(data.get("downloads"), limit=3),
+            "errors": self._compact_items(data.get("errors"), limit=3),
+        }
+
+    def _compact_items(self, value: Any, *, limit: int) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        items: list[dict[str, Any]] = []
+        for item in value[:limit]:
+            if isinstance(item, dict):
+                compact: dict[str, Any] = {}
+                for key in (
+                    "title",
+                    "url",
+                    "reason",
+                    "status",
+                    "status_code",
+                    "score",
+                    "path",
+                    "raw_html_path",
+                    "download_url",
+                    "filename",
+                    "error",
+                ):
+                    if item.get(key) not in (None, ""):
+                        compact[key] = item.get(key)
+                if compact:
+                    items.append(compact)
+            elif str(item).strip():
+                items.append({"value": str(item).strip()[:240]})
+        return items
 
     def _pressure(self, *, statuses: dict[str, int], pending_count: int, recent_count: int) -> str:
         if not recent_count:

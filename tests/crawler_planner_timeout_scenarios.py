@@ -140,6 +140,59 @@ def test_llm_plan_gap_collection_is_rebalanced_to_generic_tools() -> None:
     assert_true("helper_query_bound", any(task["query"] == "乌托邦整合包 模组列表" for task in tasks))
 
 
+def test_ungrounded_exact_url_is_discovered_before_fetch() -> None:
+    raw = {
+        "topic": "Utopian Journey",
+        "delivery_target": "MCagent/RAG",
+        "package_type": "modpack",
+        "sources": ["playwright", "modpack_download"],
+        "tasks": [
+            {
+                "source": "playwright",
+                "query": "https://github.com/Utopia-Exploration/Modpack",
+                "reason": "guessed repository URL",
+                "priority": 120,
+            }
+        ],
+    }
+    plan = _sanitize_plan(
+        raw,
+        "collect Utopian Journey modpack complete data for MCagent/RAG",
+        ROOT / "data" / "crawler_exports",
+        max_tasks=6,
+        session_summary={"delivery_target": "MCagent/RAG", "collection_target": "Utopian Journey modpack"},
+    )
+    tasks = plan["tasks"]
+    guessed = [task for task in tasks if task.get("original_unverified_url")]
+    assert_true("downgraded_guess", bool(guessed))
+    assert_equal("source", guessed[0]["source"], "web_discovery")
+    assert_true("keeps_modpack_download", any(task["source"] == "modpack_download" for task in tasks))
+
+
+def test_reflection_downgrades_ungrounded_exact_url() -> None:
+    original_client = crawler_llm_planner._planner_client
+
+    class FakeClient:
+        def chat(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return '{"action":"add_tasks","reason":"try guessed repo","tasks":[{"source":"playwright","query":"https://github.com/Utopia-Exploration/Modpack","reason":"guessed repo","priority":120}]}'
+
+    crawler_llm_planner._planner_client = lambda: (FakeClient(), "fake-reflection")  # type: ignore[assignment]
+    try:
+        decision = reflect_crawler_progress(
+            "collect Utopian Journey modpack complete data",
+            {"topic": "Utopian Journey", "target_hint": "Utopian Journey", "delivery_target": "MCagent/RAG"},
+            task_results=[{"source": "web_discovery", "query": "Utopian Journey", "returncode": 0, "empty_result": True}],
+            pending_tasks=[],
+            session_summary={"delivery_target": "MCagent/RAG", "collection_target": "Utopian Journey modpack"},
+            max_new_tasks=4,
+        )
+    finally:
+        crawler_llm_planner._planner_client = original_client  # type: ignore[assignment]
+    assert_equal("action", decision["action"], "add_tasks")
+    assert_equal("source", decision["tasks"][0]["source"], "web_discovery")
+    assert_true("unverified_saved", decision["tasks"][0].get("original_unverified_url") == "https://github.com/Utopia-Exploration/Modpack")
+
+
 def test_gap_collection_rejects_literal_missing_as_web_topic() -> None:
     raw = {
         "topic": "乌托邦整合包",

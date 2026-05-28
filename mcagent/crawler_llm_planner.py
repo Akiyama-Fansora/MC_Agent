@@ -332,6 +332,43 @@ def _is_url_query(query: str) -> bool:
     return bool(re.search(r"https?://", str(query or ""), flags=re.I))
 
 
+def _task_url_is_grounded(task: dict[str, Any], *, query: str = "") -> bool:
+    """Return whether a direct URL task is based on objective input, not a guessed slug."""
+    url = str(query or task.get("query") or "").strip()
+    if not _is_url_query(url):
+        return True
+    if task.get("from_discovered_candidate") or task.get("source_url") or task.get("candidate_url"):
+        return True
+    if task.get("artifact_ref") or task.get("content_ref"):
+        return True
+    reason = str(task.get("reason") or "")
+    if re.search(r"discovered|candidate|search result|from manifest|source page|user provided|exact url|objective", reason, flags=re.I):
+        return True
+    return False
+
+
+def _downgrade_ungrounded_url_task(task: dict[str, Any], *, target: str) -> dict[str, Any]:
+    """Keep CrawlerAgent's intent but make it discover before fetching a guessed URL."""
+    cloned = dict(task)
+    url = str(cloned.get("query") or "").strip()
+    host_match = re.search(r"https?://(?:www\.)?([^/\s]+)", url, flags=re.I)
+    host = host_match.group(1) if host_match else ""
+    slug = re.sub(r"https?://(?:www\.)?[^/]+/?", "", url, flags=re.I)
+    slug = re.sub(r"[/#?].*$", "", slug)
+    slug = re.sub(r"[-_]+", " ", slug).strip()
+    discovery_terms = [target.strip(), slug, host]
+    query = " ".join(term for term in discovery_terms if term)
+    cloned["source"] = "web_discovery"
+    cloned["query"] = re.sub(r"\s+", " ", query).strip()[:120] or target or url
+    cloned["reason"] = (
+        "CrawlerAgent proposed an exact URL without objective evidence that it was discovered; "
+        "first discover candidate pages, then CrawlerAgent can inspect objective results and choose exact URLs."
+    )
+    cloned["priority"] = min(int(cloned.get("priority") or 80), 92)
+    cloned["original_unverified_url"] = url
+    return cloned
+
+
 def _prefer_general_web_first(context_text: str, delivery_target: str, requested_by: str) -> bool:
     lowered = context_text.lower()
     if any(term in lowered for term in ("mc百科重复", "mcmod duplicate", "重复页", "重复多", "换源", "外部", "非 mc百科", "non-duplicate", "external sources")):
@@ -964,11 +1001,16 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
     sources = [str(source).strip() for source in raw_sources if str(source).strip() in ALLOWED_SOURCES]
     if not sources:
         sources = ["mcmod", "fetch_url", "web_discovery", "playwright", "modpack_download"]
+    context_text = _planner_context_text(question, session_summary)
+    modpack_context = "\n".join([context_text, package_type, topic, target_hint])
+    looks_like_modpack_collection = bool(re.search(r"modpack|整合包|鏁村悎鍖", modpack_context, flags=re.I))
+    if looks_like_modpack_collection and "modpack_download" not in sources:
+        sources.append("modpack_download")
     if "mcmod" in sources:
         for source in ("fetch_url", "web_discovery", "playwright", "modpack_download"):
             if source not in sources:
                 sources.append(source)
-    if _is_gap_analysis_collection_context(_planner_context_text(question, session_summary), str(raw.get("delivery_target") or "")) and "mcagent_context" not in sources:
+    if _is_gap_analysis_collection_context(context_text, str(raw.get("delivery_target") or "")) and "mcagent_context" not in sources:
         sources.insert(0, "mcagent_context")
 
     tasks: list[dict[str, Any]] = []
@@ -985,10 +1027,13 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
             task = _normalize_task(raw_task, str(raw.get("reason") or ""), 80 - index)
             if task:
                 query = str(task.get("query") or "").strip()
+                if _is_url_query(query) and not _task_url_is_grounded(task, query=query):
+                    task = _downgrade_ungrounded_url_task(task, target=target_hint or topic)
+                    query = str(task.get("query") or "").strip()
                 if target_hint and query and not _is_url_query(query) and not _query_mentions_target(query, target_hint):
                     task["query"] = _bind_query_to_target(query, target_hint)
                     query = str(task.get("query") or "").strip()
-                if not _is_url_query(query) and not _valid_coverage_query(query, target_hint or topic, _planner_context_text(question, session_summary)):
+                if not _is_url_query(query) and not _valid_coverage_query(query, target_hint or topic, context_text):
                     continue
                 tasks.append(task)
     if coverage_queries and len(tasks) < max_tasks:
@@ -1050,7 +1095,7 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
     _rebalance_general_web_tasks(
         tasks,
         prefer_general_web=_prefer_general_web_first(
-            _planner_context_text(question, session_summary),
+            context_text,
             delivery_target,
             str((session_summary or {}).get("requested_by") or ""),
         ),
@@ -1132,10 +1177,12 @@ def plan_crawler_tasks_with_llm(question: str, source_dir: Path, *, max_tasks: i
             "Use fetch_url for exact public URL extraction when local HTTP plus readable-text parsing is enough. It does not require hosted extraction APIs. If fetch_url fails because the page needs rendering, then choose Playwright/browser tools.\n"
             "Use save_artifact when the useful content is already in the task context, generated by the agent, or available as an artifact_ref/content_ref from earlier objective tool output. It accepts content or content_ref, format, path/filename, overwrite, and metadata; do not use it as a substitute for web extraction.\n"
             "Research method: avoid broad keyword blasting. First identify the target entity, aliases, language variants, official names, version scope, and likely source ecosystem. Then build a source graph: official/project pages, docs, repositories, package indexes, download/file pages, dependency/relation pages, changelogs/releases, wiki pages, forum posts, video indexes, and community mirrors. Use broad discovery only to find candidate source nodes, then crawl exact URLs or source-specific pages directly.\n"
+            "Do not invent exact URLs, repository names, Modrinth/CurseForge slugs, or organization names. A direct URL task is valid only if the URL came from the user, MCagent context, a previous objective tool result, an artifact_ref/content_ref, or a discovered candidate/search result. If you only infer a likely slug, make a web_discovery or playwright search task for the target plus slug/domain instead of a fetch_url/direct URL task.\n"
             "When a source is empty, duplicate, blocked, or off-topic, change the source class or graph node instead of repeating similar generic searches. Examples of source-class changes: HTTP fetch -> Playwright rendering; public search -> exact project URL; project page -> files/dependencies/changelog page; web page -> repository README/releases; local context -> targeted public collection.\n"
             "For full Minecraft modpack collection, cover: basic info, official/download/community links, mod list, quests/beginner route, key systems, items/recipes/acquisition, bosses, tutorials, known issues.\n"
             "If local archive or manifest exists, use modpack_internal first. It extracts manifest, modlist, FTB Quests, KubeJS, OpenLoader/data, recipes, config, raw text. Then use mcmod/modrinth/public web to fill gaps.\n"
             "If no local archive exists, first discover official/download/project pages. Use modpack_download to look for public .mrpack/.zip archives and save them locally; after a real archive is downloaded, use modpack_internal. Use Modrinth with modpack contents for .mrpack projects; use Playwright/topic_discovery to find public download pages and preserve their HTML. Do not pretend the pack internals are available until an archive/manifest is actually downloaded or provided.\n"
+            "For hard-to-find Minecraft modpacks, include at least one public archive/download route early: modpack_download for the target/aliases, plus web_discovery/playwright for Chinese forum/mirror/download pages. If ordinary pages fail, switch to package archive discovery instead of repeating wiki/mod-list searches.\n"
             "Playwright is a first-class local browser collection tool, not only a last fallback. Use it when API search/extract is empty, quota-limited, blocked, JS-rendered, or when you need to preserve page HTML after normal readers lose tables, tabs, images, or download links.\n"
             "When recent results are empty/off-topic, move Playwright or topic_discovery earlier instead of repeating the same path. Browser-rendered evidence is often better for Chinese modpack pages, tabs, images, and download links.\n"
             "Queries must be short. Do not use the whole user sentence as a query. Component/system queries may omit the parent pack name when context confirms membership; later validation judges relevance.\n"
@@ -1199,6 +1246,7 @@ def _quick_recovery_plan_with_llm(
         "You are CrawlerAgent. The previous long planner prompt failed. Produce a small executable JSON plan only.\n"
         "Do not answer the user. Do not use literal meta queries like 'what is missing'. Convert gaps into positive coverage tasks.\n"
         "Use the crawler research method: identify the entity and aliases, choose authoritative source nodes, prefer exact URLs/source-specific pages, then use targeted searches only for remaining gaps.\n"
+        "Do not invent exact URLs or slugs. If a URL was not supplied by the user or discovered by an objective previous result, search for the target plus domain/slug with web_discovery or playwright first.\n"
         "Allowed sources: mcagent_context, fetch_url, browser_collect, web_discovery, playwright, mcmod, modrinth, modpack_download, modpack_internal, followup, save_artifact, read_local_file, search_local_files.\n"
         "For a request that says Crawler should ask MCagent what is missing and then collect, task 1 must be mcagent_context. Later tasks should collect concrete public evidence.\n"
         "Return JSON with: topic, delivery_target, coverage_goals, tasks. Each task has source, query, reason, priority.\n"
@@ -1268,11 +1316,13 @@ def reflect_crawler_progress(
             "If enough useful records or reusable evidence has been found for the delivery target, choose finish.\n"
             "Do not use the whole user request as a query. Keep queries short and reusable.\n"
             "When collection pressure rises, replan by source graph, not by more generic wording. Identify which graph node is missing: official/project page, docs, repository, package index, download/file page, dependency/relation page, changelog/release page, wiki, forum, video/community index, or local archive. Add tasks for the missing node or switch source class, such as fetch_url -> Playwright, generic search -> exact URL, project page -> dependencies/files/changelog, or web page -> repository README/releases.\n"
+            "Do not invent exact URLs, repository names, Modrinth/CurseForge slugs, or organization names during reflection. You may use direct URL tasks only for URLs visible in objective recent_results manifest_preview/artifact_refs, user input, or MCagent context. Otherwise choose web_discovery/playwright to discover candidate URLs first.\n"
             "For MCagent/RAG gap handoffs, 'missing / 还缺 / 缺口' is not itself a web topic. Derive positive coverage goals from mcagent_gap_summary/gaps and search those. Avoid literal meta queries such as '缺少模组', '还缺哪些', '待添加', or '开发计划' unless the user explicitly asked for future roadmap/community requests.\n"
             "Use mcagent_context if the next best step is for CrawlerAgent to ask MCagent for local evidence/gaps or to validate what Crawler should collect. The tool returns MCagent's reply back to CrawlerAgent.\n"
             "If the task is for MCagent/RAG, prefer evidence that is citeable and chunkable; raw HTML support is valuable for hard pages.\n"
             "Playwright is a first-class browser tool. Prefer it when lightweight HTTP fetch cannot read enough text, when a page needs rendering, or when project tabs/download pages need browser HTML.\n"
             "For full modpack collection without a local archive, use modpack_download to find and save public .mrpack/.zip archives, and use Playwright/topic_discovery to inspect project/download pages and preserve download-link HTML. Use modpack_internal only after a real local archive/manifest is available.\n"
+            "If recent public-page searches are empty/off-topic for a modpack and no accepted evidence exists, escalate to modpack_download and browser-rendered download/forum/mirror discovery before giving up. After a real archive download, choose modpack_internal.\n"
             "If several HTTP/search tasks are empty or off-topic, do not keep cycling similar queries; escalate to browser-rendered collection or finish with a clear blocked/missing-download reason.\n"
             "For structured extraction with requested fields/output directory, choose browser_collect and preserve output_dir/max_items/fields.\n"
             "For an exact public URL, prefer fetch_url before broad search. If fetch_url returns blocked/short/empty output, escalate to Playwright/browser tools.\n"
@@ -1305,6 +1355,9 @@ def reflect_crawler_progress(
             if isinstance(raw_task, dict):
                 task = _normalize_task(raw_task, str(raw.get("reason") or "CrawlerAgent reflection task"), 75)
                 task_query = str(task.get("query") or "") if task else ""
+                if task and _is_url_query(task_query) and not _task_url_is_grounded(task, query=task_query):
+                    task = _downgrade_ungrounded_url_task(task, target=str(plan.get("target_hint") or plan.get("topic") or ""))
+                    task_query = str(task.get("query") or "")
                 if task and (
                     _is_url_query(task_query)
                     or _valid_coverage_query(

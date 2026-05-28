@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import sys
+import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -132,11 +134,52 @@ def test_snapshot_marks_unreviewed_records() -> None:
     assert_equal("observation_status", recent["observation_status"], "records_pending_review")
 
 
+def test_snapshot_surfaces_manifest_candidate_preview() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        manifest_path = Path(tmp) / "manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "query": "Utopian Journey",
+                    "records": [
+                        {
+                            "title": "Page not found · GitHub",
+                            "url": "https://github.com/Utopia-Exploration/Modpack",
+                            "path": str(Path(tmp) / "page.md"),
+                        }
+                    ],
+                    "candidates": [{"title": "BBSMC Utopian Journey", "url": "https://bbsmc.net/modpack/utopia-journey"}],
+                    "skipped": [{"title": "Video tutorial", "url": "https://example.test/video", "reason": "skip_host_or_non_text"}],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        snapshot = CrawlerReflectionSnapshotService().build(
+            plan={"topic": "Utopian Journey"},
+            task_results=[
+                {
+                    "source": "playwright",
+                    "query": "Utopian Journey",
+                    "returncode": 0,
+                    "manifest_stats": {"records": 1, "skipped": 1, "manifest_path": str(manifest_path)},
+                    "records_pending_review": True,
+                }
+            ],
+            pending_tasks=[],
+        )
+    preview = snapshot["recent_results"][0]["manifest_preview"]
+    assert_equal("record_title", preview["records"][0]["title"], "Page not found · GitHub")
+    assert_equal("candidate_url", preview["candidates"][0]["url"], "https://bbsmc.net/modpack/utopia-journey")
+    assert_equal("skipped_reason", preview["skipped"][0]["reason"], "skip_host_or_non_text")
+
+
 if __name__ == "__main__":
     test_snapshot_counts_observations_and_pressure()
     test_snapshot_detects_poor_yield_replan_pressure()
     test_snapshot_surfaces_crawler_review_actions()
     test_snapshot_surfaces_rejected_duplicate_review()
     test_snapshot_marks_unreviewed_records()
+    test_snapshot_surfaces_manifest_candidate_preview()
     print("crawler_reflection_service_scenarios: ok")
 
