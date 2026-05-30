@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -1119,6 +1120,19 @@ def test_duplicate_reuse_requires_crawler_llm_acceptance() -> None:
         assert_equal("records", result["records"], [])
 
 
+def test_modpack_internal_missing_archive_reports_objective_blocker() -> None:
+    command = web_server._round_command("modpack_internal", {"query": "definitely-no-such-pack-archive"})
+    completed = subprocess.run(command, cwd=str(ROOT), text=True, encoding="utf-8", errors="replace", stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    assert_equal("returncode", completed.returncode, 2)
+    data = json.loads(completed.stdout)
+    assert_equal("provider", data["provider"], "modpack_internal")
+    assert_equal("archive_found", data["archive_found"], False)
+    assert_true("failure_reason", "No matching local modpack archive" in data["failure_reason"])
+    stats = web_server._inline_failure_manifest_stats({"returncode": completed.returncode, "output": completed.stdout})
+    assert_equal("stats_errors", stats["errors"], 1)
+    assert_true("stats_next_action", "modpack_download" in stats["next_action"])
+
+
 if __name__ == "__main__":
     test_direct_crawler_no_save_url_uses_temporary_extract_boundary()
     test_grounded_answer_does_not_fallback_to_ollama_after_profile_error()
@@ -1148,4 +1162,5 @@ if __name__ == "__main__":
     test_crawler_topic_match_decision_comes_from_crawler_llm()
     test_crawler_summary_uses_only_llm_matched_record_indexes()
     test_duplicate_reuse_requires_crawler_llm_acceptance()
+    test_modpack_internal_missing_archive_reports_objective_blocker()
     print("web_server_side_effect_guard_scenarios passed")

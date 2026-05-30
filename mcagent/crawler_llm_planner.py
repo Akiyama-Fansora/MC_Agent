@@ -67,6 +67,9 @@ GOAL_QUERY_HINTS = {
 def _collection_target_hint(question: str) -> str:
     text = re.sub(r"\s+", " ", question.strip())
     text = re.sub(r"^(?:用户原始目标|原始请求|用户请求|Task goal|Original user request)\s*[:：]\s*", "", text, flags=re.I)
+    modern_target = _modern_chinese_modpack_target_hint(text)
+    if modern_target:
+        return modern_target
     named_alias = _named_modpack_alias_hint(text)
     if named_alias:
         return named_alias
@@ -136,6 +139,50 @@ def _collection_target_hint(question: str) -> str:
         if target:
             return target
     return ""
+
+
+def _modern_chinese_modpack_target_hint(text: str) -> str:
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not value:
+        return ""
+    slash_patterns = [
+        r"([\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9_（）()·.路之旅探险纪元 -]{1,60}?)\s*(?:/|／)\s*([A-Za-z][A-Za-z0-9_ ()'.·-]{2,60})\s*(?:整合包|modpack)",
+        r"([\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9_（）()·.路之旅探险纪元 -]{1,60}?)\s+([A-Z][A-Za-z0-9_ ()'.·-]{2,60})\s*(?:整合包|modpack)",
+    ]
+    for pattern in slash_patterns:
+        match = re.search(pattern, value, flags=re.I)
+        if not match:
+            continue
+        cn = _strip_modern_target_prefix(match.group(1))
+        en = _strip_target_suffix(match.group(2))
+        target = _clean_target_hint(f"{cn} / {en}", max_len=90)
+        if target:
+            return target
+    single_patterns = [
+        r"(?:获取|采集|收集|爬取|补齐|补充|整理|查找|搜索|告诉\s*CrawlerAgent\s*获取|让\s*CrawlerAgent\s*获取)\s*([\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9_（）()·.路之旅探险纪元 -]{1,60}?)\s*(?:整合包|modpack)",
+        r"(?:关于|针对|目标(?:是|为)?|主题(?:是|为)?)\s*([\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9_（）()·.路之旅探险纪元 -]{1,60}?)\s*(?:整合包|modpack)",
+        r"([\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9_（）()·.路之旅探险纪元 -]{1,60}?)\s*(?:整合包|modpack)(?:的|完整|公开|资料|数据|信息|版本|下载|模组|玩法|攻略)",
+    ]
+    for pattern in single_patterns:
+        match = re.search(pattern, value, flags=re.I)
+        if not match:
+            continue
+        target = _strip_modern_target_prefix(match.group(1))
+        target = _clean_target_hint(target, max_len=80)
+        if target:
+            return target
+    return ""
+
+
+def _strip_modern_target_prefix(value: str) -> str:
+    target = re.sub(r"\s+", " ", str(value or "")).strip(" ，,。；;：:")
+    target = re.sub(
+        r"^(?:请你|请|麻烦|帮我|告诉|叫|让|派|通知|CrawlerAgent|Crawler|MCagent|MCAgent|获取|采集|收集|爬取|补齐|补充|整理|查找|搜索|关于|针对|这个|那个|完整|公开|资料|数据|信息)+\s*",
+        "",
+        target,
+        flags=re.I,
+    )
+    return target.strip(" ，,。；;：:")
 
 
 def _named_modpack_alias_hint(text: str) -> str:
@@ -584,6 +631,28 @@ def _planner_context_text(question: str, session_summary: dict[str, Any] | None 
     return "\n".join(parts)
 
 
+def _context_has_archive_input(text: str) -> bool:
+    value = str(text or "")
+    lowered = value.lower()
+    if re.search(r"[a-zA-Z]:\\[^\r\n]+?\.(?:mrpack|zip)\b", value, flags=re.I):
+        return True
+    if re.search(r"https?://\S+\.(?:mrpack|zip)\b", value, flags=re.I):
+        return True
+    return any(
+        token in lowered
+        for token in (
+            ".mrpack",
+            ".zip",
+            "archive_path",
+            "pack_archive",
+            "downloaded archive",
+            "local archive",
+            "downloaded .mrpack",
+            "downloaded .zip",
+        )
+    )
+
+
 def _strip_delivery_recipient(text: str) -> str:
     value = str(text).strip()
     value = re.sub(
@@ -774,6 +843,8 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
         sources.insert(0, "topic_discovery")
     if any(term.lower() in _planner_context_text(question, session_summary).lower() for term in ("本地安装包", "本地包体", "已下载", "内部文件", "kubejs", "openloader", "modlist", "manifest", "整合包完整")):
         sources.insert(0, "modpack_internal")
+    if not _context_has_archive_input(context_text):
+        sources = [source for source in sources if source != "modpack_internal"]
     tasks: list[dict[str, Any]] = []
     for source in sources:
         if source in {"mcagent_context", "modrinth", "followup", "modpack_internal", "modpack_download"}:

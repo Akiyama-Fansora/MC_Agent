@@ -78,6 +78,10 @@ class CrawlerReflectionSnapshotService:
             "records": manifest.get("records"),
             "skipped": manifest.get("skipped"),
             "errors": manifest.get("errors"),
+            "downloads": manifest.get("downloads"),
+            "candidates": manifest.get("candidates"),
+            "failure_reason": result.get("failure_reason") or manifest.get("failure_reason"),
+            "next_action": result.get("next_action") or manifest.get("next_action"),
             "matched": validation.get("matched"),
             "validation_reason": validation.get("reason"),
             "crawler_review_action": result.get("crawler_review_action") or validation.get("cleanup_action"),
@@ -93,8 +97,16 @@ class CrawlerReflectionSnapshotService:
             "records_pending_review": bool(result.get("records_pending_review")),
             "timed_out": bool(result.get("timed_out")),
             "artifact_refs": list(result.get("artifact_refs") or [])[:6],
+            "output_tail": self._tail_text(str(result.get("output") or ""), limit=500),
             "manifest_preview": self._manifest_preview(manifest),
         }
+
+    @staticmethod
+    def _tail_text(value: str, *, limit: int) -> str:
+        text = value.strip()
+        if len(text) <= limit:
+            return text
+        return text[-limit:]
 
     def _manifest_preview(self, manifest: dict[str, Any]) -> dict[str, Any]:
         manifest_path = Path(str(manifest.get("manifest_path") or ""))

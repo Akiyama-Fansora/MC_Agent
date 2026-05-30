@@ -1036,13 +1036,23 @@ def _round_command(source: str, payload: dict[str, Any]) -> list[str]:
             str(int(payload.get("search_limit") or payload.get("max_urls") or 8)),
         ]
     if source == "modpack_internal":
-        archive = str(payload.get("zip") or _modpack_archive_for_query(query) or "").strip()
+        archive = str(
+            payload.get("zip")
+            or payload.get("archive")
+            or payload.get("archive_path")
+            or payload.get("path")
+            or _modpack_archive_for_query(query)
+            or ""
+        ).strip()
         if not archive:
             message = {
+                "provider": "modpack_internal",
                 "archive_found": False,
+                "failure_reason": "No matching local modpack archive was found for this query, and no zip/archive_path/path was provided.",
+                "next_action": "CrawlerAgent should decide whether to run modpack_download, inspect project/download pages, use a discovered direct archive URL, or report that no public archive is accessible.",
                 "message": "No matching local modpack archive was found. CrawlerAgent should decide whether to search project pages, Modrinth/CurseForge, public download sources, or ask for an archive.",
             }
-            return [sys.executable, "-c", "import json; print(json.dumps(" + repr(message) + ", ensure_ascii=False, indent=2))"]
+            return [sys.executable, "-c", "import json, sys; print(json.dumps(" + repr(message) + ", ensure_ascii=False, indent=2)); sys.exit(2)"]
         command = [
             sys.executable,
             str(PROJECT_ROOT / "scripts" / "extract_modpack_internals.py"),
@@ -1171,6 +1181,33 @@ def _crawler_manifest_stats(export_dir: str) -> dict[str, Any]:
         "status": str(data.get("status") or ""),
         "note": str(data.get("note") or ""),
         "failure_reason": str(data.get("failure_reason") or ""),
+        "next_action": str(data.get("next_action") or ""),
+    }
+
+
+def _inline_failure_manifest_stats(result: dict[str, Any]) -> dict[str, Any]:
+    output = str(result.get("output") or "")
+    data: dict[str, Any] = {}
+    match = re.search(r"\{.*\}", output, flags=re.S)
+    if match:
+        try:
+            parsed = json.loads(match.group(0))
+            if isinstance(parsed, dict):
+                data = parsed
+        except json.JSONDecodeError:
+            data = {}
+    if not data:
+        return {"records": 0, "skipped": 0, "errors": 0}
+    return {
+        "manifest_path": "",
+        "records": 0,
+        "skipped": 1 if data.get("archive_found") is False else 0,
+        "errors": 1 if int(result.get("returncode") or 0) != 0 else 0,
+        "downloads": 0,
+        "candidates": 0,
+        "status": str(data.get("status") or ""),
+        "note": str(data.get("message") or ""),
+        "failure_reason": str(data.get("failure_reason") or data.get("message") or ""),
         "next_action": str(data.get("next_action") or ""),
     }
 
@@ -2230,6 +2267,7 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
     artifact_refs = ArtifactReferenceService()
     task_preparation = CrawlerTaskPreparationService()
     result_accounting = CrawlerResultAccountingService()
+    task_materializer = CrawlerTaskMaterializationService()
     loop_control = CrawlerLoopControlService()
     topic_discovery_review = CrawlerTopicDiscoveryReviewService()
     job_finalization = CrawlerJobFinalizationService()
@@ -2293,6 +2331,22 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
                 action = str(reflection.get("action") or "execute_pending")
                 new_tasks = [task for task in list(reflection.get("tasks") or []) if isinstance(task, dict)]
                 new_tasks = _drop_duplicate_mcagent_context_tasks(new_tasks, task_results)
+                new_tasks, blocked_tasks = task_materializer.filter_executable_reflection_tasks(new_tasks)
+                if blocked_tasks:
+                    plan.setdefault("agent_reflections", []).append(
+                        {
+                            "at_index": index,
+                            "action": "blocked_unexecutable_tasks",
+                            "reason": "CrawlerAgent proposed tool tasks missing required local inputs; executor returned the objective contract issue for CrawlerAgent reflection.",
+                            "planner": "executor objective contract",
+                            "tasks": blocked_tasks,
+                            "contract": {
+                                "valid": False,
+                                "issues": ["modpack_internal_requires_archive_path"],
+                                "requires_llm_task_materialization": True,
+                            },
+                        }
+                    )
                 contract = reflection.get("contract") if isinstance(reflection.get("contract"), dict) else {}
                 needs_materialization = bool(contract.get("requires_llm_task_materialization"))
                 if action in {"add_tasks", "replan"} and needs_materialization and _has_successful_mcagent_context(task_results) and pending_tasks:
@@ -2381,6 +2435,8 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
             result["query"] = str(task_payload.get("query") or "")
             result["reason"] = str(task.get("reason") or "")
             result["manifest_stats"] = _crawler_manifest_stats(str(result.get("export_dir") or ""))
+            if not result.get("export_dir") and int(result.get("returncode") or 0) != 0:
+                result["manifest_stats"] = _inline_failure_manifest_stats(result)
             new_artifact_refs = artifact_refs.collect_from_result(result=result, result_index=len(task_results) + 1)
             if new_artifact_refs:
                 compact_refs = artifact_refs.compact_refs(new_artifact_refs, limit=12)

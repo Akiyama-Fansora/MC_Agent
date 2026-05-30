@@ -70,6 +70,8 @@ class CrawlerTaskMaterializationService:
             seen.add(identity)
             cloned = dict(task)
             cloned["source"] = source_alias_fn(str(cloned.get("source") or "web_discovery"))
+            if self._modpack_internal_without_input(cloned):
+                continue
             cloned["reason"] = f"mid-job replan after empty/off-topic results; {cloned.get('reason') or ''}".strip()
             new_tasks.append(cloned)
             if len(new_tasks) >= max_new_tasks:
@@ -117,6 +119,8 @@ class CrawlerTaskMaterializationService:
             cloned = dict(task)
             cloned["source"] = source
             cloned["query"] = query
+            if self._modpack_internal_without_input(cloned):
+                continue
             cloned["reason"] = f"Crawler LLM reviewed topic discovery candidates; {cloned.get('reason') or ''}".strip()
             identity = identity_fn(cloned)
             if identity in seen:
@@ -126,6 +130,34 @@ class CrawlerTaskMaterializationService:
             if len(new_tasks) >= max_new_tasks:
                 break
         return new_tasks
+
+    def filter_executable_reflection_tasks(self, tasks: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Drop tasks that are objectively missing required tool inputs.
+
+        This does not judge source relevance or usefulness. It only prevents the
+        executor from running a tool call whose required local input is absent.
+        """
+
+        executable: list[dict[str, Any]] = []
+        blocked: list[dict[str, Any]] = []
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            if self._modpack_internal_without_input(task):
+                blocked.append(task)
+                continue
+            executable.append(task)
+        return executable, blocked
+
+    @staticmethod
+    def _modpack_internal_without_input(task: dict[str, Any]) -> bool:
+        source = str(task.get("source") or "").strip().lower()
+        if source != "modpack_internal":
+            return False
+        for key in ("zip", "archive", "archive_path", "manifest_path", "path"):
+            if str(task.get(key) or "").strip():
+                return False
+        return True
 
     def fallback_topic_tasks(
         self,

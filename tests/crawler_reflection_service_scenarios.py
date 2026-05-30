@@ -174,6 +174,35 @@ def test_snapshot_surfaces_manifest_candidate_preview() -> None:
     assert_equal("skipped_reason", preview["skipped"][0]["reason"], "skip_host_or_non_text")
 
 
+def test_snapshot_surfaces_download_failure_context_for_llm_review() -> None:
+    snapshot = CrawlerReflectionSnapshotService().build(
+        plan={"topic": "Utopian Journey"},
+        task_results=[
+            {
+                "source": "modpack_download",
+                "query": "Utopian Journey",
+                "returncode": 0,
+                "output": "Candidates: 0\nDownloads: 0\nRecords: 1",
+                "manifest_stats": {
+                    "records": 1,
+                    "downloads": 0,
+                    "candidates": 0,
+                    "failure_reason": "No public .mrpack/.zip archive was found.",
+                    "next_action": "Use browser/project pages or ask for an archive.",
+                },
+                "archive_not_found": True,
+            }
+        ],
+        pending_tasks=[{"source": "web_discovery", "query": "Utopian Journey download"}],
+    )
+    recent = snapshot["recent_results"][0]
+    assert_equal("downloads", recent["downloads"], 0)
+    assert_equal("candidates", recent["candidates"], 0)
+    assert_equal("failure_reason", recent["failure_reason"], "No public .mrpack/.zip archive was found.")
+    assert_equal("next_action", recent["next_action"], "Use browser/project pages or ask for an archive.")
+    assert_true("output_tail", "Downloads: 0" in recent["output_tail"])
+
+
 if __name__ == "__main__":
     test_snapshot_counts_observations_and_pressure()
     test_snapshot_detects_poor_yield_replan_pressure()
@@ -181,5 +210,6 @@ if __name__ == "__main__":
     test_snapshot_surfaces_rejected_duplicate_review()
     test_snapshot_marks_unreviewed_records()
     test_snapshot_surfaces_manifest_candidate_preview()
+    test_snapshot_surfaces_download_failure_context_for_llm_review()
     print("crawler_reflection_service_scenarios: ok")
 

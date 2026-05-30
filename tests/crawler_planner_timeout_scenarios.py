@@ -48,7 +48,7 @@ def test_direct_crawler_delegate_phrase_is_not_target() -> None:
         "task_goal": "针对乌托邦探险之旅3.0整合包采集缺失资料并交付给 MCagent/RAG。",
         "mcagent_gap_summary": "本地资料确认主题是乌托邦探险之旅3.0整合包，缺少模组清单、任务线、Boss 攻略和新手路线。",
     }
-    assert_equal("specific_target", _session_target_hint(summary), "乌托邦探险之旅3.0整合包")
+    assert_equal("specific_target", _session_target_hint(summary), "乌托邦探险之旅3.0")
     plan = plan_crawler_tasks_rule_fallback(
         "叫Crawler帮你采集乌托邦缺失的资料",
         ROOT / "data" / "crawler_exports",
@@ -59,7 +59,7 @@ def test_direct_crawler_delegate_phrase_is_not_target() -> None:
     queries = [task["query"] for task in plan["tasks"]]
     assert_true("no_delegate_phrase_query", all("叫Crawler" not in query and "缺失" not in query for query in queries))
     assert_true("no_stale_specific_pack", all("落幕曲" not in query for query in queries))
-    assert_true("specific_alias_query", any("乌托邦探险之旅3.0整合包" in query or "乌托邦探险之旅" in query for query in queries))
+    assert_true("specific_alias_query", any("乌托邦探险之旅3.0" in query or "乌托邦探险之旅" in query for query in queries))
 
 
 def test_rule_fallback_extracts_domain_target_from_agent_handoff() -> None:
@@ -101,6 +101,31 @@ def test_rule_fallback_keeps_quoted_slash_alias_modpack_target() -> None:
     assert_true("no_generic_complete_public_pack", all("完整公开整合包" not in query for query in queries))
     assert_true("target_bound_queries", any("乌托邦探险之旅" in query and "模组列表" in query for query in queries))
     assert_true("english_alias_queries", any("Utopian Journey" in query for query in queries))
+
+
+def test_rule_fallback_extracts_modern_utf8_chinese_modpack_handoff() -> None:
+    question = (
+        "请你告诉 CrawlerAgent 获取乌托邦探险之旅 Utopian Journey 整合包的完整公开资料，交给 MCagent/RAG 使用。"
+        "重点包括版本、加载器、简介、下载/项目页、模组列表、任务线、玩法路线、新手到毕业攻略；"
+        "让 CrawlerAgent 自己判断来源是否有效、是否需要忽略/删除/重试。"
+    )
+    plan = plan_crawler_tasks_rule_fallback(
+        question,
+        ROOT / "data" / "crawler_exports",
+        max_tasks=10,
+        planner_error="unit timeout",
+        session_summary={
+            "delivery_target": "MCagent/RAG",
+            "requested_by": "user_via_mcagent",
+            "collection_target": question,
+            "task_goal": question + " 整合包完整公开资料；需要补齐：版本、下载/包体线索、玩法路线",
+        },
+    )
+    assert_equal("topic", plan["topic"], "乌托邦探险之旅 / Utopian Journey")
+    queries = [task["query"] for task in plan["tasks"]]
+    assert_true("no_generic_complete_public_pack", all("完整公开整合包" not in query for query in queries))
+    assert_true("target_cn_queries", any("乌托邦探险之旅" in query for query in queries))
+    assert_true("target_en_queries", any("Utopian Journey" in query for query in queries))
 
 
 def test_mcagent_delegation_extracts_modpack_entity_from_full_instruction() -> None:
@@ -528,6 +553,7 @@ if __name__ == "__main__":
     test_direct_crawler_delegate_phrase_is_not_target()
     test_rule_fallback_extracts_domain_target_from_agent_handoff()
     test_rule_fallback_keeps_quoted_slash_alias_modpack_target()
+    test_rule_fallback_extracts_modern_utf8_chinese_modpack_handoff()
     test_mcagent_delegation_extracts_modpack_entity_from_full_instruction()
     test_utf8_mcagent_delegation_extracts_clean_named_alias_target()
     test_session_target_rejects_generic_relation_phrase()

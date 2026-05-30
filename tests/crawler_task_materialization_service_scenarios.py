@@ -61,6 +61,38 @@ def test_materialize_replan_tasks_normalizes_and_deduplicates() -> None:
     assert "mid-job replan" in tasks[0]["reason"]
 
 
+def test_materialize_replan_tasks_blocks_modpack_internal_without_archive_input() -> None:
+    service = CrawlerTaskMaterializationService()
+    tasks = service.materialize_replan_tasks(
+        new_plan={
+            "tasks": [
+                {"source": "modpack_internal", "query": "Utopian Journey", "reason": "parse pack internals"},
+                {"source": "modpack_download", "query": "Utopian Journey", "reason": "find public archive"},
+            ]
+        },
+        existing_tasks=[],
+        identity_fn=identity,
+        source_alias_fn=source_alias,
+        max_new_tasks=3,
+    )
+    assert_equal("count", len(tasks), 1)
+    assert_equal("source", tasks[0]["source"], "modpack_download")
+
+
+def test_reflection_task_filter_allows_modpack_internal_with_archive_path() -> None:
+    service = CrawlerTaskMaterializationService()
+    executable, blocked = service.filter_executable_reflection_tasks(
+        [
+            {"source": "modpack_internal", "query": "Utopian Journey"},
+            {"source": "modpack_internal", "query": "Utopian Journey", "archive_path": "D:\\packs\\utopia.mrpack"},
+            {"source": "web_discovery", "query": "Utopian Journey"},
+        ]
+    )
+    assert_equal("blocked_count", len(blocked), 1)
+    assert_equal("executable_count", len(executable), 2)
+    assert_equal("archive_task_source", executable[0]["source"], "modpack_internal")
+
+
 def test_record_replan_appends_observable_history() -> None:
     service = CrawlerTaskMaterializationService()
     plan: dict[str, Any] = {}
@@ -108,6 +140,8 @@ def test_fallback_topic_tasks_switches_sources_after_first_ten() -> None:
 if __name__ == "__main__":
     test_replan_session_summary_keeps_goal_and_existing_tasks()
     test_materialize_replan_tasks_normalizes_and_deduplicates()
+    test_materialize_replan_tasks_blocks_modpack_internal_without_archive_input()
+    test_reflection_task_filter_allows_modpack_internal_with_archive_path()
     test_record_replan_appends_observable_history()
     test_topic_review_materialization_filters_discovery_and_duplicates()
     test_fallback_topic_tasks_switches_sources_after_first_ten()
