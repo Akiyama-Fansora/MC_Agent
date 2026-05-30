@@ -103,6 +103,40 @@ def test_rule_fallback_keeps_quoted_slash_alias_modpack_target() -> None:
     assert_true("english_alias_queries", any("Utopian Journey" in query for query in queries))
 
 
+def test_mcagent_delegation_extracts_modpack_entity_from_full_instruction() -> None:
+    question = (
+        "请先检查本地资料里乌托邦探险之旅 / Utopian Journey 整合包还缺哪些内容，然后把缺失的公开资料采集任务转交给 CrawlerAgent。"
+        "目标是补齐整合包完整信息：版本、下载/包体线索、manifest/配置、完整模组列表、玩法路线、新手到毕业路线、更新日志，采集结果入库给 MCagent/RAG 使用。"
+    )
+    raw = {
+        "topic": question,
+        "package_type": "modpack",
+        "delivery_target": "MCagent/RAG",
+        "sources": ["mcagent_context", "modrinth", "modpack_download", "mcmod", "web_discovery"],
+        "tasks": [
+            {"source": "mcagent_context", "query": question, "reason": "check local gaps", "priority": 150},
+            {"source": "modpack_download", "query": question, "reason": "find archive", "priority": 140},
+            {"source": "modrinth", "query": "Utopian Journey", "reason": "project metadata", "priority": 130},
+        ],
+    }
+    plan = _sanitize_plan(
+        raw,
+        question,
+        ROOT / "data" / "crawler_exports",
+        max_tasks=8,
+        session_summary={
+            "delivery_target": "MCagent/RAG",
+            "requested_by": "user_via_mcagent",
+            "collection_target": question,
+            "task_goal": question,
+        },
+    )
+    assert_equal("topic", plan["topic"], "乌托邦探险之旅 / Utopian Journey")
+    queries = [task["query"] for task in plan["tasks"]]
+    assert_true("no_full_instruction_query", all("先检查本地资料" not in query and "转交给 CrawlerAgent" not in query for query in queries))
+    assert_true("keeps_entity_query", any(query == "乌托邦探险之旅 / Utopian Journey" or query == "Utopian Journey" for query in queries))
+
+
 def test_session_target_rejects_generic_relation_phrase() -> None:
     summary = {
         "collection_target": "的相关整合包",
@@ -364,6 +398,31 @@ def test_fallback_plan_confirmation_failure_stops_before_tools() -> None:
     assert_true("executor_boundary_issue", "stopped_before_executor_tool_choice" in decision["contract"]["issues"])
 
 
+def test_fallback_plan_confirmation_empty_json_reports_real_failure() -> None:
+    original_client = crawler_llm_planner._planner_client
+
+    class EmptyClient:
+        def chat(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return ""
+
+    crawler_llm_planner._planner_client = lambda: (EmptyClient(), "fake-confirm")  # type: ignore[assignment]
+    try:
+        decision = reflect_crawler_progress(
+            "collect Utopian Journey modpack complete data",
+            {"topic": "Utopian Journey", "target_hint": "Utopian Journey", "delivery_target": "MCagent/RAG", "strategy": "target_fallback_after_llm_planner_error"},
+            task_results=[],
+            pending_tasks=[{"source": "modpack_download", "query": "Utopian Journey", "reason": "find public archive", "priority": 130}],
+            session_summary={"delivery_target": "MCagent/RAG", "collection_target": "Utopian Journey modpack"},
+            max_new_tasks=4,
+        )
+    finally:
+        crawler_llm_planner._planner_client = original_client  # type: ignore[assignment]
+    assert_equal("action", decision["action"], "finish")
+    assert_true("confirmation_issue", "fallback_confirmation_llm_error" in decision["contract"]["issues"])
+    assert_true("real_error_visible", "fallback confirmation returned empty JSON" in decision["reason"])
+    assert_true("no_broken_output_leak", "No broken output provided" not in decision["done_summary"])
+
+
 def test_structured_xlsx_request_uses_browser_collect() -> None:
     plan = plan_crawler_tasks_rule_fallback(
         "从公开商品网站采集 20 个商品名称、价格、链接，保存为 xlsx 到 C:\\Temp\\crawler-products",
@@ -423,6 +482,7 @@ if __name__ == "__main__":
     test_reflection_llm_failure_stops_before_executor_tool_choice()
     test_fallback_plan_confirmation_lets_crawler_pick_existing_task()
     test_fallback_plan_confirmation_failure_stops_before_tools()
+    test_fallback_plan_confirmation_empty_json_reports_real_failure()
     test_structured_xlsx_request_uses_browser_collect()
     test_job_planner_timeout_returns_executable_fallback()
     print("crawler_planner_timeout_scenarios passed")

@@ -67,6 +67,9 @@ GOAL_QUERY_HINTS = {
 def _collection_target_hint(question: str) -> str:
     text = re.sub(r"\s+", " ", question.strip())
     text = re.sub(r"^(?:用户原始目标|原始请求|用户请求|Task goal|Original user request)\s*[:：]\s*", "", text, flags=re.I)
+    embedded_target = _embedded_modpack_target_hint(text)
+    if embedded_target:
+        return embedded_target
     quoted_patterns = [
         r"(?:整合包|modpack)[「《\"'“]([^」》\"'”]{2,60})[」》\"'”]",
         r"[「《\"'“]([^」》\"'”]{2,60})[」》\"'”](?:的)?(?:完整公开数据|完整公开资料|完整数据|完整资料|资料|数据|内容|知识库|整合包|modpack)",
@@ -127,6 +130,29 @@ def _collection_target_hint(question: str) -> str:
         target = re.split(r"[,，。；;]|保存到|让\s*MCagent|给\s*MCagent|供\s*MCagent|用于\s*RAG|使\s*RAG", target, maxsplit=1)[0]
         target = re.sub(r"^(?:(?:一下|这个|那个|关于|有关|请|帮我|你去|去|把|将|对|并|重新|开始|复跑|检查|补齐|补充|采集|收集|获取|整理)\s*)+", "", target.strip())
         target = _clean_target_hint(target)
+        if target:
+            return target
+    return ""
+
+
+def _embedded_modpack_target_hint(text: str) -> str:
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not value:
+        return ""
+    patterns = [
+        r"(?:本地资料(?:里|中)?|本地上下文|MCagent/RAG|MCagent).*?([\u4e00-\u9fffA-Za-z0-9_ （）()+.·-]{2,60}\s*(?:/|／)\s*[A-Za-z][A-Za-z0-9_ （）()+.·' -]{2,60})\s*(?:整合包|modpack)",
+        r"(?:本地资料(?:里|中)?|本地上下文|MCagent/RAG|MCagent).*?([\u4e00-\u9fffA-Za-z0-9_ （）()+.·-]{2,60}?)(整合包|modpack)",
+        r"(?:目标是|补齐|采集|收集|获取).*?([\u4e00-\u9fffA-Za-z0-9_ （）()+.·-]{2,60}\s*(?:/|／)\s*[A-Za-z][A-Za-z0-9_ （）()+.·' -]{2,60})\s*(?:整合包|modpack)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, value, flags=re.I)
+        if not match:
+            continue
+        target = re.sub(r"^(?:问下|问问|检查|先检查|然后|把|将|缺失的|公开|资料|里|中)\s*", "", match.group(1).strip())
+        suffix = match.group(2) if len(match.groups()) >= 2 else ""
+        if suffix and suffix.lower() in {"整合包", "modpack"} and not re.search(r"(整合包|modpack)$", target, flags=re.I):
+            target = f"{target}{suffix}"
+        target = _clean_target_hint(target, max_len=90)
         if target:
             return target
     return ""
@@ -201,6 +227,31 @@ def _clean_target_hint(value: Any, *, max_len: int = 90) -> str:
     if not re.search(r"[\u4e00-\u9fffA-Za-z0-9]", target):
         return ""
     return target
+
+
+def _looks_like_instruction_query(query: str, target_hint: str = "") -> bool:
+    value = re.sub(r"\s+", " ", str(query or "")).strip()
+    if not value:
+        return False
+    if len(value) > 120 and not _is_url_query(value):
+        return True
+    if re.search(r"(先检查|然后|转交|交给|入库|给\s*MCagent|给\s*RAG|CrawlerAgent|MCagent|完整信息|玩法路线|新手到毕业)", value, flags=re.I):
+        if target_hint and _query_mentions_target(value, target_hint):
+            return True
+    return False
+
+
+def _clean_task_query(query: str, *, target_hint: str = "", topic: str = "") -> str:
+    value = re.sub(r"\s+", " ", str(query or "").strip())
+    if not value or _is_url_query(value):
+        return value
+    target = target_hint or topic
+    if _looks_like_instruction_query(value, target):
+        extracted = _collection_target_hint(value) or target
+        if extracted:
+            return extracted
+        return ""
+    return value
 
 
 def _target_specificity_score(value: str) -> tuple[int, int]:
@@ -806,6 +857,8 @@ def _json_from_text(text: str) -> dict[str, Any]:
 
 
 def _repair_planner_json(client: OpenAICompatibleClient, text: str, *, label: str, schema: dict[str, Any]) -> dict[str, Any]:
+    if not str(text or "").strip():
+        raise ValueError("planner output was empty; cannot repair JSON")
     prompt = (
         "The previous CrawlerAgent planner output was not valid JSON. "
         "Repair it into one complete valid JSON object that matches the schema. "
@@ -1031,10 +1084,11 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
         for index, raw_task in enumerate(raw_tasks):
             if not isinstance(raw_task, dict):
                 continue
+            raw_task = dict(raw_task)
+            raw_task["query"] = _clean_task_query(str(raw_task.get("query") or ""), target_hint=target_hint, topic=topic)
             if target_hint:
                 raw_query = str(raw_task.get("query") or "").strip()
                 if raw_query and not _is_url_query(raw_query) and not _query_mentions_target(raw_query, target_hint):
-                    raw_task = dict(raw_task)
                     raw_task["query"] = _bind_query_to_target(raw_query, target_hint)
             task = _normalize_task(raw_task, str(raw.get("reason") or ""), 80 - index)
             if task:
@@ -1461,6 +1515,7 @@ def _confirm_fallback_plan_first_step(
             "You are CrawlerAgent. A rule fallback produced candidate crawler tasks because the long planner timed out. "
             "The executor is not allowed to choose a tool for you. Choose exactly one existing pending task to execute, or finish/stop if none should run.\n"
             "Do not add new tasks in this response. Do not answer the user. Output valid JSON only.\n"
+            "Use this exact JSON shape: {\"action\":\"execute_pending\",\"selected_index\":0,\"reason\":\"short reason\",\"done_summary\":\"\"}\n"
             "Prefer objective public collection steps. For Minecraft modpacks, do not choose modpack_internal unless a real local archive/path/manifest is visible in the plan or context; choose modpack_download/web_discovery/playwright first when no archive exists.\n"
             "Do not use MCagent/RAG/ingest or the full user request as a search query. Choose the best pending index by source/query quality.\n"
             f"question: {question}\n"
@@ -1481,6 +1536,8 @@ def _confirm_fallback_plan_first_step(
         try:
             raw = _json_from_text(raw_text)
         except Exception:
+            if not str(raw_text or "").strip():
+                raise ValueError("fallback confirmation returned empty JSON")
             raw = _repair_planner_json(client, raw_text, label=label, schema=schema)
         action = str(raw.get("action") or "").strip().lower()
         if action not in {"execute_pending", "finish"}:
@@ -1488,15 +1545,13 @@ def _confirm_fallback_plan_first_step(
         raw["tasks"] = []
         return CrawlerReflectionDecisionService().normalize(raw, pending_count=pending_count, normalized_tasks=[], planner=f"{label} fallback-confirmation")
     except Exception as exc:  # noqa: BLE001
+        reason = f"CrawlerAgent fallback-plan confirmation failed, so the executor must not choose a crawler tool on its behalf: {type(exc).__name__}: {exc}"
         return {
             "action": "finish",
             "selected_index": 0,
-            "reason": f"CrawlerAgent fallback-plan confirmation failed, so the executor must not choose a crawler tool on its behalf: {type(exc).__name__}: {exc}",
+            "reason": reason,
             "tasks": [],
-            "done_summary": (
-                "CrawlerAgent could not confirm the fallback plan because its LLM failed. "
-                "No tools were executed automatically; retry after the model/quota issue is resolved."
-            ),
+            "done_summary": reason,
             "planner": "fallback_confirmation_after_llm_error",
             "contract": {
                 "valid": False,
