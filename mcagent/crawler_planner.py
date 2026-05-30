@@ -127,7 +127,11 @@ TOOLSETS: dict[str, Toolset] = {
     "modpack_download": Toolset(
         id="modpack_download",
         label="Modpack Archive Discovery/Download",
-        purpose="发现并下载公开 .mrpack/.zip 整合包包体，保存到本地 manual_research，供整合包内部解析工具继续抽取 manifest、modlist、任务、脚本和配方；不绕过登录、付费、网盘或验证码。",
+        purpose=(
+            "发现并下载公开 .mrpack/.zip 整合包包体，保存到本地 manual_research，供整合包内部解析工具继续抽取 manifest、modlist、任务、脚本和配方。"
+            "CrawlerAgent 应按稳定路线寻找：Modrinth project_type:modpack/version files.url、CurseForge 公开/API 文件页可见直链、GitHub Releases assets、packwiz pack.toml/index.toml 仓库、论坛/社区直链；"
+            "工具只报告候选、HTTP/下载事实和登录/验证码/网盘等阻塞，是否采信由 CrawlerAgent 判断。"
+        ),
         default_limit=8,
         timeout_seconds=1200,
     ),

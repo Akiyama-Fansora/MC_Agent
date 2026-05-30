@@ -93,6 +93,20 @@ def test_reflection_task_filter_allows_modpack_internal_with_archive_path() -> N
     assert_equal("archive_task_source", executable[0]["source"], "modpack_internal")
 
 
+def test_displayable_planned_tasks_split_blocks_modpack_internal_without_archive_input() -> None:
+    service = CrawlerTaskMaterializationService()
+    displayable, blocked = service.split_displayable_planned_tasks(
+        [
+            {"source": "web_discovery", "query": "乌托邦探险之旅 攻略"},
+            {"source": "modpack_internal", "query": "Utopian Journey"},
+            {"source": "modpack_internal", "query": "Utopian Journey", "archive_path": "D:\\packs\\utopia.mrpack"},
+        ]
+    )
+    assert_equal("displayable_sources", [task["source"] for task in displayable], ["web_discovery", "modpack_internal"])
+    assert_equal("blocked_count", len(blocked), 1)
+    assert_equal("blocked_reason", blocked[0]["blocked_reason"], "modpack_internal_requires_archive_path")
+
+
 def test_record_replan_appends_observable_history() -> None:
     service = CrawlerTaskMaterializationService()
     plan: dict[str, Any] = {}
@@ -142,6 +156,7 @@ if __name__ == "__main__":
     test_materialize_replan_tasks_normalizes_and_deduplicates()
     test_materialize_replan_tasks_blocks_modpack_internal_without_archive_input()
     test_reflection_task_filter_allows_modpack_internal_with_archive_path()
+    test_displayable_planned_tasks_split_blocks_modpack_internal_without_archive_input()
     test_record_replan_appends_observable_history()
     test_topic_review_materialization_filters_discovery_and_duplicates()
     test_fallback_topic_tasks_switches_sources_after_first_ten()

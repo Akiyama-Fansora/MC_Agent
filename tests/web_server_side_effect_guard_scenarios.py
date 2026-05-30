@@ -1233,6 +1233,47 @@ def test_modpack_internal_missing_archive_reports_objective_blocker() -> None:
     assert_true("stats_next_action", "modpack_download" in stats["next_action"])
 
 
+def test_modpack_download_accepts_direct_archive_url_as_candidate() -> None:
+    from unittest.mock import patch  # noqa: PLC0415
+
+    from scripts.fetch_modpack_archive_seed import archive_link_candidates  # noqa: PLC0415
+
+    with patch("scripts.fetch_modpack_archive_seed.urllib.request.urlopen", side_effect=RuntimeError("no network in unit test")):
+        candidates, pages, errors = archive_link_candidates("https://example.com/packs/demo.mrpack", user_agent="unit-test", limit=3)
+    assert_equal("candidate_count", len(candidates), 1)
+    assert_equal("candidate_source", candidates[0]["source"], "direct_url")
+    assert_equal("candidate_url", candidates[0]["url"], "https://example.com/packs/demo.mrpack")
+    assert_equal("pages", pages, [])
+    assert_equal("errors", errors, [])
+
+
+def test_job_to_dict_hides_unqualified_modpack_internal_from_history_view() -> None:
+    job = web_server.Job(
+        id="test-job",
+        kind="crawler",
+        title="Crawler",
+        status="succeeded",
+        created_at=1.0,
+        started_at=1.0,
+        ended_at=2.0,
+        summary="done",
+        result={
+            "plan": {"topic": "乌托邦探险之旅"},
+            "planned_tasks": [
+                {"source": "web_discovery", "query": "乌托邦探险之旅 攻略"},
+                {"source": "modpack_internal", "query": "Utopian Journey"},
+            ],
+            "tasks": [],
+        },
+    )
+    payload = web_server._job_to_dict(job)
+    planned_sources = [task["source"] for task in payload["result"]["planned_tasks"]]
+    assert_equal("planned_sources", planned_sources, ["web_discovery"])
+    assert_equal("blocked_count", len(payload["result"]["blocked_planned_tasks"]), 1)
+    assert_equal("readable_total", payload["readable"]["total_tasks"], 1)
+    assert_equal("readable_blocked", len(payload["readable"]["blocked_planned_tasks"]), 1)
+
+
 if __name__ == "__main__":
     test_direct_crawler_no_save_url_uses_temporary_extract_boundary()
     test_grounded_answer_does_not_fallback_to_ollama_after_profile_error()
@@ -1268,4 +1309,6 @@ if __name__ == "__main__":
     test_crawler_summary_uses_only_llm_matched_record_indexes()
     test_duplicate_reuse_requires_crawler_llm_acceptance()
     test_modpack_internal_missing_archive_reports_objective_blocker()
+    test_modpack_download_accepts_direct_archive_url_as_candidate()
+    test_job_to_dict_hides_unqualified_modpack_internal_from_history_view()
     print("web_server_side_effect_guard_scenarios passed")

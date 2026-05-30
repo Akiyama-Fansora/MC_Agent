@@ -69,9 +69,24 @@ def test_reflection_failure_before_tools_is_reported_explicitly() -> None:
     assert_equal("act_blocked", final["result"]["loop"][2]["status"], "blocked")
 
 
+def test_finalization_moves_unqualified_modpack_internal_out_of_planned_tasks() -> None:
+    final = build(
+        planned_tasks=[
+            {"source": "web_discovery", "query": "乌托邦探险之旅 攻略"},
+            {"source": "modpack_internal", "query": "Utopian Journey"},
+            {"source": "modpack_internal", "query": "Utopian Journey", "archive_path": "D:\\packs\\utopia.mrpack"},
+        ]
+    )
+    sources = [task["source"] for task in final["result"]["planned_tasks"]]
+    assert_equal("planned_sources", sources, ["web_discovery", "modpack_internal"])
+    assert_equal("blocked_count", len(final["result"]["blocked_planned_tasks"]), 1)
+    assert_equal("blocked_reason", final["result"]["blocked_planned_tasks"][0]["blocked_reason"], "modpack_internal_requires_archive_path")
+
+
 if __name__ == "__main__":
     test_success_with_ingest_builds_running_ingest_loop()
     test_failed_without_success_reports_all_sources_failed()
     test_stopped_job_keeps_error_clear()
     test_reflection_failure_before_tools_is_reported_explicitly()
+    test_finalization_moves_unqualified_modpack_internal_out_of_planned_tasks()
     print("crawler_job_finalization_service_scenarios passed")

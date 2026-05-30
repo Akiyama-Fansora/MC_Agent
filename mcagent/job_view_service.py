@@ -21,6 +21,7 @@ class JobReadableViewService:
         plan = result.get("plan") if isinstance(result.get("plan"), dict) else {}
         tasks = result.get("tasks") if isinstance(result.get("tasks"), list) else []
         planned = result.get("planned_tasks") if isinstance(result.get("planned_tasks"), list) else []
+        blocked_planned = result.get("blocked_planned_tasks") if isinstance(result.get("blocked_planned_tasks"), list) else []
         reflections = plan.get("agent_reflections") if isinstance(plan.get("agent_reflections"), list) else []
         last_reflection = next((item for item in reversed(reflections) if isinstance(item, dict)), {})
 
@@ -124,6 +125,7 @@ class JobReadableViewService:
             "inter_agent_messages": inter_agent_messages,
             "useful_outputs": useful_outputs,
             "blocked_outputs": blocked_outputs,
+            "blocked_planned_tasks": self._blocked_planned_tasks(blocked_planned),
             "plain_summary": self._plain_summary(
                 status=status,
                 success_count=success_count,
@@ -298,6 +300,22 @@ class JobReadableViewService:
                 }
             )
         return outputs[-6:]
+
+    def _blocked_planned_tasks(self, tasks: list[Any]) -> list[dict[str, str]]:
+        outputs: list[dict[str, str]] = []
+        for item in tasks:
+            if not isinstance(item, dict):
+                continue
+            outputs.append(
+                {
+                    "source": self.source_label(str(item.get("source") or "")),
+                    "query": str(item.get("query") or "").strip(),
+                    "reason": str(item.get("reason") or "").strip(),
+                    "blocked_reason": str(item.get("blocked_reason") or "").strip(),
+                    "blocked_message": str(item.get("blocked_message") or "").strip(),
+                }
+            )
+        return outputs[:8]
 
     def _plain_summary(
         self,

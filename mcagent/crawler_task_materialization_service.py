@@ -149,6 +149,30 @@ class CrawlerTaskMaterializationService:
             executable.append(task)
         return executable, blocked
 
+    def split_displayable_planned_tasks(self, tasks: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Hide objectively non-executable planned tasks from normal progress.
+
+        The blocked tasks are still returned separately for audit. This keeps
+        historical job views from implying Crawler can run modpack_internal
+        before a real archive/manifest path exists.
+        """
+
+        displayable: list[dict[str, Any]] = []
+        blocked: list[dict[str, Any]] = []
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            cloned = dict(task)
+            if self._modpack_internal_without_input(cloned):
+                cloned["blocked_reason"] = "modpack_internal_requires_archive_path"
+                cloned["blocked_message"] = (
+                    "modpack_internal needs a real local archive, manifest, zip, or path before it can be shown as executable."
+                )
+                blocked.append(cloned)
+                continue
+            displayable.append(cloned)
+        return displayable, blocked
+
     @staticmethod
     def _modpack_internal_without_input(task: dict[str, Any]) -> bool:
         source = str(task.get("source") or "").strip().lower()

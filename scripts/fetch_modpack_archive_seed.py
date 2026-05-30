@@ -133,6 +133,9 @@ def modrinth_archive_candidates(query: str, user_agent: str, limit: int) -> tupl
 
 
 def archive_link_candidates(query: str, user_agent: str, limit: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    direct_candidate = direct_archive_candidate(query, user_agent=user_agent)
+    if direct_candidate:
+        return [direct_candidate], [], []
     search_queries = [
         query,
         f"{query} 整合包 下载",
@@ -185,6 +188,35 @@ def archive_link_candidates(query: str, user_agent: str, limit: int) -> tuple[li
                 if len(candidates) >= limit:
                     return candidates, pages, errors
     return candidates, pages, errors
+
+
+def direct_archive_candidate(value: str, user_agent: str) -> dict[str, Any] | None:
+    target = value.strip()
+    if not re.match(r"https?://", target, flags=re.I):
+        return None
+    parsed_path = urlparse(target).path.lower()
+    if not any(parsed_path.endswith(ext) for ext in ARCHIVE_EXTENSIONS):
+        return None
+    candidate: dict[str, Any] = {
+        "source": "direct_url",
+        "filename": Path(urlparse(target).path).name or "modpack.zip",
+        "url": target,
+        "query": value,
+    }
+    try:
+        request = urllib.request.Request(target, method="HEAD", headers={"User-Agent": user_agent, "Accept": "*/*"})
+        with urllib.request.urlopen(request, timeout=30) as response:
+            candidate.update(
+                {
+                    "http_status": int(response.status),
+                    "content_type": response.headers.get("Content-Type", ""),
+                    "content_length": response.headers.get("Content-Length", ""),
+                    "final_url": response.geturl(),
+                }
+            )
+    except Exception as exc:  # noqa: BLE001 - GET download may still work even if HEAD fails.
+        candidate["head_error"] = str(exc)
+    return candidate
 
 
 def download_archive(candidate: dict[str, Any], archive_dir: Path, user_agent: str, max_bytes: int) -> dict[str, Any]:

@@ -205,12 +205,26 @@ def _write_sse(handler: BaseHTTPRequestHandler, event: str, data: Any) -> None:
 def _job_to_dict(job: Job) -> dict[str, Any]:
     _refresh_job_ingest_state(job)
     data = asdict(job)
+    _sanitize_job_planned_tasks_for_display(data)
     data["readable"] = _job_readable_summary(data)
     return data
 
 
 def _job_readable_summary(job: dict[str, Any]) -> dict[str, Any]:
     return JobReadableViewService(source_label=_source_label).build(job)
+
+
+def _sanitize_job_planned_tasks_for_display(job: dict[str, Any]) -> None:
+    result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    planned = result.get("planned_tasks") if isinstance(result.get("planned_tasks"), list) else []
+    if not planned:
+        return
+    displayable, blocked = CrawlerTaskMaterializationService().split_displayable_planned_tasks(planned)
+    if len(displayable) == len(planned) and not blocked:
+        return
+    result["planned_tasks"] = displayable
+    existing = result.get("blocked_planned_tasks") if isinstance(result.get("blocked_planned_tasks"), list) else []
+    result["blocked_planned_tasks"] = [*existing, *blocked]
 
 
 def _persist_jobs_locked() -> None:

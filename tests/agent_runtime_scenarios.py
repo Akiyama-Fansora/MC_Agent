@@ -142,6 +142,8 @@ def test_tool_catalog_exposes_agent_capabilities() -> None:
     assert_true("crawler_modpack_internal", "modpack_internal" in crawler_catalog)
     assert_true("crawler_research_method", "source graph" in crawler_catalog and "broad keyword blasting" in crawler_catalog)
     assert_true("crawler_source_nodes", "dependency/relation pages" in crawler_catalog and "changelogs/releases" in crawler_catalog)
+    assert_true("crawler_modpack_route_order", "Modrinth API" in crawler_catalog and "CurseForge" in crawler_catalog and "GitHub Releases" in crawler_catalog and "packwiz" in crawler_catalog)
+    assert_true("crawler_modpack_llm_judgment", "inspect objective evidence before choosing" in crawler_catalog and "Only schedule modpack_internal after a real local archive path" in crawler_catalog)
     assert_true("llm_ownership", "LLM owns interpretation" in mcagent_catalog)
     assert_true("mcagent_identity", "Minecraft-focused knowledge agent" in mcagent_catalog)
     assert_true("mcagent_local_kb", "local Minecraft knowledge base" in mcagent_catalog)
@@ -247,11 +249,13 @@ def test_crawler_delegation_requires_explicit_agent_route() -> None:
     planner_source = (ROOT / "mcagent" / "crawler_llm_planner.py").read_text(encoding="utf-8")
     assert_true("crawler_method_prompt", "Research method: avoid broad keyword blasting" in planner_source and "build a source graph" in planner_source)
     assert_true("crawler_pressure_replan_prompt", "When collection pressure rises, replan by source graph" in planner_source)
+    assert_true("crawler_archive_method_prompt", "versions and files.url" in planner_source and "browser_download_url" in planner_source and "pack.toml/index.toml" in planner_source)
+    assert_true("crawler_cloud_drive_blocker_prompt", "Quark" in planner_source and "direct public .mrpack/.zip URL" in planner_source)
 
 
 def test_crawler_handoff_target_overrides_old_session_topic() -> None:
-    new_target = "请收集关于 Minecraft 整合包 XYZABC 的详细资料，包括模组列表和玩法指南"
-    stale_topic = "介绍一下乌托邦整合包"
+    new_target = "Collect complete Minecraft modpack data for XYZABC, including mod list and gameplay guide."
+    stale_topic = "Introduce Utopian Journey modpack"
     summary = {
         "current_topic": stale_topic,
         "topics": [stale_topic],
@@ -259,7 +263,7 @@ def test_crawler_handoff_target_overrides_old_session_topic() -> None:
         "task_goal": new_target,
         "authoritative_task_goal": new_target,
         "delivery_target": "MCagent/RAG",
-        "known_context": "上一轮用户在聊乌托邦，但这一轮已经明确委托新的采集目标。",
+        "known_context": "Previous turn discussed Utopian Journey, but this handoff explicitly asks for a new target.",
     }
     plan = plan_crawler_tasks_rule_fallback(
         new_target,
@@ -271,7 +275,7 @@ def test_crawler_handoff_target_overrides_old_session_topic() -> None:
     queries = " ".join(str(task.get("query") or "") for task in plan.get("tasks", []))
     assert_true("new_target_topic", "XYZABC" in str(plan.get("topic") or ""))
     assert_true("new_target_queries", "XYZABC" in queries)
-    assert_true("stale_topic_not_authoritative", not str(plan.get("topic") or "").startswith("介绍一下乌托邦"))
+    assert_true("stale_topic_not_authoritative", not str(plan.get("topic") or "").startswith("Introduce Utopian Journey"))
 
 
 def main() -> int:

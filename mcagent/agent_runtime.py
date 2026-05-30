@@ -22,6 +22,10 @@ CRAWLER_RESEARCH_METHOD = [
     "Build a source graph before scaling: official/project pages, documentation, repositories, package indexes, download/file pages, dependency/relation pages, changelogs/releases, wiki pages, forum posts, videos, and community mirrors.",
     "Prefer exact URLs and source-specific queries after identity is known. Use broad web discovery only to find candidate source nodes, then crawl those nodes directly.",
     "When a result is empty, duplicate, off-topic, blocked, or low-yield, change the source class or graph node instead of repeating similar generic searches.",
+    "For Minecraft modpack archive discovery, use a stable route order: Modrinth API search with project_type:modpack and version files.url for .mrpack; CurseForge public/API file pages when a downloadUrl or direct /files download is objectively visible; GitHub Releases assets via browser_download_url; packwiz repositories by finding pack.toml and index.toml; then forum/community pages that expose direct .mrpack/.zip links.",
+    "After finding a candidate archive route, inspect objective evidence before choosing the next task: page title/source, alias match, file extension, redirect target, content type, filename, size, status code, and whether login/captcha/payment/cloud-drive UI blocks full automation.",
+    "Quark/Baidu/123pan/client-only/cloud-drive links are not fully automatic unless a direct public file URL is visible without login, captcha, payment, or manual user action. Record the blocker and switch routes instead of pretending the archive is available.",
+    "Only schedule modpack_internal after a real local archive path, manifest path, or downloaded .mrpack/.zip is present in tool output or user context.",
     "For MCagent/RAG delivery, save citeable artifacts with markdown, manifest, source URL, metadata, raw text or raw HTML when available, and a clear coverage/gap summary.",
 ]
 
@@ -609,9 +613,9 @@ CRAWLER_COLLECTION_TOOLS = [
     ),
     ToolSpec(
         name="modpack_download",
-        description="Discover and download public .mrpack/.zip modpack archives when available.",
-        input_schema={"query": "project/download query"},
-        result_schema={"downloads": "archive files or failure reason"},
+        description="Discover and download public .mrpack/.zip modpack archives when available, including exact direct URLs or pages chosen by CrawlerAgent.",
+        input_schema={"query": "project/download query, exact archive URL, or public download/release page URL"},
+        result_schema={"candidates": "objective archive candidates", "downloads": "archive files or failure reason", "blockers": "login/captcha/payment/cloud-drive limitations when observed"},
         side_effects="network_filesystem",
         llm_final_answer_required=False,
     ),

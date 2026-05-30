@@ -177,7 +177,13 @@ PROVIDERS: dict[str, ProviderSpec] = {
         capabilities=ProviderCapability(search=True, extract=True, crawl=True),
         default_limit=8,
         timeout_seconds=1200,
-        notes="发现公开 .mrpack/.zip 整合包包体并保存到本地 manual_research，供 modpack_internal 继续解析；不会绕过登录、付费、网盘或验证码限制。",
+        notes=(
+            "Discover public .mrpack/.zip modpack archives and save them to local manual_research for modpack_internal. "
+            "CrawlerAgent should use stable route order: Modrinth project_type:modpack/version files.url, CurseForge public/API file pages with visible direct downloadUrl, "
+            "GitHub Releases assets/browser_download_url, packwiz pack.toml/index.toml repositories, then forum/community direct links. "
+            "The provider reports objective candidates, HTTP/download facts, and blockers; CrawlerAgent decides relevance. "
+            "It does not bypass login, payment, cloud-drive, client-only, or captcha restrictions."
+        ),
     ),
 }
 

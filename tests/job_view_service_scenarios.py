@@ -77,8 +77,34 @@ def test_waiting_job_view_is_plain_language() -> None:
     assert_equal("timeline", view["timeline"], [])
 
 
+def test_job_view_surfaces_blocked_planned_tasks_separately() -> None:
+    view = JobReadableViewService(source_label=label).build(
+        {
+            "title": "Crawler 采集任务",
+            "status": "succeeded",
+            "result": {
+                "plan": {"topic": "乌托邦探险之旅"},
+                "planned_tasks": [{"source": "web_discovery", "query": "乌托邦探险之旅 攻略"}],
+                "blocked_planned_tasks": [
+                    {
+                        "source": "modpack_internal",
+                        "query": "Utopian Journey",
+                        "blocked_reason": "modpack_internal_requires_archive_path",
+                    }
+                ],
+                "tasks": [],
+            },
+        }
+    )
+    assert_equal("total_tasks", view["total_tasks"], 1)
+    assert_equal("blocked_count", len(view["blocked_planned_tasks"]), 1)
+    assert_equal("blocked_reason", view["blocked_planned_tasks"][0]["blocked_reason"], "modpack_internal_requires_archive_path")
+    assert_true("timeline_no_blocked_as_task", all(item.get("title") != "modpack_internal" for item in view["timeline"]))
+
+
 if __name__ == "__main__":
     test_running_job_view_explains_current_action_and_counts()
     test_waiting_job_view_is_plain_language()
+    test_job_view_surfaces_blocked_planned_tasks_separately()
     print("job_view_service_scenarios: ok")
 

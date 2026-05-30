@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .crawler_task_materialization_service import CrawlerTaskMaterializationService
+
 
 class CrawlerJobFinalizationService:
     """Build the final job update payload for a crawler run."""
@@ -30,6 +32,7 @@ class CrawlerJobFinalizationService:
             summary = f"Crawler 任务已停止：已完成 {len(task_results)}/{len(planned_tasks)} 个任务，资料成功 {success_count}，候选发现 {candidate_count}，失败 {failure_count}。"
         elif needs_ingest:
             summary += " 已启动后台入库。"
+        display_planned_tasks, blocked_planned_tasks = CrawlerTaskMaterializationService().split_displayable_planned_tasks(planned_tasks)
 
         result = {
             "source": "planner",
@@ -41,7 +44,8 @@ class CrawlerJobFinalizationService:
             "ingest_error": "",
             "ingest_background": bool(needs_ingest and not stop_requested),
             "tasks": task_results,
-            "planned_tasks": planned_tasks,
+            "planned_tasks": display_planned_tasks,
+            "blocked_planned_tasks": blocked_planned_tasks,
             "plan": plan,
             "collection_summary": collection_summary,
             "loop": [
