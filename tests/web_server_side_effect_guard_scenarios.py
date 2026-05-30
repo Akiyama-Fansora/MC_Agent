@@ -831,6 +831,34 @@ def test_version_install_note_extracts_modpack_requirements() -> None:
     assert_true("answer_has_mc_version_loader", "1.20.1" in answer and "Fabric" in answer, answer)
 
 
+def test_modpack_overview_surfaces_version_install_evidence() -> None:
+    source = SearchResult(
+        rank=1,
+        score=9.0,
+        chunk_id=1,
+        document_id=1,
+        chunk_index=0,
+        title="乌托邦探险之旅 - 我的世界整合包 | BBSMC 下载",
+        source_path="D:/magic/MC_Agent/data/crawler_exports/web_discovery/utopia_download.md",
+        url="https://bbsmc.net/modpack/utopia-journey",
+        text=(
+            "乌托邦探险之旅\n"
+            "基本信息\n"
+            "我的世界Java版本\n"
+            "1.20.1\n"
+            "平台\n"
+            "Fabric\n"
+            "运行环境\n"
+            "客户端和服务端\n"
+        ),
+        metadata={},
+    )
+
+    note = web_server._version_install_extraction_note("乌托邦探险之旅 Utopian Journey 是什么整合包？", [source])
+    assert_true("overview_has_mc_version", "1.20.1" in note, note)
+    assert_true("overview_has_loader", "Fabric" in note, note)
+
+
 def test_specific_utopian_journey_filter_rejects_generic_utopian_sources() -> None:
     generic = SearchResult(
         rank=1,
@@ -861,6 +889,57 @@ def test_specific_utopian_journey_filter_rejects_generic_utopian_sources() -> No
         [generic, target],
     )
     assert_equal("specific_filter", filtered, [target])
+
+
+def test_specific_utopian_journey_filter_rejects_other_pack_mentions() -> None:
+    other_pack = SearchResult(
+        rank=1,
+        score=6.0,
+        chunk_id=1,
+        document_id=1,
+        chunk_index=0,
+        title="落幕曲（Closing Song）整合包资料汇总",
+        source_path="D:/magic/MC_Agent/data/crawler_exports/manual_research/closing_song.md",
+        url="https://example.test/closing-song",
+        text="这里顺带提到乌托邦探险之旅作为对比，但本文主体是落幕曲。",
+        metadata={},
+    )
+    target = SearchResult(
+        rank=2,
+        score=5.0,
+        chunk_id=2,
+        document_id=2,
+        chunk_index=0,
+        title="[UJ]乌托邦探险之旅 (Utopian Journey) - MC百科",
+        source_path="D:/magic/MC_Agent/data/crawler_exports/fetch_url/utopian_journey.md",
+        url="https://www.mcmod.cn/modpack/1337.html",
+        text="乌托邦探险之旅 Utopian Journey 整合包。",
+        metadata={},
+    )
+    filtered = web_server._filter_answer_evidence_by_required_terms(
+        "乌托邦探险之旅有哪些模组列表、任务线、玩法机制资料？",
+        [other_pack, target],
+    )
+    assert_equal("strict_other_pack_filter", filtered, [target])
+
+
+def test_version_install_extraction_ignores_mcmod_navigation_loaders() -> None:
+    text = (
+        "版本检索\n"
+        "Forge 整合包\n"
+        "Fabric 整合包\n"
+        "1.20.1 整合包\n"
+        "1.19.4 整合包\n"
+        "基本信息\n"
+        "我的世界Java版本\n"
+        "1.20.1\n"
+        "平台\n"
+        "Fabric\n"
+    )
+    facts = web_server._extract_version_install_fact_map(text)
+    labels = web_server._version_install_fact_labels()
+    assert_equal("loader_only_real_platform", facts.get(labels[2]), ["Fabric"])
+    assert_true("mc_version_kept", "1.20.1" in (facts.get(labels[1]) or []), str(facts))
 
 
 def test_local_version_install_answer_ignores_wrong_modpack_sources() -> None:
@@ -982,6 +1061,27 @@ def test_version_install_fact_question_bypasses_llm_router() -> None:
     assert_true("answer_has_loader", "Fabric" in answer, answer)
     statuses = [(item.get("stage"), item.get("status")) for item in result.get("trace") or []]
     assert_true("local_fact_trace", ("answer", "local_fact_answer") in statuses, str(statuses))
+
+
+def test_modpack_overview_with_version_does_not_use_narrow_fact_route() -> None:
+    assert_equal(
+        "overview_not_narrow_fact",
+        web_server._should_use_deterministic_local_fact_rag_route(
+            "mcagent_rag",
+            "乌托邦探险之旅 Utopian Journey 是什么整合包？请说明 Minecraft 版本和加载器。",
+            {},
+        ),
+        False,
+    )
+
+
+def test_general_answer_path_skips_local_fact_answer_for_modpack_overview() -> None:
+    source = (ROOT / "mcagent" / "web_server.py").read_text(encoding="utf-8")
+    assert_true(
+        "overview_skips_local_fact_answer",
+        'answer = "" if _is_modpack_overview_question(original_question) else _local_version_install_answer(original_question, selected)'
+        in source,
+    )
 
 
 def test_mcagent_context_tool_uses_fast_structured_reply_instead_of_second_answer_llm() -> None:
@@ -1154,10 +1254,15 @@ if __name__ == "__main__":
     test_crawler_job_can_execute_mcagent_context_tool()
     test_mcagent_context_filters_off_topic_local_evidence()
     test_specific_utopian_journey_filter_rejects_generic_utopian_sources()
+    test_specific_utopian_journey_filter_rejects_other_pack_mentions()
+    test_version_install_extraction_ignores_mcmod_navigation_loaders()
     test_local_version_install_answer_ignores_wrong_modpack_sources()
     test_no_llm_mcagent_path_still_runs_evidence_selection()
     test_version_install_note_extracts_modpack_requirements()
+    test_modpack_overview_surfaces_version_install_evidence()
     test_version_install_fact_question_bypasses_llm_router()
+    test_modpack_overview_with_version_does_not_use_narrow_fact_route()
+    test_general_answer_path_skips_local_fact_answer_for_modpack_overview()
     test_mcagent_context_tool_uses_fast_structured_reply_instead_of_second_answer_llm()
     test_crawler_topic_match_decision_comes_from_crawler_llm()
     test_crawler_summary_uses_only_llm_matched_record_indexes()

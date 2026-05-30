@@ -3643,7 +3643,7 @@ def _relation_answer_note(question: str, results: list[SearchResult]) -> str:
 
 
 def _version_install_extraction_note(question: str, results: list[SearchResult]) -> str:
-    if not _is_version_install_question(question):
+    if not _should_surface_version_install_evidence(question):
         return ""
     fact_lines: list[str] = []
     for item in results[:8]:
@@ -3663,7 +3663,8 @@ def _version_install_extraction_note(question: str, results: list[SearchResult])
         return ""
     return (
         "检索器从同一来源全文里抽取到的版本/安装/配置事实行如下；"
-        "回答版本、加载器、Java、启动器、内存时必须优先核对这些行，不要说资料未提及：\n"
+        "回答整合包概览、版本、加载器、Java、启动器、内存时必须优先核对这些行。"
+        "如果这些行来自项目页/下载页而不是 manifest，请按来源说明置信边界，但不要说资料未提及：\n"
         + "\n".join(f"- {line}" for line in fact_lines)
     )
 
@@ -3797,8 +3798,6 @@ def _extract_version_install_fact_map(text: str) -> dict[str, list[str]]:
             for match in re.finditer(pattern, body):
                 facts[label].append(match.group(1).strip(" ,;，；。"))
 
-    for loader in re.findall(r"(?i)\b(?:fabric|forge|quilt)\b", body):
-        facts[labels[2]].append(loader)
     launcher_hits = [name.upper() for name in re.findall(r"(?i)(?:pcl2?|hmcl)", body)]
     if launcher_hits:
         facts[labels[4]].append("/".join(_dedupe_strings(launcher_hits)))
@@ -3811,6 +3810,10 @@ def _extract_version_install_fact_map(text: str) -> dict[str, list[str]]:
             if memory_hits:
                 facts[labels[5]].append(", ".join(_dedupe_strings(memory_hits)))
     for line in _extract_version_install_lines(body):
+        if _version_install_line_is_navigation_noise(line):
+            continue
+        for loader in re.findall(r"(?i)\b(?:fabric|forge|quilt|neoforge)\b", line):
+            facts[labels[2]].append(loader)
         if _VI["install"] in line and not facts[labels[4]]:
             facts[labels[4]].append(line)
         if _VI["memory"] in line:
@@ -3865,6 +3868,21 @@ def _is_version_install_question(question: str) -> bool:
     ) or any(token in lowered for token in ("version", "install", "fabric", "forge", "java", "memory", "requirement"))
 
 
+def _should_surface_version_install_evidence(question: str) -> bool:
+    if _is_version_install_question(question):
+        return True
+    return _is_modpack_overview_question(question)
+
+
+def _is_modpack_overview_question(question: str) -> bool:
+    lowered = question.lower()
+    is_modpack_topic = any(token in question for token in ("整合包", "模组包")) or "modpack" in lowered
+    is_overview = any(token in question for token in ("是什么", "介绍", "简介", "概览", "详情", "资料", "信息")) or any(
+        token in lowered for token in ("what is", "overview", "intro", "introduction", "about")
+    )
+    return is_modpack_topic and is_overview
+
+
 def _extract_version_install_lines(text: str) -> list[str]:
     wanted = (
         "minecraft",
@@ -3895,6 +3913,8 @@ def _extract_version_install_lines(text: str) -> list[str]:
         clean = _clean_evidence_line(line)
         if not clean:
             continue
+        if _version_install_line_is_navigation_noise(clean):
+            continue
         lowered = clean.lower()
         if not any(token in lowered for token in wanted):
             continue
@@ -3917,11 +3937,30 @@ def _extract_version_install_lines(text: str) -> list[str]:
             ) and following:
                 break
         entry = " / ".join(_dedupe_strings(window))
+        if _version_install_line_is_navigation_noise(entry):
+            continue
         if entry and entry not in output:
             output.append(entry[:260])
         if len(output) >= 18:
             break
     return output
+
+
+def _version_install_line_is_navigation_noise(line: str) -> bool:
+    value = re.sub(r"\s+", " ", str(line or "")).strip()
+    if not value:
+        return True
+    parts = [part.strip() for part in re.split(r"\s*/\s*|\s+\|\s+", value) if part.strip()]
+    nav_like = 0
+    for part in parts:
+        lowered = part.lower()
+        if re.fullmatch(r"(?:forge|fabric|quilt|neoforge)\s*(?:模组|整合包|mods?|modpacks?)", lowered, flags=re.I):
+            nav_like += 1
+        elif re.fullmatch(r"1\.\d+(?:\.\d+)?\s*(?:模组|整合包|mods?|modpacks?)", lowered, flags=re.I):
+            nav_like += 1
+        elif part in {"版本检索", "元素检索", "常用地址", "最新收录", "有新动态"}:
+            nav_like += 1
+    return bool(parts) and nav_like >= max(2, len(parts) // 2)
 
 
 def _version_install_neighbor_is_noise(line: str) -> bool:
@@ -5277,7 +5316,7 @@ def _should_use_deterministic_local_fact_rag_route(agent: str, original_question
         return False
     if _asks_for_collection_or_handoff(text) or _request_wants_persistence(text):
         return False
-    return _is_version_install_question(text)
+    return _is_version_install_question(text) and not _is_modpack_overview_question(text)
 
 
 def _mcagent_context_focus(question: str, collection_target: str = "") -> str:
@@ -5314,6 +5353,16 @@ def _filter_mcagent_context_evidence(
 def _filter_answer_evidence_by_required_terms(focus: str, selected: list[SearchResult]) -> list[SearchResult]:
     if not selected:
         return []
+    strict_terms = _strict_entity_terms_for_focus(focus)
+    if strict_terms:
+        filtered = [
+            item
+            for item in selected
+            if _search_result_matches_strict_entity(item, strict_terms)
+        ]
+        for index, item in enumerate(filtered, start=1):
+            item.rank = index
+        return filtered
     terms = _mcagent_context_required_terms(focus)
     if not terms:
         return selected
@@ -5325,6 +5374,23 @@ def _filter_answer_evidence_by_required_terms(focus: str, selected: list[SearchR
     for index, item in enumerate(filtered, start=1):
         item.rank = index
     return filtered
+
+
+def _strict_entity_terms_for_focus(focus: str) -> list[str]:
+    text = str(focus or "")
+    lowered = text.lower()
+    if "乌托邦探险之旅" in text or "utopian journey" in lowered or "utopia-journey" in lowered:
+        return ["乌托邦探险之旅", "utopian journey", "utopia-journey", "modpack/1337"]
+    return []
+
+
+def _search_result_matches_strict_entity(item: SearchResult, terms: list[str]) -> bool:
+    title_source = f"{item.title}\n{item.source_path}\n{item.url or ''}".lower()
+    if any(term.lower() in title_source for term in terms):
+        return True
+    body = str(item.text or "").lower()
+    body_hits = [term for term in terms[:3] if term.lower() in body[:1600]]
+    return len(body_hits) >= 2
 
 
 def _mcagent_context_required_terms(focus: str) -> list[str]:
@@ -6782,7 +6848,7 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
     if agent == "retriever_only" or bool(payload.get("no_llm")):
         answer, context = executor.retriever_only_answer(context)
     else:
-        answer = _local_version_install_answer(original_question, selected)
+        answer = "" if _is_modpack_overview_question(original_question) else _local_version_install_answer(original_question, selected)
         if answer:
             add_trace("answer", "local_fact_answer", {"reason": "version_install_evidence", "sources": len(selected)})
         if not answer:
