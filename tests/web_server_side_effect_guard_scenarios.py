@@ -346,6 +346,46 @@ def test_mcagent_gap_delegation_overrides_human_delivery_to_rag() -> None:
     assert_equal("payload_delivery", calls[0]["payload"].get("delivery_target"), "MCagent/RAG")
 
 
+def test_explicit_mcagent_to_crawler_handoff_starts_job_before_router() -> None:
+    tmp = tempfile.TemporaryDirectory()
+    question = "\u8bf7\u5148\u68c0\u67e5\u672c\u5730\u8d44\u6599\u91cc\u4e4c\u6258\u90a6\u63a2\u9669\u4e4b\u65c5 / Utopian Journey \u6574\u5408\u5305\u8fd8\u7f3a\u54ea\u4e9b\u5185\u5bb9\uff0c\u7136\u540e\u8ba9 CrawlerAgent \u53bb\u7f51\u4e0a\u91c7\u96c6\u7f3a\u5931\u7684\u516c\u5f00\u8d44\u6599\u5e76\u5165\u5e93\u7ed9 MCagent/RAG \u4f7f\u7528\u3002"
+    original_delegate = web_server._delegate_crawler_for_missing_data
+    original_selector = web_server._selected_llm_client
+    calls: list[dict[str, Any]] = []
+
+    def fake_delegate(config: AppConfig, payload: dict[str, Any], delegated_question: str, plan: dict[str, Any] | None = None):  # noqa: ARG001
+        calls.append({"payload": payload, "question": delegated_question, "plan": plan})
+        job = web_server.Job(id="fake-fast-handoff-job", kind="crawler", title=delegated_question, status="queued", summary="queued")
+        job.result = {"plan": {"topic": delegated_question, "delivery_target": payload.get("delivery_target")}}
+        return job, True
+
+    web_server._delegate_crawler_for_missing_data = fake_delegate  # type: ignore[assignment]
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("router should not be called"))  # type: ignore[assignment]
+    try:
+        result = web_server._chat_impl(
+            make_temp_config(Path(tmp.name)),
+            {
+                "agent": "mcagent_rag",
+                "question": question,
+                "session_id": "explicit-mcagent-crawler-fast-path",
+                "model": "fake-model",
+            },
+        )
+    finally:
+        web_server._delegate_crawler_for_missing_data = original_delegate  # type: ignore[assignment]
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        tmp.cleanup()
+
+    assert_true("delegated", bool(calls))
+    assert_equal("requested_by", calls[0]["payload"].get("requested_by"), "user_via_mcagent")
+    assert_equal("delivery_target", calls[0]["payload"].get("delivery_target"), "MCagent/RAG")
+    assert_true("clean_target_keeps_alias", "乌托邦探险之旅 / Utopian Journey" in calls[0]["question"], calls[0]["question"])
+    assert_true("clean_target_no_agent_damage", "Crawle ent" not in calls[0]["question"] and "给 / 使用" not in calls[0]["question"], calls[0]["question"])
+    assert_true("has_job", result.get("job", {}).get("id") == "fake-fast-handoff-job")
+    statuses = [(item.get("stage"), item.get("status")) for item in result.get("trace") or []]
+    assert_true("fast_trace", ("delegate", "explicit_mcagent_handoff_fast_path") in statuses, str(statuses))
+
+
 def test_mcagent_explicit_crawler_request_forces_planned_delegate() -> None:
     question = "现在乌托邦整合包你本地还缺哪些资料，列出来，然后让 Crawler 去补充。"
     decision = {
@@ -664,6 +704,7 @@ def test_no_llm_mcagent_path_still_runs_evidence_selection() -> None:
         ),
         [on_topic],
     )
+
     class FakeRun:
         original_question = "本地资料里乌托邦还有哪些缺口？"
         question = original_question
@@ -787,6 +828,58 @@ def test_version_install_note_extracts_modpack_requirements() -> None:
     assert_true("answer_has_launcher", "PCL" in answer and "HMCL" in answer, answer)
     assert_true("answer_has_memory", "16G" in answer and "8G" in answer, answer)
     assert_true("answer_has_mc_version_loader", "1.20.1" in answer and "Fabric" in answer, answer)
+
+
+def test_specific_utopian_journey_filter_rejects_generic_utopian_sources() -> None:
+    generic = SearchResult(
+        rank=1,
+        score=5.0,
+        chunk_id=1,
+        document_id=1,
+        chunk_index=0,
+        title="Utopian Armor - Advent of Ascension",
+        source_path="D:/magic/MC_Agent/data/crawler_exports/mcmod/utopian_armor.md",
+        url="https://www.mcmod.cn/item/489325.html",
+        text="Utopian Armor is an item from Advent of Ascension.",
+        metadata={},
+    )
+    target = SearchResult(
+        rank=2,
+        score=4.0,
+        chunk_id=2,
+        document_id=2,
+        chunk_index=0,
+        title="乌托邦探险之旅 - 我的世界整合包 | BBSMC 下载",
+        source_path="D:/magic/MC_Agent/data/crawler_exports/web_discovery/utopia_journey.md",
+        url="https://bbsmc.net/modpack/utopia-journey/",
+        text="乌托邦探险之旅 Utopian Journey Java 1.20.1 Fabric.",
+        metadata={},
+    )
+    filtered = web_server._filter_answer_evidence_by_required_terms(
+        "乌托邦探险之旅这个整合包适合什么 Minecraft 版本和加载器？",
+        [generic, target],
+    )
+    assert_equal("specific_filter", filtered, [target])
+
+
+def test_local_version_install_answer_ignores_wrong_modpack_sources() -> None:
+    wrong = SearchResult(
+        rank=1,
+        score=5.0,
+        chunk_id=1,
+        document_id=1,
+        chunk_index=0,
+        title="落幕曲整合包资料汇总",
+        source_path="D:/magic/MC_Agent/data/crawler_exports/manual_research/closing_song.md",
+        url="https://example.test/closing-song",
+        text="落幕曲整合包\n平台\nForge\n运行环境\n客户端 服务端",
+        metadata={},
+    )
+    answer = web_server._local_version_install_answer(
+        "乌托邦探险之旅这个整合包适合什么 Minecraft 版本和加载器？",
+        [wrong],
+    )
+    assert_equal("no_wrong_answer", answer, "")
 
 
 def test_version_install_fact_question_bypasses_llm_router() -> None:
@@ -940,6 +1033,48 @@ def test_crawler_topic_match_decision_comes_from_crawler_llm() -> None:
         assert_equal("rejected_title", result["rejected_examples"][0]["title"], "Modrinth")
 
 
+def test_crawler_summary_uses_only_llm_matched_record_indexes() -> None:
+    with tempfile.TemporaryDirectory(prefix="mcagent-accepted-summary-") as tmp:
+        export_dir = Path(tmp)
+        good = export_dir / "good.md"
+        bad = export_dir / "bad.md"
+        good.write_text("# 乌托邦探险之旅\n\nJava 1.20.1 Fabric.", encoding="utf-8")
+        bad.write_text("# BFF 逆转未来\n\nUnrelated modpack.", encoding="utf-8")
+        (export_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "records": [
+                        {"title": "乌托邦探险之旅", "url": "https://bbsmc.net/modpack/utopia-journey/", "path": str(good), "chars": 32},
+                        {"title": "BFF 逆转未来", "url": "https://www.mcmod.cn/modpack/1340.html", "path": str(bad), "chars": 26},
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        result = {
+            "source": "web_discovery",
+            "query": "乌托邦探险之旅",
+            "returncode": 0,
+            "export_dir": str(export_dir),
+            "manifest_stats": web_server._crawler_manifest_stats(str(export_dir)),
+            "topic_validation": {
+                "matched": True,
+                "reason": "direct",
+                "matched_indexes": [0],
+                "rejected_indexes": [1],
+            },
+        }
+        summary = web_server._crawler_result_summary([result], {"topic": "乌托邦探险之旅"})
+        titles = [item.get("title") for item in summary["useful_records"]]
+        assert_equal("accepted_titles", titles, ["乌托邦探险之旅"])
+        roots = web_server._crawler_accepted_ingest_roots(result)
+        assert_equal("one_root", len(roots), 1)
+        accepted_root = Path(roots[0])
+        assert_true("accepted_good", (accepted_root / "good.md").exists())
+        assert_true("rejected_bad", not (accepted_root / "bad.md").exists())
+
+
 def test_duplicate_reuse_requires_crawler_llm_acceptance() -> None:
     with tempfile.TemporaryDirectory(prefix="mcagent-dup-review-") as tmp:
         root = Path(tmp)
@@ -997,16 +1132,20 @@ if __name__ == "__main__":
     test_successful_mcagent_context_filters_new_duplicate_context_tasks()
     test_runtime_status_request_bypasses_llm_router()
     test_mcagent_gap_delegation_overrides_human_delivery_to_rag()
+    test_explicit_mcagent_to_crawler_handoff_starts_job_before_router()
     test_mcagent_explicit_crawler_request_forces_planned_delegate()
     test_direct_crawler_mcagent_gap_request_delegates_when_local_empty()
     test_crawler_mcagent_context_with_collection_continues_to_delegate()
     test_direct_crawler_delegate_choice_runs_as_crawler_context_workflow()
     test_crawler_job_can_execute_mcagent_context_tool()
     test_mcagent_context_filters_off_topic_local_evidence()
+    test_specific_utopian_journey_filter_rejects_generic_utopian_sources()
+    test_local_version_install_answer_ignores_wrong_modpack_sources()
     test_no_llm_mcagent_path_still_runs_evidence_selection()
     test_version_install_note_extracts_modpack_requirements()
     test_version_install_fact_question_bypasses_llm_router()
     test_mcagent_context_tool_uses_fast_structured_reply_instead_of_second_answer_llm()
     test_crawler_topic_match_decision_comes_from_crawler_llm()
+    test_crawler_summary_uses_only_llm_matched_record_indexes()
     test_duplicate_reuse_requires_crawler_llm_acceptance()
     print("web_server_side_effect_guard_scenarios passed")
