@@ -15,6 +15,11 @@ def assert_equal(name: str, actual, expected) -> None:
         raise AssertionError(f"{name}: expected {expected!r}, got {actual!r}")
 
 
+def assert_true(name: str, condition: bool) -> None:
+    if not condition:
+        raise AssertionError(name)
+
+
 def test_reflection_entry_preserves_contract() -> None:
     reflection = {
         "action": "replan",
@@ -87,11 +92,52 @@ def test_finish_returns_finish_reason() -> None:
     assert_equal("finish_reason", result["finish_reason"], "Enough data collected.")
 
 
+def test_llm_plan_first_task_does_not_need_extra_reflection() -> None:
+    service = CrawlerRuntimeStepService()
+    assert_equal(
+        "llm_plan_first",
+        service.should_reflect_before_task(plan={"strategy": "crawler_llm_planner"}, task_results=[], index=0),
+        False,
+    )
+    assert_equal(
+        "quick_recovery_first",
+        service.should_reflect_before_task(plan={"strategy": "quick_recovery_llm_plan_after_planner_error"}, task_results=[], index=0),
+        False,
+    )
+
+
+def test_rule_fallback_still_requires_crawler_reflection_before_tools() -> None:
+    service = CrawlerRuntimeStepService()
+    assert_equal(
+        "rule_fallback_first",
+        service.should_reflect_before_task(plan={"strategy": "target_fallback_after_llm_planner_error"}, task_results=[], index=0),
+        True,
+    )
+    assert_equal(
+        "after_result",
+        service.should_reflect_before_task(plan={"strategy": "crawler_llm_planner"}, task_results=[{"source": "web_discovery"}], index=1),
+        True,
+    )
+
+
+def test_initial_llm_plan_entry_is_trace_only() -> None:
+    service = CrawlerRuntimeStepService()
+    task = {"source": "web_discovery", "query": "Utopian Journey"}
+    entry = service.initial_llm_plan_entry(task=task)
+    assert_equal("action", entry["action"], "execute_pending")
+    assert_equal("planner", entry["planner"], "crawler_llm_planner")
+    assert_true("contains_task", entry["tasks"] == [task])
+    assert_true("valid_contract", entry["contract"]["valid"])
+
+
 if __name__ == "__main__":
     test_reflection_entry_preserves_contract()
     test_replan_inserts_unique_tasks_before_current_index()
     test_duplicate_new_tasks_are_not_inserted()
     test_selected_index_swaps_next_pending_task()
     test_finish_returns_finish_reason()
+    test_llm_plan_first_task_does_not_need_extra_reflection()
+    test_rule_fallback_still_requires_crawler_reflection_before_tools()
+    test_initial_llm_plan_entry_is_trace_only()
     print("crawler_runtime_step_service_scenarios passed")
 

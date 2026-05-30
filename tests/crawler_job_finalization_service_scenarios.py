@@ -15,6 +15,11 @@ def assert_equal(name: str, actual, expected) -> None:
         raise AssertionError(f"{name}: expected {expected!r}, got {actual!r}")
 
 
+def assert_true(name: str, condition: bool) -> None:
+    if not condition:
+        raise AssertionError(name)
+
+
 def build(**overrides):
     payload = {
         "stop_requested": False,
@@ -55,8 +60,18 @@ def test_stopped_job_keeps_error_clear() -> None:
     assert "已完成 2/3" in final["summary"]
 
 
+def test_reflection_failure_before_tools_is_reported_explicitly() -> None:
+    reason = "CrawlerAgent could not review objective results because the reflection LLM failed."
+    final = build(success_count=0, needs_ingest=False, task_results=[], planned_tasks=[{"source": "web_discovery"}], plan={"topic": "Utopia", "agent_finish_reason": reason})
+    assert_equal("status", final["status"], "failed")
+    assert_equal("error", final["error"], reason)
+    assert_true("summary_mentions_stopped", "stopped before tool execution" in final["summary"])
+    assert_equal("act_blocked", final["result"]["loop"][2]["status"], "blocked")
+
+
 if __name__ == "__main__":
     test_success_with_ingest_builds_running_ingest_loop()
     test_failed_without_success_reports_all_sources_failed()
     test_stopped_job_keeps_error_clear()
+    test_reflection_failure_before_tools_is_reported_explicitly()
     print("crawler_job_finalization_service_scenarios passed")

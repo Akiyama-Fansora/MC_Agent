@@ -79,6 +79,30 @@ def test_rule_fallback_extracts_domain_target_from_agent_handoff() -> None:
     assert_true("includes_known_alias", any("乌托邦探险之旅" in query or "Utopian Journey" in query for query in queries))
 
 
+def test_rule_fallback_keeps_quoted_slash_alias_modpack_target() -> None:
+    question = (
+        "乌托邦探险之旅 / Utopian Journey 整合包完整公开资料：版本信息、安装要求、下载/整合包包体线索、"
+        "完整模组列表、配置/manifest、更新日志、玩法路线、新手到毕业路线"
+    )
+    plan = plan_crawler_tasks_rule_fallback(
+        question,
+        ROOT / "data" / "crawler_exports",
+        max_tasks=8,
+        planner_error="unit timeout",
+        session_summary={
+            "delivery_target": "MCagent/RAG",
+            "requested_by": "user_via_mcagent",
+            "collection_target": question,
+            "task_goal": "MCagent 转达：获取“乌托邦探险之旅 / Utopian Journey”整合包完整公开资料。",
+        },
+    )
+    assert_equal("topic", plan["topic"], "乌托邦探险之旅 / Utopian Journey")
+    queries = [task["query"] for task in plan["tasks"]]
+    assert_true("no_generic_complete_public_pack", all("完整公开整合包" not in query for query in queries))
+    assert_true("target_bound_queries", any("乌托邦探险之旅" in query and "模组列表" in query for query in queries))
+    assert_true("english_alias_queries", any("Utopian Journey" in query for query in queries))
+
+
 def test_session_target_rejects_generic_relation_phrase() -> None:
     summary = {
         "collection_target": "的相关整合包",
@@ -263,6 +287,83 @@ def test_reflection_replaces_literal_gap_pending_query() -> None:
     assert_true("positive_replacement", any("模组列表" in query or "任务" in query or "Boss" in query for query in queries))
 
 
+def test_reflection_llm_failure_stops_before_executor_tool_choice() -> None:
+    original_client = crawler_llm_planner._planner_client
+
+    class FailingClient:
+        def chat(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            raise RuntimeError("exceeded retry limit, last status: 429 Too Many Requests")
+
+    crawler_llm_planner._planner_client = lambda: (FailingClient(), "fake-rate-limited")  # type: ignore[assignment]
+    try:
+        decision = reflect_crawler_progress(
+            "collect Utopian Journey modpack complete data",
+            {"topic": "Utopian Journey", "target_hint": "Utopian Journey", "delivery_target": "MCagent/RAG"},
+            task_results=[{"source": "web_discovery", "query": "Utopian Journey", "returncode": 0, "empty_result": True}],
+            pending_tasks=[{"source": "modpack_download", "query": "Utopian Journey", "reason": "find archive", "priority": 100}],
+            session_summary={"delivery_target": "MCagent/RAG", "collection_target": "Utopian Journey modpack"},
+            max_new_tasks=4,
+        )
+    finally:
+        crawler_llm_planner._planner_client = original_client  # type: ignore[assignment]
+    assert_equal("action", decision["action"], "finish")
+    assert_true("no_tasks", decision["tasks"] == [])
+    assert_true("reflection_issue", "reflection_llm_error" in decision["contract"]["issues"])
+    assert_true("executor_boundary_issue", "stopped_before_executor_tool_choice" in decision["contract"]["issues"])
+    assert_true("rate_limit_visible", "429" in decision["reason"])
+
+
+def test_fallback_plan_confirmation_lets_crawler_pick_existing_task() -> None:
+    original_client = crawler_llm_planner._planner_client
+
+    class FakeClient:
+        def chat(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return '{"action":"execute_pending","selected_index":1,"reason":"download discovery should run before internal parsing","tasks":[]}'
+
+    crawler_llm_planner._planner_client = lambda: (FakeClient(), "fake-confirm")  # type: ignore[assignment]
+    try:
+        decision = reflect_crawler_progress(
+            "collect Utopian Journey modpack complete data",
+            {"topic": "Utopian Journey", "target_hint": "Utopian Journey", "delivery_target": "MCagent/RAG", "strategy": "target_fallback_after_llm_planner_error"},
+            task_results=[],
+            pending_tasks=[
+                {"source": "modpack_internal", "query": "Utopian Journey", "reason": "parse archive", "priority": 145},
+                {"source": "modpack_download", "query": "Utopian Journey", "reason": "find public archive", "priority": 130},
+            ],
+            session_summary={"delivery_target": "MCagent/RAG", "collection_target": "Utopian Journey modpack"},
+            max_new_tasks=4,
+        )
+    finally:
+        crawler_llm_planner._planner_client = original_client  # type: ignore[assignment]
+    assert_equal("action", decision["action"], "execute_pending")
+    assert_equal("selected_index", decision["selected_index"], 1)
+    assert_true("planner_label", "fallback-confirmation" in decision["planner"])
+
+
+def test_fallback_plan_confirmation_failure_stops_before_tools() -> None:
+    original_client = crawler_llm_planner._planner_client
+
+    class FailingClient:
+        def chat(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            raise TimeoutError("timed out")
+
+    crawler_llm_planner._planner_client = lambda: (FailingClient(), "fake-confirm")  # type: ignore[assignment]
+    try:
+        decision = reflect_crawler_progress(
+            "collect Utopian Journey modpack complete data",
+            {"topic": "Utopian Journey", "target_hint": "Utopian Journey", "delivery_target": "MCagent/RAG", "strategy": "target_fallback_after_llm_planner_error"},
+            task_results=[],
+            pending_tasks=[{"source": "modpack_download", "query": "Utopian Journey", "reason": "find public archive", "priority": 130}],
+            session_summary={"delivery_target": "MCagent/RAG", "collection_target": "Utopian Journey modpack"},
+            max_new_tasks=4,
+        )
+    finally:
+        crawler_llm_planner._planner_client = original_client  # type: ignore[assignment]
+    assert_equal("action", decision["action"], "finish")
+    assert_true("confirmation_issue", "fallback_confirmation_llm_error" in decision["contract"]["issues"])
+    assert_true("executor_boundary_issue", "stopped_before_executor_tool_choice" in decision["contract"]["issues"])
+
+
 def test_structured_xlsx_request_uses_browser_collect() -> None:
     plan = plan_crawler_tasks_rule_fallback(
         "从公开商品网站采集 20 个商品名称、价格、链接，保存为 xlsx 到 C:\\Temp\\crawler-products",
@@ -313,11 +414,15 @@ def test_job_planner_timeout_returns_executable_fallback() -> None:
 if __name__ == "__main__":
     test_direct_crawler_delegate_phrase_is_not_target()
     test_rule_fallback_extracts_domain_target_from_agent_handoff()
+    test_rule_fallback_keeps_quoted_slash_alias_modpack_target()
     test_session_target_rejects_generic_relation_phrase()
     test_gap_collection_fallback_prefers_generic_web_and_bound_queries()
     test_llm_plan_gap_collection_is_rebalanced_to_generic_tools()
     test_gap_collection_rejects_literal_missing_as_web_topic()
     test_reflection_replaces_literal_gap_pending_query()
+    test_reflection_llm_failure_stops_before_executor_tool_choice()
+    test_fallback_plan_confirmation_lets_crawler_pick_existing_task()
+    test_fallback_plan_confirmation_failure_stops_before_tools()
     test_structured_xlsx_request_uses_browser_collect()
     test_job_planner_timeout_returns_executable_fallback()
     print("crawler_planner_timeout_scenarios passed")

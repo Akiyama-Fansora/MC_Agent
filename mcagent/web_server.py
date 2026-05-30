@@ -2221,7 +2221,7 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
         while index < len(tasks):
             if job.stop_requested:
                 break
-            if job_setup.is_planner_source(source):
+            if job_setup.is_planner_source(source) and runtime_step.should_reflect_before_task(plan=plan, task_results=task_results, index=index):
                 pending_tasks = list(tasks[index:])
                 reflection = reflect_crawler_progress(
                     question,
@@ -2290,6 +2290,8 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
                 if step_result.get("finished"):
                     plan["agent_finish_reason"] = str(step_result.get("finish_reason") or "")
                     break
+            elif job_setup.is_planner_source(source) and index == 0 and tasks:
+                plan.setdefault("agent_reflections", []).append(runtime_step.initial_llm_plan_entry(task=tasks[index]))
             task = tasks[index]
             index += 1
             task_source = _source_alias(str(task.get("source") or "mediawiki"))

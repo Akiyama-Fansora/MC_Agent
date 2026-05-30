@@ -6,6 +6,7 @@ from typing import Any, Iterator
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
 from .agent_runtime import collection_tools_for_crawler, tool_catalog_prompt, tools_for_agent
 from .agent_message import make_agent_message
@@ -121,7 +122,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     @app.post("/api/chat")
     async def chat(request: Request) -> dict[str, Any]:
         payload = await request.json()
-        return _chat(cfg(), payload)
+        return await run_in_threadpool(_chat, cfg(), payload)
 
     @app.post("/api/agent-message")
     async def agent_message(request: Request) -> dict[str, Any]:
@@ -136,7 +137,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             requires_reply=bool(payload.get("requires_reply", True)),
             metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
         )
-        return _send_agent_message(cfg(), payload, message)
+        return await run_in_threadpool(_send_agent_message, cfg(), payload, message)
 
     @app.post("/api/chat/stream")
     async def chat_stream(request: Request) -> StreamingResponse:
@@ -162,9 +163,9 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         max_tasks = int(payload.get("max_tasks") or 16)
         session_summary = payload.get("session_summary") if isinstance(payload.get("session_summary"), dict) else None
         if include_completed:
-            plan = plan_crawler_tasks(question, cfg().paths.source_dir, max_tasks=max_tasks, include_completed=True)
+            plan = await run_in_threadpool(plan_crawler_tasks, question, cfg().paths.source_dir, max_tasks=max_tasks, include_completed=True)
         else:
-            plan = plan_crawler_tasks_resilient(question, cfg().paths.source_dir, max_tasks=max_tasks, session_summary=session_summary)
+            plan = await run_in_threadpool(plan_crawler_tasks_resilient, question, cfg().paths.source_dir, max_tasks=max_tasks, session_summary=session_summary)
         plan.setdefault("toolsets", toolsets_payload())
         return plan
 
@@ -191,7 +192,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         raw_profile = payload.get("profile") if isinstance(payload.get("profile"), dict) else {}
         existing = profile_by_id(cfg(), str(raw_profile.get("id") or payload.get("id") or "")) if raw_profile else None
         try:
-            return JSONResponse(test_profile_connection(raw_profile, existing=existing))
+            result = await run_in_threadpool(test_profile_connection, raw_profile, existing=existing)
+            return JSONResponse(result)
         except Exception as exc:  # noqa: BLE001 - surface connection failure to settings UI.
             return JSONResponse({"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status_code=200)
 

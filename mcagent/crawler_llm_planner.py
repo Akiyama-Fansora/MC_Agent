@@ -68,8 +68,8 @@ def _collection_target_hint(question: str) -> str:
     text = re.sub(r"\s+", " ", question.strip())
     text = re.sub(r"^(?:用户原始目标|原始请求|用户请求|Task goal|Original user request)\s*[:：]\s*", "", text, flags=re.I)
     quoted_patterns = [
-        r"(?:整合包|modpack)[「《\"']([^」》\"']{2,60})[」》\"']",
-        r"[「《\"']([^」》\"']{2,60})[」》\"'](?:的)?(?:完整数据|完整资料|资料|数据|内容|知识库|整合包|modpack)",
+        r"(?:整合包|modpack)[「《\"'“]([^」》\"'”]{2,60})[」》\"'”]",
+        r"[「《\"'“]([^」》\"'”]{2,60})[」》\"'”](?:的)?(?:完整公开数据|完整公开资料|完整数据|完整资料|资料|数据|内容|知识库|整合包|modpack)",
     ]
     for pattern in quoted_patterns:
         match = re.search(pattern, text, flags=re.I)
@@ -77,6 +77,18 @@ def _collection_target_hint(question: str) -> str:
             target = _clean_target_hint(match.group(1))
             if target:
                 return target
+    slash_alias_patterns = [
+        r"([\u4e00-\u9fffA-Za-z0-9_ （）()+.·-]{2,60}\s*(?:/|／)\s*[A-Za-z][A-Za-z0-9_ （）()+.·' -]{2,60})\s*(?:整合包|modpack)(?:的)?(?:完整公开数据|完整公开资料|完整数据|完整资料|详细资料|公开资料|资料|数据|内容|知识库|模组列表|玩法指南|包括)",
+        r"([\u4e00-\u9fff]{2,60})\s*(?:/|／)\s*([A-Za-z][A-Za-z0-9_ （）()+.·' -]{2,60})\s*(?:整合包|modpack)",
+    ]
+    for pattern in slash_alias_patterns:
+        match = re.search(pattern, text, flags=re.I)
+        if not match:
+            continue
+        target = " / ".join(part.strip() for part in match.groups() if part and part.strip())
+        target = _clean_target_hint(target, max_len=90)
+        if target:
+            return target
     package_patterns = [
         r"(?:针对|为|关于|有关)?\s*([\u4e00-\u9fffA-Za-z0-9_ （）()+.-]{2,60}?)(整合包|modpack)(?:的)?(?:采集|收集|获取|补充|补齐|整理)?(?:缺失|缺少|缺口|完整|详细|相关)?(?:资料|数据|内容|知识库)",
         r"(?:关于|有关)?\s*(?:Minecraft|MC)?\s*(整合包|modpack)\s*([\u4e00-\u9fffA-Za-z0-9_ （）()+-]{2,60}?)(?:的)?(?:完整数据|完整资料|详细资料|资料|数据|内容|知识库|模组列表|玩法指南|包括)",
@@ -166,7 +178,7 @@ GENERIC_TARGET_PATTERNS = (
 )
 
 
-def _clean_target_hint(value: Any, *, max_len: int = 60) -> str:
+def _clean_target_hint(value: Any, *, max_len: int = 90) -> str:
     target = re.sub(r"\s+", " ", str(value or "")).strip(" ：:，,。；;？?！!")
     if not target:
         return ""
@@ -1297,6 +1309,14 @@ def reflect_crawler_progress(
     compact_results = list(snapshot["recent_results"])
     learned_memory = _crawler_memory_digest(limit=8)
     compact_pending = list(snapshot["pending_tasks"])
+    if not task_results and _plan_requires_llm_confirmation(plan):
+        return _confirm_fallback_plan_first_step(
+            question=question,
+            plan=plan,
+            compact_pending=compact_pending,
+            pending_count=len(pending_tasks),
+            session_summary=session_summary,
+        )
     try:
         client, label = _planner_client()
         schema = {
@@ -1398,17 +1418,91 @@ def reflect_crawler_progress(
         )
     except Exception as exc:  # noqa: BLE001
         return {
-            "action": "execute_pending" if pending_tasks else "finish",
+            "action": "finish",
             "selected_index": 0,
-            "reason": f"CrawlerAgent reflection failed; executor will use conservative pending task fallback: {type(exc).__name__}: {exc}",
+            "reason": f"CrawlerAgent reflection failed, so the executor must not choose another crawler tool on its behalf: {type(exc).__name__}: {exc}",
             "tasks": [],
-            "done_summary": "",
+            "done_summary": (
+                "CrawlerAgent could not review the latest objective results because its reflection LLM failed. "
+                "No more tools were executed automatically; retry after the model/quota issue is resolved."
+            ),
             "planner": "reflection_fallback_after_llm_error",
             "contract": {
                 "valid": False,
-                "issues": ["reflection_llm_error"],
+                "issues": ["reflection_llm_error", "stopped_before_executor_tool_choice"],
                 "requires_llm_task_materialization": False,
                 "pending_count": len(pending_tasks),
+            },
+        }
+
+
+def _plan_requires_llm_confirmation(plan: dict[str, Any]) -> bool:
+    strategy = str(plan.get("strategy") or "")
+    return strategy not in {"crawler_llm_planner", "quick_recovery_llm_plan_after_planner_error", "topic_discovery_llm_review"}
+
+
+def _confirm_fallback_plan_first_step(
+    *,
+    question: str,
+    plan: dict[str, Any],
+    compact_pending: list[dict[str, Any]],
+    pending_count: int,
+    session_summary: dict[str, Any] | None,
+) -> dict[str, Any]:
+    try:
+        client, label = _planner_client()
+        schema = {
+            "action": "execute_pending|finish",
+            "selected_index": 0,
+            "reason": "why this existing pending task is safe and useful, or why no tool should run",
+            "done_summary": "only when action=finish",
+        }
+        prompt = (
+            "You are CrawlerAgent. A rule fallback produced candidate crawler tasks because the long planner timed out. "
+            "The executor is not allowed to choose a tool for you. Choose exactly one existing pending task to execute, or finish/stop if none should run.\n"
+            "Do not add new tasks in this response. Do not answer the user. Output valid JSON only.\n"
+            "Prefer objective public collection steps. For Minecraft modpacks, do not choose modpack_internal unless a real local archive/path/manifest is visible in the plan or context; choose modpack_download/web_discovery/playwright first when no archive exists.\n"
+            "Do not use MCagent/RAG/ingest or the full user request as a search query. Choose the best pending index by source/query quality.\n"
+            f"question: {question}\n"
+            f"session_summary: {json.dumps(session_summary or {}, ensure_ascii=False)[:1200]}\n"
+            f"plan: {json.dumps(_compact_plan_for_reflection(plan), ensure_ascii=False)}\n"
+            f"artifact_refs: {json.dumps(list(plan.get('artifact_refs') or [])[:8], ensure_ascii=False)}\n"
+            f"pending_tasks: {json.dumps(compact_pending[:12], ensure_ascii=False)}\n"
+            f"JSON schema: {json.dumps(schema, ensure_ascii=False)}"
+        )
+        raw_text = client.chat(
+            [
+                {"role": "system", "content": "Return valid JSON only."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.0,
+            max_tokens=900,
+        )
+        try:
+            raw = _json_from_text(raw_text)
+        except Exception:
+            raw = _repair_planner_json(client, raw_text, label=label, schema=schema)
+        action = str(raw.get("action") or "").strip().lower()
+        if action not in {"execute_pending", "finish"}:
+            raw["action"] = "execute_pending" if pending_count else "finish"
+        raw["tasks"] = []
+        return CrawlerReflectionDecisionService().normalize(raw, pending_count=pending_count, normalized_tasks=[], planner=f"{label} fallback-confirmation")
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "action": "finish",
+            "selected_index": 0,
+            "reason": f"CrawlerAgent fallback-plan confirmation failed, so the executor must not choose a crawler tool on its behalf: {type(exc).__name__}: {exc}",
+            "tasks": [],
+            "done_summary": (
+                "CrawlerAgent could not confirm the fallback plan because its LLM failed. "
+                "No tools were executed automatically; retry after the model/quota issue is resolved."
+            ),
+            "planner": "fallback_confirmation_after_llm_error",
+            "contract": {
+                "valid": False,
+                "issues": ["fallback_confirmation_llm_error", "stopped_before_executor_tool_choice"],
+                "requires_llm_task_materialization": False,
+                "pending_count": pending_count,
             },
         }
 

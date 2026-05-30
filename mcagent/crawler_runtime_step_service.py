@@ -21,6 +21,30 @@ class CrawlerRuntimeStepService:
             "contract": reflection.get("contract") or {},
         }
 
+    def initial_llm_plan_entry(self, *, task: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "at_index": 0,
+            "action": "execute_pending",
+            "selected_index": 0,
+            "reason": "CrawlerAgent already selected this first tool in its LLM plan; execute it before asking for a follow-up reflection.",
+            "planner": "crawler_llm_planner",
+            "tasks": [task],
+            "contract": {
+                "valid": True,
+                "issues": [],
+                "requires_llm_task_materialization": False,
+                "pending_count": 1,
+            },
+        }
+
+    def should_reflect_before_task(self, *, plan: dict[str, Any], task_results: list[dict[str, Any]], index: int) -> bool:
+        if task_results:
+            return True
+        strategy = str(plan.get("strategy") or "")
+        if strategy in {"crawler_llm_planner", "quick_recovery_llm_plan_after_planner_error"}:
+            return False
+        return True
+
     def apply_action(
         self,
         *,

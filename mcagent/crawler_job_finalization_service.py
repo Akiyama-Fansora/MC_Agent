@@ -22,6 +22,10 @@ class CrawlerJobFinalizationService:
     ) -> dict[str, Any]:
         status = "stopped" if stop_requested else ("succeeded" if success_count else "failed")
         summary = f"资料补库完成：资料成功 {success_count}，候选发现 {candidate_count}，失败 {failure_count}。"
+        agent_finish_reason = str(plan.get("agent_finish_reason") or "").strip()
+        stopped_before_tools = bool(agent_finish_reason and not stop_requested and success_count <= 0 and not task_results)
+        if stopped_before_tools:
+            summary = f"CrawlerAgent stopped before tool execution: {agent_finish_reason}"
         if stop_requested:
             summary = f"Crawler 任务已停止：已完成 {len(task_results)}/{len(planned_tasks)} 个任务，资料成功 {success_count}，候选发现 {candidate_count}，失败 {failure_count}。"
         elif needs_ingest:
@@ -43,7 +47,11 @@ class CrawlerJobFinalizationService:
             "loop": [
                 {"phase": "understand", "status": "done"},
                 {"phase": "plan", "status": "done"},
-                {"phase": "act", "status": "done", "note": f"Succeeded {success_count}; failed {failure_count}"},
+                {
+                    "phase": "act",
+                    "status": "blocked" if stopped_before_tools else "done",
+                    "note": agent_finish_reason if stopped_before_tools else f"Succeeded {success_count}; failed {failure_count}",
+                },
                 {
                     "phase": "ingest",
                     "status": "running" if needs_ingest and not stop_requested else "skipped",
@@ -59,6 +67,6 @@ class CrawlerJobFinalizationService:
         return {
             "status": status,
             "summary": summary,
-            "error": None if success_count or stop_requested else "all crawler sources failed",
+            "error": None if success_count or stop_requested else (agent_finish_reason or "all crawler sources failed"),
             "result": result,
         }
