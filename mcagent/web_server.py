@@ -3289,24 +3289,9 @@ def _generate_grounded_answer(
     try:
         client, model_label = _selected_llm_client(config, model, temperature)
         answer = client.chat(messages, temperature=temperature, max_tokens=max_tokens)
-    except Exception as exc:  # noqa: BLE001 - keep chat usable if remote/local LLM times out.
-        primary_error = exc
-        if model == config.ollama.model or model.startswith("local:ollama:") or bool(context_override):
-            answer = f"模型调用失败：{primary_error}\n\n我没有用本地抽取结果替代模型最终回答。当前证据已随来源返回，修复模型连接后可重新生成。"
-            return answer, context
-        try:
-            fallback = OllamaOpenAIClient(config.ollama)
-            answer = fallback.chat(messages, temperature=temperature, max_tokens=max_tokens)
-        except Exception as fallback_exc:  # noqa: BLE001
-            answer = (
-                f"模型调用失败：首选模型失败：{primary_error}；本地 Ollama 也失败：{fallback_exc}\n\n"
-                "我没有用本地抽取结果替代模型最终回答。当前检索证据会随本次回复返回，修复模型连接后可重新生成。"
-            )
-        else:
-            answer = (
-                f"{answer}\n\n\u6a21\u578b\uff1aOllama {config.ollama.model}"
-                f"\n\u5907\u6ce8\uff1a\u9996\u9009\u6a21\u578b\u8c03\u7528\u5931\u8d25\uff0c\u5df2\u81ea\u52a8\u964d\u7ea7\u5230\u672c\u5730 Ollama\u3002\u5931\u8d25\u539f\u56e0\uff1a{primary_error}"
-            )
+    except Exception as exc:  # noqa: BLE001 - expose profile/API errors instead of hiding them behind a local fallback.
+        answer = f"模型调用失败：{exc}\n\n未自动降级到本地 Ollama；请检查当前 Agent 在设置页分配的模型配置、API Key、限流或网络状态。"
+        return answer, context
     else:
         answer = f"{answer}\n\n\u6a21\u578b\uff1a{model_label}" if answer.strip() else "\u672c\u5730\u8d44\u6599\u5e93\u672a\u627e\u5230\u53ef\u9760\u7b54\u6848\u3002"
     if _answer_is_garbled(answer):
@@ -3464,29 +3449,8 @@ def _generate_grounded_answer_stream(
             raise RuntimeError("model streaming completed without visible answer content")
         answer = f"{answer}\n\n模型：{model_label}"
     except Exception as exc:  # noqa: BLE001
-        primary_error = exc
-        if model == config.ollama.model or model.startswith("local:ollama:") or bool(context_override):
-            answer = f"模型调用失败：{primary_error}\n\n我没有用本地抽取结果替代模型最终回答。当前证据已保留在来源中，可稍后重试模型生成。"
-            return answer, context
-        try:
-            fallback = OllamaOpenAIClient(config.ollama)
-            chunks = _collect_streaming_answer(fallback, messages, temperature, max_tokens, emit_delta, emit_thinking)
-            answer = "".join(chunks).strip()
-            if not answer:
-                retry_tokens = min(max((max_tokens or 0) * 4, 4000), 8000)
-                chunks = _collect_streaming_answer(fallback, messages, temperature, retry_tokens, emit_delta, emit_thinking)
-                answer = "".join(chunks).strip()
-            if not answer:
-                raise RuntimeError("local Ollama streaming completed without visible answer content")
-            answer = (
-                f"{answer}\n\n模型：Ollama {config.ollama.model}"
-                f"\n备注：首选模型调用失败，已降级到本地 Ollama。失败原因：{primary_error}"
-            )
-        except Exception as fallback_exc:  # noqa: BLE001
-            answer = (
-                f"模型调用失败：首选模型失败：{primary_error}；本地 Ollama 也失败：{fallback_exc}\n\n"
-                "我没有用工具抽取结果替代模型最终回答。当前检索证据会随本次回复返回，修复模型连接后可重新生成。"
-            )
+        answer = f"模型调用失败：{exc}\n\n未自动降级到本地 Ollama；请检查当前 Agent 在设置页分配的模型配置、API Key、限流或网络状态。"
+        return answer, context
     if _answer_is_garbled(answer):
         answer = "模型输出疑似乱码，本次不使用工具兜底替代最终回答。请检查模型服务或重新生成。"
     return answer, context

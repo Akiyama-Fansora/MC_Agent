@@ -137,6 +137,32 @@ def test_mcagent_delegation_extracts_modpack_entity_from_full_instruction() -> N
     assert_true("keeps_entity_query", any(query == "乌托邦探险之旅 / Utopian Journey" or query == "Utopian Journey" for query in queries))
 
 
+def test_utf8_mcagent_delegation_extracts_clean_named_alias_target() -> None:
+    question = (
+        "\u8bf7\u5148\u8ba9 MCagent \u68c0\u67e5\u672c\u5730\u8d44\u6599\u91cc "
+        "\u4e4c\u6258\u90a6\u63a2\u9669\u4e4b\u65c5 / Utopian Journey \u6574\u5408\u5305"
+        "\u8fd8\u7f3a\u54ea\u4e9b\u5185\u5bb9\uff0c\u7136\u540e\u628a\u7f3a\u5931\u7684"
+        "\u516c\u5f00\u8d44\u6599\u91c7\u96c6\u4efb\u52a1\u8f6c\u4ea4\u7ed9 CrawlerAgent\u3002"
+    )
+    session_summary = {
+        "delivery_target": "MCagent/RAG",
+        "requested_by": "user_via_mcagent",
+        "collection_target": "\u4e4c\u6258\u90a6\u63a2\u9669\u4e4b\u65c5 / Utopian Journey \u6574\u5408\u5305\u5b8c\u6574\u516c\u5f00\u8d44\u6599",
+        "task_goal": "MCagent \u8f6c\u8fbe\uff1a\u83b7\u53d6\u4e4c\u6258\u90a6\u63a2\u9669\u4e4b\u65c5 / Utopian Journey \u6574\u5408\u5305\u5b8c\u6574\u516c\u5f00\u8d44\u6599\uff0c\u4f9b MCagent/RAG \u56de\u7b54\u3002",
+    }
+    raw = {
+        "topic": "/ Utopian Journey ??????????? MCagent/RAG",
+        "package_type": "modpack",
+        "delivery_target": "MCagent/RAG",
+        "tasks": [{"source": "mcagent_context", "query": "/ Utopian Journey ??????????? MCagent/RAG", "priority": 150}],
+    }
+    plan = _sanitize_plan(raw, question, ROOT / "data" / "crawler_exports", max_tasks=8, session_summary=session_summary)
+    assert_equal("topic", plan["topic"], "\u4e4c\u6258\u90a6\u63a2\u9669\u4e4b\u65c5 / Utopian Journey")
+    assert_equal("target_hint", plan["target_hint"], "\u4e4c\u6258\u90a6\u63a2\u9669\u4e4b\u65c5 / Utopian Journey")
+    queries = [task["query"] for task in plan["tasks"]]
+    assert_true("no_broken_query", all("?" not in query and "MCagent/RAG" not in query for query in queries))
+
+
 def test_session_target_rejects_generic_relation_phrase() -> None:
     summary = {
         "collection_target": "的相关整合包",
@@ -347,6 +373,34 @@ def test_reflection_llm_failure_stops_before_executor_tool_choice() -> None:
     assert_true("rate_limit_visible", "429" in decision["reason"])
 
 
+def test_topic_discovery_review_uses_crawler_profile_client() -> None:
+    original_client_for_agent = crawler_llm_planner.client_for_agent
+    calls: list[tuple[str, float, int]] = []
+
+    class FakeClient:
+        def chat(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return "ACCEPT|web_discovery|Utopian Journey mod list|useful missing public topic"
+
+    def fake_client_for_agent(config, agent, *, temperature=0.0, timeout_seconds=None):  # noqa: ANN001, ANN202
+        calls.append((agent, temperature, timeout_seconds or 0))
+        return FakeClient(), "DeepSeek crawler profile"
+
+    crawler_llm_planner.client_for_agent = fake_client_for_agent  # type: ignore[assignment]
+    try:
+        plan = crawler_llm_planner.review_topic_discovery_candidates(
+            "Utopian Journey",
+            ["Utopian Journey mod list"],
+            [],
+            [],
+            max_tasks=3,
+        )
+    finally:
+        crawler_llm_planner.client_for_agent = original_client_for_agent  # type: ignore[assignment]
+    assert_equal("agent", calls[0][0], "crawler_agent")
+    assert_equal("planner_model", plan["planner_model"], "DeepSeek crawler profile")
+    assert_equal("source", plan["tasks"][0]["source"], "web_discovery")
+
+
 def test_fallback_plan_confirmation_lets_crawler_pick_existing_task() -> None:
     original_client = crawler_llm_planner._planner_client
 
@@ -474,12 +528,15 @@ if __name__ == "__main__":
     test_direct_crawler_delegate_phrase_is_not_target()
     test_rule_fallback_extracts_domain_target_from_agent_handoff()
     test_rule_fallback_keeps_quoted_slash_alias_modpack_target()
+    test_mcagent_delegation_extracts_modpack_entity_from_full_instruction()
+    test_utf8_mcagent_delegation_extracts_clean_named_alias_target()
     test_session_target_rejects_generic_relation_phrase()
     test_gap_collection_fallback_prefers_generic_web_and_bound_queries()
     test_llm_plan_gap_collection_is_rebalanced_to_generic_tools()
     test_gap_collection_rejects_literal_missing_as_web_topic()
     test_reflection_replaces_literal_gap_pending_query()
     test_reflection_llm_failure_stops_before_executor_tool_choice()
+    test_topic_discovery_review_uses_crawler_profile_client()
     test_fallback_plan_confirmation_lets_crawler_pick_existing_task()
     test_fallback_plan_confirmation_failure_stops_before_tools()
     test_fallback_plan_confirmation_empty_json_reports_real_failure()

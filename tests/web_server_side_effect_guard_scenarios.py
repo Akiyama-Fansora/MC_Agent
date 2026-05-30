@@ -76,6 +76,35 @@ class FakeClient:
         return '{"handoff_brief":"调用关系：MCagent 将用户请求转交给 CrawlerAgent。","reason":"fake"}'
 
 
+class FailingClient:
+    def chat(self, messages: list[dict[str, Any]], *, temperature: float, max_tokens: int | None) -> str:  # noqa: ARG002
+        raise RuntimeError("primary profile failed")
+
+
+def test_grounded_answer_does_not_fallback_to_ollama_after_profile_error() -> None:
+    config = make_temp_config(Path(tempfile.mkdtemp(prefix="mcagent-no-ollama-fallback-")))
+    original_selector = web_server._selected_llm_client
+    original_ollama = web_server.OllamaOpenAIClient
+    try:
+        web_server._selected_llm_client = lambda *_args, **_kwargs: (FailingClient(), "DeepSeek test")  # type: ignore[assignment]
+        web_server.OllamaOpenAIClient = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected Ollama fallback"))  # type: ignore[assignment]
+        answer, _context = web_server._generate_grounded_answer(
+            config,
+            "question",
+            [],
+            "profile:deepseek-template",
+            0.0,
+            128,
+            context_override="evidence",
+        )
+    finally:
+        shutil.rmtree(config.paths.project_root, ignore_errors=True)
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server.OllamaOpenAIClient = original_ollama  # type: ignore[assignment]
+    assert_true("reports_primary_error", "primary profile failed" in answer, answer)
+    assert_true("no_auto_ollama_note", "已自动降级" not in answer and "未自动降级" in answer, answer)
+
+
 def test_direct_user_handoff_brief_rejects_wrong_mcagent_identity() -> None:
     original_selector = web_server._selected_llm_client
     web_server._selected_llm_client = lambda *_args, **_kwargs: (FakeClient(), "fake")  # type: ignore[assignment]
@@ -957,6 +986,7 @@ def test_duplicate_reuse_requires_crawler_llm_acceptance() -> None:
 
 if __name__ == "__main__":
     test_direct_crawler_no_save_url_uses_temporary_extract_boundary()
+    test_grounded_answer_does_not_fallback_to_ollama_after_profile_error()
     test_direct_user_handoff_brief_rejects_wrong_mcagent_identity()
     test_direct_crawler_delegate_choice_is_corrected_to_temporary_extract()
     test_direct_crawler_mcagent_gap_request_forces_planned_workflow()

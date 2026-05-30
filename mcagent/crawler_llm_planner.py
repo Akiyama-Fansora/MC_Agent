@@ -5,13 +5,13 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .config import OllamaConfig, load_config
+from .config import load_config
 from .crawler_planner import decompose_crawler_queries, plan_crawler_tasks
 from .crawler_reflection_decision_service import CrawlerReflectionDecisionService
 from .crawler_reflection_service import CrawlerReflectionSnapshotService
 from .agent_memory import read_memory_events
 from .agent_runtime import classify_crawler_tool_result, crawler_collection_catalog_prompt
-from .llm import OllamaOpenAIClient, OpenAICompatibleClient
+from .llm import OpenAICompatibleClient
 from .llm_profiles import client_for_agent
 
 
@@ -67,6 +67,9 @@ GOAL_QUERY_HINTS = {
 def _collection_target_hint(question: str) -> str:
     text = re.sub(r"\s+", " ", question.strip())
     text = re.sub(r"^(?:用户原始目标|原始请求|用户请求|Task goal|Original user request)\s*[:：]\s*", "", text, flags=re.I)
+    named_alias = _named_modpack_alias_hint(text)
+    if named_alias:
+        return named_alias
     embedded_target = _embedded_modpack_target_hint(text)
     if embedded_target:
         return embedded_target
@@ -133,6 +136,23 @@ def _collection_target_hint(question: str) -> str:
         if target:
             return target
     return ""
+
+
+def _named_modpack_alias_hint(text: str) -> str:
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not value:
+        return ""
+    match = re.search(
+        r"([\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9_ （）()+.·-]{1,60}?)\s*(?:/|／)\s*([A-Za-z][A-Za-z0-9_ （）()+.·' -]{2,60})\s*(?:整合包|modpack)",
+        value,
+        flags=re.I,
+    )
+    if not match:
+        return ""
+    cn = _strip_target_prefix(match.group(1))
+    en = _strip_target_suffix(match.group(2))
+    target = _clean_target_hint(f"{cn} / {en}", max_len=90)
+    return target
 
 
 def _embedded_modpack_target_hint(text: str) -> str:
@@ -210,6 +230,7 @@ def _clean_target_hint(value: Any, *, max_len: int = 90) -> str:
         return ""
     target = re.sub(r"^.*?(?:主题|目标|对象|名称)\s*(?:是|为|[:：])\s*", "", target)
     target = re.sub(r"^(?:针对|为|给)\s*", "", target)
+    target = _strip_target_prefix(target)
     target = re.split(r"[,，。；;：:]|缺少|缺失|缺口|不足|还缺|需要补", target, maxsplit=1)[0]
     target = re.sub(r"^(?:的|关于|有关)\s*", "", target)
     target = re.sub(r"^(?:MCagent|MCAgent|MC Agent|CrawlerAgent|Crawler|RAG|本地资料库|知识库)\s*", "", target, flags=re.I).strip()
@@ -227,6 +248,40 @@ def _clean_target_hint(value: Any, *, max_len: int = 90) -> str:
     if not re.search(r"[\u4e00-\u9fffA-Za-z0-9]", target):
         return ""
     return target
+
+
+def _strip_target_prefix(value: str) -> str:
+    target = re.sub(r"\s+", " ", str(value or "")).strip(" ：:，,。；;？?！!")
+    target = re.sub(
+        r"^.*?(?:本地资料(?:里|中)?|本地上下文|目标是|目标为|补齐|补充|采集|收集|获取|整理|检查)\s*(?=[\u4e00-\u9fffA-Za-z0-9])",
+        "",
+        target,
+        flags=re.I,
+    )
+    target = re.sub(
+        r"^(?:MCagent|MCAgent|MC Agent|CrawlerAgent|Crawler|RAG|转达|请|先|让|把|将|缺失的|公开|资料|里|中|的|关于|有关)\s*",
+        "",
+        target,
+        flags=re.I,
+    )
+    return target.strip(" ：:，,。；;？?！!")
+
+
+def _strip_target_suffix(value: str) -> str:
+    target = re.sub(r"\s+", " ", str(value or "")).strip(" ：:，,。；;？?！!")
+    target = re.split(r"\s*(?:完整公开资料|完整资料|公开资料|资料|数据|内容|信息|供\s*MCagent|给\s*MCagent|用于\s*RAG|MCagent/RAG|回答|使用)\b", target, maxsplit=1, flags=re.I)[0]
+    return target.strip(" ：:，,。；;？?！!")
+
+
+def _looks_like_broken_target(value: str) -> bool:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        return True
+    if "?" in text and not re.search(r"[\u4e00-\u9fff]", text):
+        return True
+    if re.search(r"\b(?:MCagent|CrawlerAgent|RAG)\b", text, flags=re.I) and not re.search(r"[\u4e00-\u9fff]", text):
+        return True
+    return False
 
 
 def _looks_like_instruction_query(query: str, target_hint: str = "") -> bool:
@@ -1000,7 +1055,7 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
     question = _strip_delivery_recipient(question)
     target_hint = _clean_target_hint(_session_target_hint(session_summary) or _collection_target_hint(question) or _question_subject_hint(question), max_len=80)
     topic = str(raw.get("topic") or "").strip()
-    if target_hint and (not topic or _looks_like_agent_target(topic)):
+    if target_hint and (not topic or _looks_like_agent_target(topic) or _looks_like_broken_target(topic)):
         topic = target_hint
     if target_hint and topic != target_hint and target_hint in topic:
         topic = target_hint
@@ -1088,6 +1143,9 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
             raw_task["query"] = _clean_task_query(str(raw_task.get("query") or ""), target_hint=target_hint, topic=topic)
             if target_hint:
                 raw_query = str(raw_task.get("query") or "").strip()
+                if _looks_like_broken_target(raw_query):
+                    raw_task["query"] = target_hint
+                    raw_query = target_hint
                 if raw_query and not _is_url_query(raw_query) and not _query_mentions_target(raw_query, target_hint):
                     raw_task["query"] = _bind_query_to_target(raw_query, target_hint)
             task = _normalize_task(raw_task, str(raw.get("reason") or ""), 80 - index)
@@ -1096,6 +1154,9 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
                 if _is_url_query(query) and not _task_url_is_grounded(task, query=query):
                     task = _downgrade_ungrounded_url_task(task, target=target_hint or topic)
                     query = str(task.get("query") or "").strip()
+                if target_hint and _looks_like_broken_target(query):
+                    task["query"] = target_hint
+                    query = target_hint
                 if target_hint and query and not _is_url_query(query) and not _query_mentions_target(query, target_hint):
                     task["query"] = _bind_query_to_target(query, target_hint)
                     query = str(task.get("query") or "").strip()
@@ -1627,15 +1688,7 @@ def review_topic_discovery_candidates(
     max_tasks: int = 12,
 ) -> dict[str, Any]:
     fallback_config = load_config()
-    client = OllamaOpenAIClient(
-        OllamaConfig(
-            base_url=fallback_config.ollama.base_url,
-            model=fallback_config.ollama.model,
-            temperature=0.0,
-            timeout_seconds=120,
-        )
-    )
-    label = f"Ollama topic-review {fallback_config.ollama.model}"
+    client, label = client_for_agent(fallback_config, "crawler_agent", temperature=0.0, timeout_seconds=120)
     compact_candidates = [str(item) for item in candidates if str(item).strip()][:30]
     compact_phrases = [str(item) for item in phrases if str(item).strip()][:50]
     existing_compact = existing_tasks[:30]
@@ -1668,7 +1721,15 @@ def review_topic_discovery_candidates(
             f"Target: {question}\n"
             f"Candidates: {json.dumps(compact_candidates[:12], ensure_ascii=False)}"
         )
-        try:
+        text = client.chat(
+            [
+                {"role": "system", "content": "Output only ACCEPT/REJECT lines."},
+                {"role": "user", "content": short_prompt},
+            ],
+            temperature=0.0,
+            max_tokens=900,
+        )
+        if not text.strip():
             text = client.chat(
                 [
                     {"role": "system", "content": "Output only ACCEPT/REJECT lines."},
@@ -1677,61 +1738,14 @@ def review_topic_discovery_candidates(
                 temperature=0.0,
                 max_tokens=900,
             )
-        except Exception:
-            fallback_config = load_config()
-            fallback_client = OllamaOpenAIClient(
-                OllamaConfig(
-                    base_url=fallback_config.ollama.base_url,
-                    model=fallback_config.ollama.model,
-                    temperature=0.0,
-                    timeout_seconds=120,
-                )
-            )
-            text = fallback_client.chat(
-                [
-                    {"role": "system", "content": "Output only ACCEPT/REJECT lines."},
-                    {"role": "user", "content": short_prompt},
-                ],
-                temperature=0.0,
-                max_tokens=900,
-            )
-            label = f"Ollama fallback {fallback_config.ollama.model}"
-        if not text.strip():
-            fallback_config = load_config()
-            fallback_client = OllamaOpenAIClient(
-                OllamaConfig(
-                    base_url=fallback_config.ollama.base_url,
-                    model=fallback_config.ollama.model,
-                    temperature=0.0,
-                    timeout_seconds=120,
-                )
-            )
-            text = fallback_client.chat(
-                [
-                    {"role": "system", "content": "Output only ACCEPT/REJECT lines."},
-                    {"role": "user", "content": short_prompt},
-                ],
-                temperature=0.0,
-                max_tokens=900,
-            )
-            label = f"Ollama fallback {fallback_config.ollama.model}"
     if not text.strip():
-        fallback_config = load_config()
-        fallback_client = OllamaOpenAIClient(
-            OllamaConfig(
-                base_url=fallback_config.ollama.base_url,
-                model=fallback_config.ollama.model,
-                temperature=0.0,
-                timeout_seconds=120,
-            )
-        )
         short_prompt = (
             "Output only ACCEPT lines. Format: ACCEPT|source|query|reason. "
             "Allowed sources: mcmod,fetch_url,web_discovery,playwright,modpack_download. Prefer generic public web/browser routes unless the candidate is clearly MC百科-specific. "
             f"Target: {question}\n"
             f"Candidates: {json.dumps(compact_candidates[:10], ensure_ascii=False)}"
         )
-        text = fallback_client.chat(
+        text = client.chat(
             [
                 {"role": "system", "content": "Output only ACCEPT lines."},
                 {"role": "user", "content": short_prompt},
@@ -1739,7 +1753,6 @@ def review_topic_discovery_candidates(
             temperature=0.0,
             max_tokens=600,
         )
-        label = f"Ollama fallback {fallback_config.ollama.model}"
     tasks: list[dict[str, Any]] = []
     accepted_topics: list[str] = []
     rejected_topics: list[dict[str, str]] = []
