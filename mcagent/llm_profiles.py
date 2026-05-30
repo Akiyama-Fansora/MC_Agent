@@ -9,10 +9,19 @@ from typing import Any
 
 from .config import AppConfig, OllamaConfig, PROJECT_ROOT
 from .llm import OllamaOpenAIClient, OpenAICompatibleClient
+from .provider_registry import env_value
 
 
 PROFILE_PATH = PROJECT_ROOT / "data" / "llm_profiles.json"
 AGENT_IDS = {"mcagent_rag", "crawler_agent"}
+
+
+def _default_api_key_for_profile(profile_id: str, provider: str) -> str:
+    normalized_id = str(profile_id or "").strip().lower()
+    normalized_provider = str(provider or "").strip().lower()
+    if normalized_id == "deepseek-template" or "deepseek" in normalized_provider:
+        return env_value("MCAGENT_DEEPSEEK_API_KEY") or env_value("DEEPSEEK_API_KEY")
+    return ""
 
 
 def _profile_id(value: str = "") -> str:
@@ -47,7 +56,7 @@ def _default_profiles(config: AppConfig) -> dict[str, Any]:
             "provider": "openai-compatible",
             "base_url": "https://api.deepseek.com",
             "model": "deepseek-v4-pro",
-            "api_key": "",
+            "api_key": _default_api_key_for_profile("deepseek-template", "openai-compatible"),
             "timeout_seconds": 180,
             "builtin": True,
         },
@@ -96,6 +105,8 @@ def _sanitize_profile(raw: dict[str, Any], existing: dict[str, Any] | None = Non
     api_key = str(raw.get("api_key") or "")
     if not api_key and existing:
         api_key = str(existing.get("api_key") or "")
+    if not api_key:
+        api_key = _default_api_key_for_profile(profile_id, str(raw.get("provider") or (existing or {}).get("provider") or ""))
     model = str(raw.get("model") or "").strip()
     base_url = _normalize_base_url(str(raw.get("base_url") or ""))
     timeout = int(raw.get("timeout_seconds") or (existing or {}).get("timeout_seconds") or 180)
