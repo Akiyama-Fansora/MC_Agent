@@ -1109,7 +1109,15 @@ def _round_command(source: str, payload: dict[str, Any]) -> list[str]:
     if source == "mcmod":
         return [sys.executable, str(PROJECT_ROOT / "scripts" / "fetch_mcmod_seed.py"), "--query", query, "--limit", str(int(payload.get("search_limit") or 10))]
     if source == "modrinth":
-        return [
+        include_flag = payload.get("include_modpack_contents")
+        include_modpack_contents = include_flag is True or str(include_flag or "").strip().lower() in {"1", "true", "yes", "on"}
+        if not include_modpack_contents:
+            reason_text = " ".join(str(payload.get(key) or "") for key in ("reason", "query", "collection_target", "task_goal"))
+            include_modpack_contents = bool(
+                re.search(r"整合包|modpack", reason_text, flags=re.I)
+                and re.search(r"\.mrpack|manifest|modlist|mod list|包体|内部|完整模组列表|included mods|pack contents", reason_text, flags=re.I)
+            )
+        command = [
             sys.executable,
             str(PROJECT_ROOT / "scripts" / "fetch_modrinth_seed.py"),
             "--query",
@@ -1122,8 +1130,10 @@ def _round_command(source: str, payload: dict[str, Any]) -> list[str]:
             str(int(payload.get("resourcepacks") or 10)),
             "--shaders",
             str(int(payload.get("shaders") or 8)),
-            "--include-modpack-contents",
         ]
+        if include_modpack_contents:
+            command.append("--include-modpack-contents")
+        return command
     return [sys.executable, str(PROJECT_ROOT / "scripts" / "fetch_mediawiki_seed.py"), "--query", query, "--search-limit", str(int(payload.get("search_limit") or 12))]
 
 
@@ -2630,6 +2640,24 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
                 if new_tasks:
                     tasks.extend(new_tasks)
                 bad_streak = 0
+            elif loop_control.should_finish_after_enough_success(
+                source=source,
+                success_count=success_count,
+                executed_count=len(task_results),
+                task_count=len(tasks),
+                max_total_tasks=max_total_tasks,
+            ):
+                finish_reason = "Crawler collected enough useful evidence and reached the job task budget; finish now with the accepted evidence and remaining gaps instead of extending the task list again."
+                plan["agent_finish_reason"] = finish_reason
+                plan.setdefault("agent_reflections", []).append(
+                    {
+                        "at_index": index,
+                        "action": "finish",
+                        "reason": finish_reason,
+                        "planner": "executor task-budget guard",
+                    }
+                )
+                break
             elif loop_control.should_finish_after_useful_low_yield(
                 source=source,
                 success_count=success_count,
@@ -5639,14 +5667,20 @@ def _clean_explicit_mcagent_crawler_collection_target(original_question: str) ->
     value = re.sub(r"\s+", " ", str(original_question or "")).strip()
     if not value:
         return ""
-    alias_match = re.search(
-        r"([\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9_ （）()+.·-]{1,60}?)\s*(?:/|／)\s*([A-Za-z][A-Za-z0-9_ （）()+.·' -]{2,60})\s*(?:整合包|modpack)",
-        value,
-        flags=re.I,
-    )
+    alias_matches = [
+        match
+        for match in re.finditer(
+            r"([\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9_ （）()+.·-]{1,60}?)\s*(?:/|／)\s*([A-Za-z][A-Za-z0-9_ （）()+.·' -]{2,60})(?:\s*(?:整合包|modpack|模组|mod))?",
+            value,
+            flags=re.I,
+        )
+        if str(match.group(2) or "").strip().lower() not in {"rag", "mcagent", "crawleragent", "crawler"}
+        and not re.search(r"\b(?:MCagent|MCAgent|CrawlerAgent|Crawler|RAG)\b", str(match.group(1) or ""), flags=re.I)
+    ]
+    alias_match = alias_matches[-1] if alias_matches else None
     if alias_match:
         cn = re.sub(
-            r"^.*?(?:本地资料(?:里|中)?|本地上下文|检查|补齐|补充|采集|收集|获取|整理)\s*",
+            r"^.*?(?:本地资料(?:里|中)?|本地上下文|检查|补齐|补充|采集|收集|获取|整理|转达|告诉|让|叫|以|拿|用)\s*",
             "",
             alias_match.group(1),
         ).strip(" ：:，,。；;？?！!")
@@ -5655,18 +5689,39 @@ def _clean_explicit_mcagent_crawler_collection_target(original_question: str) ->
         target = f"{cn} / {en}"
     else:
         target = value
+    type_discovery = bool(
+        re.search(
+            r"自己判断|自行判断|判断(?:它|目标)?是(?:模组|mod)还是(?:整合包|modpack)|模组还是整合包|mod\s+or\s+modpack|if\s+not\s+a\s+modpack|不是整合包|不要强行|不要强制|不强行|不强制",
+            value,
+            flags=re.I,
+        )
+    )
+    archive_goal = bool(
+        not type_discovery
+        and re.search(r"整合包|modpack", value, flags=re.I)
+        and re.search(r"下载|包体|\.mrpack|\.zip|manifest|配置|完整模组列表|mod\s*list|modlist|FTB\s*Quests?|KubeJS", value, flags=re.I)
+    )
     coverage = ""
     marker = re.search(r"(?:目标|包括|覆盖)\s*[:：]\s*(.+)$", value)
     if marker:
         coverage = re.split(r"(?:。|；|;)\s*", marker.group(1), maxsplit=1)[0].strip(" ，,。；;")
     elif any(term in value for term in ("版本", "下载", "包体", "manifest", "配置", "模组列表", "玩法路线", "新手", "更新日志")):
         wanted = []
-        for label in ("版本", "下载/包体线索", "manifest/配置", "完整模组列表", "玩法路线", "新手到毕业路线", "更新日志"):
+        labels = ["版本", "manifest/配置", "完整模组列表", "玩法路线", "新手到毕业路线", "更新日志"]
+        if archive_goal:
+            labels.insert(1, "下载/包体线索")
+        for label in labels:
             if label in value or label.split("/")[0] in value:
                 wanted.append(label)
         coverage = "、".join(dict.fromkeys(wanted))
     suffix = f"；需要补齐：{coverage}" if coverage else ""
-    return f"{target} 整合包完整公开资料{suffix}".strip()
+    if archive_goal:
+        return f"{target} 整合包完整公开资料{suffix}".strip()
+    if type_discovery:
+        neutral_note = "公开资料采集；CrawlerAgent 自行判断目标类型；如果不是整合包，不强制包体下载"
+    else:
+        neutral_note = "公开资料采集"
+    return f"{target} {neutral_note}{suffix}".strip()
 
 
 def _prune_pending_mcagent_context_tasks_after_success(tasks: list[dict[str, Any]], index: int) -> list[dict[str, Any]]:

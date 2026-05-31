@@ -562,6 +562,31 @@ def test_english_modpack_archive_fallback_extracts_pack_name_and_download_query(
     assert_true("download_query_has_archive_terms", "Utopian Journey" in first["query"] and ".mrpack" in first["query"])
 
 
+def test_type_discovery_request_does_not_force_modpack_archive_download() -> None:
+    question = (
+        "\u8bf7\u4f60\u4f5c\u4e3a MCagent \u8f6c\u8fbe CrawlerAgent\uff1a"
+        "\u4ee5\u519c\u592b\u4e50\u4e8b / Farmer's Delight \u4e3a\u4f8b\u5b50\u8fdb\u884c\u6293\u53d6\u6d4b\u8bd5\uff0c"
+        "Crawler \u81ea\u5df1\u5224\u65ad\u5b83\u662f\u6a21\u7ec4\u8fd8\u662f\u6574\u5408\u5305\uff1b"
+        "\u5982\u679c\u4e0d\u662f\u6574\u5408\u5305\uff0c\u4e0d\u8981\u5f3a\u884c\u8dd1\u5305\u4f53\u4e0b\u8f7d\u3002"
+    )
+    plan = plan_crawler_tasks_rule_fallback(
+        question,
+        ROOT / "data" / "crawler_exports",
+        max_tasks=8,
+        planner_error="unit timeout",
+        session_summary={
+            "delivery_target": "MCagent/RAG",
+            "requested_by": "user_via_mcagent",
+            "collection_target": "\u519c\u592b\u4e50\u4e8b / Farmer's Delight \u516c\u5f00\u8d44\u6599\u91c7\u96c6\uff1bCrawlerAgent \u81ea\u884c\u5224\u65ad\u76ee\u6807\u7c7b\u578b\uff1b\u5982\u679c\u4e0d\u662f\u6574\u5408\u5305\uff0c\u4e0d\u5f3a\u5236\u5305\u4f53\u4e0b\u8f7d",
+            "task_goal": question,
+        },
+    )
+    assert_equal("topic", plan["topic"], "\u519c\u592b\u4e50\u4e8b / Farmer's Delight")
+    sources = [task["source"] for task in plan["tasks"]]
+    assert_true("does_not_start_with_modpack_download", not sources or sources[0] != "modpack_download")
+    assert_true("keeps_public_discovery", any(source in {"modrinth", "mcmod", "web_discovery", "playwright", "topic_discovery"} for source in sources))
+
+
 def test_reflection_allows_url_seen_in_manifest_preview() -> None:
     original_client = crawler_llm_planner._planner_client
 
@@ -646,6 +671,7 @@ if __name__ == "__main__":
     test_structured_xlsx_request_uses_browser_collect()
     test_modpack_archive_fallback_does_not_become_browser_collect()
     test_english_modpack_archive_fallback_extracts_pack_name_and_download_query()
+    test_type_discovery_request_does_not_force_modpack_archive_download()
     test_reflection_allows_url_seen_in_manifest_preview()
     test_job_planner_timeout_returns_executable_fallback()
     print("crawler_planner_timeout_scenarios passed")

@@ -390,6 +390,49 @@ def test_explicit_mcagent_to_crawler_handoff_starts_job_before_router() -> None:
     assert_true("fast_trace", ("delegate", "explicit_mcagent_handoff_fast_path") in statuses, str(statuses))
 
 
+def test_explicit_mcagent_to_crawler_type_discovery_stays_neutral() -> None:
+    question = (
+        "\u8bf7\u4f60\u4f5c\u4e3a MCagent \u8f6c\u8fbe CrawlerAgent\uff1a"
+        "\u4ee5\u519c\u592b\u4e50\u4e8b / Farmer's Delight \u4e3a\u4f8b\u5b50\u8fdb\u884c\u6293\u53d6\u6d4b\u8bd5\uff0c"
+        "Crawler \u81ea\u5df1\u5224\u65ad\u5b83\u662f\u6a21\u7ec4\u8fd8\u662f\u6574\u5408\u5305\uff1b"
+        "\u5982\u679c\u4e0d\u662f\u6574\u5408\u5305\uff0c\u4e0d\u8981\u5f3a\u884c\u8dd1\u5305\u4f53\u4e0b\u8f7d\u3002"
+    )
+    cleaned = web_server._clean_explicit_mcagent_crawler_collection_target(question)
+    assert_true("keeps_alias", "\u519c\u592b\u4e50\u4e8b / Farmer's Delight" in cleaned, cleaned)
+    assert_true("neutral_collection", "\u516c\u5f00\u8d44\u6599\u91c7\u96c6" in cleaned, cleaned)
+    assert_true("keeps_type_decision", "\u81ea\u884c\u5224\u65ad\u76ee\u6807\u7c7b\u578b" in cleaned, cleaned)
+    assert_true("no_forced_modpack_goal", "\u6574\u5408\u5305\u5b8c\u6574\u516c\u5f00\u8d44\u6599" not in cleaned, cleaned)
+    assert_true("no_forced_archive_gap", "\u4e0b\u8f7d/\u5305\u4f53\u7ebf\u7d22" not in cleaned, cleaned)
+
+
+def test_modrinth_plain_mod_task_does_not_parse_modpack_contents() -> None:
+    command = web_server._round_command(
+        "modrinth",
+        {
+            "query": "\u519c\u592b\u4e50\u4e8b / Farmer's Delight",
+            "reason": "\u641c\u7d22\u6a21\u7ec4\u9879\u76ee\u5143\u6570\u636e\uff0c\u7531 Crawler \u81ea\u5df1\u5224\u65ad\u76ee\u6807\u7c7b\u578b",
+            "mods": 16,
+            "modpacks": 5,
+            "resourcepacks": 3,
+            "shaders": 1,
+        },
+    )
+    assert_true("no_modpack_contents", "--include-modpack-contents" not in command, str(command))
+
+
+def test_modrinth_explicit_modpack_manifest_task_can_parse_contents() -> None:
+    command = web_server._round_command(
+        "modrinth",
+        {
+            "query": "Utopian Journey modpack",
+            "reason": "整合包 manifest / modlist / .mrpack contents",
+            "mods": 5,
+            "modpacks": 5,
+        },
+    )
+    assert_true("has_modpack_contents", "--include-modpack-contents" in command, str(command))
+
+
 def test_mcagent_explicit_crawler_request_forces_planned_delegate() -> None:
     question = "现在乌托邦整合包你本地还缺哪些资料，列出来，然后让 Crawler 去补充。"
     decision = {
@@ -1737,6 +1780,9 @@ if __name__ == "__main__":
     test_runtime_status_request_bypasses_llm_router()
     test_mcagent_gap_delegation_overrides_human_delivery_to_rag()
     test_explicit_mcagent_to_crawler_handoff_starts_job_before_router()
+    test_explicit_mcagent_to_crawler_type_discovery_stays_neutral()
+    test_modrinth_plain_mod_task_does_not_parse_modpack_contents()
+    test_modrinth_explicit_modpack_manifest_task_can_parse_contents()
     test_mcagent_explicit_crawler_request_forces_planned_delegate()
     test_direct_crawler_mcagent_gap_request_delegates_when_local_empty()
     test_crawler_mcagent_context_with_collection_continues_to_delegate()

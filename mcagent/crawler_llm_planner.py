@@ -90,6 +90,7 @@ def _collection_target_hint(question: str) -> str:
             if target:
                 return target
     slash_alias_patterns = [
+        r"(?:以|用|拿|对|关于|针对)\s*([\u4e00-\u9fff]{2,60})\s*(?:/|／)\s*([A-Za-z][A-Za-z0-9_ （）()+.·' -]{2,60})\s*(?:为例|进行|做|采集|抓取|测试|公开资料|资料)",
         r"([\u4e00-\u9fffA-Za-z0-9_ （）()+.·-]{2,60}\s*(?:/|／)\s*[A-Za-z][A-Za-z0-9_ （）()+.·' -]{2,60})\s*(?:整合包|modpack)(?:的)?(?:完整公开数据|完整公开资料|完整数据|完整资料|详细资料|公开资料|资料|数据|内容|知识库|模组列表|玩法指南|包括)",
         r"([\u4e00-\u9fff]{2,60})\s*(?:/|／)\s*([A-Za-z][A-Za-z0-9_ （）()+.·' -]{2,60})\s*(?:整合包|modpack)",
     ]
@@ -169,7 +170,7 @@ def _modern_chinese_modpack_target_hint(text: str) -> str:
     if not value:
         return ""
     slash_patterns = [
-        r"([\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9_（）()·.路之旅探险纪元 -]{1,60}?)\s*(?:/|／)\s*([A-Za-z][A-Za-z0-9_ ()'.·-]{2,60})\s*(?:整合包|modpack)",
+        r"([\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9_（）()·.路之旅探险纪元 -]{1,60}?)\s*(?:/|／)\s*([A-Za-z][A-Za-z0-9_ ()'.·-]{2,60})\s*(?:整合包|modpack|模组|mod|公开资料|资料|采集)",
         r"([\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9_（）()·.路之旅探险纪元 -]{1,60}?)\s+([A-Z][A-Za-z0-9_ ()'.·-]{2,60})\s*(?:整合包|modpack)",
     ]
     for pattern in slash_patterns:
@@ -213,7 +214,7 @@ def _named_modpack_alias_hint(text: str) -> str:
     if not value:
         return ""
     match = re.search(
-        r"([\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9_ （）()+.·-]{1,60}?)\s*(?:/|／)\s*([A-Za-z][A-Za-z0-9_ （）()+.·' -]{2,60})\s*(?:整合包|modpack)",
+        r"([\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9_ （）()+.·-]{1,60}?)\s*(?:/|／)\s*([A-Za-z][A-Za-z0-9_ （）()+.·' -]{2,60})\s*(?:整合包|modpack|模组|mod|公开资料|资料|采集)",
         value,
         flags=re.I,
     )
@@ -297,6 +298,8 @@ GENERIC_TARGET_PATTERNS = (
 def _clean_target_hint(value: Any, *, max_len: int = 90) -> str:
     target = re.sub(r"\s+", " ", str(value or "")).strip(" ：:，,。；;？?！!")
     if not target:
+        return ""
+    if re.search(r"判断.*(?:模组|mod).*整合包|模组还是整合包|^(?:自己|自行)?判断目标类型$", target, flags=re.I):
         return ""
     target = re.sub(r"^.*?(?:主题|目标|对象|名称)\s*(?:是|为|[:：])\s*", "", target)
     target = re.sub(r"^(?:针对|为|给)\s*", "", target)
@@ -728,11 +731,24 @@ def _context_has_archive_input(text: str) -> bool:
     )
 
 
-def _modpack_archive_goal(text: str) -> bool:
+def _modpack_archive_negated(text: str) -> bool:
     value = str(text or "")
     return bool(
-        re.search(r"modpack|整合包|\.mrpack|\.zip|archive|包体", value, flags=re.I)
-        and re.search(r"download|下载|archive|包体|manifest|modlist|mod list|FTB\s*Quests?|KubeJS", value, flags=re.I)
+        re.search(
+        r"不要强行|不要强制|不强行|不强制|不是整合包|如果不是整合包|自行判断.*(?:模组|mod).*整合包|自己判断.*(?:模组|mod).*整合包|模组还是整合包|mod\s+or\s+modpack|if\s+not\s+a\s+modpack",
+        value,
+        flags=re.I,
+        )
+    )
+
+
+def _modpack_archive_goal(text: str) -> bool:
+    value = str(text or "")
+    if _modpack_archive_negated(value):
+        return False
+    return bool(
+        re.search(r"modpack|整合包", value, flags=re.I)
+        and re.search(r"download|下载|fully automatically download|公开.*(?:\.mrpack|\.zip)|\.mrpack|\.zip|archive|包体|manifest|modlist|mod list|FTB\s*Quests?|KubeJS", value, flags=re.I)
     )
 
 
@@ -875,6 +891,7 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
     else:
         delivery_target = "unknown"
     modpack_archive_goal = _modpack_archive_goal(context_text)
+    archive_negated = _modpack_archive_negated(context_text)
     if isinstance(session_summary, dict):
         output_dir = str(session_summary.get("output_dir") or "").strip()
         fields = session_summary.get("schema_fields") or session_summary.get("fields")
@@ -955,6 +972,8 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
         sources = ["web_discovery", "playwright", "fetch_url", "modpack_download", "followup", "mcmod", "modrinth"]
     if modpack_archive_goal:
         sources = ["modpack_download", "modrinth", "web_discovery", "playwright", "fetch_url", "followup", "mcmod"]
+    elif archive_negated:
+        sources = [source for source in sources if source != "modpack_download"]
     if _is_gap_analysis_collection_context(context_text, delivery_target):
         sources.insert(0, "mcagent_context")
     if any(term in _planner_context_text(question, session_summary) for term in ("完整", "完整资料", "完整数据", "全量", "发现", "未知主题")):
@@ -1317,12 +1336,15 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
     if not sources:
         sources = ["mcmod", "fetch_url", "web_discovery", "playwright", "modpack_download"]
     context_text = _planner_context_text(question, session_summary)
+    archive_negated = _modpack_archive_negated(context_text)
     modpack_context = "\n".join([context_text, package_type, topic, target_hint])
     looks_like_modpack_collection = bool(re.search(r"modpack|整合包|鏁村悎鍖", modpack_context, flags=re.I))
-    if looks_like_modpack_collection and "modpack_download" not in sources:
+    if looks_like_modpack_collection and not archive_negated and "modpack_download" not in sources:
         sources.append("modpack_download")
     if "mcmod" in sources:
         for source in ("fetch_url", "web_discovery", "playwright", "modpack_download"):
+            if source == "modpack_download" and archive_negated:
+                continue
             if source not in sources:
                 sources.append(source)
     if _is_gap_analysis_collection_context(context_text, str(raw.get("delivery_target") or "")) and "mcagent_context" not in sources:

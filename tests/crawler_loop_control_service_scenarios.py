@@ -139,6 +139,43 @@ def test_should_finish_after_no_success_low_yield() -> None:
     )
 
 
+def test_should_finish_after_enough_success_at_task_budget() -> None:
+    service = CrawlerLoopControlService()
+    assert_equal(
+        "finish_at_budget",
+        service.should_finish_after_enough_success(
+            source="planner",
+            success_count=3,
+            executed_count=8,
+            task_count=20,
+            max_total_tasks=20,
+        ),
+        True,
+    )
+    assert_equal(
+        "keep_below_budget",
+        service.should_finish_after_enough_success(
+            source="planner",
+            success_count=3,
+            executed_count=8,
+            task_count=19,
+            max_total_tasks=20,
+        ),
+        False,
+    )
+    assert_equal(
+        "keep_before_enough_evidence",
+        service.should_finish_after_enough_success(
+            source="planner",
+            success_count=2,
+            executed_count=8,
+            task_count=20,
+            max_total_tasks=20,
+        ),
+        False,
+    )
+
+
 if __name__ == "__main__":
     test_bad_result_increments_streak()
     test_good_result_resets_streak()
@@ -146,4 +183,5 @@ if __name__ == "__main__":
     test_should_replan_requires_planner_source_and_no_success()
     test_should_finish_after_useful_low_yield()
     test_should_finish_after_no_success_low_yield()
+    test_should_finish_after_enough_success_at_task_budget()
     print("crawler_loop_control_service_scenarios passed")

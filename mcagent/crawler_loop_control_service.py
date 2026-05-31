@@ -73,3 +73,21 @@ class CrawlerLoopControlService:
             and executed_count >= min_executed
             and bad_streak >= bad_streak_threshold
         )
+
+    def should_finish_after_enough_success(
+        self,
+        *,
+        source: str,
+        success_count: int,
+        executed_count: int,
+        task_count: int,
+        max_total_tasks: int,
+        min_success: int = 3,
+        min_executed: int = 8,
+    ) -> bool:
+        return (
+            source in PLANNER_SOURCES
+            and success_count >= min_success
+            and executed_count >= min_executed
+            and task_count >= max_total_tasks
+        )
