@@ -19,6 +19,7 @@ import traceback
 import uuid
 from typing import Any
 import sqlite3
+import zipfile
 
 from .agent_memory import append_memory_event, memory_summary
 from .agent_message import AgentMessage, agent_reply_message_from_payload, make_agent_message, message_from_payload
@@ -159,6 +160,22 @@ def _has_likely_encoding_damage(value: Any) -> bool:
             return True
         compact = re.sub(r"\s+", "", text)
         if re.search(r"\?{5,}", compact):
+            return True
+        mojibake_markers = (
+            "涔",
+            "墭",
+            "閭",
+            "鏁",
+            "鍖",
+            "鍏",
+            "絝",
+            "绔",
+            "鐖",
+            "艕",
+            "螅",
+            "€",
+        )
+        if sum(1 for marker in mojibake_markers if marker in text) >= 3:
             return True
         return False
     if isinstance(value, dict):
@@ -842,6 +859,7 @@ def _save_dir_hint(source: str) -> str:
 def _modpack_archive_for_query(query: str) -> str:
     archive_root = PROJECT_ROOT / "data" / "manual_research"
     archives = list(archive_root.glob("**/pack_archive/*.zip")) + list(archive_root.glob("**/pack_archive/*.mrpack"))
+    archives = [archive for archive in archives if _is_readable_zip_archive(archive)]
     if not archives:
         return ""
     query_text = str(query or "")
@@ -878,6 +896,11 @@ def _modpack_archive_for_query(query: str) -> str:
     query_tokens = ascii_tokens | cjk_tokens
     if not query_tokens:
         return ""
+    meaningful_tokens = {
+        token for token in query_tokens if token.lower() not in {"archive", "pack", "modpack", "zip", "mrpack", "such", "definitely", "download"}
+    }
+    if not meaningful_tokens:
+        return ""
     scored: list[tuple[int, Path]] = []
     for archive in archives:
         parent = archive.parent.parent
@@ -889,12 +912,20 @@ def _modpack_archive_for_query(query: str) -> str:
                 continue
         haystack = (str(archive) + "\n" + sidecar_text).lower()
         normalized_haystack = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", " ", haystack)
-        score = sum(1 for token in query_tokens if token.lower() in normalized_haystack)
+        score = sum(1 for token in meaningful_tokens if token.lower() in normalized_haystack)
         scored.append((score, archive))
     scored.sort(key=lambda item: item[0], reverse=True)
     if scored and scored[0][0] > 0:
         return str(scored[0][1])
     return ""
+
+
+def _is_readable_zip_archive(path: Path) -> bool:
+    try:
+        with zipfile.ZipFile(path) as zipped:
+            return bool(zipped.namelist())
+    except (OSError, zipfile.BadZipFile):
+        return False
 
 
 def _round_command(source: str, payload: dict[str, Any]) -> list[str]:
@@ -1098,7 +1129,9 @@ def _round_command(source: str, payload: dict[str, Any]) -> list[str]:
 
 def _command_timeout(source: str) -> int:
     source = _source_alias(source)
-    if source in {"followup", "web_discovery", "fetch_url", "playwright", "browser_collect", "save_artifact", "read_local_file", "search_local_files", "modpack_download"}:
+    if source == "modpack_download":
+        return 2400
+    if source in {"followup", "web_discovery", "fetch_url", "playwright", "browser_collect", "save_artifact", "read_local_file", "search_local_files"}:
         return 360
     if source in {"modrinth", "mcmod"}:
         return 240
@@ -1922,9 +1955,14 @@ def _record_text_for_validation(record: dict[str, Any]) -> str:
     parts = [str(record.get(key) or "") for key in ("title", "url", "path", "snippet", "description")]
     path = record.get("path")
     if path:
+        path_obj = Path(str(path))
+        if path_obj.suffix.lower() not in {".md", ".txt", ".json", ".html", ".htm", ".csv", ".xml", ".snbt", ".toml", ".ini", ".cfg", ".properties", ".js"}:
+            return "\n".join(parts)
         try:
-            parts.append(Path(str(path)).read_text(encoding="utf-8", errors="replace")[:12000])
-        except OSError:
+            if path_obj.stat().st_size > 5_000_000:
+                return "\n".join(parts)
+            parts.append(path_obj.read_text(encoding="utf-8", errors="replace")[:12000])
+        except (OSError, MemoryError):
             pass
     return "\n".join(parts)
 
@@ -2511,7 +2549,7 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
                 result["existing_evidence_reused"] = existing_evidence
             elif existing_evidence.get("reason") or existing_evidence.get("notes") or existing_evidence.get("cleanup_action"):
                 result["existing_evidence_review"] = existing_evidence
-            if result["returncode"] == 0 and records_loaded > 0:
+            if result["returncode"] == 0 and records_loaded > 0 and task_source not in {"modpack_download"}:
                 result["topic_validation"] = _crawler_topic_match(
                     str(result.get("export_dir") or ""),
                     question,
@@ -3802,6 +3840,113 @@ def _local_version_install_answer(question: str, results: list[SearchResult]) ->
     if missing:
         lines.append(_VERSION_INSTALL_TEXT["missing_prefix"] + _VERSION_INSTALL_TEXT["comma"].join(missing) + _VERSION_INSTALL_TEXT["period"])
     return "\n".join(lines)
+
+
+def _local_modpack_archive_fact_answer(question: str, results: list[SearchResult]) -> str:
+    if not _is_modpack_archive_fact_question(question):
+        return ""
+    filtered_results = _filter_answer_evidence_by_required_terms(question, results)
+    if not filtered_results:
+        return ""
+    facts: dict[str, list[str]] = {
+        "filename": [],
+        "source_page_or_metadata_endpoint": [],
+        "direct_archive_url": [],
+        "final_probe_url": [],
+        "probe_status": [],
+        "probe_content_type": [],
+        "probe_content_range": [],
+        "probe_magic_hex": [],
+        "archive_magic": [],
+        "bytes": [],
+        "sha256": [],
+        "local_archive_path": [],
+        "zip_entries": [],
+        "mods_count": [],
+        "ftbquests_count": [],
+    }
+    evidence_ranks: list[int] = []
+    for item in filtered_results[:8]:
+        text = _read_result_full_text(item)
+        if "source: modpack_download_evidence" not in text.lower() and "downloaded_archive_evidence" not in str(item.source_path).lower():
+            continue
+        extracted = _extract_bullet_fact_map(text)
+        if not extracted:
+            continue
+        evidence_ranks.append(item.rank)
+        for key in facts:
+            value = extracted.get(key)
+            if value:
+                facts[key].append(f"{value} [S{item.rank}]")
+    facts = {key: _dedupe_strings(values)[:2] for key, values in facts.items() if values}
+    if not facts:
+        return ""
+    lines = ["根据本地下载证据，当前能确认的包体事实如下："]
+    if facts.get("filename"):
+        lines.append("- 文件名：" + "；".join(facts["filename"]))
+    if facts.get("source_page_or_metadata_endpoint"):
+        lines.append("- 元数据/来源入口：" + "；".join(facts["source_page_or_metadata_endpoint"]))
+    if facts.get("direct_archive_url"):
+        lines.append("- 直连包体 URL：" + "；".join(facts["direct_archive_url"]))
+    if facts.get("bytes"):
+        lines.append("- 大小：" + "；".join(facts["bytes"]))
+    if facts.get("sha256"):
+        lines.append("- SHA256：" + "；".join(facts["sha256"]))
+    probe_parts = []
+    for key, label in (
+        ("probe_status", "HTTP"),
+        ("probe_content_type", "Content-Type"),
+        ("probe_content_range", "Content-Range"),
+        ("probe_magic_hex", "magic"),
+        ("archive_magic", "archive"),
+    ):
+        if facts.get(key):
+            probe_parts.append(f"{label}=" + "；".join(facts[key]))
+    if probe_parts:
+        lines.append("- 下载校验证据：" + "，".join(probe_parts))
+    extra_parts = []
+    for key, label in (("zip_entries", "zip_entries"), ("mods_count", "mods_count"), ("ftbquests_count", "ftbquests_count")):
+        if facts.get(key):
+            extra_parts.append(f"{label}=" + "；".join(facts[key]))
+    if extra_parts:
+        lines.append("- 包内摘要：" + "，".join(extra_parts))
+    if facts.get("local_archive_path"):
+        lines.append("- 本地归档路径：" + "；".join(facts["local_archive_path"]))
+    if evidence_ranks:
+        lines.append("这些是 Crawler 下载证据文件里记录的客观事实；候选是否采信由 CrawlerAgent 基于这些事实判断。")
+    return "\n".join(lines)
+
+
+def _extract_bullet_fact_map(text: str) -> dict[str, str]:
+    facts: dict[str, str] = {}
+    for line in str(text or "").splitlines():
+        match = re.match(r"\s*-\s*([A-Za-z0-9_/-]+)\s*:\s*(.+?)\s*$", line)
+        if not match:
+            continue
+        key = match.group(1).strip().lower().replace("-", "_")
+        value = match.group(2).strip()
+        if value and key not in facts:
+            facts[key] = value
+    return facts
+
+
+def _is_modpack_archive_fact_question(question: str) -> bool:
+    text = str(question or "")
+    lowered = text.lower()
+    if not re.search(r"整合包|modpack|包体|archive|\.mrpack|\.zip", text, flags=re.I):
+        return False
+    return any(
+        token in lowered
+        for token in (
+            "sha256",
+            "hash",
+            "checksum",
+            "bytes",
+            "content-range",
+            "direct_archive_url",
+            "downloaded_archive_evidence",
+        )
+    ) or any(token in text for token in ("包体", "来源", "大小", "校验", "哈希", "直链", "下载地址"))
 
 
 def _version_install_fact_labels() -> tuple[str, ...]:
@@ -5372,7 +5517,10 @@ def _should_use_deterministic_local_fact_rag_route(agent: str, original_question
         return False
     if _asks_for_collection_or_handoff(text) or _request_wants_persistence(text):
         return False
-    return _is_version_install_question(text) and not _is_modpack_overview_question(text)
+    return (
+        _is_modpack_archive_fact_question(text)
+        or (_is_version_install_question(text) and not _is_modpack_overview_question(text))
+    )
 
 
 def _mcagent_context_focus(question: str, collection_target: str = "") -> str:
@@ -6795,7 +6943,7 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
                     [*evidence_report.reasons, "Filtered retrieved evidence because it did not match the requested subject entity."]
                 )
         if evidence_report.verdict != "ok" and deterministic_local_fact_route:
-            local_fact_answer = _local_version_install_answer(original_question, selected)
+            local_fact_answer = _local_modpack_archive_fact_answer(original_question, selected) or _local_version_install_answer(original_question, selected)
             if local_fact_answer:
                 source_dicts = [_result_to_dict(item) for item in selected]
                 context = format_context(selected)
@@ -6904,9 +7052,11 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
     if agent == "retriever_only" or bool(payload.get("no_llm")):
         answer, context = executor.retriever_only_answer(context)
     else:
-        answer = "" if _is_modpack_overview_question(original_question) else _local_version_install_answer(original_question, selected)
+        answer = _local_modpack_archive_fact_answer(original_question, selected)
+        if not answer:
+            answer = "" if _is_modpack_overview_question(original_question) else _local_version_install_answer(original_question, selected)
         if answer:
-            add_trace("answer", "local_fact_answer", {"reason": "version_install_evidence", "sources": len(selected)})
+            add_trace("answer", "local_fact_answer", {"reason": "deterministic_fact_evidence", "sources": len(selected)})
         if not answer:
             answer_question = _answer_question_for_user(original_question, question, retrieval_note)
             answer_confirmation = router.confirm_next_step(

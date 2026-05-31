@@ -222,8 +222,15 @@ def _is_modpack_fact_query(query: str) -> bool:
             "forge",
             "fabric",
             "neoforge",
+            "sha256",
+            "hash",
+            "checksum",
+            "bytes",
+            "content-range",
+            "downloaded_archive_evidence",
+            "direct_archive_url",
         )
-    ) or any(term in query for term in ("版本", "加载器", "模组加载器", "整合包版本"))
+    ) or any(term in query for term in ("版本", "加载器", "模组加载器", "整合包版本", "包体", "来源", "大小", "校验", "哈希", "直链", "下载地址"))
 
 
 def _modpack_manifest_fact_chunk_ids(conn: Any, query: str, limit: int) -> list[int]:
@@ -242,6 +249,8 @@ def _modpack_manifest_fact_chunk_ids(conn: Any, query: str, limit: int) -> list[
            OR chunks.text LIKE '%整合包 manifest 结构化事实%'
            OR documents.source_path LIKE '%modpack_manifests%'
            OR documents.source_path LIKE '%modpack_archive_summary%'
+           OR chunks.text LIKE '%source: modpack_download_evidence%'
+           OR documents.source_path LIKE '%downloaded_archive_evidence%'
         LIMIT 240
         """
     ).fetchall()
@@ -258,6 +267,12 @@ def _modpack_manifest_fact_chunk_ids(conn: Any, query: str, limit: int) -> list[
             score += 4.0
         if "加载器" in str(row["text"]) or "modloaders" in str(row["text"]).lower():
             score += 3.0
+        lower_text = str(row["text"]).lower()
+        lower_path = str(row["source_path"]).lower().replace("\\", "/")
+        if "source: modpack_download_evidence" in lower_text or "downloaded_archive_evidence" in lower_path:
+            score += 6.0
+        if "sha256:" in lower_text or "direct_archive_url:" in lower_text:
+            score += 4.0
         scored.append((score, int(row["chunk_id"])))
     scored.sort(key=lambda item: item[0], reverse=True)
     return [chunk_id for score, chunk_id in scored[: max(limit, 1)] if score > 0]
@@ -510,9 +525,11 @@ def _manifest_fact_boost(row: Any, query: str) -> float:
         return 0.0
     raw_metadata = str(row["document_metadata_json"] or "")
     text = str(row["text"])
+    path = str(row["source_path"]).lower().replace("\\", "/")
+    if "downloaded_archive_evidence" in path or "source: modpack_download_evidence" in text.lower():
+        return 6.0
     if "modpack_manifest_facts" in raw_metadata or "整合包 manifest 结构化事实" in text:
         return 5.0
-    path = str(row["source_path"]).lower().replace("\\", "/")
     if "modpack_manifests" in path or "modpack_archive_summary" in path:
         return 1.6
     return 0.0

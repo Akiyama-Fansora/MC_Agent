@@ -181,6 +181,7 @@ PROVIDERS: dict[str, ProviderSpec] = {
             "Discover public .mrpack/.zip modpack archives and save them to local manual_research for modpack_internal. "
             "CrawlerAgent should use stable route order: Modrinth project_type:modpack/version files.url, CurseForge public/API file pages with visible direct downloadUrl, "
             "GitHub Releases assets/browser_download_url, packwiz pack.toml/index.toml repositories, then forum/community direct links. "
+            "For Chinese community packs, inspect public install guides, official/server sites, small public installers, and text endpoints that reveal a final release URL; require HTTP/ZIP proof before accepting. "
             "The provider reports objective candidates, HTTP/download facts, and blockers; CrawlerAgent decides relevance. "
             "It does not bypass login, payment, cloud-drive, client-only, or captcha restrictions."
         ),

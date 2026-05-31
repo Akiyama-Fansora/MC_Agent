@@ -27,9 +27,15 @@ class CrawlerResultAccountingService:
 
         if task_source == "modpack_download" and returncode == 0:
             downloads_loaded = int(manifest.get("downloads") or 0)
+            candidates_loaded = int(manifest.get("candidates") or 0)
             blockers_loaded = int(manifest.get("blockers") or 0)
             if downloads_loaded > 0:
                 accounting["success_delta"] = 1
+                if "rag" in delivery_target.lower() or "mcagent" in delivery_target.lower():
+                    accounting["needs_ingest"] = True
+                    result["ingest_deferred"] = "CrawlerAgent accepted the downloaded archive evidence; ingest the download evidence and then parse internals."
+                else:
+                    result["ingest_skipped"] = "CrawlerAgent accepted the downloaded archive evidence for the human-facing task; RAG ingest was not requested."
                 result["archive_downloaded"] = True
                 accounting["followup_task"] = {
                     "source": "modpack_internal",
@@ -37,6 +43,11 @@ class CrawlerResultAccountingService:
                     "reason": "Crawler downloaded a public modpack archive; parse internal manifest/modlist/quests/scripts next.",
                     "priority": 146,
                 }
+            elif candidates_loaded > 0:
+                accounting["candidate_delta"] = 1
+                result["archive_candidate_found"] = True
+                result["archive_not_downloaded"] = True
+                result["failure_reason"] = manifest.get("failure_reason") or ""
             else:
                 accounting["failure_delta"] = 1
                 result["archive_not_found"] = True

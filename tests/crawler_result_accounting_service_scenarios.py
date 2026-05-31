@@ -53,8 +53,18 @@ def test_modpack_download_creates_internal_followup() -> None:
     result = {"returncode": 0, "manifest_stats": {"records": 1, "downloads": 1}}
     accounting = apply(result, source="modpack_download")
     assert_equal("success", accounting["success_delta"], 1)
+    assert_equal("needs_ingest", accounting["needs_ingest"], True)
     assert_equal("archive_downloaded", result["archive_downloaded"], True)
+    assert_equal("ingest_deferred", result["ingest_deferred"], "CrawlerAgent accepted the downloaded archive evidence; ingest the download evidence and then parse internals.")
     assert_equal("followup_source", accounting["followup_task"]["source"], "modpack_internal")
+
+
+def test_modpack_download_candidate_only_is_not_failure() -> None:
+    result = {"returncode": 0, "manifest_stats": {"records": 1, "downloads": 0, "candidates": 1}}
+    accounting = apply(result, source="modpack_download")
+    assert_equal("candidate", accounting["candidate_delta"], 1)
+    assert_equal("failure", accounting["failure_delta"], 0)
+    assert_equal("archive_candidate_found", result["archive_candidate_found"], True)
 
 
 def test_off_topic_records_are_failure() -> None:
@@ -107,6 +117,7 @@ if __name__ == "__main__":
     test_browser_collect_waits_for_crawler_review()
     test_browser_collect_accepted_for_human_skips_ingest()
     test_modpack_download_creates_internal_followup()
+    test_modpack_download_candidate_only_is_not_failure()
     test_off_topic_records_are_failure()
     test_crawler_review_rejection_records_action()
     test_topic_discovery_counts_candidate_only()

@@ -728,6 +728,38 @@ def _context_has_archive_input(text: str) -> bool:
     )
 
 
+def _modpack_archive_goal(text: str) -> bool:
+    value = str(text or "")
+    return bool(
+        re.search(r"modpack|整合包|\.mrpack|\.zip|archive|包体", value, flags=re.I)
+        and re.search(r"download|下载|archive|包体|manifest|modlist|mod list|FTB\s*Quests?|KubeJS", value, flags=re.I)
+    )
+
+
+def _prioritize_modpack_archive_tasks(tasks: list[dict[str, Any]], target: str, context_text: str) -> list[dict[str, Any]]:
+    if not _modpack_archive_goal(context_text):
+        return tasks
+    query = target.strip() or _collection_target_hint(context_text) or _question_subject_hint(context_text) or "Minecraft modpack"
+    archive_task = {
+        "source": "modpack_download",
+        "query": query if re.search(r"modpack|整合包|\.mrpack|\.zip", query, flags=re.I) else f"{query} 整合包 .mrpack .zip",
+        "reason": "User explicitly requires a fully automatic public modpack archive route before internal parsing; collect objective download facts first.",
+        "priority": 220,
+        "search_limit": 8,
+    }
+    output: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for task in [archive_task, *tasks]:
+        source = str(task.get("source") or "")
+        task_query = re.sub(r"\s+", " ", str(task.get("query") or "").strip())
+        key = (source, task_query.lower())
+        if not source or not task_query or key in seen:
+            continue
+        seen.add(key)
+        output.append(task)
+    return output
+
+
 def _strip_delivery_recipient(text: str) -> str:
     value = str(text).strip()
     value = re.sub(
@@ -842,10 +874,7 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
         delivery_target = "MCagent/RAG"
     else:
         delivery_target = "unknown"
-    modpack_archive_goal = bool(
-        re.search(r"modpack|整合包|\.mrpack|\.zip|archive|包体", context_text, flags=re.I)
-        and re.search(r"download|下载|archive|包体|manifest|modlist", context_text, flags=re.I)
-    )
+    modpack_archive_goal = _modpack_archive_goal(context_text)
     if isinstance(session_summary, dict):
         output_dir = str(session_summary.get("output_dir") or "").strip()
         fields = session_summary.get("schema_fields") or session_summary.get("fields")
@@ -984,6 +1013,7 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
             if task:
                 tasks.append(task)
     tasks.sort(key=lambda item: int(item.get("priority") or 0), reverse=True)
+    tasks = _prioritize_modpack_archive_tasks(tasks, target, context_text)
     is_modpack = bool(re.search(r"整合包|modpack", context_text, flags=re.I))
     return {
         "question": question,
@@ -1202,6 +1232,9 @@ def _select_diverse_tasks(tasks: list[dict[str, Any]], max_tasks: int) -> list[d
         query = re.sub(r"\s+", " ", str(task.get("query") or "").strip()).lower()
         if (source, query) in seen_pairs:
             continue
+        if source in {"modpack_download", "modpack_internal"}:
+            add(task)
+            continue
         if source_counts.get(source, 0) >= per_source_soft_cap.get(source, max(2, max_tasks // 4)):
             continue
         add(task)
@@ -1390,6 +1423,7 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
         ),
     )
     tasks.sort(key=lambda item: int(item.get("priority") or 0), reverse=True)
+    tasks = _prioritize_modpack_archive_tasks(tasks, target_hint or topic, context_text)
     if not tasks:
         fallback = plan_crawler_tasks(question, source_dir, max_tasks=max_tasks, include_completed=True)
         tasks = list(fallback.get("tasks") or [])
@@ -1471,6 +1505,7 @@ def plan_crawler_tasks_with_llm(question: str, source_dir: Path, *, max_tasks: i
             "For full Minecraft modpack collection, cover: basic info, official/download/community links, mod list, quests/beginner route, key systems, items/recipes/acquisition, bosses, tutorials, known issues.\n"
             "If local archive or manifest exists, use modpack_internal first. It extracts manifest, modlist, FTB Quests, KubeJS, OpenLoader/data, recipes, config, raw text. Then use mcmod/modrinth/public web to fill gaps.\n"
             "If no local archive exists, first discover official/download/project pages. Use modpack_download to look for public .mrpack/.zip archives and save them locally; after a real archive is downloaded, use modpack_internal. Use Modrinth API style discovery first: exact alias search with project_type:modpack, then inspect project versions and files.url for primary .mrpack files. Use CurseForge only when a public/API file page exposes an objective downloadUrl or direct file download; if it needs API key/login/Cloudflare/captcha, record that blocker and change route. Use GitHub Releases by finding release assets/browser_download_url, and packwiz repositories by finding pack.toml/index.toml plus releases or package manifests. Use Playwright/topic_discovery to find public download pages and preserve their HTML. Do not pretend the pack internals are available until an archive/manifest is actually downloaded or provided.\n"
+            "For Chinese community packs, check public install guides and official/server sites too. A useful route may be: public guide page -> small installer or metadata page -> text endpoint -> final public release .zip. Do not accept the cloud-drive page itself; accept only if objective tool output shows a no-login direct archive URL with HTTP status/content-type/size plus downloaded zip validation.\n"
             "When teaching yourself an archive route, record how you found it: aliases tried, source graph node, search query or source-specific endpoint, candidate URL, HTTP status/redirect/content-type/filename/size when available, and why you trust or reject it. Tools may expose these objective facts, but CrawlerAgent must decide relevance, keep/delete/retry, and whether modpack_internal is now allowed.\n"
             "Quark, Baidu, 123pan, client-only cloud drives, paywalls, login pages, and captcha pages are not fully automatic unless a direct public .mrpack/.zip URL is visible without manual user action. Treat them as blocked evidence, not as downloaded archives.\n"
             "For hard-to-find Minecraft modpacks, include at least one public archive/download route early: modpack_download for the target/aliases, plus web_discovery/playwright for Chinese forum/mirror/download pages. If ordinary pages fail, switch to package archive discovery instead of repeating wiki/mod-list searches.\n"
@@ -1588,6 +1623,32 @@ def reflect_crawler_progress(
     compact_results = list(snapshot["recent_results"])
     learned_memory = _crawler_memory_digest(limit=8)
     compact_pending = list(snapshot["pending_tasks"])
+    context_text = _planner_context_text(question, session_summary)
+    target_for_archive = str(plan.get("target_hint") or plan.get("topic") or _session_target_hint(session_summary) or _collection_target_hint(question) or _question_subject_hint(question) or "").strip()
+    if _modpack_archive_goal(context_text) and not any(str(result.get("source") or "") == "modpack_download" for result in task_results):
+        for offset, task in enumerate(compact_pending):
+            if str(task.get("source") or "") == "modpack_download":
+                return CrawlerReflectionDecisionService().normalize(
+                    {
+                        "action": "execute_pending",
+                        "selected_index": offset,
+                        "reason": "The user explicitly requires a fully automatic public modpack archive route; CrawlerAgent must run modpack_download before more page-only collection.",
+                    },
+                    pending_count=len(compact_pending),
+                    normalized_tasks=[],
+                    planner="archive_goal_guard",
+                )
+        archive_tasks = _prioritize_modpack_archive_tasks([], target_for_archive, context_text)[:1]
+        return CrawlerReflectionDecisionService().normalize(
+            {
+                "action": "add_tasks",
+                "reason": "The archive route is required and no modpack_download task has run yet.",
+                "tasks": archive_tasks,
+            },
+            pending_count=len(compact_pending),
+            normalized_tasks=archive_tasks,
+            planner="archive_goal_guard",
+        )
     if not task_results and _plan_requires_llm_confirmation(plan):
         return _confirm_fallback_plan_first_step(
             question=question,
@@ -1621,6 +1682,7 @@ def reflect_crawler_progress(
             "If the task is for MCagent/RAG, prefer evidence that is citeable and chunkable; raw HTML support is valuable for hard pages.\n"
             "Playwright is a first-class browser tool. Prefer it when lightweight HTTP fetch cannot read enough text, when a page needs rendering, or when project tabs/download pages need browser HTML.\n"
             "For full modpack collection without a local archive, use modpack_download to find and save public .mrpack/.zip archives, and use Playwright/topic_discovery to inspect project/download pages and preserve download-link HTML. Route order: Modrinth project_type:modpack -> versions files.url .mrpack; CurseForge public/API file pages only when a direct downloadUrl or /files download is objectively visible; GitHub Releases assets/browser_download_url; packwiz pack.toml/index.toml repositories; then forum/community direct links. Use modpack_internal only after a real local archive/manifest is available.\n"
+            "For Chinese community packs, do not stop at Quark/Xunlei/123pan blockers. Inspect public install guides, official/server sites, small public installers, and text endpoints that may disclose a final release .zip URL. Accept only objective no-login direct archive evidence with HTTP status/content-type/size and zip validation.\n"
             "If a candidate is Quark/Baidu/123pan/cloud-drive/login/captcha/paywall/client-only, record the blocker and switch source graph nodes. Do not mark it as fully automatic unless an objective direct .mrpack/.zip URL can be downloaded without manual user action.\n"
             "When recent_results show candidate pages or archive URLs, judge them yourself from objective evidence: alias match, page/source title, URL path, extension, redirect, content-type, filename, size, HTTP status, and manifest/download result. The tool does not decide relevance for you.\n"
             "If recent public-page searches are empty/off-topic for a modpack and no accepted evidence exists, escalate to modpack_download and browser-rendered download/forum/mirror discovery before giving up. After a real archive download, choose modpack_internal.\n"

@@ -9,7 +9,7 @@ import re
 import sys
 import time
 from typing import Any
-from urllib.parse import quote, quote_plus, urlencode, urljoin, urlparse
+from urllib.parse import parse_qs, quote, quote_plus, unquote, urlencode, urljoin, urlparse
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -42,6 +42,22 @@ SKIP_HOST_PARTS = (
     "patreon.",
     "ko-fi.",
 )
+SEARCH_SKIP_HOSTS = (
+    "so.com",
+    "360.cn",
+    "360kan.com",
+    "qhimg.com",
+    "qhimgs4.com",
+    "qhupdate.com",
+    "360tres.com",
+    "mediav.com",
+    "bing.com",
+    "w3.org",
+    "requirejs.org",
+    "hao.360.com",
+    "crockford.com",
+)
+
 
 TEXT_EXTENSIONS = (".md", ".txt", ".rst", ".json", ".html", ".htm")
 
@@ -130,6 +146,88 @@ def bing_html_search(query: str, user_agent: str, limit: int) -> list[dict[str, 
             break
     return results
 
+
+def so_html_search(query: str, user_agent: str, limit: int) -> list[dict[str, Any]]:
+    url = "https://www.so.com/s?q=" + quote(query, safe="")
+    try:
+        content, _content_type, status = request_text(url, user_agent=user_agent, timeout=25, retries=1)
+    except RuntimeError:
+        return []
+    results: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    raw_urls: list[str] = []
+    for match in re.finditer(r'''(?:data-mdurl|data-url|href)\s*=\s*["']([^"']+)["']''', content, flags=re.I):
+        raw_urls.extend(search_result_url_variants(match.group(1)))
+    for match in re.finditer(r"https?://[^\\\"'<> ]+", content):
+        raw_urls.extend(search_result_url_variants(match.group(0)))
+    unique_urls = list(dict.fromkeys(raw_urls))
+    unique_urls.sort(key=lambda item: search_candidate_score(item, query), reverse=True)
+    for url_value in unique_urls:
+        parsed = urlparse(url_value)
+        host = parsed.netloc.lower()
+        if search_noise_host(host):
+            continue
+        if should_skip_url(url_value):
+            continue
+        key = url_value.lower().rstrip("/")
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(
+            {
+                "engine": "so_html",
+                "status": status,
+                "rank": len(results) + 1,
+                "title": url_value,
+                "url": url_value,
+                "snippet": "URL candidate extracted from 360 search HTML.",
+                "query": query,
+            }
+        )
+        if len(results) >= limit:
+            break
+    return results
+
+
+def search_candidate_score(url: str, query: str) -> int:
+    lower_url = url.lower()
+    host = urlparse(url).netloc.lower()
+    score = 0
+    if any(marker in host for marker in ("minepixel", "modrinth", "curseforge", "github", "gitlab", "gitee", "cnb.cool")):
+        score += 100
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9_-]{3,}|[\u4e00-\u9fff]{2,}", query):
+        if token.lower() in lower_url:
+            score += 25
+    if any(ext in lower_url for ext in (".mrpack", ".zip", "download", "下载", "client", "客户端")):
+        score += 10
+    return score
+
+
+def search_result_url_variants(raw: str) -> list[str]:
+    candidates: list[str] = []
+    value = unquote(unescape(raw)).rstrip(").,??")
+    if not re.match(r"https?://[^/\s]+\.[^/\s]+", value):
+        return []
+    if value.startswith(("http://", "https://")):
+        candidates.append(value)
+    parsed = urlparse(value)
+    if parsed.netloc.lower().endswith("so.com") and parsed.path.startswith("/link"):
+        for values in parse_qs(parsed.query).values():
+            for item in values:
+                decoded = unquote(unescape(item)).strip()
+                if decoded.startswith(("http://", "https://")):
+                    candidates.append(decoded)
+    return list(dict.fromkeys(item.split("#", 1)[0] for item in candidates if item))
+
+
+def search_noise_host(host: str) -> bool:
+    if not host:
+        return True
+    if re.match(r"^(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?$", host):
+        return True
+    if "$" in host:
+        return True
+    return any(host == item or host.endswith("." + item) for item in SEARCH_SKIP_HOSTS)
 
 def github_repo_search(query: str, user_agent: str, limit: int) -> list[dict[str, Any]]:
     url = "https://api.github.com/search/repositories?" + urlencode({"q": f"{query} minecraft", "per_page": min(limit, 10)})
@@ -388,6 +486,7 @@ def fetch_web_discovery(
         except Exception as exc:  # noqa: BLE001
             errors.append({"stage": "search", "engine": "bing_rss", "query": variant, "error": str(exc)})
         search_results.extend(bing_html_search(variant, user_agent=user_agent, limit=max_results))
+        search_results.extend(so_html_search(variant, user_agent=user_agent, limit=max_results))
         search_results.extend(github_repo_search(variant, user_agent=user_agent, limit=min(max_results, 6)))
         time.sleep(delay)
 

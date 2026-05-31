@@ -15,8 +15,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import mcagent.web_server as web_server  # noqa: E402
+import mcagent.retriever as retriever  # noqa: E402
 from mcagent.config import AppConfig, ChunkingConfig, EmbeddingConfig, OllamaConfig, PathsConfig, RetrievalConfig  # noqa: E402
-from mcagent.schema import SearchResult  # noqa: E402
+from mcagent.schema import RawDocument, SearchResult, TextChunk  # noqa: E402
+from mcagent.storage import connect, fetch_chunks_by_ids, init_db, replace_document  # noqa: E402
 
 
 def make_temp_config(root: Path) -> AppConfig:
@@ -1274,6 +1276,29 @@ def test_modpack_download_accepts_direct_archive_url_as_candidate() -> None:
     assert_equal("errors", errors, [])
 
 
+def test_modpack_download_search_queries_use_readable_chinese_terms() -> None:
+    from scripts.fetch_modpack_archive_seed import archive_discovery_search_queries, inferred_official_site_urls, official_site_search_queries  # noqa: PLC0415
+
+    queries = archive_discovery_search_queries("乌托邦探险之旅")
+    joined = "\n".join(queries)
+    assert_true("official_site_query", "乌托邦探险之旅 官网" in queries)
+    assert_true("client_query", "乌托邦探险之旅 客户端" in queries)
+    assert_true("guide_query", "乌托邦探险之旅 下载 指南" in queries)
+    assert_true("no_placeholder_queries", "??" not in joined)
+    official_queries = official_site_search_queries("乌托邦探险之旅")
+    assert_true("minepixel_official_query", "乌托邦探险之旅 MinePixel" in official_queries)
+    assert_true("server_official_query", "乌托邦探险之旅 服务器 官网" in official_queries)
+    assert_true("minebbs_source_query", "site:minebbs.com 乌托邦探险之旅" in official_queries)
+    assert_true("inferred_official_domain", "https://www.minepixel.top/" in inferred_official_site_urls("乌托邦探险之旅"))
+
+
+def test_encoding_damage_guard_catches_mojibake_without_blocking_valid_chinese() -> None:
+    good = {"question": "乌托邦探险之旅 整合包 .mrpack .zip"}
+    bad = {"question": "涔屾墭閭︽帰闄╀箣鏃?鏁村悎鍖?.mrpack .zip"}
+    assert_equal("good_chinese", web_server._has_likely_encoding_damage(good), False)
+    assert_equal("bad_mojibake", web_server._has_likely_encoding_damage(bad), True)
+
+
 def test_modpack_download_reports_bbsmc_cloud_drive_blocker() -> None:
     from unittest.mock import patch  # noqa: PLC0415
 
@@ -1361,6 +1386,232 @@ def test_modpack_download_reports_bbsmc_cloud_drive_blocker() -> None:
     assert_true("bbsmc_project_url", any(page.get("url") == "https://bbsmc.net/modpack/utopia-journey" for page in pages))
 
 
+def test_modpack_download_has_large_archive_timeout() -> None:
+    assert_equal("modpack_download_timeout", web_server._command_timeout("modpack_download"), 2400)
+
+
+def test_modpack_archive_lookup_skips_corrupt_zip() -> None:
+    import tempfile  # noqa: PLC0415
+
+    original_root = web_server.PROJECT_ROOT
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        archive = root / "data" / "manual_research" / "modpack_archives" / "demo" / "pack_archive" / "demo.zip"
+        archive.parent.mkdir(parents=True)
+        archive.write_bytes(b"partial download")
+        try:
+            web_server.PROJECT_ROOT = root  # type: ignore[misc]
+            assert_equal("lookup", web_server._modpack_archive_for_query("demo"), "")
+        finally:
+            web_server.PROJECT_ROOT = original_root  # type: ignore[misc]
+
+
+def test_record_validation_skips_binary_archive_body() -> None:
+    import tempfile  # noqa: PLC0415
+
+    with tempfile.TemporaryDirectory() as tmp:
+        archive = Path(tmp) / "demo.zip"
+        archive.write_bytes(b"PK\x03\x04" + b"x" * 1024)
+        text = web_server._record_text_for_validation({"title": "Downloaded archive", "path": str(archive)})
+    assert_true("keeps_title", "Downloaded archive" in text)
+    assert_true("skips_binary", "PK" not in text)
+
+
+def test_modpack_download_follows_public_release_seed() -> None:
+    from unittest.mock import patch  # noqa: PLC0415
+
+    from scripts import fetch_modpack_archive_seed as seed  # noqa: PLC0415
+
+    def fake_request_text(url: str, user_agent: str, timeout: int = 30):  # noqa: ARG001
+        if url == "https://example.test/dw/get.txt":
+            return ("pack:\nhttps://cnb.cool/example/demo/-/releases/download/test/demo.zip", "text/plain", 200)
+        raise RuntimeError("not found")
+
+    def fake_probe(candidate: dict, user_agent: str, timeout: int = 45):  # noqa: ARG001
+        candidate.update({"probe_status": 206, "probe_content_type": "application/zip", "archive_magic": "zip", "size": 1234})
+        return candidate
+
+    with patch.object(seed, "request_text", side_effect=fake_request_text), patch.object(seed, "candidate_with_probe", side_effect=fake_probe):
+        candidates, pages, errors = seed.public_release_candidates(
+            "Any community modpack",
+            user_agent="unit-test",
+            limit=5,
+            discovery_pages=[{"url": "https://example.test/"}],
+        )
+    assert_true("only_seed_fetch_errors", all(item.get("stage") == "release_seed_fetch" for item in errors))
+    assert_equal("pages", len(pages), 1)
+    assert_equal("candidate_count", len(candidates), 1)
+    assert_equal("candidate_source", candidates[0]["source"], "public_release_seed")
+    assert_equal("candidate_url", candidates[0]["url"], "https://cnb.cool/example/demo/-/releases/download/test/demo.zip")
+    assert_equal("probe_status", candidates[0]["probe_status"], 206)
+
+
+def test_modpack_download_prioritizes_verified_public_release_candidate() -> None:
+    from scripts import fetch_modpack_archive_seed as seed  # noqa: PLC0415
+
+    unverified = {
+        "source": "bbsmc",
+        "project_title": "乌托邦探险之旅",
+        "filename": "wtbtxzl3.2fix.zip",
+        "url": "https://example.test/wtbtxzl3.2fix.zip",
+    }
+    verified = {
+        "source": "public_release_seed",
+        "page_url": "https://www.minepixel.top/dw/get.txt",
+        "filename": "MinePIxelWuTuoBang3.5.1Fix.zip",
+        "url": "https://cnb.cool/minepixel.top/test/-/releases/download/test/MinePIxelWuTuoBang3.5.1Fix.zip",
+        "probe_status": 206,
+        "probe_content_type": "application/zip",
+        "probe_content_range": "bytes 0-4095/2173283032",
+        "probe_magic": "504b030414000000",
+        "archive_magic": "zip",
+    }
+    ranked = seed.prioritize_archive_candidates([unverified, verified], "乌托邦探险之旅 / Utopian Journey 整合包 .mrpack .zip")
+    assert_equal("verified_first", ranked[0]["url"], verified["url"])
+    assert_equal("unverified_not_downloadable", seed.archive_candidate_is_downloadable(unverified), False)
+    assert_equal("verified_downloadable", seed.archive_candidate_is_downloadable(verified), True)
+
+
+def test_modpack_download_filters_generic_google_archives() -> None:
+    from scripts import fetch_modpack_archive_seed as seed  # noqa: PLC0415
+
+    assert_equal(
+        "google_interland_not_public_page",
+        seed.usable_public_page_url("https://storage.googleapis.com/gweb-interland.appspot.com/th-all/interland/files/Google_Interland_GameSuccess.zip"),
+        False,
+    )
+
+
+def test_modpack_download_writes_download_evidence_markdown() -> None:
+    import tempfile  # noqa: PLC0415
+
+    from scripts import fetch_modpack_archive_seed as seed  # noqa: PLC0415
+
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = seed.write_download_evidence(
+            Path(tmp),
+            "乌托邦探险之旅",
+            [
+                {
+                    "filename": "MinePIxelWuTuoBang3.5.1Fix.zip",
+                    "page_url": "https://www.minepixel.top/dw/get.txt",
+                    "url": "https://cnb.cool/minepixel.top/test/-/releases/download/test/MinePIxelWuTuoBang3.5.1Fix.zip",
+                    "probe_status": 206,
+                    "probe_content_type": "application/zip",
+                    "probe_content_range": "bytes 0-4095/2173283032",
+                    "probe_magic": "504b030414000000",
+                    "archive_magic": "zip",
+                    "bytes": 2173283032,
+                    "sha256": "5479e238489b9d2ec232de43d99797a76bedc277d6814a60f8bb2313f1fe9cce",
+                    "path": "D:/packs/MinePIxelWuTuoBang3.5.1Fix.zip",
+                    "validation": {"entries": 7891, "has_minecraft_version_instance": True, "instance_root": ".minecraft/versions/demo/"},
+                }
+            ],
+        )
+        text = paths[0].read_text(encoding="utf-8")
+    assert_true("evidence_url", "https://www.minepixel.top/dw/get.txt" in text)
+    assert_true("evidence_sha", "5479e238489b9d2ec232de43d99797a76bedc277d6814a60f8bb2313f1fe9cce" in text)
+    assert_true("evidence_bytes", "2173283032" in text)
+
+
+def test_modpack_download_decodes_mcmod_external_redirect_links() -> None:
+    from scripts import fetch_modpack_archive_seed as seed  # noqa: PLC0415
+
+    links = seed.extract_links(
+        '<a href="//link.mcmod.cn/target/aHR0cHM6Ly93d3cueHllYmJzLmNvbS9yZXMtaWQvV1RCMg==">XyeBBS</a>',
+        "https://www.mcmod.cn/modpack/1337.html",
+    )
+    assert_true("decoded_external_link", "https://www.xyebbs.com/res-id/WTB2" in links)
+
+
+def test_download_archive_reuses_valid_existing_zip() -> None:
+    import tempfile  # noqa: PLC0415
+    import zipfile  # noqa: PLC0415
+
+    from scripts import fetch_modpack_archive_seed as seed  # noqa: PLC0415
+
+    with tempfile.TemporaryDirectory() as tmp:
+        archive_dir = Path(tmp)
+        existing = archive_dir / "demo.zip"
+        with zipfile.ZipFile(existing, "w") as zipped:
+            zipped.writestr("manifest.json", "{}")
+            zipped.writestr("modlist.html", "<html></html>")
+        existing_size = existing.stat().st_size
+        saved = seed.download_archive({"url": "https://example.invalid/demo.zip", "filename": "demo.zip"}, archive_dir, "unit-test", max_bytes=1024)
+    assert_equal("reused_existing", saved["reused_existing"], True)
+    assert_equal("bytes", saved["bytes"], existing_size)
+
+
+def test_ranged_download_resumes_existing_part_file() -> None:
+    import tempfile  # noqa: PLC0415
+    from unittest.mock import patch  # noqa: PLC0415
+
+    from scripts import fetch_modpack_archive_seed as seed  # noqa: PLC0415
+
+    class FakeResponse:
+        def __init__(self, body: bytes) -> None:
+            self.body = body
+            self.status = 206
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:  # noqa: ANN001
+            return None
+
+        def read(self, size: int = -1) -> bytes:
+            if not self.body:
+                return b""
+            if size < 0:
+                size = len(self.body)
+            chunk = self.body[:size]
+            self.body = self.body[size:]
+            return chunk
+
+    seen_ranges: list[str] = []
+
+    def fake_urlopen(request, timeout: int = 0):  # noqa: ANN001, ARG001
+        range_header = request.headers.get("Range")
+        seen_ranges.append(range_header)
+        start, end = [int(item) for item in range_header.removeprefix("bytes=").split("-")]
+        return FakeResponse(b"x" * (end - start + 1))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        part_path = Path(tmp) / "demo.zip.part"
+        part_path.write_bytes(b"a" * 5)
+        with patch.object(seed.urllib.request, "urlopen", side_effect=fake_urlopen):
+            seed.ranged_download("https://example.test/demo.zip", part_path, user_agent="unit-test", total_size=11, timeout=5)
+        assert_equal("size", part_path.stat().st_size, 11)
+        assert_equal("first_range", seen_ranges[0], "bytes=5-10")
+
+
+def test_modpack_internal_detects_minecraft_instance_layout() -> None:
+    import tempfile  # noqa: PLC0415
+    import zipfile  # noqa: PLC0415
+
+    from scripts.extract_modpack_internals import extract  # noqa: PLC0415
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        archive = root / "demo.zip"
+        instance = ".minecraft/versions/DemoPack/"
+        with zipfile.ZipFile(archive, "w") as zipped:
+            zipped.writestr(".minecraft/versions/", "")
+            zipped.writestr(instance, "")
+            zipped.writestr(instance + "DemoPack.json", json.dumps({"id": "DemoPack"}, ensure_ascii=False))
+            zipped.writestr(instance + "mods/example.jar", b"jar")
+            zipped.writestr(instance + "config/ftbquests/quests/chapters/intro.snbt", 'title: "Intro"\ndescription: ["Start"]\nitem: "minecraft:apple"')
+            zipped.writestr(instance + "kubejs/server_scripts/recipes.js", 'event.shaped("minecraft:stick", ["A"], {A: "minecraft:apple"})')
+        data = extract(archive, root / "exports", root / "manual")
+        assert_equal("layout_kind", data["layout"]["kind"], "minecraft_instance")
+        assert_equal("quest_files", data["stats"]["quest_chapter_files"], 1)
+        assert_equal("kubejs_scripts", data["stats"]["kubejs_scripts"], 1)
+        route_record = next(record for record in data["records"] if str(record["path"]).endswith("DemoPack_gameplay_route_index.md"))
+        route_text = Path(str(route_record["path"])).read_text(encoding="utf-8")
+        assert_true("route_terms", "retrieval_terms" in route_text and "新手" in route_text)
+        assert_true("route_chapter", "Intro" in route_text)
+
+
 def test_job_to_dict_hides_unqualified_modpack_internal_from_history_view() -> None:
     job = web_server.Job(
         id="test-job",
@@ -1386,6 +1637,90 @@ def test_job_to_dict_hides_unqualified_modpack_internal_from_history_view() -> N
     assert_equal("blocked_count", len(payload["result"]["blocked_planned_tasks"]), 1)
     assert_equal("readable_total", payload["readable"]["total_tasks"], 1)
     assert_equal("readable_blocked", len(payload["readable"]["blocked_planned_tasks"]), 1)
+
+
+def test_modpack_download_evidence_is_manifest_fact_recall() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "mcagent.sqlite"
+        conn = connect(db_path)
+        init_db(conn)
+        try:
+            document = RawDocument(
+                source_ref="evidence",
+                source_path=Path(tmp) / "downloaded_archive_evidence_1.md",
+                title="Downloaded modpack archive evidence",
+                text=(
+                    "# Downloaded modpack archive evidence\n\n"
+                    "<!-- source: modpack_download_evidence -->\n"
+                    "- query: 乌托邦探险之旅 / Utopian Journey 整合包 .mrpack .zip\n"
+                    "- direct_archive_url: https://cnb.cool/minepixel.top/test/-/releases/download/test/MinePIxelWuTuoBang3.5.1Fix.zip\n"
+                    "- bytes: 2173283032\n"
+                    "- sha256: 5479e238489b9d2ec232de43d99797a76bedc277d6814a60f8bb2313f1fe9cce\n"
+                ),
+                metadata={},
+            )
+            replace_document(
+                conn,
+                document,
+                [
+                    TextChunk(
+                        document_source_ref="evidence",
+                        chunk_index=0,
+                        text=document.text,
+                        start_char=0,
+                        end_char=len(document.text),
+                        token_estimate=80,
+                        metadata={},
+                    )
+                ],
+            )
+            chunk_ids = retriever._modpack_manifest_fact_chunk_ids(conn, "乌托邦探险之旅这个整合包的包体来源、大小和SHA256是什么？", limit=5)
+            assert_equal("download_evidence_recalled", len(chunk_ids), 1)
+            row = fetch_chunks_by_ids(conn, chunk_ids)[chunk_ids[0]]
+            assert_true("download_evidence_boost", retriever._manifest_fact_boost(row, "乌托邦探险之旅 包体 来源 大小 SHA256") >= 6.0)
+        finally:
+            conn.close()
+
+
+def test_local_modpack_archive_fact_answer_uses_download_evidence() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        evidence_path = Path(tmp) / "downloaded_archive_evidence_1.md"
+        evidence_path.write_text(
+            "\n".join(
+                [
+                    "# Downloaded modpack archive evidence",
+                    "<!-- source: modpack_download_evidence -->",
+                    "- query: 乌托邦探险之旅 / Utopian Journey 整合包 .mrpack .zip",
+                    "- filename: MinePIxelWuTuoBang3.5.1Fix.zip",
+                    "- source_page_or_metadata_endpoint: https://www.minepixel.top/dw/get.txt",
+                    "- direct_archive_url: https://cnb.cool/minepixel.top/test/-/releases/download/test/MinePIxelWuTuoBang3.5.1Fix.zip",
+                    "- probe_status: 206",
+                    "- probe_content_type: application/zip",
+                    "- probe_content_range: bytes 0-4095/2173283032",
+                    "- probe_magic_hex: 504b030414000000",
+                    "- archive_magic: zip",
+                    "- bytes: 2173283032",
+                    "- sha256: 5479e238489b9d2ec232de43d99797a76bedc277d6814a60f8bb2313f1fe9cce",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        result = SearchResult(
+            rank=1,
+            score=9.0,
+            chunk_id=1,
+            document_id=1,
+            chunk_index=0,
+            title="Downloaded modpack archive evidence",
+            source_path=str(evidence_path),
+            url=None,
+            text=evidence_path.read_text(encoding="utf-8"),
+        )
+        answer = web_server._local_modpack_archive_fact_answer("乌托邦探险之旅这个整合包的包体来源、大小和SHA256是什么？", [result])
+    assert_true("archive_url", "https://cnb.cool/minepixel.top/test/-/releases/download/test/MinePIxelWuTuoBang3.5.1Fix.zip" in answer)
+    assert_true("archive_bytes", "2173283032" in answer)
+    assert_true("archive_sha", "5479e238489b9d2ec232de43d99797a76bedc277d6814a60f8bb2313f1fe9cce" in answer)
+    assert_true("archive_probe", "Content-Range" in answer and "504b030414000000" in answer)
 
 
 if __name__ == "__main__":
@@ -1425,6 +1760,21 @@ if __name__ == "__main__":
     test_duplicate_reuse_requires_crawler_llm_acceptance()
     test_modpack_internal_missing_archive_reports_objective_blocker()
     test_modpack_download_accepts_direct_archive_url_as_candidate()
+    test_modpack_download_search_queries_use_readable_chinese_terms()
+    test_encoding_damage_guard_catches_mojibake_without_blocking_valid_chinese()
     test_modpack_download_reports_bbsmc_cloud_drive_blocker()
+    test_modpack_download_has_large_archive_timeout()
+    test_modpack_archive_lookup_skips_corrupt_zip()
+    test_record_validation_skips_binary_archive_body()
+    test_modpack_download_follows_public_release_seed()
+    test_modpack_download_prioritizes_verified_public_release_candidate()
+    test_modpack_download_filters_generic_google_archives()
+    test_modpack_download_writes_download_evidence_markdown()
+    test_modpack_download_decodes_mcmod_external_redirect_links()
+    test_download_archive_reuses_valid_existing_zip()
+    test_ranged_download_resumes_existing_part_file()
+    test_modpack_internal_detects_minecraft_instance_layout()
     test_job_to_dict_hides_unqualified_modpack_internal_from_history_view()
+    test_modpack_download_evidence_is_manifest_fact_recall()
+    test_local_modpack_archive_fact_answer_uses_download_evidence()
     print("web_server_side_effect_guard_scenarios passed")
