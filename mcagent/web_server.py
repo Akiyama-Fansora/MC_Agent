@@ -81,6 +81,7 @@ MAX_DEEP_EVIDENCE_CHARS = 900
 DEFAULT_ANSWER_MAX_TOKENS = 3000
 ANSWER_MAX_TOKENS_CAP = 6000
 DEFAULT_CRAWLER_PLANNER_TIMEOUT_SECONDS = 90
+DEFAULT_MCAGENT_CONTEXT_TIMEOUT_SECONDS = 75
 MAX_JOBS = 40
 GROW_PROGRESS_PATH = PROJECT_ROOT / "runtime" / "grow_knowledge_base_progress.json"
 JOBS_HISTORY_PATH = PROJECT_ROOT / "runtime" / "jobs_history.json"
@@ -1185,6 +1186,7 @@ def _crawler_manifest_stats(export_dir: str) -> dict[str, Any]:
     errors = data.get("errors") if isinstance(data.get("errors"), list) else []
     downloads = data.get("downloads") if isinstance(data.get("downloads"), list) else []
     candidates = data.get("candidates") if isinstance(data.get("candidates"), list) else []
+    blockers = data.get("blockers") if isinstance(data.get("blockers"), list) else []
     return {
         "manifest_path": str(manifest_path) if manifest_path.exists() else "",
         "records": len(records),
@@ -1192,6 +1194,7 @@ def _crawler_manifest_stats(export_dir: str) -> dict[str, Any]:
         "errors": len(errors),
         "downloads": len(downloads),
         "candidates": len(candidates),
+        "blockers": len(blockers),
         "status": str(data.get("status") or ""),
         "note": str(data.get("note") or ""),
         "failure_reason": str(data.get("failure_reason") or ""),
@@ -1227,6 +1230,27 @@ def _inline_failure_manifest_stats(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def _run_mcagent_context_tool(config: AppConfig, payload: dict[str, Any], plan: dict[str, Any], session_summary: dict[str, Any] | None) -> dict[str, Any]:
+    timeout_value = str(payload.get("timeout") or payload.get("timeout_seconds") or payload.get("timeout_ms") or "").strip()
+    try:
+        timeout_seconds = int(int(timeout_value) / 1000) if timeout_value and int(timeout_value) > 1000 else int(timeout_value or DEFAULT_MCAGENT_CONTEXT_TIMEOUT_SECONDS)
+    except ValueError:
+        timeout_seconds = DEFAULT_MCAGENT_CONTEXT_TIMEOUT_SECONDS
+    timeout_seconds = min(max(0.01, timeout_seconds), 180)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_run_mcagent_context_tool_inner, config, payload, plan, session_summary, timeout_seconds)
+        try:
+            return future.result(timeout=timeout_seconds)
+        except concurrent.futures.TimeoutError:
+            return _mcagent_context_timeout_result(payload, timeout_seconds)
+
+
+def _run_mcagent_context_tool_inner(
+    config: AppConfig,
+    payload: dict[str, Any],
+    plan: dict[str, Any],
+    session_summary: dict[str, Any] | None,
+    timeout_seconds: int,
+) -> dict[str, Any]:
     query = str(payload.get("query") or payload.get("question") or "").strip()
     collection_target = str(payload.get("collection_target") or payload.get("source_question") or payload.get("question") or "").strip()
     focus = _mcagent_context_focus(query or collection_target, collection_target)
@@ -1438,7 +1462,7 @@ def _run_mcagent_context_tool(config: AppConfig, payload: dict[str, Any], plan: 
             "returncode": 0,
             "command": ["internal", "mcagent_context"],
             "output": f"MCagent/RAG local context collected. local_sources={len(selected)} gaps={len(gaps)} export_dir={export_dir}",
-            "timeout_seconds": 0,
+            "timeout_seconds": timeout_seconds,
             "elapsed_seconds": round(time.time() - started, 3),
             "timed_out": False,
             "export_dir": str(export_dir),
@@ -1462,11 +1486,29 @@ def _run_mcagent_context_tool(config: AppConfig, payload: dict[str, Any], plan: 
             "returncode": 1,
             "command": ["internal", "mcagent_context"],
             "output": f"{type(exc).__name__}: {exc}",
-            "timeout_seconds": 0,
+            "timeout_seconds": timeout_seconds,
             "elapsed_seconds": round(time.time() - started, 3),
             "timed_out": False,
             "export_dir": str(export_dir),
         }
+
+
+def _mcagent_context_timeout_result(payload: dict[str, Any], timeout_seconds: int) -> dict[str, Any]:
+    query = str(payload.get("query") or payload.get("question") or "").strip()
+    return {
+        "source": "mcagent_context",
+        "returncode": 124,
+        "command": ["internal", "mcagent_context"],
+        "output": (
+            f"mcagent_context timed out after {timeout_seconds}s. "
+            "This objective blocker is returned to CrawlerAgent; CrawlerAgent should continue with public archive/download discovery instead of waiting on local context."
+        ),
+        "timeout_seconds": timeout_seconds,
+        "elapsed_seconds": timeout_seconds,
+        "timed_out": True,
+        "export_dir": "",
+        "query": query,
+    }
 
 
 def _crawler_reusable_duplicate_evidence(export_dir: str, question: str, task_query: str, plan: dict[str, Any]) -> dict[str, Any]:

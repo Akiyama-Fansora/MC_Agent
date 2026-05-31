@@ -80,6 +80,7 @@ class CrawlerReflectionSnapshotService:
             "errors": manifest.get("errors"),
             "downloads": manifest.get("downloads"),
             "candidates": manifest.get("candidates"),
+            "blockers": manifest.get("blockers"),
             "failure_reason": result.get("failure_reason") or manifest.get("failure_reason"),
             "next_action": result.get("next_action") or manifest.get("next_action"),
             "matched": validation.get("matched"),
@@ -98,7 +99,7 @@ class CrawlerReflectionSnapshotService:
             "timed_out": bool(result.get("timed_out")),
             "artifact_refs": list(result.get("artifact_refs") or [])[:6],
             "output_tail": self._tail_text(str(result.get("output") or ""), limit=500),
-            "manifest_preview": self._manifest_preview(manifest),
+            "manifest_preview": result.get("manifest_preview") if isinstance(result.get("manifest_preview"), dict) else self._manifest_preview(manifest),
         }
 
     @staticmethod
@@ -123,6 +124,7 @@ class CrawlerReflectionSnapshotService:
             "search_results": self._compact_items(data.get("search_results"), limit=5),
             "skipped": self._compact_items(data.get("skipped"), limit=5),
             "downloads": self._compact_items(data.get("downloads"), limit=3),
+            "blockers": self._compact_items(data.get("blockers"), limit=5),
             "errors": self._compact_items(data.get("errors"), limit=3),
         }
 
@@ -144,6 +146,12 @@ class CrawlerReflectionSnapshotService:
                     "raw_html_path",
                     "download_url",
                     "filename",
+                    "project_title",
+                    "project_slug",
+                    "project_url",
+                    "version",
+                    "platform",
+                    "blocker",
                     "error",
                 ):
                     if item.get(key) not in (None, ""):

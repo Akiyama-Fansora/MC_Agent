@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -625,6 +626,32 @@ def test_crawler_job_can_execute_mcagent_context_tool() -> None:
     finally:
         if result.get("export_dir"):
             shutil.rmtree(str(result["export_dir"]), ignore_errors=True)
+
+
+def test_mcagent_context_tool_timeout_returns_objective_blocker() -> None:
+    original_inner = web_server._run_mcagent_context_tool_inner
+    original_timeout = web_server.DEFAULT_MCAGENT_CONTEXT_TIMEOUT_SECONDS
+
+    def slow_inner(*args, **kwargs):  # noqa: ANN002, ANN003
+        time.sleep(0.2)
+        return {"source": "mcagent_context", "returncode": 0}
+
+    web_server._run_mcagent_context_tool_inner = slow_inner  # type: ignore[assignment]
+    web_server.DEFAULT_MCAGENT_CONTEXT_TIMEOUT_SECONDS = 0.05  # type: ignore[assignment]
+    try:
+        result = web_server._run_mcagent_context_tool(
+            make_temp_config(Path(tempfile.gettempdir())),
+            {"query": "Utopian Journey"},
+            {"delivery_target": "MCagent/RAG"},
+            {},
+        )
+    finally:
+        web_server._run_mcagent_context_tool_inner = original_inner  # type: ignore[assignment]
+        web_server.DEFAULT_MCAGENT_CONTEXT_TIMEOUT_SECONDS = original_timeout  # type: ignore[assignment]
+    assert_equal("source", result["source"], "mcagent_context")
+    assert_equal("returncode", result["returncode"], 124)
+    assert_equal("timed_out", result["timed_out"], True)
+    assert_true("continue_download_route", "public archive/download discovery" in result["output"])
 
 
 def test_mcagent_context_filters_off_topic_local_evidence() -> None:
@@ -1247,6 +1274,93 @@ def test_modpack_download_accepts_direct_archive_url_as_candidate() -> None:
     assert_equal("errors", errors, [])
 
 
+def test_modpack_download_reports_bbsmc_cloud_drive_blocker() -> None:
+    from unittest.mock import patch  # noqa: PLC0415
+
+    from scripts import fetch_modpack_archive_seed as seed  # noqa: PLC0415
+
+    def fake_request_text(url: str, user_agent: str, timeout: int = 30):  # noqa: ARG001
+        if url.startswith("https://api.bbsmc.net/v2/search"):
+            return (
+                json.dumps(
+                    {
+                        "hits": [
+                            {
+                                "project_id": "1p2TFl6X",
+                                "project_type": "modpack",
+                                "slug": "utopia-journey",
+                                "title": "乌托邦探险之旅",
+                                "description": "乌托邦探险之旅",
+                                "versions": ["1.20.1"],
+                                "downloads": 1993041,
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                "application/json",
+                200,
+            )
+        if url == "https://api.bbsmc.net/v2/project/utopia-journey":
+            return (
+                json.dumps(
+                    {
+                        "id": "1p2TFl6X",
+                        "slug": "utopia-journey",
+                        "project_type": "modpack",
+                        "title": "乌托邦探险之旅",
+                        "description": "乌托邦探险之旅",
+                        "downloads": 1993041,
+                        "game_versions": ["1.20.1"],
+                        "loaders": ["fabric"],
+                    },
+                    ensure_ascii=False,
+                ),
+                "application/json",
+                200,
+            )
+        if url == "https://api.bbsmc.net/v2/project/utopia-journey/version":
+            return (
+                json.dumps(
+                    [
+                        {
+                            "name": "乌托邦探险之旅3.5.2",
+                            "version_number": "3.5.2",
+                            "downloads": 195615,
+                            "game_versions": ["1.20.1"],
+                            "loaders": ["fabric"],
+                            "disk_only": True,
+                            "files": [
+                                {
+                                    "url": "https://pan.quark.cn/s/76148f08445c",
+                                    "filename": "",
+                                    "primary": False,
+                                    "size": 0,
+                                }
+                            ],
+                            "disk_urls": [
+                                {"platform": "quark", "url": "https://pan.quark.cn/s/76148f08445c"},
+                                {"platform": "xunlei", "url": "https://pan.xunlei.com/s/demo?pwd=32zd"},
+                            ],
+                        }
+                    ],
+                    ensure_ascii=False,
+                ),
+                "application/json",
+                200,
+            )
+        raise RuntimeError(f"unexpected url: {url}")
+
+    with patch.object(seed, "request_text", side_effect=fake_request_text):
+        candidates, pages, blockers, errors = seed.bbsmc_archive_candidates("Utopian Journey modpack .mrpack .zip", user_agent="unit-test", limit=5)
+    assert_equal("candidates", candidates, [])
+    assert_equal("errors", errors, [])
+    assert_true("has_pages", len(pages) >= 2)
+    assert_equal("blocker_count", len(blockers), 3)
+    assert_true("blocker_reason", all("direct" in item["reason"] or "cloud" in item["reason"].lower() for item in blockers))
+    assert_true("bbsmc_project_url", any(page.get("url") == "https://bbsmc.net/modpack/utopia-journey" for page in pages))
+
+
 def test_job_to_dict_hides_unqualified_modpack_internal_from_history_view() -> None:
     job = web_server.Job(
         id="test-job",
@@ -1293,6 +1407,7 @@ if __name__ == "__main__":
     test_crawler_mcagent_context_with_collection_continues_to_delegate()
     test_direct_crawler_delegate_choice_runs_as_crawler_context_workflow()
     test_crawler_job_can_execute_mcagent_context_tool()
+    test_mcagent_context_tool_timeout_returns_objective_blocker()
     test_mcagent_context_filters_off_topic_local_evidence()
     test_specific_utopian_journey_filter_rejects_generic_utopian_sources()
     test_specific_utopian_journey_filter_rejects_other_pack_mentions()
@@ -1310,5 +1425,6 @@ if __name__ == "__main__":
     test_duplicate_reuse_requires_crawler_llm_acceptance()
     test_modpack_internal_missing_archive_reports_objective_blocker()
     test_modpack_download_accepts_direct_archive_url_as_candidate()
+    test_modpack_download_reports_bbsmc_cloud_drive_blocker()
     test_job_to_dict_hides_unqualified_modpack_internal_from_history_view()
     print("web_server_side_effect_guard_scenarios passed")

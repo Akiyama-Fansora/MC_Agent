@@ -67,6 +67,9 @@ GOAL_QUERY_HINTS = {
 def _collection_target_hint(question: str) -> str:
     text = re.sub(r"\s+", " ", question.strip())
     text = re.sub(r"^(?:用户原始目标|原始请求|用户请求|Task goal|Original user request)\s*[:：]\s*", "", text, flags=re.I)
+    english_target = _english_modpack_target_hint(text)
+    if english_target:
+        return english_target
     modern_target = _modern_chinese_modpack_target_hint(text)
     if modern_target:
         return modern_target
@@ -137,6 +140,26 @@ def _collection_target_hint(question: str) -> str:
         target = re.sub(r"^(?:(?:一下|这个|那个|关于|有关|请|帮我|你去|去|把|将|对|并|重新|开始|复跑|检查|补齐|补充|采集|收集|获取|整理)\s*)+", "", target.strip())
         target = _clean_target_hint(target)
         if target:
+            return target
+    return ""
+
+
+def _english_modpack_target_hint(text: str) -> str:
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not value:
+        return ""
+    patterns = [
+        r"modpack\s+[\"'“”]?([A-Z][A-Za-z0-9][A-Za-z0-9 _'.:+-]{1,60}?)[\"'“”]?\s*(?:[,.;:]|\(|$)",
+        r"[\"'“”]([A-Z][A-Za-z0-9][A-Za-z0-9 _'.:+-]{1,60}?)[\"'“”]\s*(?:\([^)]*(?:Chinese name|中文名)[^)]*\))?",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, value, flags=re.I)
+        if not match:
+            continue
+        target = _strip_target_suffix(match.group(1))
+        target = re.sub(r"\b(?:complete|public|data|minecraft|modpack|archive|download|public archive routes?)\b", "", target, flags=re.I)
+        target = _clean_target_hint(target, max_len=80)
+        if target and not re.fullmatch(r"Minecraft|MC|Modpack", target, flags=re.I):
             return target
     return ""
 
@@ -512,6 +535,58 @@ def _task_url_is_grounded(task: dict[str, Any], *, query: str = "") -> bool:
     return False
 
 
+def _mark_grounded_url_tasks_from_recent_results(tasks: list[dict[str, Any]], recent_results: list[dict[str, Any]]) -> None:
+    discovered_urls = _urls_from_recent_results(recent_results)
+    if not discovered_urls:
+        return
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        query = str(task.get("query") or "").strip()
+        if not _is_url_query(query) or _task_url_is_grounded(task, query=query):
+            continue
+        if _url_objectively_seen(query, discovered_urls):
+            task["from_discovered_candidate"] = True
+            task["objective_evidence"] = "recent_results manifest_preview/artifact_refs contained this URL or same canonical page URL"
+
+
+def _urls_from_recent_results(recent_results: list[dict[str, Any]]) -> set[str]:
+    urls: set[str] = set()
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key in {"url", "project_url", "download_url", "api_url", "source_url", "candidate_url"}:
+                    text = str(item or "").strip()
+                    if _is_url_query(text):
+                        urls.add(_canonical_url_for_grounding(text))
+                else:
+                    visit(item)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+
+    for result in recent_results:
+        visit(result)
+    return {item for item in urls if item}
+
+
+def _url_objectively_seen(url: str, discovered_urls: set[str]) -> bool:
+    canonical = _canonical_url_for_grounding(url)
+    if canonical in discovered_urls:
+        return True
+    if canonical.endswith("/"):
+        return canonical[:-1] in discovered_urls
+    return canonical + "/" in discovered_urls
+
+
+def _canonical_url_for_grounding(url: str) -> str:
+    value = str(url or "").strip()
+    value = re.sub(r"#.*$", "", value)
+    value = re.sub(r"\?.*$", "", value)
+    return value.rstrip("/").lower()
+
+
 def _downgrade_ungrounded_url_task(task: dict[str, Any], *, target: str) -> dict[str, Any]:
     """Keep CrawlerAgent's intent but make it discover before fetching a guessed URL."""
     cloned = dict(task)
@@ -767,13 +842,25 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
         delivery_target = "MCagent/RAG"
     else:
         delivery_target = "unknown"
+    modpack_archive_goal = bool(
+        re.search(r"modpack|整合包|\.mrpack|\.zip|archive|包体", context_text, flags=re.I)
+        and re.search(r"download|下载|archive|包体|manifest|modlist", context_text, flags=re.I)
+    )
     if isinstance(session_summary, dict):
         output_dir = str(session_summary.get("output_dir") or "").strip()
         fields = session_summary.get("schema_fields") or session_summary.get("fields")
         max_items = session_summary.get("max_items") or 50
-        structured_goal = bool(output_dir or fields) or any(
-            term in context_text.lower()
-            for term in ("csv", "json", "xlsx", "xls", "excel", "table", "structured", "price", "link", "商品", "价格", "链接", "表格", "字段", "保存到")
+        structured_goal = not modpack_archive_goal and (
+            bool(output_dir or fields)
+            or bool(
+                re.search(
+                    r"(?:save|保存).{0,24}(?:csv|json|xlsx|xls|excel|table|表格|字段)"
+                    r"|(?:csv|json|xlsx|xls|excel|table|表格).{0,24}(?:输出|导出|保存|output|export)"
+                    r"|(?:商品|价格).{0,20}(?:链接|link|url)",
+                    context_text,
+                    flags=re.I,
+                )
+            )
         )
         if structured_goal:
             structured_target = target or str(session_summary.get("collection_target") or question)[:80]
@@ -837,6 +924,8 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
         sources = ["web_discovery", "playwright", "modpack_download", "fetch_url", "followup", "mcmod", "modrinth"]
     else:
         sources = ["web_discovery", "playwright", "fetch_url", "modpack_download", "followup", "mcmod", "modrinth"]
+    if modpack_archive_goal:
+        sources = ["modpack_download", "modrinth", "web_discovery", "playwright", "fetch_url", "followup", "mcmod"]
     if _is_gap_analysis_collection_context(context_text, delivery_target):
         sources.insert(0, "mcagent_context")
     if any(term in _planner_context_text(question, session_summary) for term in ("完整", "完整资料", "完整数据", "全量", "发现", "未知主题")):
@@ -847,7 +936,9 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
         sources = [source for source in sources if source != "modpack_internal"]
     tasks: list[dict[str, Any]] = []
     for source in sources:
-        if source in {"mcagent_context", "modrinth", "followup", "modpack_internal", "modpack_download"}:
+        if source == "modpack_download":
+            source_queries = [target if re.search(r"modpack|\.mrpack|\.zip|整合包", target, flags=re.I) else f"{target} modpack .mrpack .zip"]
+        elif source in {"mcagent_context", "modrinth", "followup", "modpack_internal"}:
             source_queries = [target]
         elif source == "fetch_url":
             source_queries = [query for query in queries[:6] if _is_url_query(query)]
@@ -1561,13 +1652,18 @@ def reflect_crawler_progress(
         except Exception:
             raw = _repair_planner_json(client, raw_text, label=label, schema=schema)
         tasks: list[dict[str, Any]] = []
+        discovered_urls = _urls_from_recent_results(compact_results)
         for raw_task in list(raw.get("tasks") or [])[:max_new_tasks]:
             if isinstance(raw_task, dict):
                 task = _normalize_task(raw_task, str(raw.get("reason") or "CrawlerAgent reflection task"), 75)
                 task_query = str(task.get("query") or "") if task else ""
                 if task and _is_url_query(task_query) and not _task_url_is_grounded(task, query=task_query):
-                    task = _downgrade_ungrounded_url_task(task, target=str(plan.get("target_hint") or plan.get("topic") or ""))
-                    task_query = str(task.get("query") or "")
+                    if _url_objectively_seen(task_query, discovered_urls):
+                        task["from_discovered_candidate"] = True
+                        task["objective_evidence"] = "recent_results manifest_preview/artifact_refs contained this URL or same canonical page URL"
+                    else:
+                        task = _downgrade_ungrounded_url_task(task, target=str(plan.get("target_hint") or plan.get("topic") or ""))
+                        task_query = str(task.get("query") or "")
                 if task and (
                     _is_url_query(task_query)
                     or _valid_coverage_query(
@@ -1577,6 +1673,7 @@ def reflect_crawler_progress(
                     )
                 ):
                     tasks.append(task)
+        _mark_grounded_url_tasks_from_recent_results(tasks, compact_results)
         if _is_gap_analysis_collection_context(_planner_context_text(question, session_summary), str(plan.get("delivery_target") or "")):
             selected_index = raw.get("selected_index")
             try:

@@ -524,6 +524,83 @@ def test_structured_xlsx_request_uses_browser_collect() -> None:
     assert_true("xlsx_policy", "XLSX" in plan["cleaning_policy"])
 
 
+def test_modpack_archive_fallback_does_not_become_browser_collect() -> None:
+    plan = plan_crawler_tasks_rule_fallback(
+        "Collect complete public data for Minecraft modpack Utopian Journey. Find and fully automatically download a public .mrpack or .zip archive. Start with Modrinth files.url, CurseForge downloadUrl, GitHub Releases, packwiz, then forum direct links.",
+        ROOT / "data" / "crawler_exports",
+        max_tasks=6,
+        planner_error="unit timeout",
+        session_summary={
+            "delivery_target": "MCagent/RAG",
+            "requested_by": "mcagent",
+            "collection_target": "Collect complete public data for Minecraft modpack Utopian Journey and download a public .mrpack or .zip archive.",
+        },
+    )
+    sources = [task["source"] for task in plan["tasks"]]
+    assert_equal("strategy", plan["strategy"], "target_fallback_after_llm_planner_error")
+    assert_equal("first_source", sources[0], "modpack_download")
+    assert_true("has_archive_route", "modpack_download" in sources and "modrinth" in sources)
+    assert_true("not_structured_browser", all(source != "browser_collect" for source in sources))
+
+
+def test_english_modpack_archive_fallback_extracts_pack_name_and_download_query() -> None:
+    question = (
+        'Collect complete public data for the Minecraft modpack "Utopian Journey" (Chinese name: 乌托邦探险之旅). '
+        "The primary objective is to locate and fully automatically download a public .mrpack or .zip modpack archive. "
+        "Start with public archive routes: Modrinth modpack versions files.url, CurseForge public/API file pages with direct downloadUrl, GitHub Releases assets, packwiz pack.toml/index.toml repositories, then forum/community direct links."
+    )
+    plan = plan_crawler_tasks_rule_fallback(
+        question,
+        ROOT / "data" / "crawler_exports",
+        max_tasks=6,
+        planner_error="unit timeout",
+        session_summary={"delivery_target": "MCagent/RAG", "requested_by": "mcagent", "collection_target": question},
+    )
+    assert_equal("topic", plan["topic"], "Utopian Journey")
+    first = plan["tasks"][0]
+    assert_equal("first_source", first["source"], "modpack_download")
+    assert_true("download_query_has_archive_terms", "Utopian Journey" in first["query"] and ".mrpack" in first["query"])
+
+
+def test_reflection_allows_url_seen_in_manifest_preview() -> None:
+    original_client = crawler_llm_planner._planner_client
+
+    class FakeClient:
+        def chat(self, messages, *, temperature, max_tokens):  # noqa: ANN001, ARG002
+            return (
+                '{"action":"add_tasks","reason":"inspect discovered page",'
+                '"tasks":[{"source":"playwright","query":"https://bbsmc.net/modpack/utopia-journey",'
+                '"reason":"inspect BBSMC project page","priority":110}]}'
+            )
+
+    crawler_llm_planner._planner_client = lambda: (FakeClient(), "fake")  # type: ignore[assignment]
+    try:
+        decision = reflect_crawler_progress(
+            "Collect Utopian Journey modpack archive",
+            {"topic": "Utopian Journey", "target_hint": "Utopian Journey", "delivery_target": "MCagent/RAG"},
+            [
+                {
+                    "source": "modpack_download",
+                    "returncode": 0,
+                    "manifest_stats": {"records": 1, "skipped": 1, "errors": 0, "downloads": 0, "candidates": 0, "blockers": 2},
+                    "observation": {"status": "empty", "summary": "no direct archive", "retryable": True},
+                    "failure_reason": "Observed cloud-drive/client-only blocker(s).",
+                    "manifest_preview": {
+                        "search_results": [{"title": "乌托邦探险之旅", "url": "https://bbsmc.net/modpack/utopia-journey"}],
+                        "blockers": [{"project_url": "https://bbsmc.net/modpack/utopia-journey", "url": "https://pan.quark.cn/s/76148f08445c"}],
+                    },
+                }
+            ],
+            [],
+            session_summary={"delivery_target": "MCagent/RAG"},
+        )
+    finally:
+        crawler_llm_planner._planner_client = original_client  # type: ignore[assignment]
+    assert_equal("action", decision["action"], "add_tasks")
+    assert_equal("query", decision["tasks"][0]["query"], "https://bbsmc.net/modpack/utopia-journey")
+    assert_equal("grounded", decision["tasks"][0]["from_discovered_candidate"], True)
+
+
 def test_job_planner_timeout_returns_executable_fallback() -> None:
     original = web_server.plan_crawler_tasks_resilient
 
@@ -567,5 +644,8 @@ if __name__ == "__main__":
     test_fallback_plan_confirmation_failure_stops_before_tools()
     test_fallback_plan_confirmation_empty_json_reports_real_failure()
     test_structured_xlsx_request_uses_browser_collect()
+    test_modpack_archive_fallback_does_not_become_browser_collect()
+    test_english_modpack_archive_fallback_extracts_pack_name_and_download_query()
+    test_reflection_allows_url_seen_in_manifest_preview()
     test_job_planner_timeout_returns_executable_fallback()
     print("crawler_planner_timeout_scenarios passed")

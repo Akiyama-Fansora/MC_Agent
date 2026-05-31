@@ -27,6 +27,7 @@ class CrawlerResultAccountingService:
 
         if task_source == "modpack_download" and returncode == 0:
             downloads_loaded = int(manifest.get("downloads") or 0)
+            blockers_loaded = int(manifest.get("blockers") or 0)
             if downloads_loaded > 0:
                 accounting["success_delta"] = 1
                 result["archive_downloaded"] = True
@@ -39,6 +40,8 @@ class CrawlerResultAccountingService:
             else:
                 accounting["failure_delta"] = 1
                 result["archive_not_found"] = True
+                if blockers_loaded > 0:
+                    result["archive_access_blocked"] = True
                 result["failure_reason"] = manifest.get("failure_reason") or "未发现可公开直接下载的 .mrpack/.zip 整合包包体。"
             return accounting
 
