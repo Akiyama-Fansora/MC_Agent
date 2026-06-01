@@ -484,6 +484,112 @@ def test_recent_crawler_audit_question_answers_history_without_new_collection() 
     assert_true("audit_trace", ("answer", "recent_crawler_audit") in statuses, str(statuses))
 
 
+def test_recent_crawler_audit_question_matches_create_instead_of_higher_activity_job() -> None:
+    original_jobs = dict(web_server.JOBS)
+    original_jobs_order = list(web_server.JOBS_ORDER)
+
+    create_job = web_server.Job(id="create-job", kind="crawler", title="Create crawl", status="succeeded", summary="done")
+    create_job.result = {
+        "plan": {"topic": "Create / \u673a\u68b0\u52a8\u529b"},
+        "ingest": {"stats": {"documents_loaded": 4}},
+        "tasks": [
+            {
+                "source": "modrinth",
+                "query": "Create",
+                "returncode": 0,
+                "ingest_deferred": True,
+                "manifest_stats": {"records": 2},
+                "topic_validation": {"matched": True},
+            },
+            {
+                "source": "fetch_url",
+                "query": "https://wiki.createmod.net/",
+                "returncode": 0,
+                "ingest_deferred": True,
+                "manifest_stats": {"records": 1},
+                "topic_validation": {"matched": True},
+            },
+        ],
+    }
+    stopped_create_job = web_server.Job(id="stopped-create-job", kind="crawler", title="For the latest Create crawler job", status="stopped", summary="Read latest Create crawl ledger")
+    stopped_create_job.result = {
+        "plan": {"topic": "For the latest Create crawler job"},
+        "tasks": [
+            {
+                "source": "mcagent_context",
+                "query": "For the latest Create crawler job",
+                "returncode": 0,
+                "manifest_stats": {"records": 1},
+                "records_pending_review": True,
+            },
+            {
+                "source": "read_local_file",
+                "query": "crawl_ledger.jsonl",
+                "returncode": 1,
+                "manifest_stats": {"records": 0},
+                "observation": {"status": "blocked"},
+            },
+        ],
+    }
+    farmers_job = web_server.Job(id="farmers-job", kind="crawler", title="Farmer's Delight crawl", status="succeeded", summary="done")
+    farmers_job.result = {
+        "plan": {"topic": "\u519c\u592b\u4e50\u4e8b / Farmer's Delight"},
+        "ingest": {"stats": {"documents_loaded": 8}},
+        "tasks": [
+            {
+                "source": "fetch_url",
+                "query": "https://www.mcmod.cn/class/2820.html",
+                "returncode": 0,
+                "ingest_deferred": True,
+                "manifest_stats": {"records": 1},
+                "topic_validation": {"matched": True},
+            },
+            {
+                "source": "mcmod",
+                "query": "\u519c\u592b\u4e50\u4e8b related pages",
+                "returncode": 0,
+                "manifest_stats": {"records": 1},
+                "topic_validation": {"matched": True},
+                "search_results": [{"title": "[CCK]\u673a\u68b0\u52a8\u529b\uff1a\u4e2d\u592e\u53a8\u623f (Create: Central Kitchen)"}],
+            },
+            {
+                "source": "web_discovery",
+                "query": "Farmer's Delight wiki",
+                "returncode": 1,
+                "manifest_stats": {"records": 0},
+                "observation": {"status": "empty"},
+            },
+            {
+                "source": "modrinth",
+                "query": "farmers-delight",
+                "returncode": 1,
+                "manifest_stats": {"records": 0},
+                "observation": {"status": "empty"},
+            },
+        ],
+    }
+    try:
+        with web_server.JOBS_LOCK:
+            web_server.JOBS.clear()
+            web_server.JOBS_ORDER.clear()
+            web_server.JOBS["stopped-create-job"] = stopped_create_job
+            web_server.JOBS["create-job"] = create_job
+            web_server.JOBS["farmers-job"] = farmers_job
+            web_server.JOBS_ORDER.extend(["stopped-create-job", "create-job", "farmers-job"])
+        answer = web_server._recent_crawler_audit_answer(
+            "\u521a\u624d Crawler \u91c7\u96c6 Create / \u673a\u68b0\u52a8\u529b \u65f6\uff0c\u54ea\u4e9b\u6765\u6e90\u88ab\u63a5\u53d7\uff1f"
+        )
+    finally:
+        with web_server.JOBS_LOCK:
+            web_server.JOBS.clear()
+            web_server.JOBS.update(original_jobs)
+            web_server.JOBS_ORDER[:] = original_jobs_order
+
+    assert_true("has_answer", answer is not None)
+    assert_equal("matched_create_job", (answer or {}).get("job", {}).get("id"), "create-job")
+    assert_true("mentions_create", "Create" in str((answer or {}).get("answer") or ""))
+
+
 def test_explicit_mcagent_to_crawler_type_discovery_stays_neutral() -> None:
     question = (
         "\u8bf7\u4f60\u4f5c\u4e3a MCagent \u8f6c\u8fbe CrawlerAgent\uff1a"
@@ -2060,6 +2166,7 @@ if __name__ == "__main__":
     test_mcagent_gap_delegation_overrides_human_delivery_to_rag()
     test_explicit_mcagent_to_crawler_handoff_starts_job_before_router()
     test_recent_crawler_audit_question_answers_history_without_new_collection()
+    test_recent_crawler_audit_question_matches_create_instead_of_higher_activity_job()
     test_explicit_mcagent_to_crawler_type_discovery_stays_neutral()
     test_no_force_archive_download_does_not_block_crawler_handoff()
     test_modrinth_plain_mod_task_does_not_parse_modpack_contents()

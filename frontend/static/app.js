@@ -151,6 +151,19 @@ function agentReplyContent(response) {
   return response?.agent_message?.content || response?.answer || "";
 }
 
+function shouldTrackJobResponse(response) {
+  if (!response?.job?.id) return false;
+  if (response?.trace?.some((step) => step?.stage === "answer" && step?.status === "recent_crawler_audit")) return false;
+  if (response?.delegation) return true;
+  return response.job.status === "queued" || response.job.status === "running";
+}
+
+function shouldRenderJobReadable(response) {
+  if (!response?.job?.readable) return false;
+  if (response?.trace?.some((step) => step?.stage === "answer" && step?.status === "recent_crawler_audit")) return false;
+  return true;
+}
+
 function progressTextForTrace(step) {
   const detail = step?.detail || {};
   const stage = `${step?.stage || ""}:${step?.status || ""}`;
@@ -1462,8 +1475,8 @@ async function sendQuestion(event) {
         session.messages[pendingIndex].trace = partial.trace || session.messages[pendingIndex].trace || [];
         session.messages[pendingIndex].collaboration = partial.collaboration || [];
         session.messages[pendingIndex].sources = partial.sources || [];
-        session.messages[pendingIndex].jobReadable = partial.job?.readable || session.messages[pendingIndex].jobReadable;
-        if (partial.job?.id) {
+        session.messages[pendingIndex].jobReadable = shouldRenderJobReadable(partial) ? partial.job.readable : session.messages[pendingIndex].jobReadable;
+        if (shouldTrackJobResponse(partial)) {
           session.messages[pendingIndex].jobId = partial.job.id;
           session.messages[pendingIndex].jobStatus = partial.job.status || "";
           rememberJobMessage(partial.job, session.id, pendingIndex);
@@ -1481,13 +1494,13 @@ async function sendQuestion(event) {
     session.messages[pendingIndex].trace = data.trace || [];
     session.messages[pendingIndex].collaboration = data.collaboration || [];
     session.messages[pendingIndex].sources = data.sources || [];
-    session.messages[pendingIndex].jobReadable = data.job?.readable || session.messages[pendingIndex].jobReadable;
-    if (data.job?.id) {
+    session.messages[pendingIndex].jobReadable = shouldRenderJobReadable(data) ? data.job.readable : session.messages[pendingIndex].jobReadable;
+    if (shouldTrackJobResponse(data)) {
       session.messages[pendingIndex].jobId = data.job.id;
       session.messages[pendingIndex].jobStatus = data.job.status || "";
     }
     renderSources(data.sources || []);
-    if (data.job && (data.job.status === "queued" || data.job.status === "running")) {
+    if (shouldTrackJobResponse(data) && data.job && (data.job.status === "queued" || data.job.status === "running")) {
       rememberJobMessage(data.job, session.id, pendingIndex);
       setActivity("Crawler 已接单，正在联网检索、生成 Markdown 并准备入库。", "crawler");
     } else {

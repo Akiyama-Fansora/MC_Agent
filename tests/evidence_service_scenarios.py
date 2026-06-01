@@ -8,7 +8,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from mcagent.evidence_selector import EvidenceReport  # noqa: E402
+from mcagent.evidence_selector import EvidenceReport, EvidenceSelector  # noqa: E402
 from mcagent.evidence_service import EvidenceWorkflowService  # noqa: E402
 from mcagent.retrieval_planner import RetrievalPlan  # noqa: E402
 from mcagent.schema import SearchResult  # noqa: E402
@@ -167,8 +167,46 @@ def test_fallback_theme_evidence_can_recover_sparse_selection() -> None:
     assert_true("fallback_selected", result.selected[0].title.startswith("Theme"))
 
 
+def test_create_accepted_project_pages_are_strong_sources() -> None:
+    selector = EvidenceSelector(final_context_k=4)
+    accepted_mcmod = SearchResult(
+        rank=1,
+        score=9.5,
+        chunk_id=1,
+        document_id=1,
+        chunk_index=0,
+        title="\u673a\u68b0\u52a8\u529b (Create) - MC\u767e\u79d1",
+        source_path=r"D:\magic\MC_Agent\data\crawler_exports\mcmod\run\accepted_by_crawler\create.html",
+        url="https://www.mcmod.cn/class/2021.html",
+        text="Create / \u673a\u68b0\u52a8\u529b rotational power stress automation.",
+        metadata={},
+    )
+    accepted_modrinth = SearchResult(
+        rank=2,
+        score=8.5,
+        chunk_id=2,
+        document_id=2,
+        chunk_index=0,
+        title="Create",
+        source_path=r"D:\magic\MC_Agent\data\crawler_exports\modrinth_agent\run\accepted_by_crawler\mod_create.md",
+        url="https://modrinth.com/mod/create",
+        text="Create mod supported loaders versions and Ponder documentation.",
+        metadata={},
+    )
+
+    selected, report = selector.select(
+        "Explain Create mod rotational power and stress from local evidence.",
+        [accepted_mcmod, accepted_modrinth],
+    )
+
+    assert_equal("verdict", report.verdict, "ok")
+    assert_true("selected", len(selected) >= 2)
+    assert_equal("reasons", report.reasons, [])
+
+
 if __name__ == "__main__":
     test_evidence_service_runs_selector_and_supplements_in_order()
     test_modpack_manifest_evidence_can_upgrade_objective_report()
     test_fallback_theme_evidence_can_recover_sparse_selection()
+    test_create_accepted_project_pages_are_strong_sources()
     print("evidence_service_scenarios: ok")

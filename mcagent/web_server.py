@@ -4022,12 +4022,13 @@ def _primary_fact_subject_terms(question: str) -> list[str]:
     terms: list[str] = []
     known_aliases: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
         (("农夫乐事", "farmer's delight", "farmers delight", "farmers-delight"), ("农夫乐事", "farmer's delight", "farmers delight", "farmer-s-delight", "farmers-delight", "class/2820", "mod/farmers-delight")),
+        (("机械动力", "create mod", "create /", " create ", "createmod", "createmod.net"), ("机械动力", "create", "create mod", "createmod", "wiki.createmod.net", "modrinth.com/mod/create", "class/2021")),
         (("乌托邦探险之旅", "utopian journey", "utopia-journey"), ("乌托邦探险之旅", "utopian journey", "utopia-journey", "modpack/1337")),
         (("香草纪元", "vanillaera", "fareschron"), ("香草纪元", "vanillaera", "fareschron", "fares chron")),
         (("落幕曲", "closing song"), ("落幕曲", "closing song")),
     )
     for needles, aliases in known_aliases:
-        if any(needle in text or needle in lowered for needle in needles):
+        if any((needle in text) or (needle in lowered) for needle in needles):
             terms.extend(alias.lower() for alias in aliases)
     for match in re.finditer(r"([A-Za-z][A-Za-z0-9_ '\-]{2,}|[\u4e00-\u9fff]{2,})(?:是什么|支持|版本|加载器|安装|下载|项目页|配置|运行环境)", text):
         value = match.group(1).strip(" ，,。？?：:")
@@ -6625,14 +6626,14 @@ def _is_runtime_status_request(question: str) -> bool:
 def _is_recent_crawler_audit_question(question: str) -> bool:
     text = str(question or "")
     lowered = text.lower()
-    if "crawler" not in lowered and "Crawler" not in text and "采集" not in text:
+    if "crawler" not in lowered and "采集" not in text and "爬虫" not in text:
         return False
     if not any(token in text for token in ("刚才", "最近", "上次", "这次", "当前")) and not any(
-        token in lowered for token in ("recent", "last", "current")
+        token in lowered for token in ("recent", "last", "current", "latest")
     ):
         return False
-    return any(token in text for token in ("接受", "拒绝", "入库", "自审", "来源")) or any(
-        token in lowered for token in ("accepted", "rejected", "ingest", "audit", "source")
+    return any(token in text for token in ("接受", "拒绝", "入库", "自审", "来源", "待复核")) or any(
+        token in lowered for token in ("accepted", "rejected", "ingest", "audit", "source", "pending")
     )
 
 
@@ -6653,7 +6654,7 @@ def _recent_crawler_audit_answer(question: str) -> dict[str, Any] | None:
     chosen: dict[str, Any] | None = None
     candidates: list[tuple[int, dict[str, Any]]] = []
     for job in jobs:
-        haystack = json.dumps(job, ensure_ascii=False).lower()
+        haystack = _crawler_job_identity_haystack(job)
         if terms and not any(term.lower() in haystack for term in terms):
             continue
         readable = job.get("readable") if isinstance(job.get("readable"), dict) else {}
@@ -6667,8 +6668,12 @@ def _recent_crawler_audit_answer(question: str) -> dict[str, Any] | None:
         score = activity
         if str(job.get("status") or "") == "succeeded":
             score += 10
+        elif str(job.get("status") or "") == "stopped":
+            score -= 8
         if audit.get("ingest_status") in {"done", "running"}:
             score += 5
+        elif audit.get("ingest_status") in {"skipped", "", None}:
+            score -= 3
         candidates.append((score, job))
     if candidates:
         candidates.sort(key=lambda item: item[0], reverse=True)
@@ -6703,7 +6708,11 @@ def _recent_crawler_audit_answer(question: str) -> dict[str, Any] | None:
                 continue
             reason = next((str(item.get(key) or "") for key in reason_keys if item.get(key)), "")
             query = str(item.get("query") or item.get("url") or "").strip()
-            lines.append(f"  - {item.get('source') or 'source'}：{item.get('status') or ''}；{query}{('；' + reason) if reason else ''}")
+            status = str(item.get("status") or "").strip()
+            status_part = f"；状态：{status}" if status else ""
+            query_part = f"；目标：{query}" if query else ""
+            reason_part = f"；原因：{reason}" if reason else ""
+            lines.append(f"  - {item.get('source') or 'source'}{status_part}{query_part}{reason_part}")
 
     append_sources("接受来源", audit.get("accepted_sources"), ("accepted_reason", "reason", "next_action"))
     append_sources("拒绝/受限来源", audit.get("rejected_sources"), ("rejected_reason", "reason", "next_action"))
@@ -6717,6 +6726,48 @@ def _recent_crawler_audit_answer(question: str) -> dict[str, Any] | None:
         "agent": "mcagent_rag",
         "job": chosen,
     }
+
+
+def _scalar_value_haystack(value: Any) -> str:
+    values: list[str] = []
+
+    def walk(item: Any) -> None:
+        if isinstance(item, dict):
+            for child in item.values():
+                walk(child)
+        elif isinstance(item, list):
+            for child in item:
+                walk(child)
+        elif isinstance(item, str):
+            if item:
+                values.append(item)
+        elif isinstance(item, (int, float, bool)) and item is not None:
+            values.append(str(item))
+
+    walk(value)
+    return "\n".join(values).lower()
+
+
+def _crawler_job_identity_haystack(job: dict[str, Any]) -> str:
+    readable = job.get("readable") if isinstance(job.get("readable"), dict) else {}
+    result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    plan = result.get("plan") if isinstance(result.get("plan"), dict) else {}
+    parts: list[str] = [
+        str(job.get("title") or ""),
+        str(job.get("summary") or ""),
+        str(readable.get("target") or ""),
+        str(readable.get("headline") or ""),
+        str(plan.get("topic") or ""),
+        str(plan.get("target_hint") or ""),
+        str(plan.get("question") or ""),
+        str(plan.get("collection_target") or ""),
+    ]
+    for task in result.get("planned_tasks") or []:
+        if not isinstance(task, dict):
+            continue
+        parts.append(str(task.get("query") or ""))
+        parts.append(str(task.get("reason") or ""))
+    return "\n".join(item for item in parts if item).lower()
 
 
 def _chat(config: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:

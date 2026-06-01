@@ -735,7 +735,7 @@ def _modpack_archive_negated(text: str) -> bool:
     value = str(text or "")
     return bool(
         re.search(
-        r"不要强行|不要强制|不强行|不强制|不是整合包|如果不是整合包|自行判断.*(?:模组|mod).*整合包|自己判断.*(?:模组|mod).*整合包|模组还是整合包|mod\s+or\s+modpack|if\s+not\s+a\s+modpack",
+        r"不要强行|不要强制|不强行|不强制|不是整合包|如果不是整合包|自行判断.*(?:模组|mod).*整合包|自己判断.*(?:模组|mod).*整合包|模组还是整合包|mod\s+or\s+modpack|if\s+not\s+a\s+modpack|not\s+a\s+modpack|do\s+not\s+force\s+(?:archive|modpack)\s+download|must\s+not\s+force\s+(?:archive|modpack)\s+download|avoid\s+forced\s+(?:archive|modpack)\s+download|avoid\s+forcing\s+(?:archive|modpack)\s+download",
         value,
         flags=re.I,
         )
@@ -803,9 +803,10 @@ def _coverage_queries(question: str, session_summary: dict[str, Any] | None = No
     for hint, hint_queries in GOAL_QUERY_HINTS.items():
         if hint.lower() in text.lower():
             queries.extend(hint_queries)
-    for item in ITEM_HINTS:
-        if item.lower() in text.lower():
-            queries.append(item)
+    if _coverage_allows_item_hint_expansion(text, session_summary):
+        for item in ITEM_HINTS:
+            if item.lower() in text.lower():
+                queries.append(item)
     gap_text = text.lower()
     if any(term in gap_text for term in ("模组列表", "mod list", "modlist", "依赖列表", "dependencies")):
         queries.extend(["模组列表", "mod list", "dependencies"])
@@ -870,6 +871,28 @@ def _known_components(session_summary: dict[str, Any] | None = None) -> list[str
     if not isinstance(raw, list):
         return []
     return [str(item).strip() for item in raw if str(item).strip()][:40]
+
+
+def _coverage_allows_item_hint_expansion(text: str, session_summary: dict[str, Any] | None = None) -> bool:
+    if isinstance(session_summary, dict) and isinstance(session_summary.get("known_components"), list):
+        return True
+    lowered = str(text or "").lower()
+    return any(
+        term in lowered
+        for term in (
+            "known component",
+            "known components",
+            "component mods",
+            "included mods",
+            "mod list",
+            "modlist",
+            "dependencies",
+            "依赖",
+            "组件",
+            "模组列表",
+            "包含模组",
+        )
+    )
 
 
 def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, planner_error: str = "", session_summary: dict[str, Any] | None = None) -> dict[str, Any]:

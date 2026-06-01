@@ -587,6 +587,31 @@ def test_type_discovery_request_does_not_force_modpack_archive_download() -> Non
     assert_true("keeps_public_discovery", any(source in {"modrinth", "mcmod", "web_discovery", "playwright", "topic_discovery"} for source in sources))
 
 
+def test_create_mod_fallback_does_not_inject_unrelated_component_queries() -> None:
+    question = (
+        "Collect public information for the Minecraft mod 'Create' (Chinese alias: 机械动力). "
+        "Determine it is a mod, not a modpack, and avoid forced archive download. "
+        "Prioritize project overview, supported loaders/versions, official docs or wiki, "
+        "core mechanics, beginner automation, rotational power, stress, and logistics guide material."
+    )
+    plan = plan_crawler_tasks_rule_fallback(
+        question,
+        ROOT / "data" / "crawler_exports",
+        max_tasks=12,
+        planner_error="unit timeout",
+        session_summary={
+            "delivery_target": "MCagent/RAG",
+            "requested_by": "user_via_mcagent",
+            "collection_target": question,
+            "task_goal": question,
+        },
+    )
+    queries = " ".join(str(task.get("query") or "") for task in plan["tasks"])
+    assert_true("target_kept", "Create" in queries)
+    assert_true("no_tacz_pollution", "TACZ" not in queries and "Timeless and Classics" not in queries)
+    assert_true("no_archive_first", not plan["tasks"] or plan["tasks"][0]["source"] != "modpack_download")
+
+
 def test_reflection_allows_url_seen_in_manifest_preview() -> None:
     original_client = crawler_llm_planner._planner_client
 
@@ -672,6 +697,7 @@ if __name__ == "__main__":
     test_modpack_archive_fallback_does_not_become_browser_collect()
     test_english_modpack_archive_fallback_extracts_pack_name_and_download_query()
     test_type_discovery_request_does_not_force_modpack_archive_download()
+    test_create_mod_fallback_does_not_inject_unrelated_component_queries()
     test_reflection_allows_url_seen_in_manifest_preview()
     test_job_planner_timeout_returns_executable_fallback()
     print("crawler_planner_timeout_scenarios passed")

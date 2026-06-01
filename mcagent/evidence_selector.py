@@ -178,7 +178,24 @@ class EvidenceSelector:
         path = item.source_path.lower().replace("\\", "/")
         text = item.text.lower()
         if topic == "create":
-            return "crawler_exports/createwiki/" in path
+            return (
+                "crawler_exports/createwiki/" in path
+                or (
+                    "/accepted_by_crawler/" in path
+                    and (
+                        "crawler_exports/mcmod/" in path
+                        or "crawler_exports/modrinth_agent/" in path
+                        or "crawler_exports/web_discovery/" in path
+                    )
+                    and (
+                        "create" in item.title.lower()
+                        or "机械动力" in item.title
+                        or "create" in path
+                        or "createmod" in text
+                        or "wiki.createmod.net" in text
+                    )
+                )
+            )
         if topic == "twilight_forest":
             return "crawler_exports/ftbwiki/" in path
         if topic == "utopia":
