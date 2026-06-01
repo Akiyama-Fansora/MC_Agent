@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .crawler_self_audit_service import CrawlerSelfAuditService
 from .crawler_task_materialization_service import CrawlerTaskMaterializationService
 
 
@@ -68,6 +69,7 @@ class CrawlerJobFinalizationService:
                 },
             ],
         }
+        result["self_audit"] = CrawlerSelfAuditService().build(task_results, result)
         return {
             "status": status,
             "summary": summary,

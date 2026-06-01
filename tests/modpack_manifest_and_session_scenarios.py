@@ -100,6 +100,55 @@ def test_modpack_manifest_facts_are_preferred_over_release_filename() -> None:
         assert_true("release_warning_present", "不要从压缩包文件名" in combined, combined)
 
 
+def test_crawler_accepted_sources_are_preferred_for_project_questions() -> None:
+    with tempfile.TemporaryDirectory(prefix="mcagent-crawler-accepted-") as tmp:
+        root = Path(tmp)
+        source = root / "crawler_exports"
+        accepted = source / "fetch_url" / "case" / "accepted_by_crawler"
+        noise = source / "modrinth_agent" / "old"
+        accepted.mkdir(parents=True)
+        noise.mkdir(parents=True)
+        (accepted / "Farmer-s-Delight.md").write_text(
+            "# Farmer's Delight\n\n"
+            "农夫乐事 Farmer's Delight 是一个围绕烹饪锅、煎锅、刀、砧板、食物和农作物展开的 Minecraft 模组。\n"
+            "项目页: https://modrinth.com/mod/farmers-delight\n"
+            "MC百科: https://www.mcmod.cn/class/2820.html\n",
+            encoding="utf-8",
+        )
+        (noise / "Shady-GUI-Farmers-Delight.md").write_text(
+            "# Shady's Dark Okami GUI - Farmer's Delight\n\n"
+            "This is a GUI resource pack extension for Farmer's Delight, not the main mod page.\n",
+            encoding="utf-8",
+        )
+        manifest_noise = source / "vefc" / "modpack_manifests_noise.json"
+        manifest_noise.parent.mkdir(parents=True)
+        manifest_noise.write_text(
+            json.dumps(
+                {
+                    "source_kind": "modpack_manifest_facts",
+                    "name": "VanillaEra:FaresChron",
+                    "minecraft_version": "1.20.1",
+                    "modloader": "forge-47.3.22",
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        config = build_config(root, source)
+        stats = ingest_exports(config)
+        assert_true("docs_loaded", stats.documents_loaded >= 2, str(stats))
+
+        results = Retriever(config).search("Farmer's Delight 农夫乐事 玩法 烹饪 项目页", top_k=2)
+        assert_true("has_results", bool(results))
+        top_path = results[0].source_path.replace("\\", "/")
+        assert_true("accepted_source_first", "/accepted_by_crawler/" in top_path, "\n".join(item.source_path for item in results))
+        assert_true("main_mod_content", "烹饪锅" in results[0].text and "项目页" in results[0].text, results[0].text)
+        combined_paths = "\n".join(item.source_path for item in results)
+        assert_true("other_modpack_manifest_not_selected", "modpack_manifests_noise" not in combined_paths, combined_paths)
+
+
 def test_session_memory_is_scoped_by_session_id_and_supports_followups() -> None:
     original_store = web_server.SESSION_STORE
     store = InMemorySessionStore()
@@ -132,6 +181,7 @@ def test_session_memory_is_scoped_by_session_id_and_supports_followups() -> None
 
 def main() -> int:
     test_modpack_manifest_facts_are_preferred_over_release_filename()
+    test_crawler_accepted_sources_are_preferred_for_project_questions()
     test_session_memory_is_scoped_by_session_id_and_supports_followups()
     print("MODPACK MANIFEST AND SESSION TESTS PASSED")
     return 0

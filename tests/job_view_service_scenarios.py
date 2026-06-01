@@ -66,6 +66,9 @@ def test_running_job_view_explains_current_action_and_counts() -> None:
     assert_true("timeline_reflection", any(item["type"] == "reflection" for item in view["timeline"]))
     assert_true("timeline_replan", any(item["type"] == "replan" for item in view["timeline"]))
     assert_true("timeline_ingest", any(item["type"] == "ingest" and item["status"] == "running" for item in view["timeline"]))
+    assert_equal("self_audit_accepted", view["self_audit"]["counts"]["accepted"], 1)
+    assert_equal("self_audit_rejected", view["self_audit"]["counts"]["rejected"], 1)
+    assert_true("self_audit_summary", "接受 1 个来源" in view["self_audit_summary"])
 
 
 def test_waiting_job_view_is_plain_language() -> None:
@@ -102,9 +105,60 @@ def test_job_view_surfaces_blocked_planned_tasks_separately() -> None:
     assert_true("timeline_no_blocked_as_task", all(item.get("title") != "modpack_internal" for item in view["timeline"]))
 
 
+def test_job_view_recomputes_self_audit_after_background_ingest_finishes() -> None:
+    view = JobReadableViewService(source_label=label).build(
+        {
+            "title": "Crawler 采集",
+            "status": "succeeded",
+            "summary": "后台入库已完成。",
+            "result": {
+                "ingest": {"stats": {"documents_loaded": 2}},
+                "ingest_background": True,
+                "self_audit": {"ingest_status": "running", "ingest_note": "stale cached audit"},
+                "tasks": [
+                    {
+                        "source": "fetch_url",
+                        "query": "https://example.test/project",
+                        "returncode": 0,
+                        "ingest_deferred": True,
+                        "manifest_stats": {"records": 1},
+                        "topic_validation": {"matched": True, "reason": "direct"},
+                    }
+                ],
+            },
+        }
+    )
+    assert_equal("audit_ingest_done", view["self_audit"]["ingest_status"], "done")
+    assert_true("audit_summary_done", "已入库" in view["self_audit_summary"], view["self_audit_summary"])
+
+
+def test_zero_byte_accepted_result_is_not_shown_as_useful_output() -> None:
+    view = JobReadableViewService(source_label=label).build(
+        {
+            "title": "Crawler 采集",
+            "status": "succeeded",
+            "result": {
+                "tasks": [
+                    {
+                        "source": "save_artifact",
+                        "query": "Farmer's Delight summary",
+                        "returncode": 0,
+                        "manifest_stats": {"records": 1, "usable_records": 0, "empty_records": 1},
+                        "observation": {"status": "records_pending_review", "summary": "empty artifact"},
+                        "records_pending_review": True,
+                    }
+                ],
+            },
+        }
+    )
+    assert_equal("useful_outputs", view["useful_outputs"], [])
+    assert_equal("blocked_outputs", len(view["blocked_outputs"]), 1)
+
+
 if __name__ == "__main__":
     test_running_job_view_explains_current_action_and_counts()
     test_waiting_job_view_is_plain_language()
     test_job_view_surfaces_blocked_planned_tasks_separately()
+    test_job_view_recomputes_self_audit_after_background_ingest_finishes()
+    test_zero_byte_accepted_result_is_not_shown_as_useful_output()
     print("job_view_service_scenarios: ok")
-

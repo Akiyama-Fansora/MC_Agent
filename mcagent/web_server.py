@@ -76,10 +76,13 @@ STATIC_DIR = WEB_DIR / "static"
 MAX_ROUGH_TOP_K = 200
 MAX_FINAL_CONTEXT_K = 12
 MIN_FINAL_CONTEXT_K = 4
-MAX_MODEL_CONTEXT_CHARS = 16000
+MAX_MODEL_CONTEXT_CHARS = 10000
 MAX_SOURCE_CONTEXT_CHARS = 1500
 MAX_DEEP_EVIDENCE_CHARS = 900
+RAW_HTML_SCAN_FILE_LIMIT = 300
+RAW_HTML_SCAN_SECONDS = 6.0
 DEFAULT_ANSWER_MAX_TOKENS = 3000
+AUTO_ANSWER_MAX_TOKENS = 3000
 ANSWER_MAX_TOKENS_CAP = 6000
 DEFAULT_CRAWLER_PLANNER_TIMEOUT_SECONDS = 90
 DEFAULT_MCAGENT_CONTEXT_TIMEOUT_SECONDS = 75
@@ -229,7 +232,26 @@ def _job_to_dict(job: Job) -> dict[str, Any]:
 
 
 def _job_readable_summary(job: dict[str, Any]) -> dict[str, Any]:
+    _refresh_job_manifest_stats_for_display(job)
     return JobReadableViewService(source_label=_source_label).build(job)
+
+
+def _refresh_job_manifest_stats_for_display(job: dict[str, Any]) -> None:
+    result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    tasks = result.get("tasks") if isinstance(result.get("tasks"), list) else []
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        export_dir = str(task.get("export_dir") or "")
+        if not export_dir:
+            continue
+        stats = task.get("manifest_stats") if isinstance(task.get("manifest_stats"), dict) else {}
+        if stats.get("usable_records") is not None and stats.get("empty_records") is not None and stats.get("record_bytes") is not None:
+            continue
+        refreshed = _crawler_manifest_stats(export_dir)
+        if refreshed.get("manifest_path") or refreshed.get("records") or refreshed.get("skipped") or refreshed.get("errors"):
+            task["manifest_stats"] = {**stats, **refreshed}
+            task["observation"] = classify_crawler_tool_result(task).to_dict()
 
 
 def _sanitize_job_planned_tasks_for_display(job: dict[str, Any]) -> None:
@@ -684,6 +706,27 @@ def _ingest_after_crawl(config: AppConfig, source_dirs: list[str | Path] | None 
     raise last_error or RuntimeError("ingest failed")
 
 
+def _crawler_record_has_content(record: dict[str, Any]) -> bool:
+    try:
+        byte_count = int(record.get("bytes") or 0) if record.get("bytes") is not None else None
+    except (TypeError, ValueError):
+        byte_count = None
+    if byte_count is not None and byte_count > 0:
+        return True
+    try:
+        if int(record.get("chars") or 0) > 0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    path = Path(str(record.get("path") or ""))
+    if path.is_file():
+        try:
+            return path.stat().st_size > 0
+        except OSError:
+            return False
+    return False
+
+
 def _crawler_accepted_ingest_roots(result: dict[str, Any]) -> list[str]:
     export_dir = Path(str(result.get("export_dir") or ""))
     validation = result.get("topic_validation") if isinstance(result.get("topic_validation"), dict) else {}
@@ -698,7 +741,7 @@ def _crawler_accepted_ingest_roots(result: dict[str, Any]) -> list[str]:
             record = records[int(index)]
         except (TypeError, ValueError, IndexError):
             continue
-        if isinstance(record, dict):
+        if isinstance(record, dict) and _crawler_record_has_content(record):
             accepted_records.append(record)
     if not accepted_records:
         return []
@@ -1230,9 +1273,40 @@ def _crawler_manifest_stats(export_dir: str) -> dict[str, Any]:
     downloads = data.get("downloads") if isinstance(data.get("downloads"), list) else []
     candidates = data.get("candidates") if isinstance(data.get("candidates"), list) else []
     blockers = data.get("blockers") if isinstance(data.get("blockers"), list) else []
+    record_bytes = 0
+    usable_records = 0
+    empty_records = 0
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        byte_count: int | None = None
+        try:
+            if record.get("bytes") is not None:
+                byte_count = int(record.get("bytes") or 0)
+        except (TypeError, ValueError):
+            byte_count = None
+        path = Path(str(record.get("path") or ""))
+        if byte_count is None and path.is_file():
+            try:
+                byte_count = int(path.stat().st_size)
+            except OSError:
+                byte_count = None
+        if byte_count is not None:
+            record_bytes += max(0, byte_count)
+        try:
+            chars = int(record.get("chars") or 0)
+        except (TypeError, ValueError):
+            chars = 0
+        if (byte_count is not None and byte_count > 0) or chars > 0:
+            usable_records += 1
+        else:
+            empty_records += 1
     return {
         "manifest_path": str(manifest_path) if manifest_path.exists() else "",
         "records": len(records),
+        "usable_records": usable_records,
+        "empty_records": empty_records,
+        "record_bytes": record_bytes,
         "skipped": len(skipped),
         "errors": len(errors),
         "downloads": len(downloads),
@@ -1572,7 +1646,7 @@ def _crawler_reusable_duplicate_evidence(export_dir: str, question: str, task_qu
             continue
         reason = str(item.get("reason") or "").lower()
         previous_path = str(item.get("previous_path") or "").strip()
-        if "duplicate" not in reason or not previous_path or not Path(previous_path).exists():
+        if not any(marker in reason for marker in ("duplicate", "known_project", "known")) or not previous_path or not Path(previous_path).exists():
             continue
         records.append(
             {
@@ -1629,6 +1703,13 @@ def _crawler_manifest_brief(manifest_path: Path) -> dict[str, Any]:
     record_samples: list[dict[str, Any]] = []
     for record_index, record in enumerate(records[:5]):
         if isinstance(record, dict):
+            path = Path(str(record.get("path") or ""))
+            path_bytes: int | None = None
+            if path.is_file():
+                try:
+                    path_bytes = path.stat().st_size
+                except OSError:
+                    path_bytes = None
             record_samples.append(
                 {
                     "index": record_index,
@@ -1636,6 +1717,7 @@ def _crawler_manifest_brief(manifest_path: Path) -> dict[str, Any]:
                     "url": record.get("url"),
                     "path": record.get("path"),
                     "chars": record.get("chars"),
+                    "bytes": record.get("bytes") if record.get("bytes") is not None else path_bytes,
                     "raw_html_path": record.get("raw_html_path"),
                 }
             )
@@ -1760,6 +1842,17 @@ def _crawler_result_summary(task_results: list[dict[str, Any]], plan: dict[str, 
                 for sample in brief.get("record_samples", []):
                     sample_index = sample.get("index")
                     if matched_set and (not str(sample_index).isdigit() or int(sample_index) not in matched_set):
+                        continue
+                    sample_path = Path(str(sample.get("path") or ""))
+                    try:
+                        sample_chars = int(sample.get("chars") or 0)
+                    except (TypeError, ValueError):
+                        sample_chars = 0
+                    try:
+                        sample_bytes = int(sample.get("bytes") or 0) if sample.get("bytes") is not None else (sample_path.stat().st_size if sample_path.is_file() else 0)
+                    except (OSError, TypeError, ValueError):
+                        sample_bytes = 0
+                    if sample_chars <= 0 and sample_bytes <= 0:
                         continue
                     if sample.get("raw_html_path"):
                         raw_html_count += 1
@@ -1987,10 +2080,19 @@ def _crawler_llm_record_relevance(
     samples: list[dict[str, str]] = []
     for record in records[:8]:
         text = _record_text_for_validation(record)
+        path = Path(str(record.get("path") or ""))
+        path_bytes: int | None = None
+        if path.is_file():
+            try:
+                path_bytes = path.stat().st_size
+            except OSError:
+                path_bytes = None
         samples.append(
             {
                 "title": str(record.get("title") or "")[:160],
                 "url": str(record.get("url") or "")[:240],
+                "bytes": str(record.get("bytes") if record.get("bytes") is not None else (path_bytes if path_bytes is not None else "")),
+                "chars": str(record.get("chars") if record.get("chars") is not None else ""),
                 "excerpt": normalize_text(text)[:900],
             }
         )
@@ -2068,6 +2170,8 @@ def _crawler_topic_match(export_dir: str, question: str, task_query: str, plan: 
         for index in matched_indexes[:3]:
             if isinstance(index, int) and 0 <= index < len(records):
                 record = records[index]
+                if not _crawler_record_has_content(record):
+                    continue
                 llm_examples.append({"title": str(record.get("title") or ""), "url": str(record.get("url") or ""), "hits": "Crawler LLM component/direct judgement"})
     rejected_indexes = llm_judgement.get("rejected_indexes") if isinstance(llm_judgement, dict) else []
     rejected_examples: list[dict[str, str]] = []
@@ -2095,11 +2199,18 @@ def _crawler_topic_match(export_dir: str, question: str, task_query: str, plan: 
                 break
     if not llm_judgement.get("matched") and str(llm_judgement.get("reason") or "") == "llm_judge_error_uncertain" and component_candidates:
         llm_examples = component_candidates
+    accepted_indexes = [int(index) for index in matched_indexes if isinstance(index, int) and 0 <= index < len(records) and _crawler_record_has_content(records[index])][:8] if isinstance(matched_indexes, list) else []
+    empty_matched_indexes = [int(index) for index in matched_indexes if isinstance(index, int) and 0 <= index < len(records) and not _crawler_record_has_content(records[index])][:8] if isinstance(matched_indexes, list) else []
+    effective_matched = bool(llm_judgement.get("matched")) and bool(accepted_indexes)
+    reason = str(llm_judgement.get("reason") or "uncertain") if isinstance(llm_judgement, dict) else "uncertain"
+    if bool(llm_judgement.get("matched")) and empty_matched_indexes and not accepted_indexes:
+        reason = "empty_artifact"
     return {
-        "matched": bool(llm_judgement.get("matched")) if isinstance(llm_judgement, dict) else False,
-        "reason": str(llm_judgement.get("reason") or "uncertain") if isinstance(llm_judgement, dict) else "uncertain",
+        "matched": effective_matched if isinstance(llm_judgement, dict) else False,
+        "reason": reason,
         "matched_records": len(llm_examples),
-        "matched_indexes": [int(index) for index in matched_indexes if isinstance(index, int) and 0 <= index < len(records)][:8] if isinstance(matched_indexes, list) else [],
+        "matched_indexes": accepted_indexes,
+        "empty_matched_indexes": empty_matched_indexes,
         "rejected_indexes": [int(index) for index in rejected_indexes if isinstance(index, int) and 0 <= index < len(records)][:8] if isinstance(rejected_indexes, list) else [],
         "records": len(records),
         "terms": terms,
@@ -2842,8 +2953,12 @@ def _adaptive_final_context_k(query: str, config: AppConfig, agent: str) -> int:
 
 def _answer_max_tokens(payload: dict[str, Any], question: str) -> int | None:
     raw = payload.get("max_tokens")
-    if isinstance(raw, str) and raw.strip().lower() in {"auto", "none", "null", "unlimited", "不限制", "无限制"}:
-        return None
+    if isinstance(raw, str):
+        raw_value = raw.strip().lower()
+        if raw_value == "auto":
+            raw = None
+        elif raw_value in {"none", "null", "unlimited", "不限制", "无限制"}:
+            return None
     if raw is not None:
         try:
             value = int(raw)
@@ -2860,7 +2975,7 @@ def _answer_max_tokens(payload: dict[str, Any], question: str) -> int | None:
         return 4200
     if intent and intent.domain in {"project", "known_mod"}:
         return 3600
-    return DEFAULT_ANSWER_MAX_TOKENS
+    return AUTO_ANSWER_MAX_TOKENS
 
 
 def _should_use_llm_retrieval_planner(original_question: str, contextual_question: str, session_summary: dict[str, Any]) -> bool:
@@ -3844,7 +3959,7 @@ def _local_version_install_answer(question: str, results: list[SearchResult]) ->
         return ""
     labels = _version_install_fact_labels()
     facts: dict[str, list[str]] = {label: [] for label in labels}
-    filtered_results = _filter_answer_evidence_by_required_terms(question, results)
+    filtered_results = _filter_version_install_fact_results(question, results)
     if not filtered_results:
         return ""
     for item in filtered_results[:8]:
@@ -3868,6 +3983,63 @@ def _local_version_install_answer(question: str, results: list[SearchResult]) ->
     if missing:
         lines.append(_VERSION_INSTALL_TEXT["missing_prefix"] + _VERSION_INSTALL_TEXT["comma"].join(missing) + _VERSION_INSTALL_TEXT["period"])
     return "\n".join(lines)
+
+
+def _filter_version_install_fact_results(question: str, results: list[SearchResult]) -> list[SearchResult]:
+    if _is_modpack_fact_query_text(question):
+        return _filter_answer_evidence_by_required_terms(question, results)
+    subject_terms = _primary_fact_subject_terms(question)
+    if not subject_terms:
+        return _filter_answer_evidence_by_required_terms(question, results)[:3]
+    output: list[SearchResult] = []
+    for item in results:
+        title_source = f"{item.title}\n{item.source_path}\n{item.url or ''}".lower().replace("\\", "/")
+        if any(term in title_source for term in subject_terms):
+            output.append(item)
+    for index, item in enumerate(output, start=1):
+        item.rank = index
+    return output
+
+
+def _filter_fact_answer_sources(question: str, results: list[SearchResult], answer: str) -> list[SearchResult]:
+    if _is_modpack_archive_fact_question(question):
+        filtered = _filter_answer_evidence_by_required_terms(question, results)
+    elif _is_version_install_question(question):
+        filtered = _filter_version_install_fact_results(question, results)
+    else:
+        filtered = results
+    cited_ranks = {int(match.group(1)) for match in re.finditer(r"\[S(\d+)\]", str(answer or ""))}
+    if cited_ranks:
+        filtered = [item for item in filtered if int(item.rank) in cited_ranks]
+    for index, item in enumerate(filtered, start=1):
+        item.rank = index
+    return filtered
+
+
+def _primary_fact_subject_terms(question: str) -> list[str]:
+    text = str(question or "")
+    lowered = text.lower()
+    terms: list[str] = []
+    known_aliases: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
+        (("农夫乐事", "farmer's delight", "farmers delight", "farmers-delight"), ("农夫乐事", "farmer's delight", "farmers delight", "farmer-s-delight", "farmers-delight", "class/2820", "mod/farmers-delight")),
+        (("乌托邦探险之旅", "utopian journey", "utopia-journey"), ("乌托邦探险之旅", "utopian journey", "utopia-journey", "modpack/1337")),
+        (("香草纪元", "vanillaera", "fareschron"), ("香草纪元", "vanillaera", "fareschron", "fares chron")),
+        (("落幕曲", "closing song"), ("落幕曲", "closing song")),
+    )
+    for needles, aliases in known_aliases:
+        if any(needle in text or needle in lowered for needle in needles):
+            terms.extend(alias.lower() for alias in aliases)
+    for match in re.finditer(r"([A-Za-z][A-Za-z0-9_ '\-]{2,}|[\u4e00-\u9fff]{2,})(?:是什么|支持|版本|加载器|安装|下载|项目页|配置|运行环境)", text):
+        value = match.group(1).strip(" ，,。？?：:")
+        if value and value not in {"请说明它", "它", "这个"}:
+            terms.append(value.lower())
+    return _dedupe_strings(terms)[:8]
+
+
+def _is_modpack_fact_query_text(question: str) -> bool:
+    text = str(question or "")
+    lowered = text.lower()
+    return any(marker in lowered or marker in text for marker in ("modpack", "整合包", "包体", ".mrpack", ".zip", "manifest", "香草纪元", "乌托邦探险之旅", "utopian journey", "vanillaera", "fareschron", "落幕曲", "closing song"))
 
 
 def _local_modpack_archive_fact_answer(question: str, results: list[SearchResult]) -> str:
@@ -4678,7 +4850,10 @@ def _supplement_raw_html_results(config: AppConfig, question: str, results: list
     candidates: list[tuple[float, Path]] = []
     raw_root = config.paths.source_dir
     raw_files = sorted(raw_root.rglob("raw_html/*.html"), key=lambda path: path.stat().st_mtime, reverse=True) if raw_root.exists() else []
-    for raw_path in raw_files[:1000]:
+    started = time.monotonic()
+    for raw_path in raw_files[:RAW_HTML_SCAN_FILE_LIMIT]:
+        if time.monotonic() - started > RAW_HTML_SCAN_SECONDS:
+            break
         markdown_path = _markdown_path_for_raw_html(raw_path)
         if markdown_path is None or str(markdown_path).lower() in existing_paths:
             continue
@@ -5501,6 +5676,8 @@ def _mentions_crawler_agent(text: str) -> bool:
 
 def _forbids_crawler_handoff(text: str) -> bool:
     value = str(text or "").lower()
+    value = re.sub(r"(不要|不用|别|不必|无需)强制.{0,12}(包体|下载|\.mrpack|\.zip|整合包)", " ", value, flags=re.I)
+    value = re.sub(r"不强制.{0,12}(包体|下载|\.mrpack|\.zip|整合包)", " ", value, flags=re.I)
     return bool(re.search(r"(不要|不用|别|禁止|不要自动|不用自动).{0,16}(crawler|crawleragent|爬虫|采集|委托)", value, flags=re.I))
 
 
@@ -5526,6 +5703,8 @@ def _should_start_explicit_mcagent_crawler_handoff_fast(agent: str, original_que
     if agent != "mcagent_rag":
         return False
     text = str(original_question or "")
+    if _is_recent_crawler_audit_question(text):
+        return False
     if not text.strip() or _forbids_crawler_handoff(text):
         return False
     if not _mentions_crawler_agent(text) or not _asks_for_collection_or_handoff(text):
@@ -5547,7 +5726,34 @@ def _should_use_deterministic_local_fact_rag_route(agent: str, original_question
         return False
     return (
         _is_modpack_archive_fact_question(text)
-        or (_is_version_install_question(text) and not _is_modpack_overview_question(text))
+        or (_is_version_install_question(text) and not _is_modpack_overview_question(text) and not _needs_general_grounded_answer(text))
+    )
+
+
+def _needs_general_grounded_answer(question: str) -> bool:
+    text = str(question or "")
+    lowered = text.lower()
+    return any(
+        token in text
+        for token in (
+            "怎么玩",
+            "玩法",
+            "路线",
+            "流程",
+            "入门",
+            "新手",
+            "前期",
+            "中期",
+            "后期",
+            "机制",
+            "系统",
+            "教程",
+            "攻略",
+            "够不够回答",
+        )
+    ) or any(
+        token in lowered
+        for token in ("how to play", "guide", "route", "progression", "beginner", "mid game", "mechanic", "tutorial")
     )
 
 
@@ -5586,6 +5792,10 @@ def _filter_answer_evidence_by_required_terms(focus: str, selected: list[SearchR
     if not selected:
         return []
     strict_terms = _strict_entity_terms_for_focus(focus)
+    if not strict_terms:
+        subject_terms = _primary_fact_subject_terms(focus)
+        if subject_terms:
+            strict_terms = subject_terms
     if strict_terms:
         filtered = [
             item
@@ -5620,6 +5830,8 @@ def _search_result_matches_strict_entity(item: SearchResult, terms: list[str]) -
     title_source = f"{item.title}\n{item.source_path}\n{item.url or ''}".lower()
     if any(term.lower() in title_source for term in terms):
         return True
+    if any(term.lower() in { "农夫乐事", "farmer's delight", "farmers delight", "farmer-s-delight", "farmers-delight" } for term in terms):
+        return False
     body = str(item.text or "").lower()
     body_hits = [term for term in terms[:3] if term.lower() in body[:1600]]
     return len(body_hits) >= 2
@@ -5702,12 +5914,12 @@ def _clean_explicit_mcagent_crawler_collection_target(original_question: str) ->
         and re.search(r"下载|包体|\.mrpack|\.zip|manifest|配置|完整模组列表|mod\s*list|modlist|FTB\s*Quests?|KubeJS", value, flags=re.I)
     )
     coverage = ""
-    marker = re.search(r"(?:目标|包括|覆盖)\s*[:：]\s*(.+)$", value)
+    marker = re.search(r"(?:目标|包括|覆盖|需要覆盖|重点包括|需要补齐|补齐)\s*[:：]?\s*(.+)$", value)
     if marker:
         coverage = re.split(r"(?:。|；|;)\s*", marker.group(1), maxsplit=1)[0].strip(" ，,。；;")
     elif any(term in value for term in ("版本", "下载", "包体", "manifest", "配置", "模组列表", "玩法路线", "新手", "更新日志")):
         wanted = []
-        labels = ["版本", "manifest/配置", "完整模组列表", "玩法路线", "新手到毕业路线", "更新日志"]
+        labels = ["简介", "版本/加载器", "下载/项目页", "manifest/配置", "完整模组列表", "玩法机制", "食物/烹饪系统", "玩法路线", "新手到毕业路线", "更新日志"]
         if archive_goal:
             labels.insert(1, "下载/包体线索")
         for label in labels:
@@ -6410,6 +6622,103 @@ def _is_runtime_status_request(question: str) -> bool:
     }
 
 
+def _is_recent_crawler_audit_question(question: str) -> bool:
+    text = str(question or "")
+    lowered = text.lower()
+    if "crawler" not in lowered and "Crawler" not in text and "采集" not in text:
+        return False
+    if not any(token in text for token in ("刚才", "最近", "上次", "这次", "当前")) and not any(
+        token in lowered for token in ("recent", "last", "current")
+    ):
+        return False
+    return any(token in text for token in ("接受", "拒绝", "入库", "自审", "来源")) or any(
+        token in lowered for token in ("accepted", "rejected", "ingest", "audit", "source")
+    )
+
+
+def _recent_crawler_audit_answer(question: str) -> dict[str, Any] | None:
+    terms = _primary_fact_subject_terms(question)
+    with JOBS_LOCK:
+        jobs = [asdict(JOBS[job_id]) for job_id in JOBS_ORDER if job_id in JOBS and JOBS[job_id].kind == "crawler"]
+    for job in jobs:
+        _sanitize_job_planned_tasks_for_display(job)
+        job["readable"] = _job_readable_summary(job)
+    if not jobs:
+        return {
+            "answer": "没有找到可用的 Crawler 任务自审记录。本轮只是查询历史状态，不会新开采集任务。",
+            "sources": [],
+            "context": "",
+            "agent": "mcagent_rag",
+        }
+    chosen: dict[str, Any] | None = None
+    candidates: list[tuple[int, dict[str, Any]]] = []
+    for job in jobs:
+        haystack = json.dumps(job, ensure_ascii=False).lower()
+        if terms and not any(term.lower() in haystack for term in terms):
+            continue
+        readable = job.get("readable") if isinstance(job.get("readable"), dict) else {}
+        audit = readable.get("self_audit") if isinstance(readable.get("self_audit"), dict) else {}
+        if not audit:
+            continue
+        counts = audit.get("counts") if isinstance(audit.get("counts"), dict) else {}
+        activity = int(counts.get("accepted") or 0) + int(counts.get("rejected") or 0) + int(counts.get("pending_review") or 0)
+        if activity <= 0 and str(job.get("status") or "") in {"stopped", "queued", "running"}:
+            continue
+        score = activity
+        if str(job.get("status") or "") == "succeeded":
+            score += 10
+        if audit.get("ingest_status") in {"done", "running"}:
+            score += 5
+        candidates.append((score, job))
+    if candidates:
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        chosen = candidates[0][1]
+    if chosen is None:
+        return {
+            "answer": "没有找到匹配这个主题且包含有效接受/拒绝记录的 Crawler 自审报告。本轮只是查询历史状态，不会新开采集任务。",
+            "sources": [],
+            "context": "",
+            "agent": "mcagent_rag",
+        }
+    readable = chosen.get("readable") if isinstance(chosen.get("readable"), dict) else {}
+    audit = readable.get("self_audit") if isinstance(readable.get("self_audit"), dict) else {}
+    if not audit:
+        return None
+    counts = audit.get("counts") if isinstance(audit.get("counts"), dict) else {}
+    lines = [
+        f"Crawler 最近任务自审：{readable.get('target') or chosen.get('title') or chosen.get('id')}",
+        f"- 任务ID：{chosen.get('id')}；状态：{chosen.get('status')}",
+        f"- 统计：接受 {counts.get('accepted') or 0} 个，拒绝 {counts.get('rejected') or 0} 个，待复核 {counts.get('pending_review') or 0} 个；入库状态：{audit.get('ingest_status') or 'skipped'}",
+    ]
+    if audit.get("ingest_note"):
+        lines.append(f"- 入库判断：{audit.get('ingest_note')}")
+
+    def append_sources(title: str, items: Any, reason_keys: tuple[str, ...]) -> None:
+        if not isinstance(items, list) or not items:
+            lines.append(f"- {title}：无")
+            return
+        lines.append(f"- {title}：")
+        for item in items[:6]:
+            if not isinstance(item, dict):
+                continue
+            reason = next((str(item.get(key) or "") for key in reason_keys if item.get(key)), "")
+            query = str(item.get("query") or item.get("url") or "").strip()
+            lines.append(f"  - {item.get('source') or 'source'}：{item.get('status') or ''}；{query}{('；' + reason) if reason else ''}")
+
+    append_sources("接受来源", audit.get("accepted_sources"), ("accepted_reason", "reason", "next_action"))
+    append_sources("拒绝/受限来源", audit.get("rejected_sources"), ("rejected_reason", "reason", "next_action"))
+    append_sources("待复核来源", audit.get("pending_review_sources"), ("reason", "next_action"))
+    if audit.get("principle"):
+        lines.append(f"- 原则：{audit.get('principle')}")
+    return {
+        "answer": "\n".join(lines),
+        "sources": [],
+        "context": "",
+        "agent": "mcagent_rag",
+        "job": chosen,
+    }
+
+
 def _chat(config: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
     return _chat_impl(config, payload)
 
@@ -6438,6 +6747,11 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
                 "agent": agent,
             },
         )
+    if agent == "mcagent_rag" and _is_recent_crawler_audit_question(original_question):
+        audit_answer = _recent_crawler_audit_answer(original_question)
+        if audit_answer is not None:
+            add_trace("answer", "recent_crawler_audit", {"source": "jobs", "job_id": (audit_answer.get("job") or {}).get("id")})
+            return _with_trace(audit_answer, trace)
     retrieval_note = ""
     session_summary = _session_summary(payload)
     if _should_start_explicit_mcagent_crawler_handoff_fast(agent, original_question):
@@ -7109,8 +7423,15 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
     else:
         answer = _local_modpack_archive_fact_answer(original_question, selected)
         if not answer:
-            answer = "" if _is_modpack_overview_question(original_question) else _local_version_install_answer(original_question, selected)
+            answer = (
+                ""
+                if (_is_modpack_overview_question(original_question) or _needs_general_grounded_answer(original_question))
+                else _local_version_install_answer(original_question, selected)
+            )
         if answer:
+            selected = _filter_fact_answer_sources(original_question, selected, answer)
+            source_dicts = [_result_to_dict(item) for item in selected]
+            context = format_context(selected)
             add_trace("answer", "local_fact_answer", {"reason": "deterministic_fact_evidence", "sources": len(selected)})
         if not answer:
             answer_question = _answer_question_for_user(original_question, question, retrieval_note)

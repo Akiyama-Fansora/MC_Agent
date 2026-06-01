@@ -209,6 +209,25 @@ def _literal_recall_chunk_ids(conn: Any, query: str, limit: int) -> list[int]:
 
 def _is_modpack_fact_query(query: str) -> bool:
     lowered = query.lower()
+    modpack_markers = (
+        "modpack",
+        "整合包",
+        "包体",
+        ".mrpack",
+        ".zip",
+        "manifest",
+        "downloaded_archive_evidence",
+        "direct_archive_url",
+        "vanillaera",
+        "fareschron",
+        "香草纪元",
+        "乌托邦探险之旅",
+        "utopian journey",
+        "closing song",
+        "落幕曲",
+    )
+    if not any(marker in lowered or marker in query for marker in modpack_markers):
+        return False
     return any(
         term in lowered
         for term in (
@@ -368,6 +387,8 @@ def _source_intent_boost(row: Any, query: str) -> float:
 def _source_channel(row: Any) -> str:
     path = str(row["source_path"]).lower().replace("\\", "/")
     filename = path.rsplit("/", 1)[-1]
+    if "/accepted_by_crawler/" in path:
+        return "crawler_accepted"
     if "crawler_exports/" in path and (
         filename.startswith("modpack_archive_summary")
         or filename.startswith("modpack_manifests")
@@ -410,6 +431,8 @@ def _project_channel_gate(row: Any, query: str, intent: Any | None) -> float:
         return 1.25 if lexical_hits else 0.15
     if channel == "manual_research":
         return 0.95 if lexical_hits else 0.05
+    if channel == "crawler_accepted":
+        return 1.45 if lexical_hits else 0.35
     if channel in {"modrinth", "mcmod", "followup", "web_discovery", "ftbwiki", "createwiki"}:
         return 0.85 if lexical_hits else -0.45
     return 0.0
@@ -419,11 +442,13 @@ def _source_authority_boost(row: Any, query: str, intent: Any | None) -> float:
     if not intent or intent.domain not in {"project", "known_mod"}:
         return 0.0
     channel = _source_channel(row)
-    if channel not in {"pack_internal", "manual_research"}:
+    if channel not in {"pack_internal", "manual_research", "crawler_accepted"}:
         return 0.0
     haystack = f"{row['title']}\n{row['source_path']}\n{str(row['text'])[:4200]}".lower()
     anchors = _topic_anchor_terms(query, intent)
     anchor_hits = sum(1 for term in anchors if term and term.lower() in haystack)
+    if channel == "crawler_accepted":
+        return 2.0 if anchor_hits else 0.45
     if channel == "pack_internal":
         return 1.45 if anchor_hits else 0.35
     return 0.85 if anchor_hits else 0.15
@@ -491,6 +516,8 @@ def _multi_term_coverage_boost(row: Any, query: str, intent: Any | None) -> floa
     boost = 0.55 + min(len(hits), 4) * 0.18
     if "crawler_exports/mcmod/" in str(row["source_path"]).lower().replace("\\", "/"):
         boost += 0.18
+    if _source_channel(row) == "crawler_accepted":
+        boost += 0.35
     if _source_channel(row) == "pack_internal":
         boost += 0.22
     return min(boost, 1.35)
@@ -513,6 +540,8 @@ def _primary_entity_boost(row: Any, query: str, intent: Any | None) -> float:
     boost = 0.65
     if primary.lower() in str(row["title"]).lower():
         boost += 0.45
+    if "/accepted_by_crawler/" in path:
+        boost += 0.55
     if "crawler_exports/mcmod/" in path:
         boost += 0.25
     if _source_channel(row) == "pack_internal":

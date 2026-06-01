@@ -32,6 +32,16 @@ def test_matched_records_are_success_and_need_ingest() -> None:
     assert_equal("ingest_deferred", result["ingest_deferred"], "CrawlerAgent accepted these records; ingest this accepted export after the collection loop finishes.")
 
 
+def test_empty_matched_artifact_is_not_ingestible_success() -> None:
+    result = {"returncode": 0, "manifest_stats": {"records": 1, "usable_records": 0, "empty_records": 1, "record_bytes": 0}, "topic_validation": {"matched": True}}
+    accounting = apply(result, source="save_artifact")
+    assert_equal("success", accounting["success_delta"], 0)
+    assert_equal("failure", accounting["failure_delta"], 1)
+    assert_equal("needs_ingest", accounting["needs_ingest"], False)
+    assert_equal("pending_review", result["records_pending_review"], True)
+    assert_equal("review_action", result["crawler_review_action"], "retry_or_rewrite_empty_artifact")
+
+
 def test_browser_collect_waits_for_crawler_review() -> None:
     result = {"returncode": 0, "manifest_stats": {"records": 50}}
     accounting = apply(result, source="browser_collect", delivery="human")
@@ -114,6 +124,7 @@ def test_mcagent_context_is_diagnostic_and_adds_external_followup() -> None:
 
 if __name__ == "__main__":
     test_matched_records_are_success_and_need_ingest()
+    test_empty_matched_artifact_is_not_ingestible_success()
     test_browser_collect_waits_for_crawler_review()
     test_browser_collect_accepted_for_human_skips_ingest()
     test_modpack_download_creates_internal_followup()

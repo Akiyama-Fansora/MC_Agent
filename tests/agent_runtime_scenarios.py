@@ -48,6 +48,8 @@ def test_tool_observation_matrix() -> None:
         ("parse_error", {"source": "playwright", "returncode": 1, "output": "JSONDecodeError invalid json"}),
         ("execution_error", {"source": "unknown", "returncode": 1, "output": "script failed"}),
         ("records_pending_review", {"source": "playwright", "returncode": 0, "manifest_stats": {"records": 1}, "output": "Project not found. You may have mistyped the project's URL."}),
+        ("records_pending_review", {"source": "save_artifact", "returncode": 0, "manifest_stats": {"records": 1, "usable_records": 0, "empty_records": 1, "record_bytes": 0}, "topic_validation": {"matched": True}}),
+        ("records_pending_review", {"source": "modrinth", "returncode": 0, "manifest_stats": {"records": 0, "skipped": 3}, "output": "Skipped unchanged: 3"}),
     ]
     for expected, result in cases:
         observation = classify_crawler_tool_result(result)

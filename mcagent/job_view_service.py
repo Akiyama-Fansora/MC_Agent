@@ -5,6 +5,7 @@ import re
 from typing import Any, Callable
 
 from .agent_runtime import classify_crawler_tool_result
+from .crawler_self_audit_service import CrawlerSelfAuditService
 
 
 SourceLabelFn = Callable[[str], str]
@@ -74,6 +75,7 @@ class JobReadableViewService:
         inter_agent_messages = self._inter_agent_messages(tasks)
         useful_outputs = self._useful_outputs(tasks)
         blocked_outputs = self._blocked_outputs(tasks)
+        self_audit = CrawlerSelfAuditService().build(tasks, result)
         timeline = self._timeline(
             plan=plan,
             tasks=tasks,
@@ -125,6 +127,8 @@ class JobReadableViewService:
             "inter_agent_messages": inter_agent_messages,
             "useful_outputs": useful_outputs,
             "blocked_outputs": blocked_outputs,
+            "self_audit": self_audit,
+            "self_audit_summary": self._self_audit_summary(self_audit),
             "blocked_planned_tasks": self._blocked_planned_tasks(blocked_planned),
             "plain_summary": self._plain_summary(
                 status=status,
@@ -196,9 +200,7 @@ class JobReadableViewService:
             return True
         if len(text) <= 14 and any(mark in text for mark in ("）", ")", "；", ";", "：", ":")):
             return True
-        if text in {"具体名称与功能简介）", "具体名称与功能简介)", "latest downloaded modpack"}:
-            return True
-        return False
+        return text in {"具体名称与功能简介）", "具体名称与功能简介", "latest downloaded modpack"}
 
     def _extract_named_target(self, question: str) -> str:
         text = re.sub(r"\s+", " ", str(question or "")).strip()
@@ -211,7 +213,7 @@ class JobReadableViewService:
             return "乌托邦探险之旅（Utopian Journey）"
         match = re.search(r"([\u4e00-\u9fffA-Za-z0-9 _.-]{2,40}?)(?:整合包|modpack)", text, flags=re.I)
         if match:
-            target = match.group(1).strip(" ，,。；;：:")
+            target = match.group(1).strip(" ，。；;：:")
             if target:
                 return f"{target}整合包"
         return ""
@@ -219,7 +221,7 @@ class JobReadableViewService:
     def _health_text(self, *, success_count: int, empty: int, off_topic: int, failure_count: int, latest_observation: dict[str, Any]) -> str:
         latest = str(latest_observation.get("status") or "")
         if latest == "quota_limited":
-            return "最近一次工具结果显示额度不足，需要换来源或等待额度恢复。"
+            return "最近一次工具结果显示额度不足，需要更换来源或等待额度恢复。"
         if latest == "login_required":
             return "最近一次工具结果需要登录，Crawler 应切换公开来源或说明登录限制。"
         if latest == "captcha_required":
@@ -268,6 +270,9 @@ class JobReadableViewService:
                 continue
             stats = item.get("manifest_stats") if isinstance(item.get("manifest_stats"), dict) else {}
             records = int(stats.get("records") or 0)
+            usable_records = int(stats.get("usable_records")) if stats.get("usable_records") is not None else records
+            if records > 0 and usable_records <= 0:
+                continue
             outputs.append(
                 {
                     "source": self.source_label(source),
@@ -282,7 +287,7 @@ class JobReadableViewService:
 
     def _blocked_outputs(self, tasks: list[Any]) -> list[dict[str, str]]:
         outputs: list[dict[str, str]] = []
-        important = {"auth_required", "login_required", "captcha_required", "quota_limited", "empty", "off_topic"}
+        important = {"auth_required", "login_required", "captcha_required", "quota_limited", "empty", "off_topic", "records_pending_review"}
         for item in tasks:
             if not isinstance(item, dict):
                 continue
@@ -300,6 +305,20 @@ class JobReadableViewService:
                 }
             )
         return outputs[-6:]
+
+    def _self_audit_summary(self, audit: dict[str, Any]) -> str:
+        counts = audit.get("counts") if isinstance(audit.get("counts"), dict) else {}
+        accepted = int(counts.get("accepted") or 0)
+        rejected = int(counts.get("rejected") or 0)
+        pending = int(counts.get("pending_review") or 0)
+        ingest_status = str(audit.get("ingest_status") or "skipped")
+        ingest_label = {
+            "running": "入库中",
+            "done": "已入库",
+            "failed": "入库失败",
+            "skipped": "未入库",
+        }.get(ingest_status, ingest_status)
+        return f"Crawler 自审：接受 {accepted} 个来源，拒绝 {rejected} 个来源，待复核 {pending} 个来源；入库状态：{ingest_label}。"
 
     def _blocked_planned_tasks(self, tasks: list[Any]) -> list[dict[str, str]]:
         outputs: list[dict[str, str]] = []
@@ -377,14 +396,7 @@ class JobReadableViewService:
             query = str(item.get("query") or executed.get("query") or "").strip()
             reason = str(item.get("reason") or "").strip()
             status_text = str(observation.get("status") or ("running" if status == "running" and index == len(tasks) + 1 else "pending"))
-            text_parts = []
-            if query:
-                text_parts.append(query)
-            if reason:
-                text_parts.append(reason)
-            summary = str(observation.get("summary") or "").strip()
-            if summary:
-                text_parts.append(summary)
+            text_parts = [part for part in (query, reason, str(observation.get("summary") or "").strip()) if part]
             events.append(
                 {
                     "type": "task",

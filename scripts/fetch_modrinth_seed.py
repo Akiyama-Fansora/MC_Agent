@@ -104,6 +104,26 @@ def search_projects(project_type: str, limit: int, user_agent: str, query: str =
     return [item for item in hits if isinstance(item, dict)]
 
 
+def direct_project_ref(query: str) -> str:
+    value = str(query or "").strip()
+    match = re.search(r"(?i)\bproject\s*:\s*([A-Za-z0-9._-]+)\b", value)
+    if match:
+        return match.group(1).strip()
+    match = re.search(r"https?://(?:www\.)?modrinth\.com/(?:mod|modpack|resourcepack|shader)/([A-Za-z0-9._-]+)", value, flags=re.I)
+    if match:
+        return match.group(1).strip()
+    return ""
+
+
+def possible_project_slug(query: str) -> str:
+    value = str(query or "").strip()
+    if not value or direct_project_ref(value):
+        return ""
+    if re.fullmatch(r"[a-z0-9][a-z0-9._-]{2,80}", value):
+        return value
+    return ""
+
+
 def resolve_projects(project_ids: list[str], user_agent: str) -> dict[str, dict[str, Any]]:
     resolved: dict[str, dict[str, Any]] = {}
     for index in range(0, len(project_ids), 100):
@@ -335,6 +355,105 @@ def fetch_seed(
     errors: list[dict[str, str]] = []
     ledger = load_ledger()
     seen: set[str] = set()
+    direct_ref = direct_project_ref(query) or possible_project_slug(query)
+
+    def save_or_skip_project(project: dict[str, Any], project_type: str, *, modpack_contents: dict[str, Any] | None = None) -> None:
+        title = str(project.get("title") or project.get("slug") or project.get("id") or "Untitled")
+        item_id = str(project.get("id") or project.get("slug") or "")
+        if not item_id:
+            return
+        url = project_url(project)
+        stable_text = json.dumps({"project": project, "modpack_contents": modpack_contents}, ensure_ascii=False, sort_keys=True)
+        key = make_key("modrinth", item_id)
+        previous = ledger.get(key)
+        if previous and not force:
+            skipped.append(
+                {
+                    "title": title,
+                    "slug": project.get("slug"),
+                    "project_type": project.get("project_type"),
+                    "url": url,
+                    "reason": "known_project",
+                    "previous_path": previous.get("path", ""),
+                }
+            )
+            append_ledger(
+                ledger_record(
+                    source="modrinth",
+                    item_id=item_id,
+                    title=title,
+                    url=url,
+                    text=stable_text,
+                    path=str(previous.get("path", "")),
+                    query=query,
+                    status="skipped_unchanged",
+                    previous=previous,
+                )
+            )
+            return
+        markdown = project_to_markdown(project, fetched_at, modpack_contents)
+        filename = f"{project_type}_{slugify(str(project.get('slug') or item_id))}.md"
+        path = run_dir / filename
+        path.write_text(markdown, encoding="utf-8")
+        status = "updated" if previous else "new"
+        append_ledger(
+            ledger_record(
+                source="modrinth",
+                item_id=item_id,
+                title=title,
+                url=url,
+                text=stable_text,
+                path=str(path),
+                query=query,
+                status=status,
+                previous=previous,
+            )
+        )
+        records.append(
+            {
+                "title": title,
+                "slug": project.get("slug"),
+                "project_type": project.get("project_type"),
+                "url": url,
+                "path": str(path),
+                "downloads": project.get("downloads"),
+                "updated": project.get("updated"),
+                "status": status,
+            }
+        )
+
+    if direct_ref:
+        try:
+            project = request_json(f"/project/{direct_ref}", user_agent=user_agent)
+        except RuntimeError as exc:
+            errors.append({"stage": "direct_project", "slug": direct_ref, "error": str(exc)})
+            project = None
+        if isinstance(project, dict):
+            modpack_contents = None
+            project_type = str(project.get("project_type") or "mod")
+            if include_modpack_contents and project_type == "modpack":
+                try:
+                    modpack_contents = fetch_modpack_contents(project, user_agent)
+                except Exception as exc:  # noqa: BLE001
+                    errors.append({"stage": "modpack_contents", "slug": direct_ref, "error": str(exc)})
+            save_or_skip_project(project, project_type, modpack_contents=modpack_contents)
+        manifest = {
+            "manifest_type": "modrinth_seed_export",
+            "created_at": fetched_at,
+            "api_base": API_BASE,
+            "user_agent": user_agent,
+            "export_dir": str(run_dir),
+            "query": query,
+            "direct_project": direct_ref,
+            "direct_project_reason": "explicit_ref_or_slug",
+            "limits": limits,
+            "pages": pages,
+            "records": records,
+            "skipped": skipped,
+            "errors": errors,
+        }
+        (run_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        return manifest
 
     pages = max(1, min(int(pages), 50))
     for project_type, limit in limits.items():
@@ -362,76 +481,13 @@ def fetch_seed(
                 continue
             if not isinstance(project, dict):
                 continue
-            title = str(project.get("title") or slug_or_id)
-            item_id = str(project.get("id") or project.get("slug") or slug_or_id)
-            url = project_url(project)
-            stable_text = json.dumps({"project": project, "modpack_contents": None}, ensure_ascii=False, sort_keys=True)
-            key = make_key("modrinth", item_id)
-            previous = ledger.get(key)
-            if previous and not force:
-                skipped.append(
-                    {
-                        "title": title,
-                        "slug": project.get("slug"),
-                        "project_type": project.get("project_type"),
-                        "url": url,
-                        "reason": "known_project",
-                        "previous_path": previous.get("path", ""),
-                    }
-                )
-                append_ledger(
-                    ledger_record(
-                        source="modrinth",
-                        item_id=item_id,
-                        title=title,
-                        url=url,
-                        text=stable_text,
-                        path=str(previous.get("path", "")),
-                        query=query,
-                        status="skipped_unchanged",
-                        previous=previous,
-                    )
-                )
-                time.sleep(delay)
-                continue
             modpack_contents: dict[str, Any] | None = None
             if include_modpack_contents and str(project.get("project_type")) == "modpack":
                 try:
                     modpack_contents = fetch_modpack_contents(project, user_agent)
                 except Exception as exc:  # noqa: BLE001 - project metadata is still useful if mrpack parsing fails.
                     errors.append({"stage": "modpack_contents", "slug": slug_or_id, "error": str(exc)})
-            markdown = project_to_markdown(project, fetched_at, modpack_contents)
-            stable_text = json.dumps({"project": project, "modpack_contents": modpack_contents}, ensure_ascii=False, sort_keys=True)
-            digest = content_hash(stable_text)
-            filename = f"{project_type}_{slugify(slug_or_id)}.md"
-            path = run_dir / filename
-            path.write_text(markdown, encoding="utf-8")
-            status = "updated" if previous else "new"
-            append_ledger(
-                ledger_record(
-                    source="modrinth",
-                    item_id=item_id,
-                title=title,
-                url=url,
-                text=stable_text,
-                path=str(path),
-                    query=query,
-                    status=status,
-                    previous=previous,
-                )
-            )
-            records.append(
-                {
-                    "title": title,
-                    "slug": project.get("slug"),
-                    "project_type": project.get("project_type"),
-                    "url": url,
-                    "path": str(path),
-                    "downloads": project.get("downloads"),
-                    "updated": project.get("updated"),
-                    "status": status,
-                }
-            )
+            save_or_skip_project(project, project_type, modpack_contents=modpack_contents)
             time.sleep(delay)
 
     manifest = {

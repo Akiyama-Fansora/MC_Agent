@@ -16,6 +16,8 @@ class CrawlerResultAccountingService:
     ) -> dict[str, Any]:
         manifest = result.get("manifest_stats") if isinstance(result.get("manifest_stats"), dict) else {}
         records_loaded = int(manifest.get("records") or 0)
+        usable_records = int(manifest.get("usable_records")) if manifest.get("usable_records") is not None else records_loaded
+        empty_records = int(manifest.get("empty_records") or 0)
         returncode = int(result.get("returncode") or 0)
         accounting = {
             "success_delta": 0,
@@ -78,7 +80,7 @@ class CrawlerResultAccountingService:
             result["ingest_skipped"] = "Crawler reused relevant duplicate-skipped evidence that already exists in the local knowledge base."
             return accounting
 
-        if returncode == 0 and records_loaded > 0 and bool(result.get("topic_validation", {}).get("matched")):
+        if returncode == 0 and records_loaded > 0 and bool(result.get("topic_validation", {}).get("matched")) and usable_records > 0:
             accounting["success_delta"] = 1
             if "rag" in delivery_target.lower() or "mcagent" in delivery_target.lower():
                 accounting["needs_ingest"] = True
@@ -89,6 +91,14 @@ class CrawlerResultAccountingService:
 
         if returncode == 0:
             if records_loaded > 0:
+                if usable_records <= 0 and empty_records > 0:
+                    result["records_pending_review"] = True
+                    result["empty_result"] = True
+                    result["crawler_review_action"] = "retry_or_rewrite_empty_artifact"
+                    result["crawler_review_next_action"] = "CrawlerAgent should reject or rewrite empty saved artifacts before using them as evidence."
+                    result["failure_reason"] = "records exist in manifest, but objective file/character counts show no saved content."
+                    accounting["failure_delta"] = 1
+                    return accounting
                 topic_reason = str(result.get("topic_validation", {}).get("reason") or "")
                 validation = result.get("topic_validation") if isinstance(result.get("topic_validation"), dict) else {}
                 cleanup_action = str(validation.get("cleanup_action") or "").strip()

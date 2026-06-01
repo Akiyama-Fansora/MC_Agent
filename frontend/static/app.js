@@ -565,6 +565,55 @@ function renderBlockedOutputs(readable) {
   `;
 }
 
+function renderSelfAudit(readable, key = "") {
+  const audit = readable?.self_audit || {};
+  const accepted = audit.accepted_sources || [];
+  const rejected = audit.rejected_sources || [];
+  const pending = audit.pending_review_sources || [];
+  const counts = audit.counts || {};
+  const total = accepted.length + rejected.length + pending.length;
+  if (!total && !readable?.self_audit_summary) return "";
+  const renderRows = (items, emptyText) => items.length ? `
+    <div class="compact-list">
+      ${items.map((item) => `
+        <div class="compact-row">
+          <strong>${escapeHtml(item.source || "来源")}</strong>
+          <span>${escapeHtml(observationLabel(item.status))}${item.records ? ` · ${escapeHtml(String(item.records))} 条` : ""}${item.usable_records || item.empty_records ? ` · 可用 ${escapeHtml(String(item.usable_records || 0))} / 空 ${escapeHtml(String(item.empty_records || 0))}` : ""}</span>
+          ${item.query ? `<small>${escapeHtml(item.query)}</small>` : ""}
+          ${(item.accepted_reason || item.rejected_reason) ? `<small>${escapeHtml(item.accepted_reason || item.rejected_reason)}</small>` : ""}
+          ${item.ingest_decision ? `<small>入库：${escapeHtml(item.ingest_decision)}</small>` : ""}
+          ${item.next_action ? `<small>下一步：${escapeHtml(item.next_action)}</small>` : ""}
+        </div>
+      `).join("")}
+    </div>
+  ` : `<div class="compact-empty">${escapeHtml(emptyText)}</div>`;
+  return `
+    <details class="message-section compact-details" ${detailsAttrs(key || "self-audit", true)}>
+      <summary>
+        <span>Crawler 自审</span>
+        <span>${escapeHtml(`accepted ${counts.accepted || accepted.length} / rejected ${counts.rejected || rejected.length} / pending ${counts.pending_review || pending.length} / ingest ${audit.ingest_status || "skipped"}`)}</span>
+      </summary>
+      ${readable.self_audit_summary ? `<div class="compact-summary">${escapeHtml(readable.self_audit_summary)}</div>` : ""}
+      ${audit.ingest_note ? `<div class="source-meta">入库判断：${escapeHtml(audit.ingest_note)}</div>` : ""}
+      <div class="compact-columns">
+        <div>
+          <div class="compact-title">接受的来源</div>
+          ${renderRows(accepted, "暂无接受来源。")}
+        </div>
+        <div>
+          <div class="compact-title">拒绝/受限的来源</div>
+          ${renderRows(rejected, "暂无拒绝来源。")}
+        </div>
+      </div>
+      ${pending.length ? `
+        <div class="compact-title">待复核来源</div>
+        ${renderRows(pending, "暂无待复核来源。")}
+      ` : ""}
+      ${audit.principle ? `<div class="source-meta">${escapeHtml(audit.principle)}</div>` : ""}
+    </details>
+  `;
+}
+
 function renderInterAgentMessages(readable, key = "") {
   const messages = readable?.inter_agent_messages || [];
   if (!messages.length) return "";
@@ -635,6 +684,7 @@ function renderJobActorPanel(readable, headline, displayStatus, progressText) {
   const currentText = readable.current_source || readable.current_query
     ? `${readable.current_source || "当前来源"}${readable.current_query ? `：${readable.current_query}` : ""}`
     : (readable.next_action || "等待下一步动作。");
+  const auditText = readable.self_audit_summary || "";
   return `
     <section class="message-section job-actor-panel">
       <div class="collab-log">
@@ -673,6 +723,15 @@ function renderJobActorPanel(readable, headline, displayStatus, progressText) {
             <div class="collab-text">${escapeHtml(blockedText)}</div>
           </div>
         </div>
+        ${auditText ? `
+          <div class="collab-row crawleragent">
+            <div class="collab-speaker">CrawlerAgent</div>
+            <div class="collab-bubble">
+              <div class="collab-state">自审</div>
+              <div class="collab-text">${escapeHtml(auditText)}</div>
+            </div>
+          </div>
+        ` : ""}
       </div>
     </section>
   `;
@@ -734,6 +793,7 @@ function renderJobReadable(readable, key = "") {
           ${readable.next_action ? `<div class="source-meta">下一步：${escapeHtml(readable.next_action)}</div>` : ""}
         </details>
         ${renderInterAgentMessages(readable, `${key || "job"}:inter-agent`)}
+        ${renderSelfAudit(readable, `${key || "job"}:self-audit`)}
         ${renderJobTimeline(readable, `${key || "job"}:timeline`)}
       </div>
     </details>

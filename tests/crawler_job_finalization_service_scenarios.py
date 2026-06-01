@@ -38,11 +38,35 @@ def build(**overrides):
 
 
 def test_success_with_ingest_builds_running_ingest_loop() -> None:
-    final = build()
+    final = build(
+        task_results=[
+            {
+                "source": "mcmod",
+                "query": "农夫乐事",
+                "returncode": 0,
+                "manifest_stats": {"records": 2},
+                "topic_validation": {"matched": True, "reason": "direct"},
+                "ingest_deferred": "CrawlerAgent accepted these records; ingest this accepted export after the collection loop finishes.",
+            },
+            {
+                "source": "web_discovery",
+                "query": "Farmers Delight unrelated",
+                "returncode": 0,
+                "manifest_stats": {"records": 1},
+                "topic_validation": {"matched": False, "reason": "noise", "next_action": "try exact project page"},
+                "off_topic_result": True,
+            },
+        ]
+    )
     assert_equal("status", final["status"], "succeeded")
     assert_equal("error", final["error"], None)
     assert_equal("ingest_background", final["result"]["ingest_background"], True)
     assert_equal("ingest_status", final["result"]["loop"][3]["status"], "running")
+    audit = final["result"]["self_audit"]
+    assert_equal("audit_accepted", audit["counts"]["accepted"], 1)
+    assert_equal("audit_rejected", audit["counts"]["rejected"], 1)
+    assert_equal("audit_ingest_status", audit["ingest_status"], "running")
+    assert_equal("audit_rejected_reason", audit["rejected_sources"][0]["rejected_reason"], "noise")
 
 
 def test_failed_without_success_reports_all_sources_failed() -> None:

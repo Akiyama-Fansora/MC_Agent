@@ -317,6 +317,17 @@ def _manifest_count(result: dict[str, Any], key: str) -> int:
         return 0
 
 
+def _manifest_has_only_empty_records(result: dict[str, Any]) -> bool:
+    manifest = result.get("manifest_stats") if isinstance(result.get("manifest_stats"), dict) else {}
+    try:
+        records = int(manifest.get("records") or 0)
+        usable_records = int(manifest.get("usable_records") or 0)
+        empty_records = int(manifest.get("empty_records") or 0)
+    except (TypeError, ValueError):
+        return False
+    return records > 0 and usable_records <= 0 and empty_records >= records
+
+
 def classify_crawler_tool_result(result: dict[str, Any]) -> ToolObservation:
     """Classify an objective crawler tool result for Agent reflection.
 
@@ -328,6 +339,8 @@ def classify_crawler_tool_result(result: dict[str, Any]) -> ToolObservation:
     records = _manifest_count(result, "records")
     skipped = _manifest_count(result, "skipped")
     errors = _manifest_count(result, "errors")
+    usable_records = _manifest_count(result, "usable_records")
+    empty_records = _manifest_count(result, "empty_records")
     returncode = int(result.get("returncode") or 0)
     text = _result_text_for_classification(result)
     detail = {
@@ -335,6 +348,8 @@ def classify_crawler_tool_result(result: dict[str, Any]) -> ToolObservation:
         "query": result.get("query"),
         "returncode": returncode,
         "records": records,
+        "usable_records": usable_records,
+        "empty_records": empty_records,
         "skipped": skipped,
         "errors": errors,
     }
@@ -356,13 +371,20 @@ def classify_crawler_tool_result(result: dict[str, Any]) -> ToolObservation:
     if result.get("timed_out") or returncode == 124 or "timed out" in text or "timeout" in text:
         return observation("timeout", "Tool timed out before returning usable data.", retryable=True, suggested_next="Retry with a narrower target, browser path, or lower page/file limit.")
     if bool(result.get("existing_evidence_reused", {}).get("matched")):
-        return observation("duplicate_reused", "New fetch was duplicate, but matching existing evidence was found and reused.")
+        return observation("duplicate_reused", "New fetch produced no new file, but CrawlerAgent accepted matching existing evidence for reuse.")
     if result.get("off_topic_result"):
         return observation("off_topic", "Tool returned content, but CrawlerAgent/evidence validation judged it off-topic.", retryable=True, suggested_next="Change source, query, URL, or validation context before retrying.")
     if result.get("uncertain_result"):
         return observation("uncertain", "Tool returned content whose relevance is uncertain.", retryable=True, suggested_next="Ask CrawlerAgent to inspect examples and decide whether to expand, keep, or discard.")
     if result.get("empty_result") or result.get("archive_not_found"):
         return observation("empty", "Tool produced no usable records for this target.", retryable=True, suggested_next="Try a different source, alias, broader/narrower query, browser search, or direct URL.")
+    if _manifest_has_only_empty_records(result):
+        return observation(
+            "records_pending_review",
+            "Tool produced record metadata, but objective file/character counts show no saved content bytes.",
+            retryable=True,
+            suggested_next="Ask CrawlerAgent to reject, rewrite, or retry with a source that produces non-empty evidence.",
+        )
 
     if returncode != 0:
         if any(token in text for token in ("quota", "429", "rate limit", "insufficient credit", "billing", "credit")):
@@ -388,7 +410,7 @@ def classify_crawler_tool_result(result: dict[str, Any]) -> ToolObservation:
             suggested_next="Ask CrawlerAgent to inspect the saved records and choose accept, reject, retry, ignore, or delete for this job.",
         )
     if skipped > 0:
-        return observation("empty", "Tool produced no new records; output was skipped or already filtered.", retryable=True, suggested_next="Inspect skipped reasons and decide whether existing evidence is enough or a new source is needed.")
+        return observation("records_pending_review", "Tool produced no new records, but skipped outputs may reference existing evidence for CrawlerAgent review.", retryable=True, suggested_next="Inspect skipped reasons and previous_path values, then decide whether existing evidence is enough or a new source is needed.")
     return observation("empty", "Tool completed but produced no records.", retryable=True, suggested_next="Try a different source, alias, broader/narrower query, browser search, or direct URL.")
 
 

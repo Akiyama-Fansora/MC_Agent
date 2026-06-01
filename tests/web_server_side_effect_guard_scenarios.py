@@ -109,6 +109,57 @@ def test_grounded_answer_does_not_fallback_to_ollama_after_profile_error() -> No
     assert_true("no_auto_ollama_note", "已自动降级" not in answer and "未自动降级" in answer, answer)
 
 
+def test_auto_max_tokens_uses_bounded_adaptive_limit() -> None:
+    auto_value = web_server._answer_max_tokens({"max_tokens": "auto"}, "Farmer's Delight 农夫乐事 是什么？")
+    unlimited_value = web_server._answer_max_tokens({"max_tokens": "unlimited"}, "Farmer's Delight 农夫乐事 是什么？")
+    explicit_value = web_server._answer_max_tokens({"max_tokens": 9000}, "Farmer's Delight 农夫乐事 是什么？")
+    assert_true("auto_is_bounded", isinstance(auto_value, int) and 1200 <= auto_value <= web_server.ANSWER_MAX_TOKENS_CAP, str(auto_value))
+    assert_equal("unlimited_still_allowed_when_explicit", unlimited_value, None)
+    assert_equal("explicit_is_capped", explicit_value, web_server.ANSWER_MAX_TOKENS_CAP)
+
+
+def test_version_fact_answer_requires_subject_in_title_or_source() -> None:
+    farmers_delight = "\u519c\u592b\u4e50\u4e8b"
+    question = farmers_delight + "\u662f\u4ec0\u4e48\uff1f\u8bf7\u8bf4\u660e\u5b83\u652f\u6301\u7684\u7248\u672c/\u52a0\u8f7d\u5668\uff0c\u4ee5\u53ca\u9879\u76ee\u9875\u6216\u4e0b\u8f7d\u9875\u6709\u54ea\u4e9b\u3002"
+    wanted = SearchResult(
+        rank=1,
+        score=9.0,
+        chunk_id=1,
+        document_id=1,
+        chunk_index=0,
+        title=f"[FD]{farmers_delight} (Farmer's Delight)",
+        source_path=r"D:\case\accepted_by_crawler\Farmer-s-Delight.md",
+        url="https://www.mcmod.cn/class/2820.html",
+        text="\u8fd0\u884c\u73af\u5883: \u5ba2\u6237\u7aef\u9700\u88c5, \u670d\u52a1\u7aef\u9700\u88c5\nForge\nFabric \u7248\u672c\u76f8\u5173\n",
+    )
+    pack_mention = SearchResult(
+        rank=2,
+        score=8.0,
+        chunk_id=2,
+        document_id=2,
+        chunk_index=0,
+        title="\u4e4c\u6258\u90a6\u63a2\u9669\u4e4b\u65c5 pack internal inventory",
+        source_path=r"D:\case\utopia\pack_inventory.md",
+        url=None,
+        text=f"{farmers_delight}\uff1a\u91cd\u7ec7 FarmersDelight-1.20.1-2.4.1+refabricated.jar\nFabric\n",
+    )
+    other_mod = SearchResult(
+        rank=3,
+        score=7.0,
+        chunk_id=3,
+        document_id=3,
+        chunk_index=0,
+        title="I18nUpdateMod",
+        source_path=r"D:\case\mod_i18nupdatemod.md",
+        url="https://modrinth.com/mod/i18nupdatemod",
+        text="Mod\u52a0\u8f7d\u5668\uff1aMinecraftForge\u3001NeoForge\u3001Fabric\u3001Quilt \u90fd\u652f\u6301\n",
+    )
+    answer = web_server._local_version_install_answer(question, [wanted, pack_mention, other_mod])
+    assert_true("uses_wanted_source", "[S1]" in answer, answer)
+    assert_true("rejects_pack_mention", "[S2]" not in answer, answer)
+    assert_true("rejects_other_mod", "[S3]" not in answer, answer)
+
+
 def test_direct_user_handoff_brief_rejects_wrong_mcagent_identity() -> None:
     original_selector = web_server._selected_llm_client
     web_server._selected_llm_client = lambda *_args, **_kwargs: (FakeClient(), "fake")  # type: ignore[assignment]
@@ -390,6 +441,49 @@ def test_explicit_mcagent_to_crawler_handoff_starts_job_before_router() -> None:
     assert_true("fast_trace", ("delegate", "explicit_mcagent_handoff_fast_path") in statuses, str(statuses))
 
 
+def test_recent_crawler_audit_question_answers_history_without_new_collection() -> None:
+    tmp = tempfile.TemporaryDirectory()
+    question = "刚才 Crawler 采集农夫乐事时，哪些来源被接受，哪些被拒绝，为什么？是否已经入库？"
+    original_delegate = web_server._delegate_crawler_for_missing_data
+    original_selector = web_server._selected_llm_client
+    original_jobs = dict(web_server.JOBS)
+    original_jobs_order = list(web_server.JOBS_ORDER)
+    calls: list[dict[str, Any]] = []
+
+    def fake_delegate(config: AppConfig, payload: dict[str, Any], delegated_question: str, plan: dict[str, Any] | None = None):  # noqa: ARG001
+        calls.append({"payload": payload, "question": delegated_question, "plan": plan})
+        return web_server.Job(id="should-not-start", kind="crawler", title="bad"), True
+
+    web_server._delegate_crawler_for_missing_data = fake_delegate  # type: ignore[assignment]
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("router should not be called"))  # type: ignore[assignment]
+    try:
+        with web_server.JOBS_LOCK:
+            web_server.JOBS.clear()
+            web_server.JOBS_ORDER.clear()
+        result = web_server._chat_impl(
+            make_temp_config(Path(tmp.name)),
+            {
+                "agent": "mcagent_rag",
+                "question": question,
+                "session_id": "recent-crawler-audit",
+                "model": "fake-model",
+            },
+        )
+    finally:
+        with web_server.JOBS_LOCK:
+            web_server.JOBS.clear()
+            web_server.JOBS.update(original_jobs)
+            web_server.JOBS_ORDER[:] = original_jobs_order
+        web_server._delegate_crawler_for_missing_data = original_delegate  # type: ignore[assignment]
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        tmp.cleanup()
+
+    assert_equal("no_delegate_calls", len(calls), 0)
+    assert_true("history_answer", "不会新开采集任务" in str(result.get("answer") or ""))
+    statuses = [(item.get("stage"), item.get("status")) for item in result.get("trace") or []]
+    assert_true("audit_trace", ("answer", "recent_crawler_audit") in statuses, str(statuses))
+
+
 def test_explicit_mcagent_to_crawler_type_discovery_stays_neutral() -> None:
     question = (
         "\u8bf7\u4f60\u4f5c\u4e3a MCagent \u8f6c\u8fbe CrawlerAgent\uff1a"
@@ -405,6 +499,33 @@ def test_explicit_mcagent_to_crawler_type_discovery_stays_neutral() -> None:
     assert_true("no_forced_archive_gap", "\u4e0b\u8f7d/\u5305\u4f53\u7ebf\u7d22" not in cleaned, cleaned)
 
 
+def test_explicit_mcagent_to_crawler_preserves_coverage_goals() -> None:
+    question = (
+        "请先由 MCagent 检查本地资料里‘农夫乐事 / Farmer's Delight’还缺哪些公开资料，然后转达 CrawlerAgent 去采集补充，"
+        "交付给 MCagent/RAG 使用。CrawlerAgent 要自己判断这是模组还是整合包，不要强制包体下载；"
+        "需要覆盖简介、版本/加载器、下载/项目页、玩法机制、食物/烹饪系统、入库可引用资料，并在完成后说明哪些来源接受、哪些拒绝、拒绝原因、是否入库。"
+    )
+    cleaned = web_server._clean_explicit_mcagent_crawler_collection_target(question)
+    assert_true("keeps_alias", "农夫乐事 / Farmer's Delight" in cleaned, cleaned)
+    assert_true("keeps_version_loader", "版本/加载器" in cleaned, cleaned)
+    assert_true("keeps_project_page", "下载/项目页" in cleaned, cleaned)
+    assert_true("keeps_gameplay", "玩法机制" in cleaned, cleaned)
+    assert_true("keeps_cooking", "食物/烹饪系统" in cleaned, cleaned)
+    assert_true("keeps_type_decision", "自行判断目标类型" in cleaned, cleaned)
+    assert_true("no_forced_archive_gap", "下载/包体线索" not in cleaned, cleaned)
+
+
+def test_no_force_archive_download_does_not_block_crawler_handoff() -> None:
+    question = (
+        "请先由 MCagent 检查本地资料里‘农夫乐事 / Farmer's Delight’还缺哪些公开资料，"
+        "然后转达 CrawlerAgent 去采集补充，交付给 MCagent/RAG 使用。"
+        "CrawlerAgent 要自己判断这是模组还是整合包，不要强制包体下载；"
+        "采集完成后请保留自审报告：哪些来源被接受、哪些被拒绝、拒绝原因、是否入库。"
+    )
+    assert_equal("not_forbidden", web_server._forbids_crawler_handoff(question), False)
+    assert_equal("fast_handoff", web_server._should_start_explicit_mcagent_crawler_handoff_fast("mcagent_rag", question), True)
+
+
 def test_modrinth_plain_mod_task_does_not_parse_modpack_contents() -> None:
     command = web_server._round_command(
         "modrinth",
@@ -418,6 +539,69 @@ def test_modrinth_plain_mod_task_does_not_parse_modpack_contents() -> None:
         },
     )
     assert_true("no_modpack_contents", "--include-modpack-contents" not in command, str(command))
+
+
+def test_known_modrinth_project_skips_are_reusable_existing_evidence() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        previous = root / "mod_farmers-delight.md"
+        previous.write_text("# Farmer's Delight\n\nFarm cooking mod.\n", encoding="utf-8")
+        run_dir = root / "modrinth_agent" / "run"
+        run_dir.mkdir(parents=True)
+        (run_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "records": [],
+                    "skipped": [
+                        {
+                            "title": "Farmer's Delight",
+                            "slug": "farmers-delight",
+                            "project_type": "mod",
+                            "url": "https://modrinth.com/mod/farmers-delight",
+                            "reason": "known_project",
+                            "previous_path": str(previous),
+                        }
+                    ],
+                    "errors": [],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        original_judge = web_server._crawler_llm_record_relevance
+        web_server._crawler_llm_record_relevance = lambda *_args, **_kwargs: {  # type: ignore[assignment]
+            "matched": True,
+            "reason": "direct",
+            "matched_indexes": [0],
+            "rejected_indexes": [],
+            "cleanup_action": "keep",
+            "next_action": "reuse_existing_modrinth_project",
+            "judge": "Crawler LLM",
+        }
+        try:
+            review = web_server._crawler_reusable_duplicate_evidence(
+                str(run_dir),
+                "农夫乐事 / Farmer's Delight",
+                "farmer's delight",
+                {"topic": "农夫乐事 / Farmer's Delight"},
+            )
+        finally:
+            web_server._crawler_llm_record_relevance = original_judge  # type: ignore[assignment]
+    assert_equal("matched", review.get("matched"), True)
+    assert_equal("reused_title", review["records"][0]["title"], "Farmer's Delight")
+    assert_equal("reused_path", review["records"][0]["path"], str(previous))
+
+
+def test_modrinth_slug_query_is_direct_project_candidate() -> None:
+    scripts_dir = str(ROOT / "scripts")
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    from scripts.fetch_modrinth_seed import direct_project_ref, possible_project_slug  # noqa: PLC0415
+
+    assert_equal("explicit_project_ref", direct_project_ref("project: farmers-delight"), "farmers-delight")
+    assert_equal("url_project_ref", direct_project_ref("https://modrinth.com/mod/farmers-delight"), "farmers-delight")
+    assert_equal("slug_candidate", possible_project_slug("farmers-delight"), "farmers-delight")
+    assert_equal("free_text_not_slug", possible_project_slug("Farmer's Delight"), "")
 
 
 def test_modrinth_explicit_modpack_manifest_task_can_parse_contents() -> None:
@@ -1147,11 +1331,23 @@ def test_modpack_overview_with_version_does_not_use_narrow_fact_route() -> None:
     )
 
 
+def test_mixed_version_and_guide_question_does_not_use_narrow_fact_route() -> None:
+    assert_equal(
+        "mixed_guide_not_narrow_fact",
+        web_server._should_use_deterministic_local_fact_rag_route(
+            "mcagent_rag",
+            "农夫乐事 / Farmer's Delight 是什么？支持哪些加载器和版本？这些资料够不够回答新手怎么玩，请给一个从入门到中期的路线。",
+            {},
+        ),
+        False,
+    )
+
+
 def test_general_answer_path_skips_local_fact_answer_for_modpack_overview() -> None:
     source = (ROOT / "mcagent" / "web_server.py").read_text(encoding="utf-8")
     assert_true(
         "overview_skips_local_fact_answer",
-        'answer = "" if _is_modpack_overview_question(original_question) else _local_version_install_answer(original_question, selected)'
+        "_needs_general_grounded_answer(original_question)"
         in source,
     )
 
@@ -1246,6 +1442,87 @@ def test_crawler_summary_uses_only_llm_matched_record_indexes() -> None:
         accepted_root = Path(roots[0])
         assert_true("accepted_good", (accepted_root / "good.md").exists())
         assert_true("rejected_bad", not (accepted_root / "bad.md").exists())
+
+
+def test_zero_byte_artifact_is_visible_but_not_accepted_for_ingest() -> None:
+    with tempfile.TemporaryDirectory(prefix="mcagent-empty-artifact-") as tmp:
+        export_dir = Path(tmp)
+        empty = export_dir / "empty.md"
+        empty.write_text("", encoding="utf-8")
+        (export_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "provider": "save_artifact",
+                    "records": [
+                        {
+                            "title": "Crawler summary",
+                            "path": str(empty),
+                            "bytes": 0,
+                        }
+                    ],
+                    "skipped": [],
+                    "errors": [],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        stats = web_server._crawler_manifest_stats(str(export_dir))
+        assert_equal("records", stats["records"], 1)
+        assert_equal("usable_records", stats["usable_records"], 0)
+        assert_equal("empty_records", stats["empty_records"], 1)
+        result = {
+            "source": "save_artifact",
+            "query": "Farmer's Delight summary",
+            "returncode": 0,
+            "export_dir": str(export_dir),
+            "manifest_stats": stats,
+            "topic_validation": {"matched": True, "matched_indexes": [0], "reason": "direct"},
+        }
+        roots = web_server._crawler_accepted_ingest_roots(result)
+        assert_equal("empty_not_ingested", roots, [])
+        summary = web_server._crawler_result_summary([result], {"topic": "Farmer's Delight"})
+        assert_equal("no_useful_records", summary["useful_records"], [])
+
+
+def test_job_readable_refreshes_legacy_manifest_stats() -> None:
+    with tempfile.TemporaryDirectory(prefix="mcagent-legacy-empty-artifact-") as tmp:
+        export_dir = Path(tmp)
+        empty = export_dir / "empty.md"
+        empty.write_text("", encoding="utf-8")
+        (export_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "provider": "save_artifact",
+                    "records": [{"title": "Empty saved summary", "path": str(empty), "bytes": 0}],
+                    "skipped": [],
+                    "errors": [],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        job = {
+            "title": "Crawler 采集",
+            "status": "succeeded",
+            "result": {
+                "tasks": [
+                    {
+                        "source": "save_artifact",
+                        "query": "Farmer's Delight summary",
+                        "returncode": 0,
+                        "export_dir": str(export_dir),
+                        "manifest_stats": {"records": 1},
+                        "topic_validation": {"matched": True, "matched_indexes": [0], "reason": "direct"},
+                    }
+                ]
+            },
+        }
+        readable = web_server._job_readable_summary(job)
+        assert_equal("refreshed_status", readable["latest_observation"]["status"], "records_pending_review")
+        assert_equal("accepted_count", readable["self_audit"]["counts"]["accepted"], 0)
+        assert_equal("pending_count", readable["self_audit"]["counts"]["pending_review"], 1)
+        assert_equal("useful_outputs", readable["useful_outputs"], [])
 
 
 def test_duplicate_reuse_requires_crawler_llm_acceptance() -> None:
@@ -1769,6 +2046,8 @@ def test_local_modpack_archive_fact_answer_uses_download_evidence() -> None:
 if __name__ == "__main__":
     test_direct_crawler_no_save_url_uses_temporary_extract_boundary()
     test_grounded_answer_does_not_fallback_to_ollama_after_profile_error()
+    test_auto_max_tokens_uses_bounded_adaptive_limit()
+    test_version_fact_answer_requires_subject_in_title_or_source()
     test_direct_user_handoff_brief_rejects_wrong_mcagent_identity()
     test_direct_crawler_delegate_choice_is_corrected_to_temporary_extract()
     test_direct_crawler_mcagent_gap_request_forces_planned_workflow()
@@ -1780,8 +2059,12 @@ if __name__ == "__main__":
     test_runtime_status_request_bypasses_llm_router()
     test_mcagent_gap_delegation_overrides_human_delivery_to_rag()
     test_explicit_mcagent_to_crawler_handoff_starts_job_before_router()
+    test_recent_crawler_audit_question_answers_history_without_new_collection()
     test_explicit_mcagent_to_crawler_type_discovery_stays_neutral()
+    test_no_force_archive_download_does_not_block_crawler_handoff()
     test_modrinth_plain_mod_task_does_not_parse_modpack_contents()
+    test_known_modrinth_project_skips_are_reusable_existing_evidence()
+    test_modrinth_slug_query_is_direct_project_candidate()
     test_modrinth_explicit_modpack_manifest_task_can_parse_contents()
     test_mcagent_explicit_crawler_request_forces_planned_delegate()
     test_direct_crawler_mcagent_gap_request_delegates_when_local_empty()
@@ -1799,10 +2082,13 @@ if __name__ == "__main__":
     test_modpack_overview_surfaces_version_install_evidence()
     test_version_install_fact_question_bypasses_llm_router()
     test_modpack_overview_with_version_does_not_use_narrow_fact_route()
+    test_mixed_version_and_guide_question_does_not_use_narrow_fact_route()
     test_general_answer_path_skips_local_fact_answer_for_modpack_overview()
     test_mcagent_context_tool_uses_fast_structured_reply_instead_of_second_answer_llm()
     test_crawler_topic_match_decision_comes_from_crawler_llm()
     test_crawler_summary_uses_only_llm_matched_record_indexes()
+    test_zero_byte_artifact_is_visible_but_not_accepted_for_ingest()
+    test_job_readable_refreshes_legacy_manifest_stats()
     test_duplicate_reuse_requires_crawler_llm_acceptance()
     test_modpack_internal_missing_archive_reports_objective_blocker()
     test_modpack_download_accepts_direct_archive_url_as_candidate()
