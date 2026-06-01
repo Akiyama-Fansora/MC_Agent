@@ -122,7 +122,10 @@ async function streamChat(payload, controller, handlers = {}) {
   }
   if (buffer.trim()) {
     const event = parseSseEvent(buffer);
-    if (event?.event === "response") finalResponse = event.data;
+    if (event?.event === "response") {
+      finalResponse = event.data;
+      handlers.onResponse?.(event.data);
+    }
     if (event?.event === "delta") handlers.onDelta?.(event.data);
   }
   return finalResponse;
@@ -1486,7 +1489,8 @@ async function sendQuestion(event) {
       },
     });
     if (state.currentChat !== currentChat) return;
-    session.messages[pendingIndex].text = agentReplyContent(data);
+    const finalText = agentReplyContent(data) || streamedAnswer || session.messages[pendingIndex].text || "";
+    session.messages[pendingIndex].text = finalText;
     session.messages[pendingIndex].hasFinalAnswer = true;
     session.messages[pendingIndex].isStreamingAnswer = false;
     session.messages[pendingIndex].agent = state.agents.find((item) => item.id === state.activeAgent)?.name || state.activeAgent;
@@ -1511,9 +1515,25 @@ async function sendQuestion(event) {
     }
   } catch (error) {
     if (state.currentChat !== currentChat) return;
-    session.messages[pendingIndex].text = error.name === "AbortError" ? "已暂停本次回复。" : `请求失败：${error.message}`;
-    if (error.name !== "AbortError") renderSources([]);
-    setActivity(error.name === "AbortError" ? "已暂停本次回复。": "请求失败：请查看消息或后台任务。", error.name === "AbortError" ? "paused" : "error");
+    const message = session.messages[pendingIndex];
+    const hasUsableAnswer = Boolean(message.hasFinalAnswer || streamedAnswer || (message.text && message.text.length > 80 && message.isStreamingAnswer));
+    if (error.name === "AbortError") {
+      message.text = "已暂停本次回复。";
+      message.hasFinalAnswer = false;
+      message.isStreamingAnswer = false;
+      setActivity("已暂停本次回复。", "paused");
+    } else if (hasUsableAnswer) {
+      message.text = streamedAnswer || message.text || "";
+      message.hasFinalAnswer = Boolean(message.text);
+      message.isStreamingAnswer = false;
+      setActivity("连接中断，已保留已收到的回答。", "done");
+    } else {
+      message.text = `请求失败：${error.message}`;
+      message.hasFinalAnswer = false;
+      message.isStreamingAnswer = false;
+      renderSources([]);
+      setActivity("请求失败：请查看消息或后台任务。", "error");
+    }
   } finally {
     if (state.currentChat === currentChat) {
       state.currentChat = null;

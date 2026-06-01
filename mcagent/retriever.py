@@ -418,6 +418,21 @@ def _source_channel(row: Any) -> str:
     return "other"
 
 
+def _source_family(row: Any) -> str:
+    channel = _source_channel(row)
+    path = str(row["source_path"]).lower().replace("\\", "/")
+    if channel == "crawler_accepted":
+        if "/crawler_exports/mcmod/" in path:
+            return "accepted_mcmod"
+        if "/crawler_exports/modrinth_agent/" in path:
+            return "accepted_modrinth"
+        if "/crawler_exports/createwiki/" in path:
+            return "accepted_createwiki"
+        if "/crawler_exports/web_discovery/" in path:
+            return "accepted_web_discovery"
+    return channel
+
+
 def _project_channel_gate(row: Any, query: str, intent: Any | None) -> float:
     if not intent or intent.domain not in {"project", "known_mod"}:
         return 0.0
@@ -746,8 +761,17 @@ class Retriever:
             )
             reranked.append((score, chunk_id))
         reranked.sort(key=lambda item: item[0], reverse=True)
-        selected_ids = [chunk_id for _, chunk_id in reranked[:top_k]]
-        selected_scores = {chunk_id: score for score, chunk_id in reranked[:top_k]}
+        diversify_sources = bool(intent and intent.domain in {"project", "known_mod"} and top_k >= 6)
+        selected_ranked = _select_diverse_ranked_items(
+            reranked,
+            rows_by_id,
+            top_k,
+            diversify_sources=diversify_sources,
+            query=query,
+            intent=intent,
+        )
+        selected_ids = [chunk_id for _, chunk_id in selected_ranked]
+        selected_scores = {chunk_id: score for score, chunk_id in selected_ranked}
 
         results: list[SearchResult] = []
         for rank, chunk_id in enumerate(selected_ids, start=1):
@@ -779,6 +803,155 @@ class Retriever:
                 )
             )
         return results
+
+
+def _select_diverse_ranked_items(
+    reranked: list[tuple[float, int]],
+    rows_by_id: dict[int, Any],
+    top_k: int,
+    *,
+    diversify_sources: bool,
+    query: str = "",
+    intent: Any | None = None,
+) -> list[tuple[float, int]]:
+    if not diversify_sources or top_k <= 0:
+        return reranked[:top_k]
+
+    candidate_pool = reranked
+    if intent and getattr(intent, "domain", "") in {"project", "known_mod"} and query:
+        relevant_pool = [
+            item
+            for item in reranked
+            if _project_diversity_candidate_relevant(rows_by_id.get(item[1]), query, intent)
+        ]
+        if relevant_pool:
+            candidate_pool = relevant_pool
+
+    selected: list[tuple[float, int]] = []
+    selected_ids: set[int] = set()
+    document_counts: dict[int, int] = {}
+    family_counts: dict[str, int] = {}
+    per_document_limit = 2 if top_k >= 6 else max(1, top_k)
+    per_family_limit = max(2, top_k // 3)
+
+    def add(item: tuple[float, int], *, enforce_document: int | None, enforce_family: bool) -> bool:
+        _score, chunk_id = item
+        if chunk_id in selected_ids:
+            return False
+        row = rows_by_id.get(chunk_id)
+        if row is None:
+            return False
+        document_id = int(row["document_id"])
+        family = _source_family(row)
+        if enforce_document is not None and document_counts.get(document_id, 0) >= enforce_document:
+            return False
+        if enforce_family and family_counts.get(family, 0) >= per_family_limit:
+            return False
+        selected.append(item)
+        selected_ids.add(chunk_id)
+        document_counts[document_id] = document_counts.get(document_id, 0) + 1
+        family_counts[family] = family_counts.get(family, 0) + 1
+        return len(selected) >= top_k
+
+    for item in candidate_pool:
+        if add(item, enforce_document=per_document_limit, enforce_family=True):
+            return selected
+    for item in candidate_pool:
+        if add(item, enforce_document=max(per_document_limit + 1, 3), enforce_family=False):
+            return selected
+    for item in candidate_pool:
+        if add(item, enforce_document=None, enforce_family=False):
+            return selected
+    return selected
+
+
+def _row_text_value(row: Any, key: str) -> str:
+    if row is None:
+        return ""
+    try:
+        value = row[key]
+    except (KeyError, IndexError, TypeError):
+        value = ""
+    return str(value or "")
+
+
+def _project_diversity_candidate_relevant(row: Any, query: str, intent: Any | None) -> bool:
+    if row is None:
+        return False
+    title = _row_text_value(row, "title").lower()
+    path = _row_text_value(row, "source_path").lower().replace("\\", "/")
+    text = _row_text_value(row, "text")[:3200].lower()
+    title_path = f"{title}\n{path}"
+    haystack = f"{title_path}\n{text}"
+    strong_anchors, weak_terms = _project_diversity_terms(query, intent)
+    has_strong_anchor = any(anchor in title_path for anchor in strong_anchors)
+    channel = _source_channel(row)
+
+    if channel in {"pack_internal", "manual_research"} and not _is_modpack_fact_query(query):
+        return has_strong_anchor
+
+    if has_strong_anchor or any(anchor in haystack for anchor in strong_anchors if " " in anchor):
+        return True
+
+    weak_hits = {term for term in weak_terms if term in haystack}
+    return len(weak_hits) >= 2
+
+
+def _project_diversity_terms(query: str, intent: Any | None) -> tuple[list[str], list[str]]:
+    raw_strong: list[str] = []
+    raw_weak: list[str] = []
+    if intent:
+        raw_strong.append(str(getattr(intent, "entity", "") or ""))
+        concept = getattr(intent, "concept", None) or {}
+        if isinstance(concept, dict):
+            raw_strong.extend(str(item) for item in concept.get("aliases", []) or [])
+            raw_strong.extend(str(item) for item in concept.get("search_queries", []) or [])
+        raw_weak.extend(str(item) for item in getattr(intent, "keywords", []) or [])
+        raw_weak.extend(str(item) for item in getattr(intent, "search_queries", []) or [])
+    raw_weak.extend(_exact_recall_terms(query))
+
+    generic = {
+        "minecraft",
+        "mc",
+        "mod",
+        "mods",
+        "modpack",
+        "forge",
+        "fabric",
+        "quilt",
+        "loader",
+        "loaders",
+        "version",
+        "versions",
+        "supported",
+        "support",
+        "beginner",
+        "guide",
+        "wiki",
+    }
+    strong: list[str] = []
+    weak: list[str] = []
+
+    def append_unique(target: list[str], value: str) -> None:
+        lowered = value.lower().strip()
+        if not lowered or len(lowered) < 3 or lowered in target:
+            return
+        target.append(lowered)
+
+    for value in raw_strong:
+        lowered = re.sub(r"\s+", " ", str(value).lower()).strip()
+        if not lowered or lowered in generic:
+            continue
+        if " " in lowered or re.fullmatch(r"[\u4e00-\u9fff]{2,}", lowered):
+            append_unique(strong, lowered)
+        elif lowered != "create":
+            append_unique(strong, lowered)
+    for value in raw_weak:
+        for term in re.findall(r"[A-Za-z][A-Za-z0-9_+-]{2,}|[\u4e00-\u9fff]{2,}", str(value).lower()):
+            if term in generic or term == "create":
+                continue
+            append_unique(weak, term)
+    return strong[:12], weak[:16]
 
 
 def _dedupe_search_queries(items: list[str]) -> list[str]:

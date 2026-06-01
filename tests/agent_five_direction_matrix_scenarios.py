@@ -55,6 +55,17 @@ def test_frontend_uses_compact_job_card_instead_of_default_trace_noise() -> None
     assert_true("job_actor_panel_names_subject", "CrawlerAgent" in app and "当前动作" in app and "成果" in app)
 
 
+def test_frontend_keeps_streamed_answer_when_connection_ends_badly() -> None:
+    app = (ROOT / "frontend" / "static" / "app.js").read_text(encoding="utf-8")
+    tail_buffer_block = app[app.index("if (buffer.trim())") : app.index("return finalResponse;")]
+    guarded_error_block = app[app.index("hasUsableAnswer") : app.index("} finally {", app.index("hasUsableAnswer"))]
+    assert_true("tail_response_calls_handler", "handlers.onResponse?.(event.data);" in tail_buffer_block)
+    assert_true("stream_fallback_final_text", "agentReplyContent(data) || streamedAnswer" in app)
+    assert_true("usable_answer_guard", "hasUsableAnswer" in guarded_error_block)
+    assert_true("partial_answer_not_replaced_by_error", "message.text = streamedAnswer || message.text ||" in guarded_error_block)
+    assert_true("sources_cleared_only_without_usable_answer", "renderSources([]);" in guarded_error_block.split("} else {", 1)[1])
+
+
 def test_crawler_tool_catalog_exposes_temporary_and_persistent_paths() -> None:
     runtime = (ROOT / "mcagent" / "agent_runtime.py").read_text(encoding="utf-8")
     assert_true("temporary_extract_tool", 'name="temporary_extract"' in runtime)
@@ -80,6 +91,7 @@ def main() -> int:
     test_matrix_document_covers_five_directions_with_examples()
     test_frontend_does_not_show_fixed_three_way_prompt()
     test_frontend_uses_compact_job_card_instead_of_default_trace_noise()
+    test_frontend_keeps_streamed_answer_when_connection_ends_badly()
     test_crawler_tool_catalog_exposes_temporary_and_persistent_paths()
     test_router_prompt_does_not_hardcode_url_no_save_rule()
     print("agent_five_direction_matrix_scenarios passed")
