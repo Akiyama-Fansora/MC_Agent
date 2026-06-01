@@ -1338,7 +1338,7 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
     context_text = _planner_context_text(question, session_summary)
     archive_negated = _modpack_archive_negated(context_text)
     modpack_context = "\n".join([context_text, package_type, topic, target_hint])
-    looks_like_modpack_collection = bool(re.search(r"modpack|整合包|鏁村悎鍖", modpack_context, flags=re.I))
+    looks_like_modpack_collection = bool(re.search(r"modpack|整合包", modpack_context, flags=re.I))
     if looks_like_modpack_collection and not archive_negated and "modpack_download" not in sources:
         sources.append("modpack_download")
     if "mcmod" in sources:

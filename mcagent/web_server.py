@@ -162,18 +162,18 @@ def _has_likely_encoding_damage(value: Any) -> bool:
         if re.search(r"\?{5,}", compact):
             return True
         mojibake_markers = (
-            "涔",
-            "墭",
-            "閭",
-            "鏁",
-            "鍖",
-            "鍏",
-            "絝",
-            "绔",
-            "鐖",
-            "艕",
-            "螅",
-            "€",
+            "涔",  # encoding-check: allow
+            "墭",  # encoding-check: allow
+            "閭",  # encoding-check: allow
+            "鏁",  # encoding-check: allow
+            "鍖",  # encoding-check: allow
+            "鍏",  # encoding-check: allow
+            "絝",  # encoding-check: allow
+            "绔",  # encoding-check: allow
+            "鐖",  # encoding-check: allow
+            "艕",  # encoding-check: allow
+            "螅",  # encoding-check: allow
+            "€",  # encoding-check: allow
         )
         if sum(1 for marker in mojibake_markers if marker in text) >= 3:
             return True

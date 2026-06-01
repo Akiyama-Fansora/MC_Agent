@@ -176,10 +176,10 @@ def test_utf8_mcagent_delegation_extracts_clean_named_alias_target() -> None:
         "task_goal": "MCagent \u8f6c\u8fbe\uff1a\u83b7\u53d6\u4e4c\u6258\u90a6\u63a2\u9669\u4e4b\u65c5 / Utopian Journey \u6574\u5408\u5305\u5b8c\u6574\u516c\u5f00\u8d44\u6599\uff0c\u4f9b MCagent/RAG \u56de\u7b54\u3002",
     }
     raw = {
-        "topic": "/ Utopian Journey ??????????? MCagent/RAG",
+        "topic": "/ Utopian Journey ??????????? MCagent/RAG",  # encoding-check: allow
         "package_type": "modpack",
         "delivery_target": "MCagent/RAG",
-        "tasks": [{"source": "mcagent_context", "query": "/ Utopian Journey ??????????? MCagent/RAG", "priority": 150}],
+        "tasks": [{"source": "mcagent_context", "query": "/ Utopian Journey ??????????? MCagent/RAG", "priority": 150}],  # encoding-check: allow
     }
     plan = _sanitize_plan(raw, question, ROOT / "data" / "crawler_exports", max_tasks=8, session_summary=session_summary)
     assert_equal("topic", plan["topic"], "\u4e4c\u6258\u90a6\u63a2\u9669\u4e4b\u65c5 / Utopian Journey")

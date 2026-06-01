@@ -1337,7 +1337,7 @@ def test_modpack_download_search_queries_use_readable_chinese_terms() -> None:
 
 def test_encoding_damage_guard_catches_mojibake_without_blocking_valid_chinese() -> None:
     good = {"question": "乌托邦探险之旅 整合包 .mrpack .zip"}
-    bad = {"question": "涔屾墭閭︽帰闄╀箣鏃?鏁村悎鍖?.mrpack .zip"}
+    bad = {"question": "涔屾墭閭︽帰闄╀箣鏃?鏁村悎鍖?.mrpack .zip"}  # encoding-check: allow
     assert_equal("good_chinese", web_server._has_likely_encoding_damage(good), False)
     assert_equal("bad_mojibake", web_server._has_likely_encoding_damage(bad), True)
 

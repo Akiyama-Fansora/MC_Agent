@@ -32,80 +32,7 @@ jobs:
 
       - name: Python syntax check
         shell: pwsh
-        run: >
-          python -m py_compile
-          api.py
-          mcagent\agent_execution.py
-          mcagent\agent_executor.py
-          mcagent\agent_message.py
-          mcagent\agent_router.py
-          mcagent\artifact_reference_service.py
-          mcagent\artifact_save_service.py
-          mcagent\crawler_delegation_service.py
-          mcagent\crawler_job_finalization_service.py
-          mcagent\crawler_job_progress_service.py
-          mcagent\crawler_job_setup_service.py
-          mcagent\crawler_loop_control_service.py
-          mcagent\crawler_planner_wait_service.py
-          mcagent\crawler_reflection_decision_service.py
-          mcagent\crawler_runtime_step_service.py
-          mcagent\crawler_task_materialization_service.py
-          mcagent\crawler_task_preparation_service.py
-          mcagent\crawler_temporary_extract_service.py
-          mcagent\crawler_result_accounting_service.py
-          mcagent\crawler_topic_discovery_service.py
-          mcagent\evidence_service.py
-          mcagent\event_stream.py
-          mcagent\fastapi_app.py
-          mcagent\crawler_reflection_service.py
-          mcagent\job_view_service.py
-          mcagent\rag_service.py
-          mcagent\session_state.py
-          mcagent\web_server.py
-          mcagent\agent_runtime.py
-          mcagent\crawler_llm_planner.py
-          mcagent\provider_registry.py
-          mcagent\crawler_planner.py
-          scripts\browser_collect_seed.py
-          scripts\fetch_url_seed.py
-          scripts\read_local_file.py
-          scripts\search_local_files.py
-          scripts\fetch_mcmod_seed.py
-          scripts\fetch_modpack_archive_seed.py
-          scripts\public_readiness_check.py
-          scripts\save_artifact.py
-          scripts\smoke_agent_flows.py
-          tests\artifact_reference_service_scenarios.py
-          tests\artifact_save_service_scenarios.py
-          tests\browser_collect_output_scenarios.py
-          tests\crawler_delegation_service_scenarios.py
-          tests\crawler_job_finalization_service_scenarios.py
-          tests\crawler_job_progress_service_scenarios.py
-          tests\crawler_job_setup_service_scenarios.py
-          tests\crawler_loop_control_service_scenarios.py
-          tests\crawler_planner_wait_service_scenarios.py
-          tests\crawler_planner_timeout_scenarios.py
-          tests\crawler_reflection_decision_scenarios.py
-          tests\crawler_runtime_step_service_scenarios.py
-          tests\crawler_task_materialization_service_scenarios.py
-          tests\crawler_task_preparation_service_scenarios.py
-          tests\crawler_temporary_extract_service_scenarios.py
-          tests\crawler_result_accounting_service_scenarios.py
-          tests\crawler_topic_discovery_service_scenarios.py
-          tests\crawler_reflection_service_scenarios.py
-          tests\agent_execution_scenarios.py
-          tests\agent_executor_scenarios.py
-          tests\agent_five_direction_matrix_scenarios.py
-          tests\agent_message_bus_scenarios.py
-          tests\generic_local_tool_scenarios.py
-          tests\agent_router_scenarios.py
-          tests\evidence_service_scenarios.py
-          tests\job_view_service_scenarios.py
-          tests\rag_service_scenarios.py
-          tests\agent_runtime_scenarios.py
-          tests\web_server_side_effect_guard_scenarios.py
-          tests\backend_services_scenarios.py
-          tests\fastapi_backend_scenarios.py
+        run: python -m compileall -q mcagent scripts tests api.py chat.py ingest.py web.py
 
       - name: Encoding and public readiness checks
         shell: pwsh
@@ -116,38 +43,12 @@ jobs:
       - name: Smoke test
         shell: pwsh
         run: |
+          Get-ChildItem tests -Filter *_scenarios.py | Sort-Object Name | ForEach-Object {
+            Write-Host "RUN $($_.Name)"
+            python $_.FullName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
           python tests\smoke_test.py
-          python tests\browser_collect_output_scenarios.py
-          python tests\artifact_reference_service_scenarios.py
-          python tests\artifact_save_service_scenarios.py
-          python tests\crawler_delegation_service_scenarios.py
-          python tests\crawler_job_finalization_service_scenarios.py
-          python tests\crawler_job_progress_service_scenarios.py
-          python tests\crawler_job_setup_service_scenarios.py
-          python tests\crawler_loop_control_service_scenarios.py
-          python tests\crawler_planner_wait_service_scenarios.py
-          python tests\crawler_planner_timeout_scenarios.py
-          python tests\crawler_reflection_decision_scenarios.py
-          python tests\crawler_runtime_step_service_scenarios.py
-          python tests\crawler_task_materialization_service_scenarios.py
-          python tests\crawler_task_preparation_service_scenarios.py
-          python tests\crawler_temporary_extract_service_scenarios.py
-          python tests\crawler_result_accounting_service_scenarios.py
-          python tests\crawler_topic_discovery_service_scenarios.py
-          python tests\crawler_reflection_service_scenarios.py
-          python tests\agent_execution_scenarios.py
-          python tests\agent_executor_scenarios.py
-          python tests\agent_five_direction_matrix_scenarios.py
-          python tests\agent_message_bus_scenarios.py
-          python tests\generic_local_tool_scenarios.py
-          python tests\agent_router_scenarios.py
-          python tests\evidence_service_scenarios.py
-          python tests\job_view_service_scenarios.py
-          python tests\rag_service_scenarios.py
-          python tests\agent_runtime_scenarios.py
-          python tests\web_server_side_effect_guard_scenarios.py
-          python tests\backend_services_scenarios.py
-          python tests\fastapi_backend_scenarios.py
 
       - name: Frontend syntax check
         shell: pwsh

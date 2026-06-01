@@ -73,6 +73,7 @@ MOJIBAKE_TOKENS = (
     "\u7487\u950b",
     "\u59af\u2033",
     "\u93c9\u30e6",
+    "\u93c1\u6751\u608e\u9356",
 )
 
 
@@ -125,6 +126,8 @@ def scan_file(path: Path) -> list[tuple[int, str, str]]:
     except UnicodeDecodeError as exc:
         return [(0, "not_utf8", str(exc))]
     for line_no, line in enumerate(text.splitlines(), start=1):
+        if "encoding-check: allow" in line:
+            continue
         for token in MOJIBAKE_TOKENS:
             if token in line:
                 hits.append((line_no, "mojibake_token", line.strip()))
