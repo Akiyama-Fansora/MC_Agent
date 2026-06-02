@@ -401,6 +401,72 @@ def test_mcagent_gap_delegation_overrides_human_delivery_to_rag() -> None:
     assert_equal("payload_delivery", calls[0]["payload"].get("delivery_target"), "MCagent/RAG")
 
 
+def test_delegate_confirmation_can_cancel_background_job() -> None:
+    tmp = tempfile.TemporaryDirectory()
+    fake_client = SequencedClient(
+        [
+            json.dumps(
+                {
+                    "tool": "delegate_crawler",
+                    "reason": "initially thought collection was needed",
+                    "collection_target": "collect Utopia modpack data",
+                    "delivery_target": "MCagent/RAG",
+                },
+                ensure_ascii=False,
+            ),
+            json.dumps(
+                {
+                    "proceed": True,
+                    "tool": "delegate_crawler",
+                    "goal": "allow initial route decision",
+                    "reason": "route confirmation accepts the selected tool",
+                },
+                ensure_ascii=False,
+            ),
+            json.dumps(
+                {
+                    "proceed": False,
+                    "tool": "direct_answer",
+                    "suggested_tool": "direct_answer",
+                    "goal": "explain that collection is not being started",
+                    "reason": "confirmation cancelled the background side effect",
+                },
+                ensure_ascii=False,
+            ),
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    original_delegate = web_server._delegate_crawler_for_missing_data
+    calls: list[dict[str, Any]] = []
+
+    def fake_delegate(config: AppConfig, payload: dict[str, Any], delegated_question: str, plan: dict[str, Any] | None = None):  # noqa: ARG001
+        calls.append({"payload": payload, "question": delegated_question, "plan": plan})
+        job = web_server.Job(id="unexpected-job", kind="crawler", title=delegated_question, status="queued", summary="queued")
+        return job, True
+
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake_client, "fake")  # type: ignore[assignment]
+    web_server._delegate_crawler_for_missing_data = fake_delegate  # type: ignore[assignment]
+    try:
+        result = web_server._chat_impl(
+            make_temp_config(Path(tmp.name)),
+            {
+                "agent": "mcagent_rag",
+                "question": "先别采集，说明一下现在为什么不需要启动后台任务",
+                "session_id": "delegate-confirmation-cancel-test",
+                "model": "fake-model",
+            },
+        )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._delegate_crawler_for_missing_data = original_delegate  # type: ignore[assignment]
+        tmp.cleanup()
+
+    assert_equal("no_background_job", calls, [])
+    statuses = [(item.get("stage"), item.get("status")) for item in result.get("trace") or []]
+    assert_true("delegate_confirmed_trace", ("delegate", "next_step_confirmed") in statuses, str(statuses))
+    assert_true("no_job_response", not result.get("job"), str(result.get("job")))
+
+
 def test_explicit_mcagent_to_crawler_handoff_starts_job_before_router() -> None:
     tmp = tempfile.TemporaryDirectory()
     question = "\u8bf7\u5148\u68c0\u67e5\u672c\u5730\u8d44\u6599\u91cc\u4e4c\u6258\u90a6\u63a2\u9669\u4e4b\u65c5 / Utopian Journey \u6574\u5408\u5305\u8fd8\u7f3a\u54ea\u4e9b\u5185\u5bb9\uff0c\u7136\u540e\u8ba9 CrawlerAgent \u53bb\u7f51\u4e0a\u91c7\u96c6\u7f3a\u5931\u7684\u516c\u5f00\u8d44\u6599\u5e76\u5165\u5e93\u7ed9 MCagent/RAG \u4f7f\u7528\u3002"
@@ -2338,6 +2404,7 @@ if __name__ == "__main__":
     test_successful_mcagent_context_filters_new_duplicate_context_tasks()
     test_runtime_status_request_bypasses_llm_router()
     test_mcagent_gap_delegation_overrides_human_delivery_to_rag()
+    test_delegate_confirmation_can_cancel_background_job()
     test_explicit_mcagent_to_crawler_handoff_starts_job_before_router()
     test_recent_crawler_audit_question_answers_history_without_new_collection()
     test_recent_crawler_audit_question_matches_create_instead_of_higher_activity_job()

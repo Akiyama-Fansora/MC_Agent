@@ -7149,77 +7149,58 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
             context={"collection_target": collection_question, "delivery_target": tool_decision.get("delivery_target") or ""},
         )
         add_trace("delegate", "next_step_confirmed", delegate_confirmation)
-        handoff = _delegation_handoff(payload, original_question, collection_question)
-        requested_by = handoff["requested_by"]
-        explicit_payload_delivery = str(payload.get("delivery_target") or "").strip()
-        decision_delivery = str(tool_decision.get("delivery_target") or "").strip()
-        if not explicit_payload_delivery and "mcagent/rag" in decision_delivery.lower():
-            decision_delivery = "MCagent/RAG"
-        delegate_goal_text = "\n".join(
-            str(item or "")
-            for item in (
-                original_question,
-                collection_question,
-                tool_decision.get("reason"),
-                tool_decision.get("planning_instruction"),
-                decision_delivery,
-            )
-        )
-        if explicit_payload_delivery:
-            delivery_target = explicit_payload_delivery
-        elif requested_by in {"mcagent", "user_via_mcagent"} and (
-            not decision_delivery
-            or (
-                decision_delivery.lower() == "human"
-                and (_asks_for_collection_or_handoff(delegate_goal_text) or _request_wants_persistence(delegate_goal_text))
-            )
-        ):
-            delivery_target = "MCagent/RAG"
-        elif decision_delivery:
-            delivery_target = decision_delivery
-        else:
-            delivery_target = _infer_delivery_target(original_question, session_summary)
-        handoff_brief, brief_reason = _build_delegate_handoff_brief(
+        if not bool(delegate_confirmation.get("proceed", True)):
+            suggested_tool = str(delegate_confirmation.get("suggested_tool") or delegate_confirmation.get("tool") or "").strip()
+            if suggested_tool != "delegate_crawler":
+                return executor.direct_answer(run, session_summary=session_summary, mode="direct_after_delegate_cancelled")
+
+        delegation_plan = CrawlerDelegationService(
+            delegation_handoff=_delegation_handoff,
+            infer_delivery_target=_infer_delivery_target,
+            build_handoff_brief=_build_delegate_handoff_brief,
+        ).prepare(
             config,
+            payload,
             model=model,
             original_question=original_question,
+            current_question=question,
             collection_target=collection_question,
             session_summary=session_summary,
-            requested_by=requested_by,
-            delivery_target=delivery_target,
+            planning_instruction=str(tool_decision.get("planning_instruction") or "").strip(),
+            delivery_target=str(tool_decision.get("delivery_target") or "").strip(),
         )
-        add_trace("delegate", "handoff_brief", {"brief": handoff_brief, "reason": brief_reason})
-        delegate_summary = dict(session_summary or {})
-        delegate_summary["handoff_brief"] = handoff_brief
-        delegate_summary["handoff_brief_reason"] = brief_reason
-        if str(tool_decision.get("planning_instruction") or "").strip():
-            delegate_summary["planning_instruction"] = str(tool_decision["planning_instruction"]).strip()
-        if not delegate_summary.get("current_topic") and (delegate_summary.get("topics") or []):
-            delegate_summary["current_topic"] = str((delegate_summary.get("topics") or [""])[0])
-        if not delegate_summary.get("missing_evidence") and (delegate_summary.get("gaps") or []):
-            delegate_summary["missing_evidence"] = "；".join(str(item) for item in (delegate_summary.get("gaps") or [])[:8])
-        delegate_payload = payload | {
-            "requested_by": requested_by,
-            "handoff_from": handoff["handoff_from"],
-            "original_user_request": handoff["original_user_request"],
-            "delivery_target": delivery_target,
-            "preserve_crawler_request": True,
-            "session_summary": delegate_summary,
-        }
-        job, created = _delegate_crawler_for_missing_data(config, delegate_payload, collection_question)
-        if agent == "crawler_agent" and requested_by == "user":
+        add_trace("delegate", "handoff_brief", {"brief": delegation_plan.handoff_brief, "reason": delegation_plan.brief_reason})
+        job, created = _delegate_crawler_for_missing_data(config, delegation_plan.delegate_payload, delegation_plan.collection_question)
+        if agent == "crawler_agent" and delegation_plan.requested_by == "user":
             answer = "我是 CrawlerAgent。采集任务已启动。" if created else "我是 CrawlerAgent。已有采集任务在运行。"
         else:
             answer = "Crawler 多源采集任务已启动。" if created else "Crawler 已有任务在运行。"
-        answer += _crawler_delegation_note_for(job, collection_question, created, requested_by=requested_by, delivery_target=delivery_target)
+        answer += _crawler_delegation_note_for(
+            job,
+            delegation_plan.collection_question,
+            created,
+            requested_by=delegation_plan.requested_by,
+            delivery_target=delegation_plan.delivery_target,
+        )
         return _with_trace(
             {
                 "answer": answer,
                 "sources": [],
                 "agent": agent,
                 "job": _job_to_dict(job),
-                "collaboration": _collaboration_dialog_for(collection_question, job, created, requested_by=requested_by, delivery_target=delivery_target),
-                "delegation": {"requested_by": requested_by, "delivery_target": delivery_target, "task": collection_question},
+                "collaboration": _collaboration_dialog_for(
+                    delegation_plan.collection_question,
+                    job,
+                    created,
+                    requested_by=delegation_plan.requested_by,
+                    delivery_target=delegation_plan.delivery_target,
+                ),
+                "delegation": {
+                    "requested_by": delegation_plan.requested_by,
+                    "delivery_target": delegation_plan.delivery_target,
+                    "task": delegation_plan.collection_question,
+                    "handoff_brief": delegation_plan.handoff_brief,
+                },
             },
             trace,
         )

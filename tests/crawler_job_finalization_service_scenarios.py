@@ -66,7 +66,11 @@ def test_success_with_ingest_builds_running_ingest_loop() -> None:
     assert_equal("audit_accepted", audit["counts"]["accepted"], 1)
     assert_equal("audit_rejected", audit["counts"]["rejected"], 1)
     assert_equal("audit_ingest_status", audit["ingest_status"], "running")
+    assert_equal("audit_review_summary", audit["review_summary"], "accepted=1; rejected=1; pending_review=0; ingest=running")
+    assert_true("audit_accepted_note", "Accepted by CrawlerAgent" in audit["accepted_sources"][0]["review_note"])
     assert_equal("audit_rejected_reason", audit["rejected_sources"][0]["rejected_reason"], "noise")
+    assert_true("audit_rejected_note", "Rejected by CrawlerAgent" in audit["rejected_sources"][0]["review_note"])
+    assert_equal("audit_objective_records", audit["accepted_sources"][0]["objective_evidence"]["records"], 2)
 
 
 def test_failed_without_success_reports_all_sources_failed() -> None:
