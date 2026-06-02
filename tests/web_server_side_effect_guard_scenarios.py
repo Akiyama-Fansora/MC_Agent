@@ -1702,6 +1702,107 @@ def test_modpack_download_accepts_direct_archive_url_as_candidate() -> None:
     assert_equal("errors", errors, [])
 
 
+def test_archive_url_helper_and_fetch_url_boundary() -> None:
+    assert_equal("mrpack_url", web_server._looks_like_archive_url("https://cdn.example.test/packs/demo.mrpack"), True)
+    assert_equal("zip_url", web_server._looks_like_archive_url("fetch https://cdn.example.test/packs/demo.zip please"), True)
+    assert_equal("page_url", web_server._looks_like_archive_url("https://example.test/page.html"), False)
+    command = web_server._round_command("fetch_url", {"query": "https://cdn.example.test/packs/demo.mrpack"})
+    assert_true("still_objective_fetch_tool", "fetch_url_seed.py" in " ".join(command))
+
+
+def test_modpack_download_direct_archive_url_is_range_probed() -> None:
+    from unittest.mock import patch  # noqa: PLC0415
+
+    from scripts import fetch_modpack_archive_seed as seed  # noqa: PLC0415
+
+    def fake_probe(candidate: dict, user_agent: str, timeout: int = 45):  # noqa: ARG001
+        candidate.update({"probe_status": 206, "probe_magic": "504b0304", "size": 1024})
+        return candidate
+
+    with patch.object(seed, "candidate_with_probe", side_effect=fake_probe):
+        candidate = seed.direct_archive_candidate("https://cdn.example.test/packs/demo.mrpack", user_agent="unit-test")
+    assert_true("candidate", isinstance(candidate, dict))
+    assert_equal("source", candidate["source"], "direct_url")
+    assert_equal("downloadable", seed.archive_candidate_is_downloadable(candidate), True)
+
+
+def test_modpack_download_modrinth_search_uses_clean_alias_variant() -> None:
+    from unittest.mock import patch  # noqa: PLC0415
+
+    from scripts import fetch_modpack_archive_seed as seed  # noqa: PLC0415
+
+    calls: list[str] = []
+
+    def fake_request_text(url: str, user_agent: str, timeout: int = 30):  # noqa: ARG001
+        calls.append(url)
+        if "/search?" in url and "Craftoria%20modpack%20.mrpack%20.zip" in url:
+            return '{"hits":[]}', "application/json", 200
+        if "/search?" in url and "Craftoria" in url:
+            return '{"hits":[{"title":"Craftoria","slug":"craftoria","project_id":"project-1"}]}', "application/json", 200
+        if "/project/project-1/version" in url:
+            return (
+                '[{"version_number":"1.0.0","files":[{"filename":"Craftoria.mrpack","url":"https://cdn.modrinth.com/data/project/versions/file/Craftoria.mrpack","size":42,"primary":true}]}]',
+                "application/json",
+                200,
+            )
+        raise AssertionError(url)
+
+    with patch.object(seed, "request_text", side_effect=fake_request_text):
+        candidates, errors = seed.modrinth_archive_candidates("Craftoria modpack .mrpack .zip", user_agent="unit-test", limit=8)
+    assert_equal("errors", errors, [])
+    assert_equal("candidate_count", len(candidates), 1)
+    assert_equal("discovery_query", candidates[0]["discovery_query"], "Craftoria")
+    assert_true("clean_alias_called", any("query=Craftoria" in url for url in calls))
+
+
+def test_modpack_download_skips_download_when_candidate_name_mismatches_target() -> None:
+    from scripts import fetch_modpack_archive_seed as seed  # noqa: PLC0415
+
+    mismatch = {
+        "project_title": "Craft Royale",
+        "project_slug": "craftroyale",
+        "filename": "Craft Royale.mrpack",
+        "url": "https://cdn.modrinth.com/data/demo/Craft%20Royale.mrpack",
+        "archive_magic": "zip",
+    }
+    exact = {
+        "project_title": "Craftoria",
+        "project_slug": "craftoria",
+        "filename": "Craftoria.mrpack",
+        "url": "https://cdn.modrinth.com/data/demo/Craftoria.mrpack",
+        "archive_magic": "zip",
+    }
+    assert_equal("mismatch", seed.archive_candidate_matches_target(mismatch, "Craftoria modpack .mrpack .zip"), False)
+    assert_equal("exact", seed.archive_candidate_matches_target(exact, "Craftoria modpack .mrpack .zip"), True)
+
+
+def test_modpack_download_discovers_curseforge_mediafilez_candidate() -> None:
+    from unittest.mock import patch  # noqa: PLC0415
+
+    from scripts import fetch_modpack_archive_seed as seed  # noqa: PLC0415
+
+    def fake_request_text(url: str, user_agent: str, timeout: int = 30):  # noqa: ARG001
+        if "api.cfwidget.com/minecraft/modpacks/craftoria" in url:
+            return (
+                '{"id":1039252,"title":"Craftoria","summary":"Demo","download":{"id":8127261,"url":"https://www.curseforge.com/minecraft/modpacks/craftoria/files/8127261","display":"Craftoria - 1.31.0","name":"Craftoria-1.31.0.zip","type":"release","version":"1.21.1","filesize":62463455,"versions":["1.21.1","NeoForge"]},"files":[]}',
+                "application/json",
+                200,
+            )
+        raise AssertionError(url)
+
+    def fake_probe(candidate: dict, user_agent: str, timeout: int = 45):  # noqa: ARG001
+        candidate.update({"probe_status": 206, "probe_magic": "504b0304", "probe_content_range": "bytes 0-4095/62463455"})
+        return candidate
+
+    with patch.object(seed, "request_text", side_effect=fake_request_text), patch.object(seed, "candidate_with_probe", side_effect=fake_probe):
+        candidates, pages, errors = seed.curseforge_archive_candidates("Craftoria modpack .mrpack .zip", user_agent="unit-test", limit=3)
+    assert_equal("errors", errors, [])
+    assert_equal("pages", len(pages), 1)
+    assert_equal("candidates", len(candidates), 1)
+    assert_true("mediafilez_url", candidates[0]["url"].startswith("https://mediafilez.forgecdn.net/files/8127/261/Craftoria-1.31.0.zip"))
+    assert_equal("matches_target", seed.archive_candidate_matches_target(candidates[0], "Craftoria modpack .mrpack .zip"), True)
+
+
 def test_modpack_download_search_queries_use_readable_chinese_terms() -> None:
     from scripts.fetch_modpack_archive_seed import archive_discovery_search_queries, inferred_official_site_urls, official_site_search_queries  # noqa: PLC0415
 
@@ -2038,6 +2139,79 @@ def test_modpack_internal_detects_minecraft_instance_layout() -> None:
         assert_true("route_chapter", "Intro" in route_text)
 
 
+def test_modpack_internal_uses_curseforge_overrides_root() -> None:
+    import tempfile  # noqa: PLC0415
+    import zipfile  # noqa: PLC0415
+
+    from scripts.extract_modpack_internals import extract  # noqa: PLC0415
+
+    manifest = {
+        "manifestType": "minecraftModpack",
+        "name": "Demo CurseForge Pack",
+        "version": "1.0.0",
+        "minecraft": {"version": "1.21.1", "modLoaders": [{"id": "neoforge-21.1.1", "primary": True}]},
+        "overrides": "overrides",
+        "files": [],
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        archive = root / "demo.zip"
+        with zipfile.ZipFile(archive, "w") as zipped:
+            zipped.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False))
+            zipped.writestr("modlist.html", '<a href="https://example.test/mod">Example Mod</a>')
+            zipped.writestr("overrides/mods/example.jar", b"jar")
+            zipped.writestr("overrides/config/ftbquests/quests/chapters/intro.snbt", 'title: "Intro"\ndescription: ["Start"]')
+            zipped.writestr("overrides/kubejs/server_scripts/recipes.js", 'event.shaped("minecraft:stick", ["A"], {A: "minecraft:apple"})')
+        data = extract(archive, root / "exports", root / "manual")
+        assert_equal("layout_kind", data["layout"]["kind"], "curseforge")
+        assert_equal("quest_files", data["stats"]["quest_chapter_files"], 1)
+        assert_equal("kubejs_scripts", data["stats"]["kubejs_scripts"], 1)
+        inventory_record = next(record for record in data["records"] if str(record["path"]).endswith("Demo_CurseForge_Pack_pack_internal_inventory.md"))
+        inventory_text = Path(str(inventory_record["path"])).read_text(encoding="utf-8")
+        assert_true("overrides_root", "instance_root: overrides/" in inventory_text)
+        assert_true("minecraft_version", "minecraft: 1.21.1" in inventory_text)
+
+
+def test_modpack_internal_detects_modrinth_overrides_layout() -> None:
+    import tempfile  # noqa: PLC0415
+    import zipfile  # noqa: PLC0415
+
+    from scripts.extract_modpack_internals import extract  # noqa: PLC0415
+
+    index = {
+        "formatVersion": 1,
+        "game": "minecraft",
+        "name": "Demo Modrinth Pack",
+        "versionId": "1.2.3",
+        "dependencies": {"minecraft": "1.20.1", "fabric-loader": "0.16.9"},
+        "files": [
+            {
+                "path": "mods/example.jar",
+                "downloads": ["https://cdn.modrinth.com/data/demo/example.jar"],
+                "fileSize": 123,
+            }
+        ],
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        archive = root / "demo.mrpack"
+        with zipfile.ZipFile(archive, "w") as zipped:
+            zipped.writestr("modrinth.index.json", json.dumps(index, ensure_ascii=False))
+            zipped.writestr("overrides/mods/example.jar", b"jar")
+            zipped.writestr("overrides/config/ftbquests/quests/chapters/intro.snbt", 'title: "Start Here"\ndescription: ["Begin"]\nitem: "minecraft:apple"')
+            zipped.writestr("overrides/kubejs/server_scripts/recipes.js", 'event.shaped("minecraft:stick", ["A"], {A: "minecraft:apple"})')
+        data = extract(archive, root / "exports", root / "manual")
+        assert_equal("layout_kind", data["layout"]["kind"], "modrinth")
+        assert_equal("layout_root", data["layout"]["root"], "overrides/")
+        assert_equal("quest_files", data["stats"]["quest_chapter_files"], 1)
+        assert_equal("kubejs_scripts", data["stats"]["kubejs_scripts"], 1)
+        inventory_record = next(record for record in data["records"] if str(record["path"]).endswith("Demo_Modrinth_Pack_pack_internal_inventory.md"))
+        inventory_text = Path(str(inventory_record["path"])).read_text(encoding="utf-8")
+        assert_true("modrinth_version", "minecraft: 1.20.1" in inventory_text)
+        assert_true("modrinth_loader", "fabric-loader=0.16.9" in inventory_text)
+        assert_true("modrinth_files", "modrinth_files: 1" in inventory_text)
+
+
 def test_job_to_dict_hides_unqualified_modpack_internal_from_history_view() -> None:
     job = web_server.Job(
         id="test-job",
@@ -2199,6 +2373,11 @@ if __name__ == "__main__":
     test_duplicate_reuse_requires_crawler_llm_acceptance()
     test_modpack_internal_missing_archive_reports_objective_blocker()
     test_modpack_download_accepts_direct_archive_url_as_candidate()
+    test_archive_url_helper_and_fetch_url_boundary()
+    test_modpack_download_direct_archive_url_is_range_probed()
+    test_modpack_download_modrinth_search_uses_clean_alias_variant()
+    test_modpack_download_skips_download_when_candidate_name_mismatches_target()
+    test_modpack_download_discovers_curseforge_mediafilez_candidate()
     test_modpack_download_search_queries_use_readable_chinese_terms()
     test_encoding_damage_guard_catches_mojibake_without_blocking_valid_chinese()
     test_modpack_download_reports_bbsmc_cloud_drive_blocker()
@@ -2213,6 +2392,8 @@ if __name__ == "__main__":
     test_download_archive_reuses_valid_existing_zip()
     test_ranged_download_resumes_existing_part_file()
     test_modpack_internal_detects_minecraft_instance_layout()
+    test_modpack_internal_uses_curseforge_overrides_root()
+    test_modpack_internal_detects_modrinth_overrides_layout()
     test_job_to_dict_hides_unqualified_modpack_internal_from_history_view()
     test_modpack_download_evidence_is_manifest_fact_recall()
     test_local_modpack_archive_fact_answer_uses_download_evidence()

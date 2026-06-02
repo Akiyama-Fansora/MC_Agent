@@ -42,6 +42,9 @@ QUESTION_WORDS = {
     "是什么", "有什么用", "用法", "作用", "里的", "里面", "中",
     "可以打", "怎么打", "哪里打", "掉落什么",
     "minecraft", "mc", "mod", "mods", "modpack",
+    "archive", "source", "manifest", "version", "versions", "loader", "loaders", "forge", "fabric", "neoforge",
+    "quest", "quests", "chapter", "chapters", "kubejs",
+    "for", "the", "from", "local", "evidence", "answer", "what", "exists", "internal", "and", "or",
 }
 
 INTENT_EXPANSIONS = {
@@ -70,6 +73,8 @@ def plan_retrieval(
     max_queries: int = 8,
     use_llm: bool = True,
 ) -> RetrievalPlan:
+    if use_llm and _should_use_fast_plan(question, session_summary):
+        return _plan_fallback(question, session_summary=session_summary, max_queries=max_queries)
     if use_llm:
         try:
             return _plan_with_llm(question, session_summary=session_summary, max_queries=max_queries)
@@ -78,6 +83,17 @@ def plan_retrieval(
             fallback.reason = f"LLM retrieval planner failed, used fallback: {type(exc).__name__}: {exc}"
             return fallback
     return _plan_fallback(question, session_summary=session_summary, max_queries=max_queries)
+
+
+def _should_use_fast_plan(question: str, session_summary: dict[str, Any] | None) -> bool:
+    if session_summary and _is_followup(question):
+        return False
+    ascii_terms = re.findall(r"[A-Za-z][A-Za-z0-9_+-]{2,}", question)
+    if len(ascii_terms) >= 3:
+        return True
+    if re.search(r"(整合包|modpack|minecraft|loader|version|quest|kubejs|manifest|archive)", question, flags=re.I):
+        return True
+    return False
 
 
 def _planner_client() -> tuple[OpenAICompatibleClient, str]:
@@ -159,7 +175,7 @@ def _plan_fallback(question: str, *, session_summary: dict[str, Any] | None, max
         terms = _dedupe([*summary_terms[:6], *terms])
     intent_terms = _intent_terms(question)
     entities = [term for term in terms if term and term.lower() not in QUESTION_WORDS]
-    topic = relation_terms[1] if len(relation_terms) >= 2 else (entities[0] if entities else intent.entity or question)
+    topic = relation_terms[1] if len(relation_terms) >= 2 else (_preferred_topic_entity(entities, question) or intent.entity or question)
     required = _dedupe([
         *(_relation_required_terms(relation_terms) if relation_terms else []),
         topic,
@@ -195,6 +211,18 @@ def _candidate_terms_from_intent(entity: str, keywords: list[str], search_querie
         if _looks_like_atomic_term(value):
             output.append(value)
     return _dedupe(output)
+
+
+def _preferred_topic_entity(entities: list[str], question: str) -> str:
+    generic = {str(item).lower() for item in QUESTION_WORDS}
+    for term in re.findall(r"[A-Za-z][A-Za-z0-9_+-]{2,}", question):
+        lowered = term.lower()
+        if lowered not in generic:
+            return term
+    for entity in entities:
+        if entity.lower() not in generic:
+            return entity
+    return ""
 
 
 def _looks_like_atomic_term(value: str) -> bool:

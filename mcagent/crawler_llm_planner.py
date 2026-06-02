@@ -149,6 +149,20 @@ def _english_modpack_target_hint(text: str) -> str:
     value = re.sub(r"\s+", " ", str(text or "")).strip()
     if not value:
         return ""
+    direct_patterns = [
+        r"\bfor\s+(?:the\s+)?([A-Z][A-Za-z0-9][A-Za-z0-9 _'.:+-]{1,60}?)\s+(?:Minecraft\s+)?modpack\b",
+        r"\b(?:Minecraft\s+)?modpack\s+([A-Z][A-Za-z0-9][A-Za-z0-9 _'.:+-]{1,60}?)(?:\s+(?:and|to|with|public|complete|download|archive)\b|[,.;:]|\(|$)",
+    ]
+    for pattern in direct_patterns:
+        match = re.search(pattern, value, flags=re.I)
+        if not match:
+            continue
+        raw_target = str(match.group(1) or "")
+        if re.search(r"\b(?:archive|download|public|complete|data|files?|routes?|version|versions)\b|\.mrpack|\.zip", raw_target, flags=re.I):
+            continue
+        target = _clean_target_hint(_strip_target_suffix(raw_target), max_len=80)
+        if target and not re.fullmatch(r"Minecraft|MC|Modpack|Archive|Download|Public|Data|Files?|Routes?", target, flags=re.I):
+            return target
     patterns = [
         r"modpack\s+[\"'“”]?([A-Z][A-Za-z0-9][A-Za-z0-9 _'.:+-]{1,60}?)[\"'“”]?\s*(?:[,.;:]|\(|$)",
         r"[\"'“”]([A-Z][A-Za-z0-9][A-Za-z0-9 _'.:+-]{1,60}?)[\"'“”]\s*(?:\([^)]*(?:Chinese name|中文名)[^)]*\))?",
@@ -758,7 +772,7 @@ def _prioritize_modpack_archive_tasks(tasks: list[dict[str, Any]], target: str, 
     query = target.strip() or _collection_target_hint(context_text) or _question_subject_hint(context_text) or "Minecraft modpack"
     archive_task = {
         "source": "modpack_download",
-        "query": query if re.search(r"modpack|整合包|\.mrpack|\.zip", query, flags=re.I) else f"{query} 整合包 .mrpack .zip",
+        "query": query if re.search(r"modpack|整合包|\.mrpack|\.zip", query, flags=re.I) else f"{query} modpack .mrpack .zip",
         "reason": "User explicitly requires a fully automatic public modpack archive route before internal parsing; collect objective download facts first.",
         "priority": 220,
         "search_limit": 8,

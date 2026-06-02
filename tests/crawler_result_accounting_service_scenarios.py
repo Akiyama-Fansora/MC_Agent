@@ -122,6 +122,24 @@ def test_mcagent_context_is_diagnostic_and_adds_external_followup() -> None:
     )
 
 
+def test_fetch_url_archive_redirect_adds_modpack_download_followup() -> None:
+    result = {
+        "returncode": 1,
+        "manifest_stats": {
+            "records": 0,
+            "skipped": 1,
+            "archive_url_detected": True,
+            "failure_reason": "URL points to a binary modpack archive.",
+        },
+    }
+    accounting = apply(result, source="fetch_url", delivery="MCagent/RAG")
+    assert_equal("candidate", accounting["candidate_delta"], 1)
+    assert_equal("failure", accounting["failure_delta"], 0)
+    assert_equal("needs_ingest", accounting["needs_ingest"], False)
+    assert_equal("archive_url_detected", result["archive_url_detected"], True)
+    assert_equal("followup_source", accounting["followup_task"]["source"], "modpack_download")
+
+
 if __name__ == "__main__":
     test_matched_records_are_success_and_need_ingest()
     test_empty_matched_artifact_is_not_ingestible_success()
@@ -133,4 +151,5 @@ if __name__ == "__main__":
     test_crawler_review_rejection_records_action()
     test_topic_discovery_counts_candidate_only()
     test_mcagent_context_is_diagnostic_and_adds_external_followup()
+    test_fetch_url_archive_redirect_adds_modpack_download_followup()
     print("crawler_result_accounting_service_scenarios passed")

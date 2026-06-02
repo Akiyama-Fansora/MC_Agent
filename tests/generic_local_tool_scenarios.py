@@ -10,7 +10,7 @@ sys.path.insert(0, str(ROOT))
 
 from scripts.read_local_file import read_file  # noqa: E402
 from scripts.search_local_files import search_files  # noqa: E402
-from scripts.fetch_url_seed import extract_url, html_to_markdown  # noqa: E402
+from scripts.fetch_url_seed import extract_url, html_to_markdown, save_url  # noqa: E402
 
 
 TMP = ROOT / "runtime" / "test_generic_local_tools"
@@ -62,8 +62,18 @@ def test_fetch_url_helpers_are_local_and_generic() -> None:
     assert_true("text", "Readable text" in text)
 
 
+def test_fetch_url_refuses_binary_modpack_archive_urls() -> None:
+    reset_tmp()
+    manifest = save_url("https://cdn.example.test/packs/demo.mrpack", TMP / "exports", timeout=1, user_agent="unit-test")
+    assert_equal("records", len(manifest["records"]), 0)
+    assert_equal("status", manifest["status"], "blocked")
+    assert_equal("archive_url_detected", manifest["archive_url_detected"], True)
+    assert_true("recommended_source", "modpack_download" in manifest["next_action"])
+
+
 if __name__ == "__main__":
     test_read_local_file_exports_manifest_and_markdown()
     test_search_local_files_exports_matches()
     test_fetch_url_helpers_are_local_and_generic()
+    test_fetch_url_refuses_binary_modpack_archive_urls()
     print("generic_local_tool_scenarios passed")

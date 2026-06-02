@@ -562,6 +562,27 @@ def test_english_modpack_archive_fallback_extracts_pack_name_and_download_query(
     assert_true("download_query_has_archive_terms", "Utopian Journey" in first["query"] and ".mrpack" in first["query"])
 
 
+def test_english_handoff_extracts_pack_name_from_for_the_minecraft_modpack_phrase() -> None:
+    question = (
+        "Collect complete public data for the Craftoria Minecraft modpack. "
+        "Prioritize finding a public fully automatic .mrpack or .zip archive download, download it, "
+        "parse internal files, self-audit accepted and rejected sources with ingest status, then deliver evidence to MCagent/RAG for answering."
+    )
+    plan = plan_crawler_tasks_rule_fallback(
+        question,
+        ROOT / "data" / "crawler_exports",
+        max_tasks=6,
+        planner_error="unit timeout",
+        session_summary={"delivery_target": "MCagent/RAG", "requested_by": "mcagent", "collection_target": question},
+    )
+    assert_equal("topic", plan["topic"], "Craftoria")
+    first = plan["tasks"][0]
+    assert_equal("first_source", first["source"], "modpack_download")
+    assert_true(f"short_download_query: {first['query']}", first["query"].startswith("Craftoria "))
+    assert_true(f"archive_terms: {first['query']}", "modpack" in first["query"] and ".mrpack" in first["query"] and ".zip" in first["query"])
+    assert_true(f"no_instruction_leak: {first['query']}", "complete public data" not in first["query"].lower())
+
+
 def test_type_discovery_request_does_not_force_modpack_archive_download() -> None:
     question = (
         "\u8bf7\u4f60\u4f5c\u4e3a MCagent \u8f6c\u8fbe CrawlerAgent\uff1a"
@@ -696,6 +717,7 @@ if __name__ == "__main__":
     test_structured_xlsx_request_uses_browser_collect()
     test_modpack_archive_fallback_does_not_become_browser_collect()
     test_english_modpack_archive_fallback_extracts_pack_name_and_download_query()
+    test_english_handoff_extracts_pack_name_from_for_the_minecraft_modpack_phrase()
     test_type_discovery_request_does_not_force_modpack_archive_download()
     test_create_mod_fallback_does_not_inject_unrelated_component_queries()
     test_reflection_allows_url_seen_in_manifest_preview()

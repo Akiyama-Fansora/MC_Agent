@@ -11,13 +11,16 @@ from .cleaners import iter_source_files, load_documents_from_path
 from .config import AppConfig, load_config
 from .embeddings import make_embedder
 from .storage import (
+    chunk_ids_for_source_roots,
     connect,
+    count_fts_rows,
     count_rows,
     delete_source_documents_not_in,
     init_db,
     rebuild_fts_index,
     rebuild_vector_index,
     replace_document,
+    update_vector_index_for_chunks,
 )
 
 
@@ -31,6 +34,8 @@ class IngestStats:
     fts_rows: int = 0
     documents_removed: int = 0
     errors: int = 0
+    index_target_chunks: int = 0
+    index_pending_chunks: int = 0
 
 
 def ingest_exports(
@@ -39,6 +44,7 @@ def ingest_exports(
     rebuild_index: bool = True,
     limit_files: int | None = None,
     allowed_roots: list[Path] | None = None,
+    incremental_index_chunk_limit: int | None = 256,
 ) -> IngestStats:
     source = source_dir or config.paths.source_dir
     if not source.exists():
@@ -86,11 +92,42 @@ def ingest_exports(
             else:
                 stats.documents_removed = delete_source_documents_not_in(conn, source, seen_source_refs)
         conn.commit()
-        stats.fts_rows = rebuild_fts_index(conn)
+        if resolved_allowed_roots:
+            stats.fts_rows = count_fts_rows(conn)
+        else:
+            stats.fts_rows = rebuild_fts_index(conn)
         conn.commit()
         if rebuild_index:
             embedder = make_embedder(config.embedding)
-            stats.index_vectors = rebuild_vector_index(conn, config.paths.index_path, embedder)
+            if resolved_allowed_roots:
+                target_chunk_ids = chunk_ids_for_source_roots(conn, resolved_allowed_roots)
+                stats.index_target_chunks = len(target_chunk_ids)
+                stats.index_vectors = update_vector_index_for_chunks(
+                    conn,
+                    config.paths.index_path,
+                    embedder,
+                    target_chunk_ids,
+                    max_new_chunks=incremental_index_chunk_limit,
+                )
+                if config.paths.index_path.exists():
+                    np = __import__("numpy")
+                    indexed_ids: set[int] = set()
+                    for index_path in [
+                        config.paths.index_path,
+                        config.paths.index_path.with_name(f"{config.paths.index_path.stem}.delta{config.paths.index_path.suffix}"),
+                    ]:
+                        if not index_path.exists():
+                            continue
+                        index_data = None
+                        try:
+                            index_data = np.load(index_path, allow_pickle=False)
+                            indexed_ids.update(int(value) for value in index_data["chunk_ids"].tolist())
+                        finally:
+                            if index_data is not None:
+                                index_data.close()
+                    stats.index_pending_chunks = len([chunk_id for chunk_id in target_chunk_ids if chunk_id not in indexed_ids])
+            else:
+                stats.index_vectors = rebuild_vector_index(conn, config.paths.index_path, embedder)
         return stats
     except Exception:
         conn.rollback()

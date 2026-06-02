@@ -16,7 +16,8 @@ from .storage import connect, fetch_chunks_by_ids
 
 
 # 模块级向量索引缓存，避免每次检索都重新 np.load
-_vector_cache: dict[str, tuple[tuple[int, int], Any]] = {}
+_vector_cache: dict[str, tuple[tuple[int, int, int, int], Any]] = {}
+PRIMARY_VECTOR_SCAN_SIZE_LIMIT = 50 * 1024 * 1024
 
 
 def _require_numpy():
@@ -179,8 +180,8 @@ def _literal_recall_chunk_ids(conn: Any, query: str, limit: int) -> list[int]:
     params: list[str] = []
     for term in terms:
         like = f"%{term}%"
-        clauses.append("(documents.title LIKE ? OR documents.source_path LIKE ? OR chunks.text LIKE ?)")
-        params.extend([like, like, like])
+        clauses.append("(documents.title LIKE ? OR documents.source_path LIKE ?)")
+        params.extend([like, like])
     rows = conn.execute(sql.format(where_clause=" OR ".join(clauses)), [*params, max(limit, 1)]).fetchall()
     scored: list[tuple[float, int]] = []
     for row in rows:
@@ -209,6 +210,8 @@ def _literal_recall_chunk_ids(conn: Any, query: str, limit: int) -> list[int]:
 
 def _is_modpack_fact_query(query: str) -> bool:
     lowered = query.lower()
+    if any(term in lowered for term in ("sha256", "checksum", "direct_archive_url", "content-range")):
+        return True
     modpack_markers = (
         "modpack",
         "整合包",
@@ -220,11 +223,15 @@ def _is_modpack_fact_query(query: str) -> bool:
         "direct_archive_url",
         "vanillaera",
         "fareschron",
+        "craftoria",
         "香草纪元",
         "乌托邦探险之旅",
         "utopian journey",
         "closing song",
         "落幕曲",
+        "\u93c1\u6751\u608e",
+        "\u9366\u5442\u7db0",
+        "\u6d94\u5c7e\u58ad",
     )
     if not any(marker in lowered or marker in query for marker in modpack_markers):
         return False
@@ -255,7 +262,76 @@ def _is_modpack_fact_query(query: str) -> bool:
 def _modpack_manifest_fact_chunk_ids(conn: Any, query: str, limit: int) -> list[int]:
     if not _is_modpack_fact_query(query):
         return []
-    rows = conn.execute(
+    entity_terms = _entity_filter_terms(query)
+    if entity_terms:
+        clauses: list[str] = []
+        params: list[str] = []
+        for term in entity_terms[:2]:
+            like = f"%{term}%"
+            clauses.append("(documents.title LIKE ? OR documents.source_path LIKE ?)")
+            params.extend([like, like])
+        rows = conn.execute(
+            f"""
+            SELECT
+                chunks.id AS chunk_id,
+                chunks.text AS text,
+                documents.title AS title,
+                documents.source_path AS source_path,
+                documents.metadata_json AS metadata_json
+            FROM chunks
+            JOIN documents ON documents.id = chunks.document_id
+            WHERE ({" OR ".join(clauses)})
+              AND (
+                   documents.metadata_json LIKE '%modpack_manifest_facts%'
+                OR documents.source_path LIKE '%modpack_manifests%'
+                OR documents.source_path LIKE '%modpack_archive_summary%'
+                OR documents.source_path LIKE '%downloaded_archive_evidence%'
+                OR documents.title LIKE '%Downloaded modpack archive evidence%'
+              )
+            LIMIT 120
+            """,
+            params,
+        ).fetchall()
+        if not rows:
+            rows = conn.execute(
+                """
+                SELECT
+                    chunks.id AS chunk_id,
+                    chunks.text AS text,
+                    documents.title AS title,
+                    documents.source_path AS source_path,
+                    documents.metadata_json AS metadata_json
+                FROM chunks
+                JOIN documents ON documents.id = chunks.document_id
+                WHERE documents.metadata_json LIKE '%modpack_manifest_facts%'
+                   OR documents.source_path LIKE '%modpack_manifests%'
+                   OR documents.source_path LIKE '%modpack_archive_summary%'
+                   OR documents.source_path LIKE '%downloaded_archive_evidence%'
+                   OR documents.title LIKE '%Downloaded modpack archive evidence%'
+                LIMIT 240
+                """
+            ).fetchall()
+        if not rows:
+            rows = conn.execute(
+                """
+                SELECT
+                    chunks.id AS chunk_id,
+                    chunks.text AS text,
+                    documents.title AS title,
+                    documents.source_path AS source_path,
+                    documents.metadata_json AS metadata_json
+                FROM chunks
+                JOIN documents ON documents.id = chunks.document_id
+                WHERE documents.metadata_json LIKE '%modpack_manifest_facts%'
+                   OR documents.source_path LIKE '%modpack_manifests%'
+                   OR documents.source_path LIKE '%modpack_archive_summary%'
+                   OR documents.source_path LIKE '%downloaded_archive_evidence%'
+                   OR documents.title LIKE '%Downloaded modpack archive evidence%'
+                LIMIT 240
+                """
+            ).fetchall()
+    else:
+        rows = conn.execute(
         """
         SELECT
             chunks.id AS chunk_id,
@@ -625,6 +701,172 @@ def _bm25_scores(rows: Iterable[Any], query: str) -> dict[int, float]:
     return {chunk_id: score / max_score for chunk_id, score in raw_scores.items()}
 
 
+def _entity_filter_terms(query: str) -> list[str]:
+    mojibake_markers = ("\u6d94\u5c7e\u58ad", "\u95ad\ufe42", "\u93c1\u6751\u608e", "\u9366\u5442\u7db0", "\u93c9\u30e6\u7c3d")
+    if any(marker in str(query or "") for marker in mojibake_markers):
+        return []
+    generic = {
+        "minecraft",
+        "modpack",
+        "archive",
+        "source",
+        "manifest",
+        "version",
+        "versions",
+        "loader",
+        "loaders",
+        "neoforge",
+        "forge",
+        "fabric",
+        "quest",
+        "quests",
+        "chapter",
+        "chapters",
+        "kubejs",
+        "for",
+        "the",
+        "from",
+        "local",
+        "evidence",
+        "answer",
+        "what",
+        "exists",
+        "internal",
+        "and",
+        "or",
+        "sha256",
+        "hash",
+        "checksum",
+        "bytes",
+    }
+    terms: list[str] = []
+    has_strong_ascii = any(
+        term.lower() not in generic
+        for term in re.findall(r"[A-Za-z][A-Za-z0-9_+-]{2,}", str(query))
+    )
+    has_modpack_context = bool(re.search(r"整合包|modpack|archive|manifest|loader|quest|kubejs", str(query), flags=re.I))
+    if not has_strong_ascii and not has_modpack_context:
+        return []
+    ascii_terms = [
+        term.lower()
+        for term in re.findall(r"[A-Za-z][A-Za-z0-9_+-]{2,}", str(query))
+        if term.lower() not in generic
+    ]
+    if ascii_terms:
+        return ascii_terms[:2]
+    known_cn_aliases = [
+        "乌托邦探险之旅",
+        "乌托邦",
+        "香草纪元",
+        "落幕曲",
+        "农夫乐事",
+        "机械动力",
+    ]
+    matched_cn = [alias.lower() for alias in known_cn_aliases if alias in str(query)]
+    if matched_cn:
+        return matched_cn[:2]
+    for term in re.findall(r"[\u4e00-\u9fff]{2,}", str(query).lower()):
+        if term in generic:
+            continue
+        terms.append(term)
+    return terms[:3]
+
+
+def _modpack_manifest_fact_chunk_ids(conn: Any, query: str, limit: int) -> list[int]:
+    if not _is_modpack_fact_query(query):
+        return []
+    entity_terms = _entity_filter_terms(query)
+    if entity_terms:
+        clauses: list[str] = []
+        params: list[str] = []
+        for term in entity_terms[:2]:
+            like = f"%{term}%"
+            clauses.append("(documents.title LIKE ? OR documents.source_path LIKE ?)")
+            params.extend([like, like])
+        rows = conn.execute(
+            f"""
+            SELECT
+                chunks.id AS chunk_id,
+                chunks.text AS text,
+                documents.title AS title,
+                documents.source_path AS source_path,
+                documents.metadata_json AS metadata_json
+            FROM chunks
+            JOIN documents ON documents.id = chunks.document_id
+            WHERE ({" OR ".join(clauses)})
+              AND (
+                   documents.metadata_json LIKE '%modpack_manifest_facts%'
+                OR documents.source_path LIKE '%modpack_manifests%'
+                OR documents.source_path LIKE '%modpack_archive_summary%'
+                OR documents.source_path LIKE '%downloaded_archive_evidence%'
+                OR documents.title LIKE '%Downloaded modpack archive evidence%'
+              )
+            LIMIT 120
+            """,
+            params,
+        ).fetchall()
+        if not rows:
+            rows = conn.execute(
+                """
+                SELECT
+                    chunks.id AS chunk_id,
+                    chunks.text AS text,
+                    documents.title AS title,
+                    documents.source_path AS source_path,
+                    documents.metadata_json AS metadata_json
+                FROM chunks
+                JOIN documents ON documents.id = chunks.document_id
+                WHERE documents.metadata_json LIKE '%modpack_manifest_facts%'
+                   OR documents.source_path LIKE '%modpack_manifests%'
+                   OR documents.source_path LIKE '%modpack_archive_summary%'
+                   OR documents.source_path LIKE '%downloaded_archive_evidence%'
+                   OR documents.title LIKE '%Downloaded modpack archive evidence%'
+                LIMIT 240
+                """
+            ).fetchall()
+    else:
+        rows = conn.execute(
+        """
+        SELECT
+            chunks.id AS chunk_id,
+            chunks.text AS text,
+            documents.title AS title,
+            documents.source_path AS source_path,
+            documents.metadata_json AS metadata_json
+        FROM chunks
+        JOIN documents ON documents.id = chunks.document_id
+        WHERE documents.metadata_json LIKE '%modpack_manifest_facts%'
+           OR documents.source_path LIKE '%modpack_manifests%'
+           OR documents.source_path LIKE '%modpack_archive_summary%'
+           OR documents.source_path LIKE '%downloaded_archive_evidence%'
+           OR documents.title LIKE '%Downloaded modpack archive evidence%'
+        LIMIT 240
+        """
+        ).fetchall()
+    if not rows:
+        return []
+    query_tokens = set(_tokenize_sparse(query))
+    scored: list[tuple[float, int]] = []
+    for row in rows:
+        haystack = f"{row['title']}\n{row['source_path']}\n{row['metadata_json']}\n{row['text']}".lower()
+        row_tokens = set(_tokenize_sparse(haystack))
+        score = float(len(query_tokens & row_tokens))
+        lower_text = str(row["text"]).lower()
+        lower_path = str(row["source_path"]).lower().replace("\\", "/")
+        if "minecraft.version" in lower_text or "minecraft version" in lower_text:
+            score += 4.0
+        if "modloaders" in lower_text or "loader" in lower_text:
+            score += 3.0
+        if "downloaded_archive_evidence" in lower_path:
+            score += 6.0
+        if "sha256:" in lower_text or "direct_archive_url:" in lower_text:
+            score += 4.0
+        if score > 0:
+            scored.append((score, int(row["chunk_id"])))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [chunk_id for _score, chunk_id in scored[: max(limit, 1)]]
+
+
 class Retriever:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
@@ -635,23 +877,50 @@ class Retriever:
             raise FileNotFoundError(
                 f"Vector index not found: {index_path}. Run: python -m mcagent.ingest"
             )
+        delta_path = index_path.with_name(f"{index_path.stem}.delta{index_path.suffix}")
         stat = index_path.stat()
-        signature = (int(stat.st_mtime_ns), int(stat.st_size))
+        delta_signature = (0, 0)
+        if delta_path.exists():
+            delta_stat = delta_path.stat()
+            delta_signature = (int(delta_stat.st_mtime_ns), int(delta_stat.st_size))
+        signature = (int(stat.st_mtime_ns), int(stat.st_size), *delta_signature)
         cache_key = str(index_path.resolve())
         cached = _vector_cache.get(cache_key)
         if cached and cached[0] == signature:
             return cached[1]
         np = _require_numpy()
-        try:
-            data = np.load(index_path, allow_pickle=False)
-        except Exception as exc:  # noqa: BLE001 - surface a repair action for any unreadable npz.
-            raise RuntimeError(f"Vector index is unreadable: {index_path}. Rebuild it with: python ingest.py") from exc
-        chunk_ids = data["chunk_ids"]
-        vectors = data["vectors"]
+        skip_primary = (
+            self.embedder.provider_name == "hashing_char_ngram"
+            and delta_path.exists()
+            and stat.st_size > PRIMARY_VECTOR_SCAN_SIZE_LIMIT
+        )
+        if skip_primary:
+            dimension = int(getattr(self.embedder, "dimension", 0) or 0)
+            chunk_ids = np.zeros((0,), dtype=np.int64)
+            vectors = np.zeros((0, dimension), dtype=np.float32)
+        else:
+            chunk_ids, vectors = self._load_one_index(index_path)
+        if delta_path.exists():
+            delta_chunk_ids, delta_vectors = self._load_one_index(delta_path)
+            if len(delta_chunk_ids):
+                chunk_ids = np.concatenate([chunk_ids, delta_chunk_ids])
+                vectors = np.vstack([vectors, delta_vectors]) if len(vectors) else delta_vectors
         if vectors.shape[0] != chunk_ids.shape[0]:
             raise RuntimeError("Vector index is corrupted: vector count does not match chunk IDs.")
         _vector_cache[cache_key] = (signature, (chunk_ids, vectors))
         return chunk_ids, vectors
+
+    def _load_one_index(self, index_path: Path):
+        data = None
+        try:
+            data = _require_numpy().load(index_path, allow_pickle=False)
+        except Exception as exc:  # noqa: BLE001 - surface a repair action for any unreadable npz.
+            raise RuntimeError(f"Vector index is unreadable: {index_path}. Rebuild it with: python ingest.py") from exc
+        try:
+            return data["chunk_ids"], data["vectors"]
+        finally:
+            if data is not None:
+                data.close()
 
     def search(
         self,
@@ -668,8 +937,6 @@ class Retriever:
 
         np = _require_numpy()
         chunk_ids, vectors = self._load_index(self.config.paths.index_path)
-        if vectors.shape[0] == 0:
-            return []
 
         if plan is None and use_planner:
             plan = plan_retrieval(query, session_summary=session_summary, max_queries=8)
@@ -678,30 +945,33 @@ class Retriever:
             search_queries = _dedupe_search_queries([*plan.subqueries, query])
 
         alias_queries: list[str] = []
-        if plan is not None:
+        if plan is not None and plan.planner != "fallback":
             alias_queries = _local_alias_queries(self.config.paths.db_path, query, plan, limit=6)
             search_queries = _dedupe_search_queries([*search_queries, *alias_queries])
+        search_queries = search_queries[:6]
+        entity_filter_terms = _entity_filter_terms(query)
 
-        query_vectors = self.embedder.embed([_expand_query(item) for item in search_queries])
         query_factor = max(1, min(len(search_queries), 8))
         candidate_count = min(max(top_k * 12, 50, query_factor * 18), min(160, len(vectors)))
 
         candidate_ids: list[int] = []
         vector_scores: dict[int, float] = {}
-        for query_vector in query_vectors:
-            scores = vectors @ query_vector
-            candidate_indices = np.argpartition(scores, -candidate_count)[-candidate_count:]
-            sorted_indices = candidate_indices[np.argsort(scores[candidate_indices])[::-1]]
-            for index in sorted_indices:
-                score = float(scores[index])
-                if score < self.config.retrieval.min_score:
-                    continue
-                chunk_id = int(chunk_ids[index])
-                if chunk_id not in vector_scores:
-                    candidate_ids.append(chunk_id)
-                    vector_scores[chunk_id] = score
-                else:
-                    vector_scores[chunk_id] = max(vector_scores[chunk_id], score)
+        if vectors.shape[0] > 0 and candidate_count > 0:
+            query_vectors = self.embedder.embed([_expand_query(item) for item in search_queries])
+            for query_vector in query_vectors:
+                scores = vectors @ query_vector
+                candidate_indices = np.argpartition(scores, -candidate_count)[-candidate_count:]
+                sorted_indices = candidate_indices[np.argsort(scores[candidate_indices])[::-1]]
+                for index in sorted_indices:
+                    score = float(scores[index])
+                    if score < self.config.retrieval.min_score:
+                        continue
+                    chunk_id = int(chunk_ids[index])
+                    if chunk_id not in vector_scores:
+                        candidate_ids.append(chunk_id)
+                        vector_scores[chunk_id] = score
+                    else:
+                        vector_scores[chunk_id] = max(vector_scores[chunk_id], score)
 
         conn = connect(self.config.paths.db_path)
         try:
@@ -714,7 +984,11 @@ class Retriever:
                     candidate_ids.append(chunk_id)
                     vector_scores[chunk_id] = 0.0
             literal_ids: list[int] = []
-            for search_query in search_queries:
+            literal_seed_queries = [*(entity_filter_terms or []), *(plan.required_terms if plan else [])]
+            if not literal_seed_queries:
+                literal_seed_queries.append(query)
+            literal_queries = _dedupe_search_queries(literal_seed_queries)[:2]
+            for search_query in literal_queries:
                 literal_ids.extend(_literal_recall_chunk_ids(conn, search_query, limit=max(top_k * 5, 32)))
             literal_id_set = set(literal_ids)
             for chunk_id in literal_ids:
@@ -741,6 +1015,10 @@ class Retriever:
             row = rows_by_id.get(chunk_id)
             if row is None:
                 continue
+            if entity_filter_terms:
+                haystack_for_entity = f"{row['title']}\n{row['source_path']}\n{str(row['text'])[:1800]}".lower()
+                if not any(term in haystack_for_entity for term in entity_filter_terms):
+                    continue
             if plan is not None and not _strong_plan_term_overlap(row, plan):
                 continue
             vector_weight = 0.25 if (intent and intent.domain in {"project", "known_mod"} and self.embedder.provider_name == "hashing_char_ngram") else 0.70
@@ -759,6 +1037,10 @@ class Retriever:
                 + (1.30 if chunk_id in manifest_fact_id_set else 0.0)
                 + 0.42 * bm25_scores.get(chunk_id, 0.0)
             )
+            if entity_filter_terms and "downloaded_archive_evidence" in str(row["source_path"]).lower().replace("\\", "/"):
+                title_path = f"{row['title']}\n{row['source_path']}".lower()
+                if not any(term in title_path for term in entity_filter_terms):
+                    score -= 4.0
             reranked.append((score, chunk_id))
         reranked.sort(key=lambda item: item[0], reverse=True)
         diversify_sources = bool(intent and intent.domain in {"project", "known_mod"} and top_k >= 6)
@@ -1045,8 +1327,8 @@ def _local_alias_queries(db_path: Path, query: str, plan: RetrievalPlan, *, limi
     params: list[str] = []
     for seed in seeds[:6]:
         like = f"%{seed}%"
-        clauses.append("(documents.title LIKE ? OR documents.source_path LIKE ? OR chunks.text LIKE ?)")
-        params.extend([like, like, like])
+        clauses.append("(documents.title LIKE ? OR documents.source_path LIKE ?)")
+        params.extend([like, like])
     sql = f"""
         SELECT documents.title AS title, documents.source_path AS source_path, chunks.text AS text
         FROM chunks
@@ -1058,20 +1340,32 @@ def _local_alias_queries(db_path: Path, query: str, plan: RetrievalPlan, *, limi
         conn = connect(db_path)
         try:
             rows = conn.execute(sql, params).fetchall()
+            for seed in seeds[:3]:
+                fts_ids = _fts_recall_chunk_ids(conn, seed, limit=10)
+                if not fts_ids:
+                    continue
+                rows.extend(fetch_chunks_by_ids(conn, fts_ids).values())
         finally:
             conn.close()
     except Exception:
         return []
     aliases: dict[str, float] = {}
+    seed_set = {seed.lower() for seed in seeds}
     for row in rows:
         haystack = f"{row['title']}\n{row['source_path']}\n{str(row['text'])[:2200]}"
+        haystack_lower = haystack.lower()
+        if seed_set and not any(seed in haystack_lower for seed in seed_set):
+            continue
         for alias in _extract_alias_candidates(haystack):
             if _bad_alias(alias):
                 continue
+            alias_lower = alias.lower()
+            if seed_set and not any(seed in alias_lower for seed in seed_set) and not any(seed in str(row["title"]).lower() for seed in seed_set):
+                continue
             score = aliases.get(alias, 0.0)
-            if alias.lower() in query.lower():
+            if alias_lower in query.lower():
                 score += 0.2
-            if alias.lower() in str(row["title"]).lower():
+            if alias_lower in str(row["title"]).lower():
                 score += 1.1
             if any(marker in str(row["source_path"]).lower().replace("\\", "/") for marker in ("modrinth_agent", "mcmod", "fetch_url", "web_discovery", "playwright")):
                 score += 0.35

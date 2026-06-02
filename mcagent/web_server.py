@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 import traceback
+import urllib.parse
 import uuid
 from typing import Any
 import sqlite3
@@ -692,7 +693,7 @@ def _ingest_after_crawl(config: AppConfig, source_dirs: list[str | Path] | None 
         try:
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
                 if source_dirs is None:
-                    stats = ingest_exports(config)
+                    stats = ingest_exports(config, rebuild_index=False)
                 else:
                     allowed_roots = list(dict.fromkeys(Path(source_dir).resolve() for source_dir in source_dirs if Path(source_dir).exists()))
                     stats = ingest_exports(config, allowed_roots=allowed_roots) if allowed_roots else IngestStats()
@@ -897,6 +898,14 @@ def _save_dir_hint(source: str) -> str:
         "modpack_internal": r"D:\magic\MC_Agent\data\crawler_exports\manual_research\...",
         "topic_discovery": r"D:\magic\MC_Agent\data\crawler_exports\topic_discovery\...",
     }.get(_source_alias(source), r"D:\magic\MC_Agent\data\crawler_exports\...")
+
+
+def _looks_like_archive_url(value: str) -> bool:
+    match = re.search(r"https?://[^\s<>'\"]+", str(value or ""), flags=re.I)
+    if not match:
+        return False
+    path = urllib.parse.urlparse(match.group(0).rstrip(".,;:)")).path.lower()
+    return path.endswith((".mrpack", ".zip"))
 
 
 def _modpack_archive_for_query(query: str) -> str:
@@ -1316,6 +1325,7 @@ def _crawler_manifest_stats(export_dir: str) -> dict[str, Any]:
         "note": str(data.get("note") or ""),
         "failure_reason": str(data.get("failure_reason") or ""),
         "next_action": str(data.get("next_action") or ""),
+        "archive_url_detected": bool(data.get("archive_url_detected")),
     }
 
 
@@ -2623,6 +2633,22 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
             task_source = _source_alias(str(task.get("source") or "mediawiki"))
             task_payload = task_preparation.build_payload(base_payload=payload, task=task, question=question, task_source=task_source)
             task_payload = artifact_refs.resolve_payload_refs(task_payload, list(plan.get("artifact_refs") or []))
+            if task_source == "fetch_url" and _looks_like_archive_url(str(task_payload.get("query") or "")):
+                task_source = "modpack_download"
+                task_payload["source"] = "modpack_download"
+                task_payload["reason"] = (
+                    str(task_payload.get("reason") or "")
+                    + " Executor routed binary .mrpack/.zip URL to modpack_download because fetch_url only extracts readable text."
+                ).strip()
+                plan.setdefault("agent_reflections", []).append(
+                    {
+                        "at_index": index,
+                        "action": "route_archive_url_to_modpack_download",
+                        "reason": "Objective tool boundary: fetch_url is for readable text; binary .mrpack/.zip URLs must be probed/downloaded by modpack_download.",
+                        "planner": "executor objective routing",
+                        "task": {"source": task_source, "query": str(task_payload.get("query") or "")},
+                    }
+                )
             if not str(task_payload.get("query") or "").strip():
                 result = task_preparation.empty_query_result(task_source=task_source, task=task)
                 task_results.append(result)
@@ -3957,6 +3983,8 @@ _VI = {
 def _local_version_install_answer(question: str, results: list[SearchResult]) -> str:
     if not _is_version_install_question(question):
         return ""
+    if re.search(r"\b(?:archive|source|quest|quests|kubejs|internal)\b|包体|来源|任务|内部", str(question or ""), flags=re.I):
+        return ""
     labels = _version_install_fact_labels()
     facts: dict[str, list[str]] = {label: [] for label in labels}
     filtered_results = _filter_version_install_fact_results(question, results)
@@ -4025,6 +4053,7 @@ def _primary_fact_subject_terms(question: str) -> list[str]:
         (("机械动力", "create mod", "create /", " create ", "createmod", "createmod.net"), ("机械动力", "create", "create mod", "createmod", "wiki.createmod.net", "modrinth.com/mod/create", "class/2021")),
         (("乌托邦探险之旅", "utopian journey", "utopia-journey"), ("乌托邦探险之旅", "utopian journey", "utopia-journey", "modpack/1337")),
         (("香草纪元", "vanillaera", "fareschron"), ("香草纪元", "vanillaera", "fareschron", "fares chron")),
+        (("craftoria",), ("craftoria", "craftoria-1.31.0", "Craftoria-1.31.0.zip")),
         (("落幕曲", "closing song"), ("落幕曲", "closing song")),
     )
     for needles, aliases in known_aliases:
@@ -4040,7 +4069,7 @@ def _primary_fact_subject_terms(question: str) -> list[str]:
 def _is_modpack_fact_query_text(question: str) -> bool:
     text = str(question or "")
     lowered = text.lower()
-    return any(marker in lowered or marker in text for marker in ("modpack", "整合包", "包体", ".mrpack", ".zip", "manifest", "香草纪元", "乌托邦探险之旅", "utopian journey", "vanillaera", "fareschron", "落幕曲", "closing song"))
+    return any(marker in lowered or marker in text for marker in ("modpack", "整合包", "包体", ".mrpack", ".zip", "manifest", "香草纪元", "乌托邦探险之旅", "utopian journey", "vanillaera", "fareschron", "craftoria", "落幕曲", "closing song"))
 
 
 def _local_modpack_archive_fact_answer(question: str, results: list[SearchResult]) -> str:
@@ -5848,6 +5877,8 @@ def _mcagent_context_required_terms(focus: str) -> list[str]:
         terms.append("\u4e4c\u6258\u90a6")
     if "\u9999\u8349\u7eaa\u5143" in text or "vanillaera" in lowered or "fareschron" in lowered:
         terms.extend(["\u9999\u8349\u7eaa\u5143", "vanillaera", "fareschron", "fares chron"])
+    if "craftoria" in lowered:
+        terms.extend(["craftoria", "craftoria-1.31.0"])
     if "\u843d\u5e55\u66f2" in text or "closing song" in lowered:
         terms.extend(["\u843d\u5e55\u66f2", "closing song"])
     extracted = [

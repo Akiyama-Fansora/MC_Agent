@@ -140,6 +140,15 @@ def test_crawler_accepted_sources_are_preferred_for_project_questions() -> None:
         stats = ingest_exports(config)
         assert_true("docs_loaded", stats.documents_loaded >= 2, str(stats))
 
+        extra = source / "extra" / "accepted_by_crawler"
+        extra.mkdir(parents=True)
+        (extra / "one.md").write_text("# One\n\nCrawler accepted delta one.", encoding="utf-8")
+        (extra / "two.md").write_text("# Two\n\nCrawler accepted delta two.", encoding="utf-8")
+        limited_stats = ingest_exports(config, allowed_roots=[extra], incremental_index_chunk_limit=1)
+        assert_true("limited_target_chunks", limited_stats.index_target_chunks >= 2, str(limited_stats))
+        assert_true("limited_pending_chunks", limited_stats.index_pending_chunks >= 1, str(limited_stats))
+        assert_true("delta_index_exists", config.paths.index_path.with_name("vector_index.delta.npz").exists())
+
         results = Retriever(config).search("Farmer's Delight 农夫乐事 玩法 烹饪 项目页", top_k=2)
         assert_true("has_results", bool(results))
         top_path = results[0].source_path.replace("\\", "/")

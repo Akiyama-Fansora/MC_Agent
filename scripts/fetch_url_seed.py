@@ -19,6 +19,7 @@ from mcagent.provider_registry import request_text, slugify  # noqa: E402
 
 URL_RE = re.compile(r"https?://[^\s<>'\"，。；、）\])]+", flags=re.I)
 DEFAULT_USER_AGENT = "Mozilla/5.0 (compatible; MC_Agent fetch_url; +https://github.com/Akiyama-Fansora/MC_Agent)"
+ARCHIVE_EXTENSIONS = (".mrpack", ".zip")
 
 
 def now_slug() -> str:
@@ -43,7 +44,63 @@ def html_to_markdown(raw: str, content_type: str, url: str) -> tuple[str, str]:
     return title, text
 
 
+def is_archive_url(url: str) -> bool:
+    return urlparse(url).path.lower().endswith(ARCHIVE_EXTENSIONS)
+
+
+def archive_redirect_manifest(url: str, output_root: Path) -> dict[str, object]:
+    run_dir = output_root / "fetch_url" / now_slug()
+    run_dir.mkdir(parents=True, exist_ok=True)
+    fetched_at = datetime.now().isoformat(timespec="seconds")
+    failure_reason = "URL points to a binary modpack archive; fetch_url only extracts readable text. Use modpack_download for objective archive probing/downloading."
+    report_path = run_dir / "archive_url_redirect.md"
+    report_path.write_text(
+        "\n".join(
+            [
+                "# Archive URL passed to fetch_url",
+                "",
+                "<!-- source: fetch_url_archive_redirect -->",
+                "",
+                "## Objective Facts",
+                "",
+                f"- URL: {url}",
+                "- detected_type: modpack_archive_url",
+                "- accepted_by_tool: false",
+                "- recommended_source: modpack_download",
+                f"- failure_reason: {failure_reason}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    manifest = {
+        "manifest_type": "fetch_url_export",
+        "provider": "fetch_url",
+        "created_at": fetched_at,
+        "export_dir": str(run_dir),
+        "query": url,
+        "records": [],
+        "skipped": [
+            {
+                "url": url,
+                "reason": "binary_modpack_archive_url",
+                "recommended_source": "modpack_download",
+                "report_path": str(report_path),
+            }
+        ],
+        "errors": [],
+        "status": "blocked",
+        "archive_url_detected": True,
+        "failure_reason": failure_reason,
+        "next_action": "CrawlerAgent should schedule modpack_download for this exact URL, then modpack_internal after a real local archive is downloaded.",
+    }
+    (run_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return manifest
+
+
 def save_url(url: str, output_root: Path, *, timeout: int, user_agent: str) -> dict[str, object]:
+    if is_archive_url(url):
+        return archive_redirect_manifest(url, output_root)
     run_dir = output_root / "fetch_url" / now_slug()
     raw_dir = run_dir / "raw_html"
     raw_dir.mkdir(parents=True, exist_ok=True)

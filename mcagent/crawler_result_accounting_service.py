@@ -69,6 +69,18 @@ class CrawlerResultAccountingService:
             result["ingest_skipped"] = "MCagent/RAG context is an inter-agent diagnostic artifact; Crawler uses it for planning but does not re-ingest it as new external evidence."
             return accounting
 
+        if task_source == "fetch_url" and bool(manifest.get("archive_url_detected")):
+            accounting["candidate_delta"] = 1
+            accounting["followup_task"] = {
+                "source": "modpack_download",
+                "query": followup_query,
+                "reason": "fetch_url reported an exact binary .mrpack/.zip URL; use modpack_download to probe and download the archive objectively.",
+                "priority": 148,
+            }
+            result["archive_url_detected"] = True
+            result["ingest_skipped"] = "fetch_url does not extract binary modpack archives; Crawler should use modpack_download for this exact URL."
+            return accounting
+
         if task_source == "topic_discovery" and returncode == 0 and records_loaded > 0:
             accounting["candidate_delta"] = 1
             result["candidate_only"] = True

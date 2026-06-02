@@ -25,6 +25,7 @@ DEFAULT_ARCHIVE_ROOT = PROJECT_ROOT / "data" / "manual_research" / "modpack_arch
 DEFAULT_USER_AGENT = "MC_Agent/0.1 (modpack archive discovery; D:/magic/MC_Agent)"
 MODRINTH_API = "https://api.modrinth.com/v2"
 BBSMC_API = "https://api.bbsmc.net/v2"
+CFWIDGET_API = "https://api.cfwidget.com"
 ARCHIVE_EXTENSIONS = (".mrpack", ".zip")
 CLOUD_DRIVE_DOMAINS = (
     "pan.quark.cn",
@@ -266,6 +267,11 @@ def query_variants(query: str) -> list[str]:
     compact = re.sub(r"\s+", " ", query.strip())
     if compact and compact != query.strip():
         variants.append(compact)
+    plain = re.sub(r"\.(?:mrpack|zip)\b", " ", compact, flags=re.I)
+    plain = re.sub(r"\b(?:minecraft|mc|modpack|download|archive|public|complete|data|fully|automatic|automatically|find|finding|collect|mrpack|zip)\b", " ", plain, flags=re.I)
+    plain = re.sub(r"\s+", " ", plain).strip(" -_.,;:()[]{}")
+    if plain:
+        variants.append(plain)
     return list(dict.fromkeys(item for item in variants if item))
 
 
@@ -398,57 +404,68 @@ def prioritize_source_pages(pages: list[dict[str, Any]], limit: int) -> list[dic
 def modrinth_archive_candidates(query: str, user_agent: str, limit: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     candidates: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
-    search_url = (
-        MODRINTH_API
-        + "/search?limit="
-        + str(max(1, min(limit, 10)))
-        + "&facets="
-        + quote('[["project_type:modpack"]]', safe="")
-        + "&query="
-        + quote(query, safe="")
-    )
-    try:
-        text, _content_type, _status = request_text(search_url, user_agent=user_agent, timeout=30)
-        data = json.loads(text)
-    except Exception as exc:  # noqa: BLE001
-        return [], [{"stage": "modrinth_search", "error": str(exc)}]
-    for project in data.get("hits") or []:
-        if not isinstance(project, dict):
-            continue
-        project_id = str(project.get("project_id") or project.get("slug") or "").strip()
-        if not project_id:
-            continue
-        versions_url = f"{MODRINTH_API}/project/{quote(project_id, safe='')}/version"
+    seen_projects: set[str] = set()
+    for search_query in query_variants(query):
+        search_url = (
+            MODRINTH_API
+            + "/search?limit="
+            + str(max(1, min(limit, 10)))
+            + "&facets="
+            + quote('[["project_type:modpack"]]', safe="")
+            + "&query="
+            + quote(search_query, safe="")
+        )
         try:
-            text, _content_type, _status = request_text(versions_url, user_agent=user_agent, timeout=35)
-            versions = json.loads(text)
+            text, _content_type, _status = request_text(search_url, user_agent=user_agent, timeout=30)
+            data = json.loads(text)
         except Exception as exc:  # noqa: BLE001
-            errors.append({"stage": "modrinth_versions", "project": project_id, "error": str(exc)})
+            errors.append({"stage": "modrinth_search", "query": search_query, "error": str(exc)})
             continue
-        for version in versions if isinstance(versions, list) else []:
-            for file_info in version.get("files") or []:
-                if not isinstance(file_info, dict):
-                    continue
-                filename = str(file_info.get("filename") or "")
-                url = str(file_info.get("url") or "").strip()
-                if not url or not filename.lower().endswith(".mrpack"):
-                    continue
-                candidates.append(
-                    {
-                        "source": "modrinth",
-                        "project_title": project.get("title") or project.get("slug") or project_id,
-                        "project_slug": project.get("slug"),
-                        "project_url": "https://modrinth.com/modpack/" + str(project.get("slug") or project_id),
-                        "version": version.get("version_number") or version.get("name") or "",
-                        "filename": filename,
-                        "url": url,
-                        "size": file_info.get("size"),
-                        "primary": file_info.get("primary"),
-                    }
-                )
-                break
-            if candidates:
-                break
+        for project in data.get("hits") or []:
+            if not isinstance(project, dict):
+                continue
+            project_id = str(project.get("project_id") or project.get("slug") or "").strip()
+            if not project_id or project_id in seen_projects:
+                continue
+            seen_projects.add(project_id)
+            versions_url = f"{MODRINTH_API}/project/{quote(project_id, safe='')}/version"
+            try:
+                text, _content_type, _status = request_text(versions_url, user_agent=user_agent, timeout=35)
+                versions = json.loads(text)
+            except Exception as exc:  # noqa: BLE001
+                errors.append({"stage": "modrinth_versions", "query": search_query, "project": project_id, "error": str(exc)})
+                continue
+            for version in versions if isinstance(versions, list) else []:
+                for file_info in version.get("files") or []:
+                    if not isinstance(file_info, dict):
+                        continue
+                    filename = str(file_info.get("filename") or "")
+                    url = str(file_info.get("url") or "").strip()
+                    if not url or not filename.lower().endswith(".mrpack"):
+                        continue
+                    candidates.append(
+                        candidate_with_probe(
+                            {
+                                "source": "modrinth",
+                                "discovery_query": search_query,
+                                "project_title": project.get("title") or project.get("slug") or project_id,
+                                "project_slug": project.get("slug"),
+                                "project_url": "https://modrinth.com/modpack/" + str(project.get("slug") or project_id),
+                                "version": version.get("version_number") or version.get("name") or "",
+                                "filename": filename,
+                                "url": url,
+                                "size": file_info.get("size"),
+                                "primary": file_info.get("primary"),
+                            },
+                            user_agent=user_agent,
+                            timeout=12,
+                        )
+                    )
+                    break
+                if candidates:
+                    break
+        if candidates:
+            break
     return candidates, errors
 
 
@@ -637,6 +654,103 @@ def looks_like_direct_archive_url(url: str, filename: str = "") -> bool:
 def looks_like_cloud_drive_url(url: str) -> bool:
     host = urlparse(url).netloc.lower()
     return any(host == domain or host.endswith("." + domain) for domain in CLOUD_DRIVE_DOMAINS)
+
+
+def slug_candidates_for_query(query: str) -> list[str]:
+    slugs: list[str] = []
+    for variant in query_variants(query):
+        cleaned = re.sub(r"\.(?:mrpack|zip)\b", " ", variant, flags=re.I)
+        cleaned = re.sub(r"\b(?:minecraft|mc|modpack|download|archive|public|complete|data|fully|automatic|automatically|find|finding|collect|mrpack|zip)\b", " ", cleaned, flags=re.I)
+        cleaned = re.sub(r"[^A-Za-z0-9]+", "-", cleaned).strip("-").lower()
+        if cleaned and len(cleaned) >= 3:
+            slugs.append(cleaned)
+    for match in re.finditer(r"curseforge\.com/minecraft/modpacks/([^/?#]+)", query, flags=re.I):
+        slugs.insert(0, match.group(1).strip().lower())
+    return list(dict.fromkeys(slugs))[:6]
+
+
+def curseforge_mediafilez_url(file_id: int | str, filename: str) -> str:
+    digits = re.sub(r"\D+", "", str(file_id or ""))
+    safe_filename = quote(str(filename or "").strip(), safe="._-+()[] ")
+    safe_filename = safe_filename.replace(" ", "%20")
+    if len(digits) <= 3:
+        return ""
+    return f"https://mediafilez.forgecdn.net/files/{digits[:-3]}/{digits[-3:]}/{safe_filename}"
+
+
+def curseforge_archive_candidates(query: str, user_agent: str, limit: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    candidates: list[dict[str, Any]] = []
+    pages: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for slug in slug_candidates_for_query(query):
+        api_url = f"{CFWIDGET_API}/minecraft/modpacks/{quote(slug, safe='')}"
+        try:
+            text, content_type, status = request_text(api_url, user_agent=user_agent, timeout=20)
+            data = json.loads(text)
+        except Exception as exc:  # noqa: BLE001
+            errors.append({"stage": "curseforge_cfwidget", "slug": slug, "url": api_url, "error": str(exc)})
+            continue
+        title = str(data.get("title") or slug)
+        pages.append(
+            {
+                "engine": "curseforge_cfwidget",
+                "rank": len(pages) + 1,
+                "status": status,
+                "content_type": content_type,
+                "title": title,
+                "url": api_url,
+                "project_id": data.get("id"),
+                "summary": str(data.get("summary") or "")[:700],
+            }
+        )
+        files: list[Any] = []
+        download = data.get("download")
+        if isinstance(download, dict):
+            files.append(download)
+        files.extend(item for item in data.get("files") or [] if isinstance(item, dict))
+        for item in files:
+            filename = str(item.get("name") or Path(urlparse(str(item.get("url") or "")).path).name or "").strip()
+            file_id = item.get("id")
+            if not filename.lower().endswith(".zip") or not file_id:
+                continue
+            direct_url = curseforge_mediafilez_url(file_id, filename)
+            if not direct_url or direct_url in seen_urls:
+                continue
+            seen_urls.add(direct_url)
+            candidate = candidate_with_probe(
+                {
+                    "source": "curseforge_cfwidget",
+                    "discovery_query": slug,
+                    "project_title": title,
+                    "project_slug": slug,
+                    "project_id": data.get("id"),
+                    "project_url": f"https://www.curseforge.com/minecraft/modpacks/{slug}",
+                    "file_page_url": item.get("url"),
+                    "version": item.get("display") or item.get("version") or "",
+                    "game_versions": item.get("versions") or [],
+                    "filename": filename,
+                    "url": direct_url,
+                    "size": item.get("filesize"),
+                    "downloads": item.get("downloads"),
+                    "uploaded_at": item.get("uploaded_at"),
+                    "discovery_method": "cfwidget project metadata -> CurseForge file id/name -> mediafilez.forgecdn.net direct archive URL",
+                    "method_steps": [
+                        f"Queried anonymous cfwidget endpoint {api_url}",
+                        "Read project title/id and public file metadata",
+                        "Derived mediafilez path from CurseForge file id grouping and filename",
+                        "Range-probed direct URL for HTTP status, content type, size, and zip magic",
+                    ],
+                },
+                user_agent=user_agent,
+                timeout=15,
+            )
+            candidates.append(candidate)
+            if len(candidates) >= limit:
+                return candidates, pages, errors
+        if candidates:
+            break
+    return candidates, pages, errors
 
 
 def collect_public_site_pages(query: str, user_agent: str, limit: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -1321,7 +1435,7 @@ def direct_archive_candidate(value: str, user_agent: str) -> dict[str, Any] | No
             )
     except Exception as exc:  # noqa: BLE001 - GET download may still work even if HEAD fails.
         candidate["head_error"] = str(exc)
-    return candidate
+    return candidate_with_probe(candidate, user_agent=user_agent)
 
 
 def download_archive(candidate: dict[str, Any], archive_dir: Path, user_agent: str, max_bytes: int, timeout: int = 1800) -> dict[str, Any]:
@@ -1386,6 +1500,37 @@ def archive_candidate_is_downloadable(candidate: dict[str, Any]) -> bool:
     return False
 
 
+def target_name_terms(query: str) -> list[str]:
+    value = re.sub(r"\.(?:mrpack|zip)\b", " ", str(query or ""), flags=re.I)
+    words = re.findall(r"[A-Za-z][A-Za-z0-9_-]{3,}|[\u4e00-\u9fff]{2,}", value)
+    generic = {
+        "minecraft",
+        "modpack",
+        "download",
+        "archive",
+        "public",
+        "complete",
+        "data",
+        "fully",
+        "automatic",
+        "automatically",
+        "mrpack",
+        "zip",
+    }
+    return [word for word in words if word.lower() not in generic][:6]
+
+
+def archive_candidate_matches_target(candidate: dict[str, Any], query: str) -> bool:
+    terms = target_name_terms(query)
+    if not terms:
+        return True
+    combined = " ".join(
+        str(candidate.get(key) or "")
+        for key in ("project_title", "project_slug", "filename", "project_url", "url")
+    ).lower()
+    return any(term.lower() in combined for term in terms)
+
+
 def archive_candidate_rank(candidate: dict[str, Any], query: str) -> tuple[int, int, int, int, int]:
     url = str(candidate.get("url") or "")
     page_url = str(candidate.get("page_url") or candidate.get("project_url") or "")
@@ -1394,7 +1539,7 @@ def archive_candidate_rank(candidate: dict[str, Any], query: str) -> tuple[int, 
     verified = 1 if archive_candidate_is_downloadable(candidate) else 0
     sized = 1 if archive_candidate_size(candidate) else 0
     source_graph = 1 if source_graph_host(url) or source_graph_host(page_url) else 0
-    target_match = 1 if any(token.lower() in combined for token in re.findall(r"[A-Za-z][A-Za-z0-9_-]{3,}|[\u4e00-\u9fff]{2,}", query)) else 0
+    target_match = 1 if archive_candidate_matches_target(candidate, query) else 0
     public_seed = 1 if str(candidate.get("source") or "") == "public_release_seed" else 0
     return verified, sized, source_graph + public_seed, target_match, search_candidate_score(url + " " + page_url, query)
 
@@ -1643,30 +1788,66 @@ def discover_and_download(dest_root: Path, archive_root: Path, query: str, limit
     run_dir.mkdir(parents=True, exist_ok=True)
     archive_dir = archive_root / slugify(query, "modpack") / "pack_archive"
     modrinth_candidates, modrinth_errors = modrinth_archive_candidates(query, user_agent=user_agent, limit=limit)
-    bbsmc_candidates, bbsmc_pages, bbsmc_blockers, bbsmc_errors = bbsmc_archive_candidates(query, user_agent=user_agent, limit=limit)
-    mcmod_pages, mcmod_errors = mcmod_external_pages(query, user_agent=user_agent, limit=limit)
-    official_pages, official_errors = discover_official_site_pages(query, user_agent=user_agent, limit=limit)
-    discovery_pages, discovery_errors = discover_public_pages(query, user_agent=user_agent, limit=limit)
-    seed_context_pages = prioritize_source_pages(mcmod_pages + official_pages + discovery_pages, limit=max(limit * 2, 12))
-    site_pages, site_errors = collect_public_site_pages(" ".join([query] + [str(page.get("url") or "") for page in seed_context_pages]), user_agent=user_agent, limit=limit)
-    xye_pages, xye_errors = xye_release_pages(mcmod_pages + site_pages, user_agent=user_agent, limit=limit)
-    yuque_pages, yuque_errors = yuque_doc_pages(query, user_agent=user_agent, limit=limit)
-    cloud_blockers, cloud_errors = cloud_drive_observations(bbsmc_pages + mcmod_pages + site_pages + xye_pages + yuque_pages, query, user_agent=user_agent, limit=limit)
-    release_candidates, release_pages, release_errors = public_release_candidates(
-        query, user_agent=user_agent, limit=limit, discovery_pages=prioritize_source_pages(mcmod_pages + official_pages + discovery_pages + site_pages + xye_pages, limit=max(limit * 2, 16))
+    curseforge_candidates, curseforge_pages, curseforge_errors = curseforge_archive_candidates(query, user_agent=user_agent, limit=limit)
+    bbsmc_candidates: list[dict[str, Any]] = []
+    bbsmc_pages: list[dict[str, Any]] = []
+    bbsmc_blockers: list[dict[str, Any]] = []
+    bbsmc_errors: list[dict[str, Any]] = []
+    mcmod_pages: list[dict[str, Any]] = []
+    mcmod_errors: list[dict[str, Any]] = []
+    official_pages: list[dict[str, Any]] = []
+    official_errors: list[dict[str, Any]] = []
+    discovery_pages: list[dict[str, Any]] = []
+    discovery_errors: list[dict[str, Any]] = []
+    site_pages: list[dict[str, Any]] = []
+    site_errors: list[dict[str, Any]] = []
+    xye_pages: list[dict[str, Any]] = []
+    xye_errors: list[dict[str, Any]] = []
+    yuque_pages: list[dict[str, Any]] = []
+    yuque_errors: list[dict[str, Any]] = []
+    cloud_blockers: list[dict[str, Any]] = []
+    cloud_errors: list[dict[str, Any]] = []
+    release_candidates: list[dict[str, Any]] = []
+    release_pages: list[dict[str, Any]] = []
+    release_errors: list[dict[str, Any]] = []
+    if not (modrinth_candidates or curseforge_candidates):
+        bbsmc_candidates, bbsmc_pages, bbsmc_blockers, bbsmc_errors = bbsmc_archive_candidates(query, user_agent=user_agent, limit=limit)
+        mcmod_pages, mcmod_errors = mcmod_external_pages(query, user_agent=user_agent, limit=limit)
+        official_pages, official_errors = discover_official_site_pages(query, user_agent=user_agent, limit=limit)
+        discovery_pages, discovery_errors = discover_public_pages(query, user_agent=user_agent, limit=limit)
+        seed_context_pages = prioritize_source_pages(mcmod_pages + official_pages + discovery_pages, limit=max(limit * 2, 12))
+        site_pages, site_errors = collect_public_site_pages(" ".join([query] + [str(page.get("url") or "") for page in seed_context_pages]), user_agent=user_agent, limit=limit)
+        xye_pages, xye_errors = xye_release_pages(mcmod_pages + site_pages, user_agent=user_agent, limit=limit)
+        yuque_pages, yuque_errors = yuque_doc_pages(query, user_agent=user_agent, limit=limit)
+        cloud_blockers, cloud_errors = cloud_drive_observations(bbsmc_pages + mcmod_pages + site_pages + xye_pages + yuque_pages, query, user_agent=user_agent, limit=limit)
+        release_candidates, release_pages, release_errors = public_release_candidates(
+            query, user_agent=user_agent, limit=limit, discovery_pages=prioritize_source_pages(mcmod_pages + official_pages + discovery_pages + site_pages + xye_pages, limit=max(limit * 2, 16))
     )
     web_candidates: list[dict[str, Any]] = []
     pages: list[dict[str, Any]] = []
     web_errors: list[dict[str, Any]] = []
-    if not release_candidates:
+    if not (modrinth_candidates or curseforge_candidates or bbsmc_candidates or release_candidates):
         web_candidates, pages, web_errors = archive_link_candidates(query, user_agent=user_agent, limit=limit)
-    candidates = prioritize_archive_candidates(modrinth_candidates + bbsmc_candidates + release_candidates + web_candidates, query)
+    candidates = prioritize_archive_candidates(modrinth_candidates + curseforge_candidates + bbsmc_candidates + release_candidates + web_candidates, query)
     blockers = bbsmc_blockers + cloud_blockers
-    pages = bbsmc_pages + mcmod_pages + official_pages + discovery_pages + site_pages + xye_pages + yuque_pages + release_pages + pages
-    errors = modrinth_errors + bbsmc_errors + mcmod_errors + official_errors + discovery_errors + site_errors + xye_errors + yuque_errors + cloud_errors + release_errors + web_errors
+    pages = curseforge_pages + bbsmc_pages + mcmod_pages + official_pages + discovery_pages + site_pages + xye_pages + yuque_pages + release_pages + pages
+    errors = modrinth_errors + curseforge_errors + bbsmc_errors + mcmod_errors + official_errors + discovery_errors + site_errors + xye_errors + yuque_errors + cloud_errors + release_errors + web_errors
     downloads: list[dict[str, Any]] = []
     if download:
         for candidate in candidates[:limit]:
+            if not archive_candidate_matches_target(candidate, query):
+                errors.append(
+                    {
+                        "stage": "download_skip_target_name_mismatch",
+                        "url": candidate.get("url"),
+                        "project_title": candidate.get("project_title"),
+                        "project_slug": candidate.get("project_slug"),
+                        "filename": candidate.get("filename"),
+                        "query_terms": target_name_terms(query),
+                        "reason": "candidate archive is objectively downloadable, but its title/slug/filename does not contain the target name terms; CrawlerAgent should review or choose another source graph node.",
+                    }
+                )
+                continue
             if not archive_candidate_is_downloadable(candidate):
                 errors.append(
                     {

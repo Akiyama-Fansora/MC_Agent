@@ -13,6 +13,7 @@ import zipfile
 
 TEXT_EXTS = {
     ".json",
+    ".jsonc",
     ".json5",
     ".snbt",
     ".js",
@@ -152,6 +153,8 @@ def write_markdown(path: Path, lines: list[str]) -> None:
 
 
 def detect_pack_layout(names: list[str]) -> dict[str, object]:
+    if "modrinth.index.json" in names:
+        return {"kind": "modrinth", "root": "overrides/", "pack_id": "modrinth"}
     if "manifest.json" in names and "modlist.html" in names:
         return {"kind": "curseforge", "root": "", "pack_id": "curseforge"}
     instance_dirs = [name for name in names if name.startswith(".minecraft/versions/") and name.endswith("/") and name.count("/") == 3]
@@ -187,6 +190,12 @@ def extract(zip_path: Path, export_dir: Path, manual_dir: Path) -> dict[str, obj
         manifest: dict[str, object] = {}
         if "manifest.json" in names:
             manifest = json.loads(read_zip_text(zf, "manifest.json"))
+        modrinth_index: dict[str, object] = {}
+        if "modrinth.index.json" in names:
+            try:
+                modrinth_index = json.loads(read_zip_text(zf, "modrinth.index.json"))
+            except json.JSONDecodeError:
+                modrinth_index = {}
         mod_parser = ModListParser()
         if "modlist.html" in names:
             mod_parser.feed(read_zip_text(zf, "modlist.html"))
@@ -199,6 +208,30 @@ def extract(zip_path: Path, export_dir: Path, manual_dir: Path) -> dict[str, obj
                 instance_json = {}
         if layout_kind == "curseforge":
             pack_id = str(manifest.get("name") or zip_path.stem)
+            overrides = str(manifest.get("overrides") or "").strip("/\\")
+            if overrides:
+                instance_root = overrides + "/"
+        if layout_kind == "modrinth":
+            pack_id = str(modrinth_index.get("name") or zip_path.stem)
+
+        modrinth_dependencies = modrinth_index.get("dependencies") if isinstance(modrinth_index, dict) else {}
+        if not isinstance(modrinth_dependencies, dict):
+            modrinth_dependencies = {}
+        modrinth_files = modrinth_index.get("files") if isinstance(modrinth_index, dict) else []
+        if not isinstance(modrinth_files, list):
+            modrinth_files = []
+        curseforge_minecraft = manifest.get("minecraft", {}) if isinstance(manifest.get("minecraft"), dict) else {}
+        curseforge_loaders = curseforge_minecraft.get("modLoaders", []) if isinstance(curseforge_minecraft, dict) else []
+        if not isinstance(curseforge_loaders, list):
+            curseforge_loaders = []
+        minecraft_version = (
+            curseforge_minecraft.get("version")
+            if isinstance(curseforge_minecraft, dict)
+            else None
+        ) or modrinth_dependencies.get("minecraft") or instance_json.get("id") or ""
+        loader_values: list[str] = []
+        loader_values.extend(str(item.get("id") or "") for item in curseforge_loaders if isinstance(item, dict) and item.get("id"))
+        loader_values.extend(f"{key}={value}" for key, value in modrinth_dependencies.items() if key != "minecraft")
 
         text_names = []
         for info in infos:
@@ -211,7 +244,7 @@ def extract(zip_path: Path, export_dir: Path, manual_dir: Path) -> dict[str, obj
             if info.file_size > 2_500_000:
                 continue
             interesting = (
-                name in {"manifest.json", "modlist.html", instance_json_name}
+                name in {"manifest.json", "modlist.html", "modrinth.index.json", instance_json_name}
                 or name.startswith(pack_path(instance_root, "config/ftbquests/"))
                 or name.startswith(pack_path(instance_root, "kubejs/"))
                 or name.startswith(pack_path(instance_root, "config/openloader/"))
@@ -334,10 +367,11 @@ def extract(zip_path: Path, export_dir: Path, manual_dir: Path) -> dict[str, obj
             f"- zip_entries: {len(names)}",
             f"- extracted_text_files: {len(text_names)}",
             f"- pack_name: {manifest.get('name') or instance_json.get('id') or pack_id}",
-            f"- pack_version: {manifest.get('version') or instance_json.get('releaseTime') or ''}",
-            f"- minecraft: {manifest.get('minecraft', {}).get('version') if isinstance(manifest.get('minecraft'), dict) else instance_json.get('id')}",
-            f"- mod_loader: {', '.join(x.get('id', '') for x in manifest.get('minecraft', {}).get('modLoaders', [])) if isinstance(manifest.get('minecraft'), dict) else ''}",
+            f"- pack_version: {manifest.get('version') or modrinth_index.get('versionId') or instance_json.get('releaseTime') or ''}",
+            f"- minecraft: {minecraft_version}",
+            f"- mod_loader: {', '.join(loader_values)}",
             f"- curseforge_files: {len(manifest.get('files', [])) if isinstance(manifest.get('files'), list) else 0}",
+            f"- modrinth_files: {len(modrinth_files)}",
             f"- modlist_entries: {len(mod_parser.links)}",
             f"- jar_mod_files: {sum(1 for name in names if name.startswith(pack_path(instance_root, 'mods/')) and name.lower().endswith('.jar'))}",
             "",
@@ -349,6 +383,14 @@ def extract(zip_path: Path, export_dir: Path, manual_dir: Path) -> dict[str, obj
         summary_lines.extend(f"- {ext}: {count}" for ext, count in ext_counter.most_common(40))
         summary_lines.extend(["", "## Modlist sample", ""])
         summary_lines.extend(f"- {m['name']} - {m['url']}" for m in mod_parser.links[:160])
+        if modrinth_files:
+            summary_lines.extend(["", "## Modrinth indexed files sample", ""])
+            for item in modrinth_files[:240]:
+                if not isinstance(item, dict):
+                    continue
+                downloads = item.get("downloads") if isinstance(item.get("downloads"), list) else []
+                url = str(downloads[0]) if downloads else ""
+                summary_lines.append(f"- {item.get('path')} | size: {item.get('fileSize')} | url: {url}")
         mod_files = [n for n in names if n.startswith(pack_path(instance_root, "mods/")) and n.lower().endswith(".jar")]
         if mod_files:
             summary_lines.extend(["", "## Jar mod files", ""])
