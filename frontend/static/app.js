@@ -581,6 +581,33 @@ function renderBlockedOutputs(readable) {
   `;
 }
 
+function auditEvidenceText(item) {
+  const evidence = item?.objective_evidence || {};
+  const parts = [];
+  if (evidence.url) parts.push(`URL ${evidence.url}`);
+  if (evidence.status_code) parts.push(`HTTP ${evidence.status_code}`);
+  if (evidence.content_type) parts.push(evidence.content_type);
+  if (evidence.archive_path) parts.push(`archive ${evidence.archive_path}`);
+  if (evidence.download_url) parts.push(`download ${evidence.download_url}`);
+  if (evidence.download_status) parts.push(`download ${evidence.download_status}`);
+  if (evidence.returncode !== undefined) parts.push(`return ${evidence.returncode}`);
+  if (evidence.records !== undefined) parts.push(`records ${evidence.records}`);
+  if (evidence.usable_records !== undefined) parts.push(`usable ${evidence.usable_records}`);
+  if (evidence.record_bytes) parts.push(`${evidence.record_bytes} bytes`);
+  return parts.join(" · ");
+}
+
+function auditExampleText(item) {
+  const accepted = item?.accepted_examples || [];
+  const rejected = item?.rejected_examples || [];
+  const examples = accepted.length ? accepted : rejected;
+  if (!examples.length) return "";
+  return examples.slice(0, 2).map((example) => {
+    if (typeof example === "string") return example;
+    return [example.title, example.url, example.reason || example.hits].filter(Boolean).join(" · ");
+  }).filter(Boolean).join("；");
+}
+
 function renderSelfAudit(readable, key = "") {
   const audit = readable?.self_audit || {};
   const accepted = audit.accepted_sources || [];
@@ -591,16 +618,25 @@ function renderSelfAudit(readable, key = "") {
   if (!total && !readable?.self_audit_summary) return "";
   const renderRows = (items, emptyText) => items.length ? `
     <div class="compact-list">
-      ${items.map((item) => `
-        <div class="compact-row">
-          <strong>${escapeHtml(item.source || "来源")}</strong>
-          <span>${escapeHtml(observationLabel(item.status))}${item.records ? ` · ${escapeHtml(String(item.records))} 条` : ""}${item.usable_records || item.empty_records ? ` · 可用 ${escapeHtml(String(item.usable_records || 0))} / 空 ${escapeHtml(String(item.empty_records || 0))}` : ""}</span>
+      ${items.map((item) => {
+        const reason = item.review_note || item.accepted_reason || item.rejected_reason || item.summary || "";
+        const evidence = auditEvidenceText(item);
+        const examples = auditExampleText(item);
+        return `
+        <div class="compact-row audit-row">
+          <div class="audit-row-head">
+            <strong>${escapeHtml(item.source || "来源")}</strong>
+            <span>${escapeHtml(observationLabel(item.status))}${item.records ? ` · ${escapeHtml(String(item.records))} 条` : ""}${item.usable_records || item.empty_records ? ` · 可用 ${escapeHtml(String(item.usable_records || 0))} / 空 ${escapeHtml(String(item.empty_records || 0))}` : ""}</span>
+          </div>
           ${item.query ? `<small>${escapeHtml(item.query)}</small>` : ""}
-          ${(item.accepted_reason || item.rejected_reason) ? `<small>${escapeHtml(item.accepted_reason || item.rejected_reason)}</small>` : ""}
+          ${reason ? `<small class="audit-note">${escapeHtml(reason)}</small>` : ""}
+          ${evidence ? `<small class="audit-evidence">客观证据：${escapeHtml(evidence)}</small>` : ""}
           ${item.ingest_decision ? `<small>入库：${escapeHtml(item.ingest_decision)}</small>` : ""}
           ${item.next_action ? `<small>下一步：${escapeHtml(item.next_action)}</small>` : ""}
+          ${examples ? `<small>样例：${escapeHtml(examples)}</small>` : ""}
         </div>
-      `).join("")}
+      `;
+      }).join("")}
     </div>
   ` : `<div class="compact-empty">${escapeHtml(emptyText)}</div>`;
   return `
@@ -610,6 +646,7 @@ function renderSelfAudit(readable, key = "") {
         <span>${escapeHtml(`accepted ${counts.accepted || accepted.length} / rejected ${counts.rejected || rejected.length} / pending ${counts.pending_review || pending.length} / ingest ${audit.ingest_status || "skipped"}`)}</span>
       </summary>
       ${readable.self_audit_summary ? `<div class="compact-summary">${escapeHtml(readable.self_audit_summary)}</div>` : ""}
+      ${audit.review_summary ? `<div class="source-meta">自审摘要：${escapeHtml(audit.review_summary)}</div>` : ""}
       ${audit.ingest_note ? `<div class="source-meta">入库判断：${escapeHtml(audit.ingest_note)}</div>` : ""}
       <div class="compact-columns">
         <div>
@@ -1145,9 +1182,10 @@ function renderActiveCrawlerOverview(jobs) {
         ${readable.progress_text ? `<div class="source-meta">${escapeHtml(readable.progress_text)}</div>` : ""}
         ${readable.health_text ? `<div class="source-meta">${escapeHtml(readable.health_text)}</div>` : ""}
         ${renderObservationStatus(readable)}
-        ${readable.latest_observation?.status ? `<div class="source-meta">最近工具结果：${escapeHtml(observationLabel(readable.latest_observation.status))}${readable.latest_observation.summary ? ` · ${escapeHtml(readable.latest_observation.summary)}` : ""}</div>` : ""}
-        ${readable.agent_reflection?.reason ? `<div class="source-meta">Agent 判断：${escapeHtml(readable.agent_reflection.reason).slice(0, 220)}</div>` : ""}
-      </details>
+          ${readable.latest_observation?.status ? `<div class="source-meta">最近工具结果：${escapeHtml(observationLabel(readable.latest_observation.status))}${readable.latest_observation.summary ? ` · ${escapeHtml(readable.latest_observation.summary)}` : ""}</div>` : ""}
+          ${readable.agent_reflection?.reason ? `<div class="source-meta">Agent 判断：${escapeHtml(readable.agent_reflection.reason).slice(0, 220)}</div>` : ""}
+          ${renderSelfAudit(readable, `active-crawler:${latest.id || latest.started_at || "latest"}`)}
+        </details>
       ${latest.stop_requested && latest.status === "running" ? `<div class="source-meta stop-note">已请求提前结束，等待当前动作退出。</div>` : ""}
     </div>
   `;
@@ -1201,6 +1239,7 @@ function renderJobs(jobs) {
           ${readable.latest_observation?.status ? `<div class="source-meta">最近结果：${escapeHtml(observationLabel(readable.latest_observation.status))}${readable.latest_observation.summary ? ` · ${escapeHtml(readable.latest_observation.summary).slice(0, 180)}` : ""}</div>` : ""}
           ${readable.agent_reflection?.reason ? `<div class="source-meta">Agent 判断：${escapeHtml(readable.agent_reflection.reason).slice(0, 180)}</div>` : ""}
           ${readable.health_text ? `<div class="source-meta">${escapeHtml(readable.health_text)}</div>` : ""}
+          ${renderSelfAudit(readable, `job-list:${job.id || "job"}`)}
           ${job.summary ? `<div class="source-meta">${escapeHtml(job.summary).slice(0, 220)}</div>` : ""}
         </details>
       `

@@ -1041,6 +1041,29 @@ textarea {
   word-break: break-word;
 }
 
+.audit-row {
+  gap: 5px;
+}
+
+.audit-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.audit-row-head span {
+  text-align: right;
+}
+
+.audit-note {
+  color: var(--text) !important;
+}
+
+.audit-evidence {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
 .compact-empty {
   color: var(--muted);
   border: 1px dashed var(--line);
