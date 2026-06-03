@@ -37,6 +37,9 @@ SOURCE_DEFAULTS: dict[str, dict[str, Any]] = {
     "mediawiki": {"priority": 50, "search_limit": 8},
 }
 
+GENERAL_COLLECTION_SOURCES = ["web_discovery", "playwright", "fetch_url", "browser_collect", "save_artifact", "read_local_file", "search_local_files"]
+MINECRAFT_DOMAIN_SOURCES = ["mcmod", "modrinth", "followup", "mediawiki", "ftbwiki", "createwiki", "modpack_download", "modpack_internal"]
+
 AGENT_WORDS = {"MCagent", "MCAgent", "Crawler", "CrawlerAgent", "RAG", "LLM", "Agent"}
 ITEM_HINTS = {
     "梦想一心",
@@ -283,7 +286,7 @@ def _session_target_hint(session_summary: dict[str, Any] | None = None) -> str:
         value = str(session_summary.get(key) or "").strip()
         if not value:
             continue
-        extracted = _collection_target_hint(value) or _question_subject_hint(value)
+        extracted = _collection_target_hint(value) or _general_collection_target_hint(value) or _question_subject_hint(value)
         if extracted:
             cleaned = _clean_target_hint(extracted, max_len=80) or extracted
             candidates.append((weight, cleaned))
@@ -465,6 +468,25 @@ def _question_subject_hint(question: str) -> str:
     return ""
 
 
+def _general_collection_target_hint(text: str) -> str:
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not value:
+        return ""
+    patterns = [
+        r"(?:采集|收集|获取|爬取|整理|查找)\s+([A-Za-z][A-Za-z0-9_.+\- ]{1,80}?)(?:\s*(?:库|项目|框架|文档|官方|的|，|,|。|$))",
+        r"(?:collect|crawl|scrape|gather)\s+([A-Za-z][A-Za-z0-9_.+\- ]{1,80}?)(?:\s+(?:docs?|documentation|github|releases?|data|for)\b|[,.;:]|$)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, value, flags=re.I)
+        if not match:
+            continue
+        target = re.sub(r"\b(?:official|docs?|documentation|github|releases?|data|rag|for|use)\b", "", match.group(1), flags=re.I)
+        target = re.sub(r"\s+", " ", target).strip(" ，,。.;:")
+        if 2 <= len(target) <= 80 and not _looks_like_agent_target(target):
+            return target
+    return ""
+
+
 def _looks_like_agent_target(text: str) -> bool:
     stripped = re.sub(r"\s+", "", text)
     if not stripped:
@@ -505,6 +527,22 @@ def _target_queries(target: str) -> list[str]:
             ]
         )
     return list(dict.fromkeys(query for query in queries if 2 <= len(query) <= 80))
+
+
+def _general_target_queries(target: str, context_text: str) -> list[str]:
+    if not target:
+        return []
+    queries = [target]
+    lowered = str(context_text or "").lower()
+    if any(term in lowered for term in ("官方", "official", "文档", "docs", "documentation")):
+        queries.extend([f"{target} official documentation", f"{target} docs"])
+    if "github" in lowered or "仓库" in lowered or "repository" in lowered:
+        queries.extend([f"{target} GitHub", f"{target} repository"])
+    if any(term in lowered for term in ("release", "发布", "changelog", "更新日志")):
+        queries.extend([f"{target} releases", f"{target} changelog"])
+    if any(term in lowered for term in ("用法", "示例", "example", "usage", "教程")):
+        queries.extend([f"{target} examples", f"{target} usage"])
+    return list(dict.fromkeys(query for query in queries if 2 <= len(query) <= 120))
 
 
 def _query_mentions_target(query: str, target: str) -> bool:
@@ -633,6 +671,33 @@ def _prefer_general_web_first(context_text: str, delivery_target: str, requested
     if delivery_target == "MCagent/RAG" and any(term in lowered for term in ("缺口", "缺失", "还缺", "本地资料", "本地上下文", "补给", "补充", "补库")):
         return True
     return requested_by in {"user", "mcagent", "user_via_mcagent"} and any(term in lowered for term in ("网上找", "去网上", "public web", "search online"))
+
+
+def _looks_like_minecraft_domain_context(context_text: str) -> bool:
+    value = str(context_text or "")
+    if not value.strip():
+        return False
+    return bool(
+        re.search(
+            r"\b(?:minecraft|mc百科|mcmod|modrinth|curseforge|modpack|mod list|kubejs|ftb quests|packwiz|mrpack)\b|整合包|模组|光影|资源包|我的世界",
+            value,
+            flags=re.I,
+        )
+    )
+
+
+def _default_collection_sources_for_context(context_text: str, *, prefer_general_web: bool = False, archive_negated: bool = False) -> list[str]:
+    """Return capability-first source defaults without making Crawler Minecraft-only."""
+
+    if not _looks_like_minecraft_domain_context(context_text):
+        return list(GENERAL_COLLECTION_SOURCES)
+    if prefer_general_web:
+        sources = ["web_discovery", "playwright", "modpack_download", "fetch_url", "followup", "mcmod", "modrinth"]
+    else:
+        sources = ["web_discovery", "playwright", "fetch_url", "modpack_download", "followup", "mcmod", "modrinth"]
+    if archive_negated:
+        sources = [source for source in sources if source != "modpack_download"]
+    return sources
 
 
 def _is_gap_analysis_collection_context(context_text: str, delivery_target: str = "") -> bool:
@@ -911,7 +976,7 @@ def _coverage_allows_item_hint_expansion(text: str, session_summary: dict[str, A
 
 def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, planner_error: str = "", session_summary: dict[str, Any] | None = None) -> dict[str, Any]:
     question = _strip_delivery_recipient(question)
-    target = _clean_target_hint(_session_target_hint(session_summary) or _collection_target_hint(question) or _question_subject_hint(question), max_len=80)
+    target = _clean_target_hint(_session_target_hint(session_summary) or _collection_target_hint(question) or _question_subject_hint(question) or _general_collection_target_hint(_planner_context_text(question, session_summary)), max_len=80)
     coverage_only_queries = _coverage_queries(question, session_summary, target)
     context_text = _planner_context_text(question, session_summary)
     explicit_delivery_target = ""
@@ -1000,13 +1065,12 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
             if planner_error:
                 fallback["planner_error"] = planner_error
             return fallback
+    minecraft_context = _looks_like_minecraft_domain_context(context_text)
     coverage_only_queries = _target_bound_queries(coverage_only_queries, target)
-    queries = [*coverage_only_queries, *_target_queries(target)]
+    base_queries = _target_queries(target) if minecraft_context else _general_target_queries(target, context_text)
+    queries = [*coverage_only_queries, *base_queries]
     queries = list(dict.fromkeys(query for query in queries if query))
-    if prefer_external:
-        sources = ["web_discovery", "playwright", "modpack_download", "fetch_url", "followup", "mcmod", "modrinth"]
-    else:
-        sources = ["web_discovery", "playwright", "fetch_url", "modpack_download", "followup", "mcmod", "modrinth"]
+    sources = _default_collection_sources_for_context(context_text, prefer_general_web=prefer_external, archive_negated=archive_negated)
     if modpack_archive_goal:
         sources = ["modpack_download", "modrinth", "web_discovery", "playwright", "fetch_url", "followup", "mcmod"]
     elif archive_negated:
@@ -1019,6 +1083,18 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
         sources.insert(0, "modpack_internal")
     if not _context_has_archive_input(context_text):
         sources = [source for source in sources if source != "modpack_internal"]
+    if not _looks_like_minecraft_domain_context(context_text):
+        needs_structured_browser = bool(
+            re.search(r"xlsx|csv|json|excel|table|表格|字段|结构化|商品|价格|列表", context_text, flags=re.I)
+        )
+        has_local_path = bool(re.search(r"[A-Za-z]:\\|/[^ \n]+", context_text))
+        wants_save_existing_content = bool(re.search(r"save_artifact|保存已有|写入文件|导出", context_text, flags=re.I))
+        if not needs_structured_browser:
+            sources = [source for source in sources if source != "browser_collect"]
+        if not has_local_path:
+            sources = [source for source in sources if source not in {"read_local_file", "search_local_files"}]
+        if not wants_save_existing_content:
+            sources = [source for source in sources if source != "save_artifact"]
     tasks: list[dict[str, Any]] = []
     for source in sources:
         if source == "modpack_download":
@@ -1071,6 +1147,16 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
     tasks.sort(key=lambda item: int(item.get("priority") or 0), reverse=True)
     tasks = _prioritize_modpack_archive_tasks(tasks, target, context_text)
     is_modpack = bool(re.search(r"整合包|modpack", context_text, flags=re.I))
+    if not _looks_like_minecraft_domain_context(context_text):
+        minecraft_coverage_goals = []
+    else:
+        minecraft_coverage_goals = [
+            "基本信息、别名和简介",
+            "官方链接、下载页和社区链接",
+            "整合包模组列表或依赖列表",
+            "新手路线、核心玩法和教程",
+            "关键系统、物品、配方、Boss、已知问题",
+        ]
     return {
         "question": question,
         "strategy": "target_fallback_after_llm_planner_error" if planner_error else "target_fallback",
@@ -1082,12 +1168,12 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
         "cleaning_policy": "RAG-oriented markdown chunks with source URL, title, metadata, raw_html path, and dedupe fingerprint.",
         "requested_by": requested_by,
         "handoff_from": handoff_from,
-        "coverage_goals": [
-            "基本信息、别名和简介",
-            "官方链接、下载页和社区链接",
-            "整合包模组列表或依赖列表",
-            "新手路线、核心玩法和教程",
-            "关键系统、物品、配方、Boss、已知问题",
+        "coverage_goals": minecraft_coverage_goals
+        or [
+            "identify the target entity, aliases, official names, and source ecosystem",
+            "collect authoritative/project/docs/repository/package-index pages when available",
+            "preserve source URLs, titles, metadata, raw text or raw HTML when available",
+            "record blocked, empty, duplicate, and off-topic routes for CrawlerAgent review",
         ],
         "known_components": _known_components(session_summary),
         "success_criteria": [
@@ -1304,7 +1390,7 @@ def _select_diverse_tasks(tasks: list[dict[str, Any]], max_tasks: int) -> list[d
 
 def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tasks: int, session_summary: dict[str, Any] | None = None) -> dict[str, Any]:
     question = _strip_delivery_recipient(question)
-    target_hint = _clean_target_hint(_session_target_hint(session_summary) or _collection_target_hint(question) or _question_subject_hint(question), max_len=80)
+    target_hint = _clean_target_hint(_session_target_hint(session_summary) or _collection_target_hint(question) or _question_subject_hint(question) or _general_collection_target_hint(_planner_context_text(question, session_summary)), max_len=80)
     topic = str(raw.get("topic") or "").strip()
     if target_hint and (not topic or _looks_like_agent_target(topic) or _looks_like_broken_target(topic)):
         topic = target_hint
@@ -1369,11 +1455,17 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
     raw_sources = raw.get("sources")
     if not isinstance(raw_sources, list):
         raw_sources = []
-    sources = [str(source).strip() for source in raw_sources if str(source).strip() in ALLOWED_SOURCES]
-    if not sources:
-        sources = ["mcmod", "fetch_url", "web_discovery", "playwright", "modpack_download"]
     context_text = _planner_context_text(question, session_summary)
     archive_negated = _modpack_archive_negated(context_text)
+    minecraft_context = _looks_like_minecraft_domain_context(context_text)
+    prefer_general_defaults = _prefer_general_web_first(context_text, delivery_target, str((session_summary or {}).get("requested_by") or ""))
+    sources = [str(source).strip() for source in raw_sources if str(source).strip() in ALLOWED_SOURCES]
+    if not sources:
+        sources = _default_collection_sources_for_context(context_text, prefer_general_web=prefer_general_defaults, archive_negated=archive_negated)
+    elif not minecraft_context:
+        sources = [source for source in sources if source not in MINECRAFT_DOMAIN_SOURCES]
+        if not sources:
+            sources = _default_collection_sources_for_context(context_text, prefer_general_web=True, archive_negated=True)
     modpack_context = "\n".join([context_text, package_type, topic, target_hint])
     looks_like_modpack_collection = bool(re.search(r"modpack|整合包", modpack_context, flags=re.I))
     if looks_like_modpack_collection and not archive_negated and "modpack_download" not in sources:
@@ -1404,6 +1496,8 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
                     raw_task["query"] = _bind_query_to_target(raw_query, target_hint)
             task = _normalize_task(raw_task, str(raw.get("reason") or ""), 80 - index)
             if task:
+                if not minecraft_context and str(task.get("source") or "") in MINECRAFT_DOMAIN_SOURCES:
+                    continue
                 query = str(task.get("query") or "").strip()
                 if _is_url_query(query) and not _task_url_is_grounded(task, query=query):
                     task = _downgrade_ungrounded_url_task(task, target=target_hint or topic)
@@ -1511,18 +1605,24 @@ def plan_crawler_tasks_with_llm(question: str, source_dir: Path, *, max_tasks: i
     question = _strip_delivery_recipient(question)
     client, label = _planner_client()
     fallback = decompose_crawler_queries(question)
-    target_hint = _clean_target_hint(_session_target_hint(session_summary) or _collection_target_hint(question), max_len=80)
+    target_hint = _clean_target_hint(
+        _session_target_hint(session_summary)
+        or _collection_target_hint(question)
+        or _question_subject_hint(question)
+        or _general_collection_target_hint(_planner_context_text(question, session_summary)),
+        max_len=80,
+    )
     learned_memory = _crawler_memory_digest(limit=8)
     schema = {
-        "topic": "short target entity, e.g. 落幕曲 Closing Song or Utopia",
-        "package_type": "modpack|mod|item|guide|unknown",
+        "topic": "short target entity, e.g. a product, paper, website, Minecraft modpack, company, dataset, or local file target",
+        "package_type": "general|document|product|site|repository|dataset|modpack|mod|item|guide|unknown",
         "coverage_goals": [
             "basic info and aliases",
             "official/download/community links",
-            "mod list or dependency list",
-            "beginner route/gameplay guide",
-            "systems/items/bosses/recipes mentioned by the target",
-            "known issues and useful tutorials",
+            "official/project/docs/repository/package-index pages",
+            "downloads/files/assets/changelog/release pages when relevant",
+            "structured fields, tables, or local files requested by the user",
+            "known issues, blockers, mirrors, and source quality notes",
         ],
         "subqueries": ["short search phrase, not the full user sentence"],
         "sources": ["mcagent_context", "modpack_internal", "modpack_download", "browser_collect", "fetch_url", "save_artifact", "read_local_file", "search_local_files", "mcmod", "modrinth", "web_discovery", "followup", "playwright"],
@@ -1551,8 +1651,10 @@ def plan_crawler_tasks_with_llm(question: str, source_dir: Path, *, max_tasks: i
             "Participants: human user, MCagent, CrawlerAgent. Preserve caller and delivery target, but do not treat MCagent/RAG/ingest as search topics.\n"
             "Use this shared Agent Runtime tool catalog as capability context, not as keyword triggers:\n"
             f"{tool_catalog}\n"
-            "Decide target entity, coverage goals, short source-specific queries, and ordered tasks. Tools execute after your JSON plan.\n"
+            "Decide target entity, target ecosystem, coverage goals, short source-specific queries, and ordered tasks. Tools execute after your JSON plan.\n"
             "The authoritative collection target is the current handoff/task goal. Prior current_topic/topics are background memory only; never let old session topics override collection_target/task_goal.\n"
+            "CrawlerAgent is a general-purpose crawler. Minecraft is only one optional domain toolset. For non-Minecraft targets, do not choose mcmod, modrinth, mediawiki, ftbwiki, createwiki, modpack_download, or modpack_internal.\n"
+            "Think in capability groups: general discovery/search (web_discovery), exact URL fetch (fetch_url), browser rendering or structured extraction (playwright/browser_collect), local file inspection (read_local_file/search_local_files), artifact persistence (save_artifact), then domain-specific tools only when the source ecosystem calls for them.\n"
             "When a handoff says 'what is missing / 还缺哪些 / 缺口' for MCagent/RAG, treat it as local coverage-gap analysis: read mcagent_gap_summary/gaps, turn each gap into positive coverage queries (mod list, quest line, boss guide, beginner route, changelog, download page), and then collect evidence. Do not search literal phrases like '缺少模组', '还缺什么', or '待添加' unless the user explicitly asks for roadmap/future features/community wish lists.\n"
             "Use mcagent_context when CrawlerAgent needs to ask MCagent what local evidence/gaps exist. This sends an inter-agent message to MCagent; MCagent then uses its own local RAG/evidence workflow and replies to CrawlerAgent. It is not a web search provider and not direct database access by CrawlerAgent.\n"
             "For general data collection tasks that ask for structured fields and a save location, use browser_collect. It can open a browser, collect item rows, and save XLSX/CSV/JSON/report to output_dir. Keep the user's requested output_dir exactly.\n"
@@ -1573,6 +1675,9 @@ def plan_crawler_tasks_with_llm(question: str, source_dir: Path, *, max_tasks: i
             "Queries must be short. Do not use the whole user sentence as a query. Component/system queries may omit the parent pack name when context confirms membership; later validation judges relevance.\n"
             "For MCagent/RAG delivery, require Markdown, manifest, stable title, source URL/internal path, metadata, dedupe key, raw_html/raw_text where available.\n"
             "Your final plan should show this method through task ordering: identity/context tasks first when needed, authoritative exact-source tasks next, then targeted gap-filling searches, and only then broad fallback discovery.\n"
+            "General sources: browser_collect, fetch_url, save_artifact, read_local_file, search_local_files, web_discovery, playwright.\n"
+            "Inter-agent source for MCagent/RAG handoff context: mcagent_context.\n"
+            "Minecraft-domain sources only when the target is Minecraft/MC/modpack related: modpack_internal, modpack_download, mcmod, modrinth, followup, mediawiki, ftbwiki, createwiki.\n"
             "Available sources: mcagent_context, modpack_internal, modpack_download, browser_collect, fetch_url, save_artifact, read_local_file, search_local_files, mcmod, modrinth, followup, web_discovery, playwright, mediawiki, ftbwiki, createwiki.\n"
             "Return valid JSON only, no Markdown, no prose.\n"
             f"用户问题: {question}\n"

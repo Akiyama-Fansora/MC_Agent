@@ -249,6 +249,52 @@ def test_llm_plan_gap_collection_is_rebalanced_to_generic_tools() -> None:
     assert_true("helper_query_bound", any(task["query"] == "乌托邦整合包 模组列表" for task in tasks))
 
 
+def test_general_domain_fallback_does_not_default_to_minecraft_tools() -> None:
+    question = (
+        "\u5e2e\u6211\u91c7\u96c6 Python requests \u5e93\u7684\u5b98\u65b9\u6587\u6863\u3001"
+        "GitHub \u4ed3\u5e93\u3001\u6700\u65b0\u53d1\u5e03\u8bf4\u660e\u548c"
+        "\u5e38\u89c1\u7528\u6cd5\uff0c\u4fdd\u5b58\u7ed9\u901a\u7528 RAG \u4f7f\u7528\u3002"
+    )
+    plan = plan_crawler_tasks_rule_fallback(
+        question,
+        ROOT / "data" / "crawler_exports",
+        max_tasks=8,
+        planner_error="unit timeout",
+        session_summary={
+            "delivery_target": "RAG",
+            "requested_by": "user",
+            "collection_target": question,
+            "task_goal": question,
+        },
+    )
+    sources = [task["source"] for task in plan["tasks"]]
+    assert_true("has_general_sources", any(source in {"web_discovery", "playwright", "fetch_url"} for source in sources))
+    assert_true("no_minecraft_sources", all(source not in {"mcmod", "modrinth", "modpack_download", "modpack_internal", "mediawiki", "ftbwiki", "createwiki"} for source in sources))
+    assert_equal("package_type", plan["package_type"], "unknown")
+    assert_true("general_coverage", any("source ecosystem" in goal or "official" in goal for goal in plan["coverage_goals"]))
+
+
+def test_general_domain_sanitize_filters_minecraft_tool_noise() -> None:
+    question = "采集 Playwright Python 的官方安装文档、API 文档、GitHub releases 和浏览器自动化示例。"
+    raw = {
+        "topic": "Playwright Python",
+        "package_type": "unknown",
+        "delivery_target": "human",
+        "sources": ["mcmod", "modrinth", "web_discovery", "playwright"],
+        "tasks": [
+            {"source": "mcmod", "query": "Playwright Python", "reason": "bad domain carryover", "priority": 150},
+            {"source": "modrinth", "query": "Playwright Python", "reason": "bad domain carryover", "priority": 140},
+            {"source": "web_discovery", "query": "Playwright Python official docs", "reason": "official docs", "priority": 120},
+            {"source": "playwright", "query": "Playwright Python GitHub releases", "reason": "render release pages", "priority": 115},
+        ],
+    }
+    plan = _sanitize_plan(raw, question, ROOT / "data" / "crawler_exports", max_tasks=8, session_summary={"delivery_target": "human"})
+    sources = [task["source"] for task in plan["tasks"]]
+    assert_true("keeps_general_task", "web_discovery" in sources and "playwright" in sources)
+    assert_true("filters_minecraft_tasks", all(source not in {"mcmod", "modrinth", "modpack_download", "modpack_internal"} for source in sources))
+    assert_true("filters_source_list", all(source not in {"mcmod", "modrinth", "modpack_download", "modpack_internal"} for source in plan["sources"]))
+
+
 def test_ungrounded_exact_url_is_discovered_before_fetch() -> None:
     raw = {
         "topic": "Utopian Journey",
@@ -707,6 +753,8 @@ if __name__ == "__main__":
     test_session_target_rejects_generic_relation_phrase()
     test_gap_collection_fallback_prefers_generic_web_and_bound_queries()
     test_llm_plan_gap_collection_is_rebalanced_to_generic_tools()
+    test_general_domain_fallback_does_not_default_to_minecraft_tools()
+    test_general_domain_sanitize_filters_minecraft_tool_noise()
     test_gap_collection_rejects_literal_missing_as_web_topic()
     test_reflection_replaces_literal_gap_pending_query()
     test_reflection_llm_failure_stops_before_executor_tool_choice()

@@ -18,6 +18,9 @@ LLM_OWNERSHIP_PRINCIPLES = [
 
 
 CRAWLER_RESEARCH_METHOD = [
+    "CrawlerAgent is a general-purpose collection agent. Minecraft is only one domain toolset; do not treat MC sites or modpack archive tools as the default for every task.",
+    "Choose tools by capability group first: general discovery/search, exact URL fetch, browser-rendered extraction, local file search/read, artifact persistence, then optional domain-specific toolsets such as Minecraft/modpack sources.",
+    "Use domain-specific tools only when the target ecosystem justifies them or the user/MCagent handoff explicitly requests that domain. For non-Minecraft targets, prefer web_discovery, fetch_url, playwright, browser_collect, read_local_file/search_local_files, and save_artifact.",
     "Research method for CrawlerAgent: do not start with broad keyword blasting. First identify the target entity, aliases, language variants, official names, version scope, and likely source ecosystem.",
     "Build a source graph before scaling: official/project pages, documentation, repositories, package indexes, download/file pages, dependency/relation pages, changelogs/releases, wiki pages, forum posts, videos, and community mirrors.",
     "Prefer exact URLs and source-specific queries after identity is known. Use broad web discovery only to find candidate source nodes, then crawl those nodes directly.",
@@ -433,8 +436,9 @@ AGENT_ROLES = {
         agent_id="crawler_agent",
         display_name="CrawlerAgent",
         responsibility=(
-            "Collects, verifies, saves, and prepares web/local data. It can serve the user directly "
-            "or prepare data for MCagent/RAG depending on the delivery target."
+            "A general-purpose data collection agent. It collects, verifies, saves, and prepares "
+            "web/local data across domains. Minecraft/modpack collection is one optional domain "
+            "toolset, not CrawlerAgent's whole identity."
         ),
         relationship="Receives direct human tasks or MCagent handoffs, then plans its own collection loop.",
     ),
@@ -572,7 +576,7 @@ CRAWLER_COLLECTION_TOOLS = [
     ),
     ToolSpec(
         name="mcmod",
-        description="Search and scrape MC百科 pages, preserving markdown, manifest, and raw HTML when available.",
+        description="Minecraft-domain tool: search and scrape MC百科 pages, preserving markdown, manifest, and raw HTML when available. Use only for Minecraft/MC百科 targets.",
         input_schema={"query": "short source-specific query"},
         result_schema={"records": "saved pages", "manifest": "metadata"},
         side_effects="network_and_filesystem",
@@ -580,7 +584,7 @@ CRAWLER_COLLECTION_TOOLS = [
     ),
     ToolSpec(
         name="modrinth",
-        description="Search Modrinth projects and project contents.",
+        description="Minecraft-domain tool: search Modrinth projects and project contents. Use only for Minecraft mod/modpack/resource-pack ecosystems.",
         input_schema={"query": "short project query"},
         result_schema={"records": "project/content markdown"},
         side_effects="network_and_filesystem",
@@ -636,7 +640,7 @@ CRAWLER_COLLECTION_TOOLS = [
     ),
     ToolSpec(
         name="modpack_download",
-        description="Discover and download public .mrpack/.zip modpack archives when available, including exact direct URLs or pages chosen by CrawlerAgent.",
+        description="Minecraft-domain tool: discover and download public .mrpack/.zip modpack archives when available, including exact direct URLs or pages chosen by CrawlerAgent.",
         input_schema={"query": "project/download query, exact archive URL, or public download/release page URL"},
         result_schema={"candidates": "objective archive candidates", "downloads": "archive files or failure reason", "blockers": "login/captcha/payment/cloud-drive limitations when observed"},
         side_effects="network_filesystem",
@@ -644,7 +648,7 @@ CRAWLER_COLLECTION_TOOLS = [
     ),
     ToolSpec(
         name="modpack_internal",
-        description="Parse a real local modpack archive for manifest, modlist, quests, KubeJS, recipes, configs, and text.",
+        description="Minecraft-domain tool: parse a real local modpack archive for manifest, modlist, quests, KubeJS, recipes, configs, and text.",
         input_schema={"archive_or_query": "downloaded/provided archive"},
         result_schema={"records": "internal files converted for RAG"},
         side_effects="filesystem",
