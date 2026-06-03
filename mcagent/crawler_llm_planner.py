@@ -9,36 +9,21 @@ from .config import load_config
 from .crawler_planner import decompose_crawler_queries, plan_crawler_tasks
 from .crawler_reflection_decision_service import CrawlerReflectionDecisionService
 from .crawler_reflection_service import CrawlerReflectionSnapshotService
+from .crawler_capabilities import (
+    default_sources_for_context,
+    is_domain_source,
+    allowed_sources,
+    looks_like_minecraft_context,
+    source_defaults,
+)
 from .agent_memory import read_memory_events
 from .agent_runtime import classify_crawler_tool_result, crawler_collection_catalog_prompt
 from .llm import OpenAICompatibleClient
 from .llm_profiles import client_for_agent
 
 
-ALLOWED_SOURCES = {"mcagent_context", "topic_discovery", "modpack_internal", "modpack_download", "mcmod", "modrinth", "followup", "web_discovery", "playwright", "browser_collect", "fetch_url", "save_artifact", "read_local_file", "search_local_files", "mediawiki", "ftbwiki", "createwiki"}
-
-SOURCE_DEFAULTS: dict[str, dict[str, Any]] = {
-    "mcagent_context": {"priority": 150},
-    "modpack_internal": {"priority": 145},
-    "topic_discovery": {"priority": 130, "max_files": 120, "max_queries": 40},
-    "mcmod": {"priority": 100, "search_limit": 10, "max_urls": 8},
-    "modrinth": {"priority": 88},
-    "followup": {"priority": 76, "max_urls": 16},
-    "web_discovery": {"priority": 62, "search_limit": 8, "max_urls": 8},
-    "playwright": {"priority": 82, "search_limit": 8, "max_urls": 6},
-    "browser_collect": {"priority": 120, "max_items": 50},
-    "fetch_url": {"priority": 125},
-    "save_artifact": {"priority": 110},
-    "read_local_file": {"priority": 108},
-    "search_local_files": {"priority": 106},
-    "modpack_download": {"priority": 130, "search_limit": 8},
-    "ftbwiki": {"priority": 80, "search_limit": 8},
-    "createwiki": {"priority": 80, "search_limit": 8},
-    "mediawiki": {"priority": 50, "search_limit": 8},
-}
-
-GENERAL_COLLECTION_SOURCES = ["web_discovery", "playwright", "fetch_url", "browser_collect", "save_artifact", "read_local_file", "search_local_files"]
-MINECRAFT_DOMAIN_SOURCES = ["mcmod", "modrinth", "followup", "mediawiki", "ftbwiki", "createwiki", "modpack_download", "modpack_internal"]
+ALLOWED_SOURCES = allowed_sources()
+SOURCE_DEFAULTS: dict[str, dict[str, Any]] = source_defaults()
 
 AGENT_WORDS = {"MCagent", "MCAgent", "Crawler", "CrawlerAgent", "RAG", "LLM", "Agent"}
 ITEM_HINTS = {
@@ -674,30 +659,11 @@ def _prefer_general_web_first(context_text: str, delivery_target: str, requested
 
 
 def _looks_like_minecraft_domain_context(context_text: str) -> bool:
-    value = str(context_text or "")
-    if not value.strip():
-        return False
-    return bool(
-        re.search(
-            r"\b(?:minecraft|mc百科|mcmod|modrinth|curseforge|modpack|mod list|kubejs|ftb quests|packwiz|mrpack)\b|整合包|模组|光影|资源包|我的世界",
-            value,
-            flags=re.I,
-        )
-    )
+    return looks_like_minecraft_context(context_text)
 
 
 def _default_collection_sources_for_context(context_text: str, *, prefer_general_web: bool = False, archive_negated: bool = False) -> list[str]:
-    """Return capability-first source defaults without making Crawler Minecraft-only."""
-
-    if not _looks_like_minecraft_domain_context(context_text):
-        return list(GENERAL_COLLECTION_SOURCES)
-    if prefer_general_web:
-        sources = ["web_discovery", "playwright", "modpack_download", "fetch_url", "followup", "mcmod", "modrinth"]
-    else:
-        sources = ["web_discovery", "playwright", "fetch_url", "modpack_download", "followup", "mcmod", "modrinth"]
-    if archive_negated:
-        sources = [source for source in sources if source != "modpack_download"]
-    return sources
+    return default_sources_for_context(context_text, prefer_general_web=prefer_general_web, archive_negated=archive_negated)
 
 
 def _is_gap_analysis_collection_context(context_text: str, delivery_target: str = "") -> bool:
@@ -1463,7 +1429,7 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
     if not sources:
         sources = _default_collection_sources_for_context(context_text, prefer_general_web=prefer_general_defaults, archive_negated=archive_negated)
     elif not minecraft_context:
-        sources = [source for source in sources if source not in MINECRAFT_DOMAIN_SOURCES]
+        sources = [source for source in sources if not is_domain_source(source, "minecraft")]
         if not sources:
             sources = _default_collection_sources_for_context(context_text, prefer_general_web=True, archive_negated=True)
     modpack_context = "\n".join([context_text, package_type, topic, target_hint])
@@ -1496,7 +1462,7 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
                     raw_task["query"] = _bind_query_to_target(raw_query, target_hint)
             task = _normalize_task(raw_task, str(raw.get("reason") or ""), 80 - index)
             if task:
-                if not minecraft_context and str(task.get("source") or "") in MINECRAFT_DOMAIN_SOURCES:
+                if not minecraft_context and is_domain_source(str(task.get("source") or ""), "minecraft"):
                     continue
                 query = str(task.get("query") or "").strip()
                 if _is_url_query(query) and not _task_url_is_grounded(task, query=query):

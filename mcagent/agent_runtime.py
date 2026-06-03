@@ -5,6 +5,8 @@ import json
 import time
 from typing import Any, Iterable
 
+from .crawler_capabilities import capability_catalog_prompt
+
 
 LLM_OWNERSHIP_PRINCIPLES = [
     "LLM owns interpretation, tool choice, reflection, and final answer wording.",
@@ -704,7 +706,7 @@ def tool_catalog_json(agent_id: str) -> str:
 
 def crawler_collection_catalog_prompt(*, include_principles: bool = True) -> str:
     role = AGENT_ROLES["crawler_agent"]
-    lines: list[str] = [role.to_prompt_text(), "Collection tools:"]
+    lines: list[str] = [role.to_prompt_text(), capability_catalog_prompt(), "Collection tools:"]
     lines.extend(tool.to_prompt_line() for tool in collection_tools_for_crawler())
     if include_principles:
         lines.append("Runtime principles:")

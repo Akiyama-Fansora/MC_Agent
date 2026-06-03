@@ -2657,6 +2657,40 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
                         "task": {"source": task_source, "query": str(task_payload.get("query") or "")},
                     }
                 )
+            preflight_task = dict(task_payload)
+            preflight_task["reason"] = str(task.get("reason") or task_payload.get("reason") or "")
+            preflight_context = "\n".join(
+                str(item or "")
+                for item in (
+                    question,
+                    plan.get("topic"),
+                    plan.get("target_hint"),
+                    plan.get("delivery_target"),
+                    plan.get("package_type"),
+                    plan.get("coverage_goals"),
+                )
+            )
+            preflight_result = task_preparation.blocked_preflight_result(
+                task_source=task_source,
+                task=preflight_task,
+                context_text=preflight_context,
+            )
+            if preflight_result is not None:
+                task_results.append(preflight_result)
+                failure_count += 1
+                bad_streak += 1
+                plan.setdefault("agent_reflections", []).append(
+                    {
+                        "at_index": index,
+                        "action": "blocked_by_capability_preflight",
+                        "reason": "Executor objective preflight found the selected crawler tool call is missing required inputs or domain contract.",
+                        "planner": "crawler capability registry",
+                        "task": {"source": task_source, "query": str(task_payload.get("query") or "")},
+                        "contract": preflight_result.get("capability_preflight") or {},
+                    }
+                )
+                _update_job(job, **job_progress.empty_query_blocked(source_label=_source_label(task_source), task_results=task_results, tasks=tasks, plan=plan))
+                continue
             if not str(task_payload.get("query") or "").strip():
                 result = task_preparation.empty_query_result(task_source=task_source, task=task)
                 task_results.append(result)

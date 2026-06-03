@@ -4,6 +4,7 @@ import re
 from typing import Any
 
 from .agent_runtime import classify_crawler_tool_result
+from .crawler_capabilities import task_preflight
 
 
 FORWARDED_TASK_KEYS = (
@@ -72,6 +73,27 @@ class CrawlerTaskPreparationService:
             "reason": str(task.get("reason") or ""),
             "manifest_stats": {"records": 0, "skipped": 0, "errors": 0},
             "empty_query_result": True,
+            "empty_result": True,
+        }
+        result["observation"] = classify_crawler_tool_result(result).to_dict()
+        return result
+
+    def blocked_preflight_result(self, *, task_source: str, task: dict[str, Any], context_text: str = "") -> dict[str, Any] | None:
+        preflight = task_preflight({**task, "source": task_source}, context_text=context_text)
+        if preflight.get("valid"):
+            return None
+        result = {
+            "source": task_source,
+            "returncode": 2,
+            "command": [],
+            "output": "Crawler executor refused to run a task that failed objective capability preflight. This contract issue is returned to CrawlerAgent for reflection/replanning.",
+            "timeout_seconds": 0,
+            "timed_out": False,
+            "export_dir": "",
+            "query": str(task.get("query") or ""),
+            "reason": str(task.get("reason") or ""),
+            "manifest_stats": {"records": 0, "skipped": 0, "errors": 0},
+            "capability_preflight": preflight,
             "empty_result": True,
         }
         result["observation"] = classify_crawler_tool_result(result).to_dict()

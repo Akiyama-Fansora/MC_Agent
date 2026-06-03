@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from .crawler_capabilities import task_preflight
+
 
 TaskIdentity = Callable[[dict[str, Any]], tuple[str, str]]
 SourceAlias = Callable[[str], str]
@@ -70,7 +72,7 @@ class CrawlerTaskMaterializationService:
             seen.add(identity)
             cloned = dict(task)
             cloned["source"] = source_alias_fn(str(cloned.get("source") or "web_discovery"))
-            if self._modpack_internal_without_input(cloned):
+            if not task_preflight(cloned, check_domain=False).get("valid"):
                 continue
             cloned["reason"] = f"mid-job replan after empty/off-topic results; {cloned.get('reason') or ''}".strip()
             new_tasks.append(cloned)
@@ -119,7 +121,7 @@ class CrawlerTaskMaterializationService:
             cloned = dict(task)
             cloned["source"] = source
             cloned["query"] = query
-            if self._modpack_internal_without_input(cloned):
+            if not task_preflight(cloned, check_domain=False).get("valid"):
                 continue
             cloned["reason"] = f"Crawler LLM reviewed topic discovery candidates; {cloned.get('reason') or ''}".strip()
             identity = identity_fn(cloned)
@@ -143,8 +145,13 @@ class CrawlerTaskMaterializationService:
         for task in tasks:
             if not isinstance(task, dict):
                 continue
-            if self._modpack_internal_without_input(task):
-                blocked.append(task)
+            preflight = task_preflight(task, check_domain=False)
+            if not preflight.get("valid"):
+                cloned = dict(task)
+                cloned["blocked_reason"] = ",".join(preflight.get("issues") or []) or "crawler_capability_preflight_failed"
+                cloned["blocked_message"] = str(preflight.get("message") or "")
+                cloned["preflight"] = preflight
+                blocked.append(cloned)
                 continue
             executable.append(task)
         return executable, blocked
@@ -163,11 +170,11 @@ class CrawlerTaskMaterializationService:
             if not isinstance(task, dict):
                 continue
             cloned = dict(task)
-            if self._modpack_internal_without_input(cloned):
-                cloned["blocked_reason"] = "modpack_internal_requires_archive_path"
-                cloned["blocked_message"] = (
-                    "modpack_internal needs a real local archive, manifest, zip, or path before it can be shown as executable."
-                )
+            preflight = task_preflight(cloned, check_domain=False)
+            if not preflight.get("valid"):
+                cloned["blocked_reason"] = ",".join(preflight.get("issues") or []) or "crawler_capability_preflight_failed"
+                cloned["blocked_message"] = str(preflight.get("message") or "")
+                cloned["preflight"] = preflight
                 blocked.append(cloned)
                 continue
             displayable.append(cloned)

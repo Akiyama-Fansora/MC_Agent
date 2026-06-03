@@ -86,11 +86,16 @@ def test_reflection_task_filter_allows_modpack_internal_with_archive_path() -> N
             {"source": "modpack_internal", "query": "Utopian Journey"},
             {"source": "modpack_internal", "query": "Utopian Journey", "archive_path": "D:\\packs\\utopia.mrpack"},
             {"source": "web_discovery", "query": "Utopian Journey"},
+            {"source": "fetch_url", "query": "Python requests docs"},
+            {"source": "save_artifact", "query": "save this"},
         ]
     )
-    assert_equal("blocked_count", len(blocked), 1)
+    assert_equal("blocked_count", len(blocked), 3)
     assert_equal("executable_count", len(executable), 2)
     assert_equal("archive_task_source", executable[0]["source"], "modpack_internal")
+    blocked_reasons = " ".join(str(task.get("blocked_reason") or "") for task in blocked)
+    assert "url_required" in blocked_reasons
+    assert "requires_any:content|content_ref|artifact_ref" in blocked_reasons
 
 
 def test_displayable_planned_tasks_split_blocks_modpack_internal_without_archive_input() -> None:
@@ -104,7 +109,7 @@ def test_displayable_planned_tasks_split_blocks_modpack_internal_without_archive
     )
     assert_equal("displayable_sources", [task["source"] for task in displayable], ["web_discovery", "modpack_internal"])
     assert_equal("blocked_count", len(blocked), 1)
-    assert_equal("blocked_reason", blocked[0]["blocked_reason"], "modpack_internal_requires_archive_path")
+    assert_equal("blocked_reason", blocked[0]["blocked_reason"], "requires_any:zip|archive|archive_path|manifest_path|path")
 
 
 def test_record_replan_appends_observable_history() -> None:
@@ -161,4 +166,3 @@ if __name__ == "__main__":
     test_topic_review_materialization_filters_discovery_and_duplicates()
     test_fallback_topic_tasks_switches_sources_after_first_ten()
     print("crawler_task_materialization_service_scenarios passed")
-

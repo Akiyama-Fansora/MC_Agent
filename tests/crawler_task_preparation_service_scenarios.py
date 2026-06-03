@@ -102,11 +102,26 @@ def test_empty_query_result_is_objective_failure_observation() -> None:
     assert_equal("retryable", result["observation"]["retryable"], True)
 
 
+def test_blocked_preflight_result_is_returned_to_crawler_for_reflection() -> None:
+    result = CrawlerTaskPreparationService().blocked_preflight_result(
+        task_source="fetch_url",
+        task={"query": "Python requests docs", "reason": "LLM selected fetch_url before discovering a URL"},
+        context_text="Collect Python requests official docs.",
+    )
+    assert result is not None
+    assert_equal("returncode", result["returncode"], 2)
+    assert_equal("source", result["source"], "fetch_url")
+    assert_equal("preflight_valid", result["capability_preflight"]["valid"], False)
+    assert "url_required" in result["capability_preflight"]["issues"]
+    assert_equal("observation_status", result["observation"]["status"], "empty")
+
+
 if __name__ == "__main__":
     test_build_payload_preserves_task_specific_fields()
     test_build_payload_falls_back_to_question_when_query_missing()
     test_build_payload_preserves_generic_artifact_fields()
     test_browser_collect_recovers_url_path_and_count_from_original_question()
     test_empty_query_result_is_objective_failure_observation()
+    test_blocked_preflight_result_is_returned_to_crawler_for_reflection()
     print("crawler_task_preparation_service_scenarios passed")
 
