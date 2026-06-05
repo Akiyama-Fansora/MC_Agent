@@ -52,7 +52,9 @@ def main() -> int:
     assert "mcagent_context" in collection_catalog, "Crawler collection catalog missing MCagent context tool"
     assert "browser_collect" in collection_catalog, "Crawler collection catalog missing browser tool"
     assert "save_artifact" in collection_catalog, "Crawler collection catalog missing save artifact tool"
-    assert validate_tool_name("crawler_agent", "answer", fallback="delegate_crawler") == "delegate_crawler"
+    assert validate_tool_name("crawler_agent", "answer") == "router_error"
+    assert validate_tool_name("crawler_agent", "answer", fallback="delegate_crawler") == "router_error"
+    assert validate_tool_name("crawler_agent", "answer", fallback="direct_answer") == "direct_answer"
     assert "LLM owns interpretation" in tool_catalog_prompt("mcagent_rag")
     assert classify_crawler_tool_result({"source": "web_discovery", "returncode": 124, "timed_out": True}).status == "timeout"
     assert classify_crawler_tool_result({"source": "playwright", "returncode": 1, "output": "HTTP 429 quota exceeded"}).status == "quota_limited"

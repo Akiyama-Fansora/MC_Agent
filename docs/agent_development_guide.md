@@ -218,7 +218,7 @@ node --check D:\magic\AgentConsole\static\app.js
 2. `crawler_llm_planner.py` 增强 JSON 解析：优先提取首个平衡 JSON 对象，并容忍尾随逗号，减少 Crawler LLM 输出被 Markdown 或额外文本污染时的失败。
 3. `web_server.py` 增加 `modpack_internal` 的客观边界：没有匹配本地安装包时，工具返回“未找到匹配本地包”，由 CrawlerAgent 决定下一步，不再把任意本地 zip 塞给它。
 4. `web_server.py` 修复本地包匹配：只用实体词匹配安装包和旁路元数据，不再把“整合包、资料、下载页、任务线”等泛词算作匹配依据。验证结果：`乌托邦 Utopia 整合包` 不匹配落幕曲 zip，`落幕曲 Closing Song 整合包` 能匹配落幕曲 zip。
-5. `web_server.py` 修复直接启动 Crawler 任务的来源链：`/api/jobs/start-crawler` 未显式传 agent 时默认视为用户直接委托 CrawlerAgent，不再误标为 MCagent 派单。
+5. `web_server.py` 已废弃并移除旧的直接启动 Crawler 入口；当前统一通过 `/api/agent-message` 发送 `From/Content/To` 消息给 CrawlerAgent，由 CrawlerAgent 自己选择 `delegate_crawler` 后再启动后台任务。
 6. `web_server.py` 修复 Crawler 行动循环：当 CrawlerAgent 返回 `replan/add_tasks` 时，新任务插到当前执行位置优先运行；如果 CrawlerAgent 说明要重规划但未给出可执行任务，则再调用 Crawler 规划 LLM 把意图落实成工具任务。
 7. `AgentConsole/static/app.js` 已支持把 Crawler job 更新写入同一条会话消息，让用户在会话框内看到自然语言进度，而不只看右侧后台字段。
 
@@ -337,7 +337,7 @@ python scripts\check_text_encoding.py
 node --check D:\magic\AgentConsole\static\app.js
 ~~~
 
-结果通过。服务已多次重启验证 `/api/jobs/start-crawler`、`/api/crawler/plan`、`/api/jobs/stop` 能工作。Utopia 首轮因发现工具边界问题而主动停止，下一轮应在修复后继续。
+结果通过。服务已多次重启验证 `/api/agent-message`、`/api/crawler/plan`、`/api/jobs/stop` 能工作。Utopia 首轮因发现工具边界问题而主动停止，下一轮应在修复后继续。
 
 
 ## 13. 本轮修复：2026-05-19 02:15
@@ -633,7 +633,7 @@ python scripts\public_readiness_check.py
 
 1. 确认项目维护文件本身是 UTF-8：`python scripts\check_text_encoding.py` 通过；额外扫描 Git 跟踪文本也未发现替换字符、长问号串或常见 mojibake。
 2. 本轮 UI 中出现的连续问号加 `Utopian Journey` 文本不是源码文件乱码，而是一次通过 PowerShell 发送中文 JSON 时输入已经变成问号，后端按原样保存到了内存 job。
-3. `/api/jobs/start-crawler` 已增加输入损坏防护：如果请求内容含替换字符或连续问号，会返回 400，不再创建 Crawler job，避免坏数据进入任务列表、记忆或资料库。
+3. Crawler 启动请求已统一收敛到 `/api/agent-message`；如果请求内容含替换字符或连续问号，会在 AgentMessage 进入正常运行链路前返回编码损坏说明，不再创建 Crawler job，避免坏数据进入任务列表、记忆或资料库。
 4. 重启服务后，内存中的乱码 stopped job 已清空；后续启动中文 Crawler 任务必须使用 Web UI 或 UTF-8 客户端。
 
 ### 19.2 Crawler 新增整合包包体发现工具
@@ -1800,7 +1800,7 @@ python tests\agent_runtime_scenarios.py
 - FastAPI import 导致公开环境缺依赖；
 - SSE 队列线程吞异常或不结束；
 - 静态文件路径暴露；
-- `/api/session`、`/api/jobs/start-crawler` 等 POST 接口行为和旧后端不一致；
+- `/api/session`、`/api/agent-message` 等 POST 接口行为和旧后端不一致；
 - CI 没覆盖 FastAPI，导致公开后才坏。
 
 离线测试：
@@ -3833,13 +3833,7 @@ The user exposed another agent-loop gap with a direct CrawlerAgent request: "ask
 
 ### Implemented Changes
 
-1. Added Crawler route tool `mcagent_context` to the runtime catalog.
-2. Updated router prompts so CrawlerAgent knows it can plan `mcagent_context -> delegate_crawler`.
-3. Added runtime helper checks:
-   - `_should_force_crawler_mcagent_gap_workflow()`
-   - `_mcagent_context_focus()`
-   - `_default_mcagent_gap_action_plan()`
-4. `_chat_impl()` now corrects impossible direct answers into planned workflows when the user asked for MCagent/RAG context plus collection.
+1. Added Crawler route tool `mcagent_context` to the runtime catalog.\n2. Updated router prompts so CrawlerAgent can choose `mcagent_context`, `delegate_crawler`, or `planned_workflow` from its tool catalog.\n3. Removed the old forced Crawler gap-workflow correction path. `_chat_impl()` no longer rewrites direct answers into inter-agent workflows before/after Router choice.\n4. Cross-agent gap collection now happens only when the active Agent LLM selects a delegation/planned workflow tool and passes confirmation.
 5. The planned-delegate branch now delegates even when local retrieval is empty, carrying an explicit no-local-evidence gap summary to CrawlerAgent.
 6. Frontend trace text now includes the cross-agent correction step.
 
@@ -4160,17 +4154,17 @@ The intended semantics are not "Crawler reads RAG directly in the chat turn" and
 
 ### Implemented Changes
 
-1. The `_should_force_crawler_mcagent_gap_workflow()` correction path now routes direct Crawler gap-fill requests to `delegate_crawler`, not `answer`.
-2. The chat turn no longer performs `RagRetrievalService.retrieve()` for direct Crawler requests that require "ask MCagent, then collect." Local retrieval is deferred into the Crawler job through `mcagent_context`.
-3. The delegated Crawler task text explicitly tells CrawlerAgent to call `mcagent_context` inside its task loop before web collection.
-4. Direct Crawler job-start responses now use CrawlerAgent's own voice instead of a generic "transferred to Crawler" system-style message.
-5. Regression coverage now fails if the chat router tries to read RAG directly for this direct-Crawler path.
+1. Removed the old forced Crawler gap-workflow correction path. Direct Crawler requests are no longer rewritten by runtime heuristics.
+2. If CrawlerAgent selects `direct_answer`, the chat turn answers directly and does not start a background job.
+3. If CrawlerAgent selects `delegate_crawler` or `planned_workflow`, the job starts from that Agent-selected tool decision and the task loop may use `mcagent_context` according to the plan/tool catalog.
+4. Direct Crawler job-start responses use CrawlerAgent's own voice instead of a generic "transferred to Crawler" system-style message.
+5. Regression coverage now fails if the chat router starts Crawler collection without an Agent-selected delegation tool.
 
 ### Test Plan And Results
 
 Updated `tests\web_server_side_effect_guard_scenarios.py`:
 
-- direct Crawler `direct_answer` mistakes are corrected into a Crawler job;
+- direct Crawler `direct_answer` choices do not start a Crawler job;
 - direct Crawler `mcagent_context + delegate_crawler` plans are deferred into the Crawler job;
 - the direct Crawler path raises a test failure if chat-turn RAG retrieval happens;
 - the delegated job target mentions both `mcagent_context` and `MCagent`;

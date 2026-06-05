@@ -182,6 +182,23 @@ def resolve_profile_from_model(config: AppConfig, model: str, agent: str = "mcag
         return profile_by_id(config, value.split(":", 1)[1])
     if not value:
         return assigned_profile(config, agent)
+    value_lower = value.lower()
+    store = _merge_store(config)
+    exact_matches = [
+        profile
+        for profile in store["profiles"]
+        if value_lower
+        in {
+            str(profile.get("id") or "").strip().lower(),
+            str(profile.get("model") or "").strip().lower(),
+            str(profile.get("name") or "").strip().lower(),
+        }
+    ]
+    if len(exact_matches) == 1:
+        return exact_matches[0]
+    assigned = assigned_profile(config, agent)
+    if exact_matches and assigned in exact_matches:
+        return assigned
     return None
 
 

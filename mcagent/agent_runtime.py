@@ -123,19 +123,17 @@ class AgentToolDecision:
 TOOL_DECISION_ALIASES = {
     "local_rag_search": "answer",
     "answer_from_evidence": "answer",
-    "rag": "answer",
-    "chat": "direct_answer",
-    "smalltalk": "direct_answer",
-    "direct": "direct_answer",
-    "answer_and_delegate": "planned_workflow",
-    "answer_then_crawler": "planned_workflow",
-    "answer_then_delegate": "planned_workflow",
-    "plan": "planned_workflow",
-    "workflow": "planned_workflow",
-    "crawler_status": "status",
-    "delegate": "delegate_crawler",
-    "crawler": "delegate_crawler",
 }
+
+
+def _safe_action_step_number(value: Any, fallback: int) -> tuple[int, str]:
+    text = str(value or "").strip()
+    if not text:
+        return fallback, ""
+    try:
+        return int(text), ""
+    except (TypeError, ValueError):
+        return fallback, text[:80]
 
 
 def normalize_agent_tool_decision(
@@ -155,18 +153,25 @@ def normalize_agent_tool_decision(
         tool = "router_error"
 
     action_plan: list[dict[str, Any]] = []
+    allowed_action_tools = set(tool_names_for_agent(agent_id)) | {"answer", "direct_answer", "evidence_select", "final_answer_llm"}
     raw_plan = value.get("action_plan")
     if isinstance(raw_plan, list):
         for index, step in enumerate(raw_plan[:8], start=1):
             if not isinstance(step, dict):
                 continue
-            action_plan.append(
-                {
-                    "step": int(step.get("step") or index),
-                    "tool": str(step.get("tool") or "").strip(),
-                    "goal": str(step.get("goal") or step.get("description") or "").strip()[:300],
-                }
-            )
+            raw_step_tool = str(step.get("tool") or "").strip().lower()
+            step_tool = TOOL_DECISION_ALIASES.get(raw_step_tool, raw_step_tool)
+            if step_tool not in allowed_action_tools:
+                step_tool = ""
+            step_number, step_label = _safe_action_step_number(step.get("step"), index)
+            normalized_step = {
+                "step": step_number,
+                "tool": step_tool,
+                "goal": str(step.get("goal") or step.get("description") or "").strip()[:300],
+            }
+            if step_label:
+                normalized_step["step_label"] = step_label
+            action_plan.append(normalized_step)
 
     return AgentToolDecision(
         tool=tool,
@@ -470,6 +475,15 @@ MCAGENT_TOOLS = [
         llm_final_answer_required=True,
     ),
     ToolSpec(
+        name="local_corpus_inventory",
+        description="Objectively inspect which local Minecraft/mod/modpack documents are already indexed, grouping by source/type and listing representative topics. Use when the Agent judges the user is asking about local knowledge-base coverage rather than asking a specific gameplay fact.",
+        input_schema={"question": "coverage or inventory question"},
+        result_schema={"answer": "objective local corpus inventory", "sources": "representative indexed documents"},
+        side_effects="read_local_index",
+        terminal=True,
+        llm_final_answer_required=False,
+    ),
+    ToolSpec(
         name="evidence_select",
         description="Select and validate whether retrieved evidence is enough for the user's question.",
         input_schema={"question": "evidence question", "candidates": "retrieval results"},
@@ -489,6 +503,15 @@ MCAGENT_TOOLS = [
         description="Read crawler/import/background job status when the user asks about system progress.",
         input_schema={"scope": "optional status focus"},
         result_schema={"status": "human-readable current system state"},
+        side_effects="read_runtime_state",
+        terminal=True,
+        llm_final_answer_required=False,
+    ),
+    ToolSpec(
+        name="crawler_audit",
+        description="Read recent Crawler job self-audit details, including accepted/rejected/pending sources, rejection reasons, ingest status, and whether records entered the local knowledge base.",
+        input_schema={"question": "audit question about recent crawler work"},
+        result_schema={"answer": "objective audit summary", "job": "matched crawler job"},
         side_effects="read_runtime_state",
         terminal=True,
         llm_final_answer_required=False,
@@ -556,6 +579,14 @@ CRAWLER_ROUTE_TOOLS = [
         side_effects="start_background_job",
         terminal=True,
         llm_final_answer_required=False,
+    ),
+    ToolSpec(
+        name="planned_workflow",
+        description="Create a short CrawlerAgent route plan for compound requests, such as first inspecting MCagent/RAG context and then starting background collection. The LLM owns the plan and must include action_plan steps.",
+        input_schema={"goal": "compound user goal", "steps": "candidate route tools such as mcagent_context and delegate_crawler"},
+        result_schema={"plan": "observable action plan"},
+        side_effects="depends_on_steps",
+        llm_final_answer_required=True,
     ),
 ]
 
@@ -716,13 +747,56 @@ def crawler_collection_catalog_prompt(*, include_principles: bool = True) -> str
     return "\n".join(lines)
 
 
-def validate_tool_name(agent_id: str, name: str, *, fallback: str = "direct_answer") -> str:
+def compact_crawler_collection_catalog_prompt() -> str:
+    """Short planning catalog for latency-sensitive CrawlerAgent LLM calls."""
+
+    role = AGENT_ROLES["crawler_agent"]
+    capability_groups = [
+        "General discovery/search: web_discovery",
+        "Exact public URL extraction: fetch_url",
+        "Browser-rendered extraction and structured rows: playwright, browser_collect",
+        "Local file inspection: read_local_file, search_local_files",
+        "Persistence of already available content/artifacts: save_artifact",
+        "Inter-agent local context request: mcagent_context",
+        "Minecraft/domain sources when target is MC-related: mcmod, modrinth, followup, mediawiki, ftbwiki, createwiki",
+        "Minecraft modpack archive and internals when objective archive/path evidence exists: modpack_download, modpack_internal",
+    ]
+    tool_lines: list[str] = []
+    for tool in collection_tools_for_crawler():
+        inputs = ",".join(tool.input_schema.keys()) if tool.input_schema else ""
+        effect = tool.side_effects or "none"
+        tool_lines.append(f"- {tool.name}: inputs={inputs or 'none'}; side_effects={effect}")
+    principles = [
+        "LLM chooses tool/query; tools only return objective observations.",
+        "Do not invent exact URLs/slugs; use direct URL tasks only when URL is supplied or objectively discovered.",
+        "For MCagent/RAG gap handoffs, convert gaps into positive coverage tasks, not literal 'missing/缺口' searches.",
+        "For non-Minecraft targets, avoid Minecraft-specific sources.",
+        "For structured extraction with fields/output_dir, prefer browser_collect and preserve user path.",
+        "For modpack archive goals, use modpack_download before modpack_internal; modpack_internal requires a real local archive/manifest path.",
+    ]
+    return "\n".join(
+        [
+            role.to_prompt_text(),
+            "Capability groups:",
+            *[f"- {item}" for item in capability_groups],
+            "Tools:",
+            *tool_lines,
+            "Planning principles:",
+            *[f"- {item}" for item in principles],
+        ]
+    )
+
+
+def validate_tool_name(agent_id: str, name: str, *, fallback: str = "router_error") -> str:
     names = set(tool_names_for_agent(agent_id))
     if name in names:
         return name
-    if fallback in names:
+    unsafe_fallbacks = {"delegate_crawler", "planned_workflow", "temporary_extract"}
+    if fallback in unsafe_fallbacks:
+        return "router_error"
+    if fallback == "router_error" or fallback in names:
         return fallback
-    return next(iter(names), fallback)
+    return "router_error"
 
 
 def build_handoff_contract(

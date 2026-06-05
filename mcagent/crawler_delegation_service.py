@@ -91,16 +91,23 @@ class CrawlerDelegationService:
         if planning_instruction:
             planner_summary["planning_instruction"] = planning_instruction
 
-        handoff_brief, brief_reason = self._build_handoff_brief(
-            config,
-            model=model,
-            original_question=original_question,
-            collection_target=collection_question,
-            session_summary=planner_summary,
-            requested_by=requested_by,
-            delivery_target=resolved_delivery_target,
-            mcagent_gap_summary=gap_summary,
-        )
+        message = payload.get("agent_message") if isinstance(payload.get("agent_message"), dict) else {}
+        metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+        existing_brief = str(planner_summary.get("handoff_brief") or metadata.get("handoff_brief") or "").strip()
+        if existing_brief:
+            handoff_brief = existing_brief
+            brief_reason = "Reused handoff_brief carried by the From-Content-To AgentMessage."
+        else:
+            handoff_brief = self._contract_handoff_brief(
+                original_question=original_question,
+                collection_question=collection_question,
+                requested_by=requested_by,
+                resolved_delivery_target=resolved_delivery_target,
+                session_summary=planner_summary,
+                gap_summary=gap_summary,
+                planning_instruction=planning_instruction,
+            )
+            brief_reason = "Built deterministic handoff contract from MCagent's already-selected delegation context."
         planner_summary["handoff_brief"] = handoff_brief
         planner_summary["handoff_brief_reason"] = brief_reason
         if not planner_summary.get("current_topic") and (planner_summary.get("topics") or []):
@@ -125,6 +132,49 @@ class CrawlerDelegationService:
             planner_summary=planner_summary,
             delegate_payload=delegate_payload,
         )
+
+    def _contract_handoff_brief(
+        self,
+        *,
+        original_question: str,
+        collection_question: str,
+        requested_by: str,
+        resolved_delivery_target: str,
+        session_summary: dict[str, Any],
+        gap_summary: str,
+        planning_instruction: str,
+    ) -> str:
+        caller = {
+            "user": "User directly asked CrawlerAgent.",
+            "user_via_mcagent": "User asked MCagent to relay this collection request to CrawlerAgent.",
+            "mcagent": "MCagent delegated this evidence gap to CrawlerAgent.",
+        }.get(requested_by, requested_by or "unknown")
+        parts = [
+            f"Requested by: {requested_by or 'unknown'}",
+            f"Caller relationship: {caller}",
+            "From: " + ("MCagent" if requested_by in {"mcagent", "user_via_mcagent"} else "User"),
+            "To: CrawlerAgent",
+            f"Original user request: {original_question}",
+            f"Task goal: {collection_question or original_question}",
+            f"Delivery target: {resolved_delivery_target or 'CrawlerAgent decides from task goal'}",
+        ]
+        topics = [str(item) for item in (session_summary.get("topics") or [])[:6] if str(item).strip()]
+        gaps = [str(item) for item in (session_summary.get("gaps") or [])[:8] if str(item).strip()]
+        if topics:
+            parts.append("Known topics: " + " / ".join(topics))
+        if gaps:
+            parts.append("Known gaps: " + " / ".join(gaps))
+        if gap_summary:
+            parts.append("MCagent gap summary:\n" + str(gap_summary)[:4000])
+        if planning_instruction:
+            parts.append("Planning instruction from MCagent:\n" + str(planning_instruction)[:1500])
+        parts.append(
+            "Acceptance criteria:\n"
+            "- CrawlerAgent must read this context, then independently choose sources, queries, tools, retries, and source audit decisions.\n"
+            "- Tools only report objective fetch/download/extract facts; CrawlerAgent decides accept, reject, retry, ignore, or ingest.\n"
+            "- If blocked by login, captcha, quota, unavailable archive, or low-quality results, report exact sources, objective reasons, and next viable path."
+        )
+        return "\n".join(part for part in parts if str(part).strip())[:3500]
 
 
 def _looks_like_mcagent_rag_fill_goal(*parts: Any) -> bool:

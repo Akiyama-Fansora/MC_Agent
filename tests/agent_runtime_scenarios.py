@@ -103,14 +103,45 @@ def test_agent_tool_decision_normalization() -> None:
     )
     assert_equal("crawler_temporary_extract_tool", crawler_extract.tool, "temporary_extract")
 
-    planned = normalize_agent_tool_decision(
+    legacy_planned = normalize_agent_tool_decision(
         {"tool": "answer_then_crawler", "action_plan": [{"tool": "local_rag_search", "goal": "先查本地"}, {"tool": "delegate_crawler", "goal": "再补缺口"}]},
         agent_id="mcagent_rag",
         original_question="本地有什么，缺什么让 Crawler 去找",
         planner="test",
     )
-    assert_equal("planned_alias", planned.tool, "planned_workflow")
-    assert_equal("planned_steps", len(planned.action_plan), 2)
+    assert_equal("legacy_planned_alias_rejected", legacy_planned.tool, "router_error")
+
+    vague_delegate = normalize_agent_tool_decision(
+        {"tool": "crawler", "collection_target": "采集公开资料"},
+        agent_id="mcagent_rag",
+        original_question="让 Crawler 去采集公开资料",
+        planner="test",
+    )
+    assert_equal("vague_crawler_alias_rejected", vague_delegate.tool, "router_error")
+
+    vague_inventory = normalize_agent_tool_decision(
+        {"tool": "inventory", "reason": "inspect coverage"},
+        agent_id="mcagent_rag",
+        original_question="本地有哪些资料",
+        planner="test",
+    )
+    assert_equal("vague_inventory_alias_rejected", vague_inventory.tool, "router_error")
+
+    labelled_step = normalize_agent_tool_decision(
+        {
+            "tool": "planned_workflow",
+            "action_plan": [
+                {"step": "check_coverage", "tool": "local_corpus_inventory", "goal": "先盘点覆盖范围"},
+                {"step": "fill_gaps", "tool": "delegate_crawler", "goal": "再交给 Crawler 补缺口"},
+            ],
+        },
+        agent_id="mcagent_rag",
+        original_question="本地缺什么，让 Crawler 补",
+        planner="test",
+    )
+    assert_equal("labelled_step_number", labelled_step.action_plan[0]["step"], 1)
+    assert_equal("labelled_step_label", labelled_step.action_plan[0]["step_label"], "check_coverage")
+    assert_equal("second_labelled_step_number", labelled_step.action_plan[1]["step"], 2)
 
 
 def test_handoff_contract_preserves_context() -> None:
@@ -138,6 +169,7 @@ def test_tool_catalog_exposes_agent_capabilities() -> None:
     assert_true("mcagent_local_rag", "local_rag_search" in mcagent_catalog)
     crawler_route_catalog = tool_catalog_prompt("crawler_agent")
     assert_true("crawler_mcagent_context", "mcagent_context" in crawler_route_catalog)
+    assert_true("crawler_planned_workflow", "planned_workflow" in crawler_route_catalog)
     assert_true("crawler_browser", "browser_collect" in crawler_catalog)
     assert_true("crawler_save_artifact", "save_artifact" in crawler_catalog)
     assert_true("crawler_artifact_ref_schema", "content_ref" in crawler_catalog or "artifact_ref" in crawler_catalog)

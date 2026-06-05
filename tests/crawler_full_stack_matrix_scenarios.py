@@ -61,6 +61,8 @@ def test_structured_browser_task_keeps_browser_collect_constraints() -> None:
     )
     browser_tasks = [task for task in plan.get("tasks") or [] if task.get("source") == "browser_collect"]
     assert_true("browser_collect", bool(browser_tasks))
+    assert_true("only_browser_collect", sources(plan) == ["browser_collect"])
+    assert_true("start_url", browser_tasks[0].get("start_url") == "https://webscraper.io/test-sites/e-commerce/static/computers/laptops")
     assert_true("fields", browser_tasks[0].get("fields") == ["name", "price", "url"])
     assert_true("output_dir", str(browser_tasks[0].get("output_dir") or "").endswith("matrix_items"))
 

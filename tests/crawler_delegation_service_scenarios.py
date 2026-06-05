@@ -64,7 +64,7 @@ def test_prepare_preserves_mcagent_to_crawler_relationship() -> None:
     assert_equal("requested_by", plan.requested_by, "user_via_mcagent")
     assert_equal("delivery_target", plan.delivery_target, "MCagent/RAG")
     assert_equal("collection_question", plan.collection_question, "Utopia modpack missing data")
-    assert_equal("handoff_brief", plan.handoff_brief, "handoff brief")
+    assert_true("handoff_brief_contract", "Task goal: Utopia modpack missing data" in plan.handoff_brief, plan.handoff_brief)
     assert_equal("payload_requested_by", plan.delegate_payload["requested_by"], "user_via_mcagent")
     assert_equal("payload_handoff_from", plan.delegate_payload["handoff_from"], "MCagent")
     assert_equal("payload_preserve", plan.delegate_payload["preserve_crawler_request"], True)
@@ -72,10 +72,7 @@ def test_prepare_preserves_mcagent_to_crawler_relationship() -> None:
     assert_equal("summary_instruction", plan.planner_summary["planning_instruction"], "Crawler should plan its own sources")
     assert_equal("summary_current_topic", plan.planner_summary["current_topic"], "Utopia")
     assert_equal("summary_missing", plan.planner_summary["missing_evidence"], "boss list；mod list")
-    assert_true("brief_called", any(call.get("fn") == "brief" for call in calls))
-    brief_call = next(call for call in calls if call.get("fn") == "brief")
-    assert_equal("brief_delivery", brief_call["delivery_target"], "MCagent/RAG")
-    assert_equal("brief_gap", brief_call["mcagent_gap_summary"], "MCagent found gaps")
+    assert_true("brief_builder_not_called", not any(call.get("fn") == "brief" for call in calls), str(calls))
 
 
 def test_prepare_uses_inferred_delivery_for_direct_user_request() -> None:
@@ -115,8 +112,7 @@ def test_prepare_corrects_model_human_delivery_for_mcagent_gap_fill() -> None:
 
     assert_equal("delivery_target", plan.delivery_target, "MCagent/RAG")
     assert_equal("payload_delivery", plan.delegate_payload["delivery_target"], "MCagent/RAG")
-    brief_call = next(call for call in calls if call.get("fn") == "brief")
-    assert_equal("brief_delivery", brief_call["delivery_target"], "MCagent/RAG")
+    assert_true("handoff_brief_has_rag_delivery", "Delivery target: MCagent/RAG" in plan.handoff_brief, plan.handoff_brief)
 
 
 def test_prepare_normalizes_mixed_human_rag_delivery_for_mcagent_gap_fill() -> None:
@@ -138,9 +134,38 @@ def test_prepare_normalizes_mixed_human_rag_delivery_for_mcagent_gap_fill() -> N
     assert_equal("payload_delivery", plan.delegate_payload["delivery_target"], "MCagent/RAG")
 
 
+def test_prepare_reuses_handoff_brief_from_agent_message() -> None:
+    calls: list[dict[str, Any]] = []
+    service = build_service(calls, requested_by="mcagent")
+
+    plan = service.prepare(
+        object(),
+        {
+            "agent": "crawler_agent",
+            "agent_message": {
+                "metadata": {
+                    "handoff_brief": "Existing From-Content-To handoff.",
+                    "delivery_target": "MCagent/RAG",
+                }
+            },
+        },
+        model="model-a",
+        original_question="collect missing data",
+        current_question="collect missing data",
+        collection_target="collect missing data",
+        session_summary={},
+        delivery_target="MCagent/RAG",
+    )
+
+    assert_equal("handoff_brief", plan.handoff_brief, "Existing From-Content-To handoff.")
+    assert_equal("brief_reason", plan.brief_reason, "Reused handoff_brief carried by the From-Content-To AgentMessage.")
+    assert_true("brief_builder_not_called", not any(call.get("fn") == "brief" for call in calls), str(calls))
+
+
 if __name__ == "__main__":
     test_prepare_preserves_mcagent_to_crawler_relationship()
     test_prepare_uses_inferred_delivery_for_direct_user_request()
     test_prepare_corrects_model_human_delivery_for_mcagent_gap_fill()
     test_prepare_normalizes_mixed_human_rag_delivery_for_mcagent_gap_fill()
+    test_prepare_reuses_handoff_brief_from_agent_message()
     print("crawler_delegation_service_scenarios: ok")

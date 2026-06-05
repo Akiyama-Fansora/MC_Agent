@@ -20,8 +20,12 @@ class CrawlerJobSetupService:
 
     def limits(self, *, payload: dict[str, Any], tasks: list[dict[str, Any]]) -> dict[str, int]:
         max_replans = int(payload.get("max_replans") or 2)
+        explicit_max_tasks = "max_tasks" in payload and str(payload.get("max_tasks") or "").strip()
         initial_task_limit = int(payload.get("max_tasks") or len(tasks) or 16)
-        max_total_tasks = max(len(tasks), min(32, initial_task_limit + 12))
+        if explicit_max_tasks:
+            max_total_tasks = max(len(tasks), min(32, initial_task_limit))
+        else:
+            max_total_tasks = max(len(tasks), min(18, initial_task_limit + 6))
         return {
             "max_replans": max_replans,
             "initial_task_limit": initial_task_limit,

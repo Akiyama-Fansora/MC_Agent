@@ -76,6 +76,38 @@ MOJIBAKE_TOKENS = (
     "\u93c1\u6751\u608e\u9356",
 )
 
+MOJIBAKE_CLUSTER_CODES = {
+    0x6D63,
+    0x72B2,
+    0x30BD,
+    0x93C8,
+    0xE104,
+    0x6D00,
+    0x6769,
+    0x6A3C,
+    0x583E,
+    0x951B,
+    0x9286,
+    0x7487,
+    0x9477,
+    0x9429,
+    0x935B,
+    0x7039,
+    0x93B4,
+    0x93C4,
+    0x95B2,
+    0x6FBE,
+    0x7C2E,
+    0x741B,
+    0x7C31,
+    0x5BB8,
+    0x60CE,
+    0x93B5,
+    0x7571,
+    0x7D35,
+    0x4FD3,
+}
+
 
 def iter_files(paths: list[Path]) -> list[Path]:
     seen: set[Path] = set()
@@ -132,6 +164,9 @@ def scan_file(path: Path) -> list[tuple[int, str, str]]:
             if token in line:
                 hits.append((line_no, "mojibake_token", line.strip()))
                 break
+        cluster_hits = sum(1 for char in line if ord(char) in MOJIBAKE_CLUSTER_CODES)
+        if cluster_hits >= 3:
+            hits.append((line_no, "mojibake_cluster", line.strip()))
         if suspicious_question_run(line):
             hits.append((line_no, "question_mark_run", line.strip()))
     return hits

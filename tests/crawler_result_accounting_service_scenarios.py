@@ -51,6 +51,15 @@ def test_browser_collect_waits_for_crawler_review() -> None:
     assert_equal("pending_review", result["records_pending_review"], True)
 
 
+def test_browser_collect_manifest_ok_is_structured_success() -> None:
+    result = {"returncode": 0, "manifest_stats": {"records": 5, "status": "ok"}}
+    accounting = apply(result, source="browser_collect", delivery="human")
+    assert_equal("success", accounting["success_delta"], 1)
+    assert_equal("failure", accounting["failure_delta"], 0)
+    assert_equal("structured_success", result["structured_collection_succeeded"], True)
+    assert_equal("ingest_skipped", result["ingest_skipped"], "CrawlerAgent accepted structured browser records for the human-facing task; RAG ingest was not requested.")
+
+
 def test_browser_collect_accepted_for_human_skips_ingest() -> None:
     result = {"returncode": 0, "manifest_stats": {"records": 50}, "topic_validation": {"matched": True}}
     accounting = apply(result, source="browser_collect", delivery="human")
@@ -144,6 +153,7 @@ if __name__ == "__main__":
     test_matched_records_are_success_and_need_ingest()
     test_empty_matched_artifact_is_not_ingestible_success()
     test_browser_collect_waits_for_crawler_review()
+    test_browser_collect_manifest_ok_is_structured_success()
     test_browser_collect_accepted_for_human_skips_ingest()
     test_modpack_download_creates_internal_followup()
     test_modpack_download_candidate_only_is_not_failure()

@@ -43,10 +43,12 @@ def test_limits_respect_payload_and_total_cap() -> None:
     service = CrawlerJobSetupService()
     defaults = service.limits(payload={}, tasks=[{}])
     capped = service.limits(payload={"max_replans": 4, "max_tasks": 40}, tasks=[{} for _ in range(3)])
+    explicit = service.limits(payload={"max_tasks": 8}, tasks=[{} for _ in range(8)])
     assert_equal("default_replans", defaults["max_replans"], 2)
-    assert_equal("default_total", defaults["max_total_tasks"], 13)
+    assert_equal("default_total", defaults["max_total_tasks"], 7)
     assert_equal("custom_replans", capped["max_replans"], 4)
     assert_equal("total_cap", capped["max_total_tasks"], 32)
+    assert_equal("explicit_budget_total", explicit["max_total_tasks"], 8)
 
 
 def test_stopped_updates_do_not_own_end_time() -> None:

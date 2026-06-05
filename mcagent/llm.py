@@ -18,8 +18,14 @@ class OpenAICompatibleClient:
         self.api_key = api_key
         self.provider_label = provider_label
 
-    def chat(self, messages: list[dict[str, str]], temperature: float | None = None, max_tokens: int | None = None) -> str:
-        return self._chat_once_or_retry(messages, temperature=temperature, max_tokens=max_tokens)
+    def chat(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        response_format: dict[str, Any] | None = None,
+    ) -> str:
+        return self._chat_once_or_retry(messages, temperature=temperature, max_tokens=max_tokens, response_format=response_format)
 
     def stream_chat(self, messages: list[dict[str, str]], temperature: float | None = None, max_tokens: int | None = None) -> Iterator[str]:
         for event in self.stream_events(messages, temperature=temperature, max_tokens=max_tokens):
@@ -81,8 +87,14 @@ class OpenAICompatibleClient:
                 "Check the service, base URL, model name, and network availability."
             ) from exc
 
-    def _chat_once_or_retry(self, messages: list[dict[str, str]], temperature: float | None = None, max_tokens: int | None = None) -> str:
-        data = self._chat_raw(messages, temperature=temperature, max_tokens=max_tokens)
+    def _chat_once_or_retry(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        response_format: dict[str, Any] | None = None,
+    ) -> str:
+        data = self._chat_raw(messages, temperature=temperature, max_tokens=max_tokens, response_format=response_format)
         content = self._content_from_response(data)
         choice = (data.get("choices") or [{}])[0] if isinstance(data, dict) else {}
         finish_reason = choice.get("finish_reason") if isinstance(choice, dict) else None
@@ -90,10 +102,16 @@ class OpenAICompatibleClient:
             return content
         retry_tokens = max((max_tokens or 0) * 3, 3000)
         retry_tokens = min(retry_tokens, 8000)
-        retry_data = self._chat_raw(messages, temperature=temperature, max_tokens=retry_tokens)
+        retry_data = self._chat_raw(messages, temperature=temperature, max_tokens=retry_tokens, response_format=response_format)
         return self._content_from_response(retry_data)
 
-    def _chat_raw(self, messages: list[dict[str, str]], temperature: float | None = None, max_tokens: int | None = None) -> dict[str, Any]:
+    def _chat_raw(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        response_format: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         endpoint = self.base_url.rstrip("/") + "/chat/completions"
         payload: dict[str, Any] = {
             "model": self.model,
@@ -103,6 +121,8 @@ class OpenAICompatibleClient:
         }
         if max_tokens is not None and max_tokens > 0:
             payload["max_tokens"] = max_tokens
+        if response_format:
+            payload["response_format"] = response_format
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers = {"Content-Type": "application/json"}
         if self.api_key:

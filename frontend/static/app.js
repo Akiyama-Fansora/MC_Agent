@@ -183,6 +183,7 @@ function progressTextForTrace(step) {
     if (detail.tool === "temporary_extract") return `${activeName} 会临时读取公开网页并直接总结，不写入本地。`;
     if (detail.tool === "delegate_crawler") return `${activeName} 已决定启动采集任务，并生成明确交接。`;
     if (detail.tool === "planned_workflow") return `${activeName} 已列出多步工作流。`;
+    if (detail.tool === "local_corpus_inventory") return `${activeName} 正在盘点本地资料库覆盖范围。`;
     return `${activeName} 已选择下一步工具：${detail.tool || "local_rag_search"}。`;
   }
   if (stage === "decide:side_effect_boundary_corrected") return `已按副作用边界调整：这轮改为临时读取，不启动后台保存任务。`;
@@ -191,11 +192,30 @@ function progressTextForTrace(step) {
   if (stage === "retrieve:planning") return `${activeName} 正在规划本地资料检索问题。`;
   if (stage === "retrieve:planned") return `检索方向已确定，开始查找可用证据。`;
   if (stage === "retrieve:searching") return `正在检索本地资料库、全文索引和 raw HTML 线索。`;
+  if (stage === "retrieve:inventory_scanning") return `正在读取本地入库文档并按资料类型归类。`;
+  if (stage === "retrieve:inventory_done") return `本地资料盘点完成，正在整理可读摘要。`;
   if (stage === "retrieve:done") {
     const count = Number(detail.results || 0);
     return count ? `找到 ${count} 条候选资料，正在筛选可用证据。` : `本地暂时没有找到候选资料，正在确认下一步。`;
   }
   if (stage === "decide:selecting_evidence") return `正在判断哪些证据真正能回答这轮问题。`;
+  if (stage === "decide:evidence_step_started") {
+    const label = {
+      prefer_parent_topic: "主题父级证据",
+      modpack_manifest: "整合包 manifest",
+      local_modpack_manifest: "本地整合包 manifest",
+      project_keyword_supplement: "项目关键词补充",
+      raw_html_supplement: "raw HTML 补充",
+      modpack_mod_list_context: "整合包模组清单上下文",
+      theme_fallback: "主题兜底证据",
+    }[detail.step] || detail.step || "证据补充";
+    return `正在检查${label}。`;
+  }
+  if (stage === "decide:evidence_step_done") {
+    const count = Number(detail.results || 0);
+    return `证据子步骤完成，得到 ${count} 条候选。`;
+  }
+  if (stage === "decide:evidence_step_failed") return `证据子步骤失败，正在把错误交给后端处理。`;
   if (stage === "decide:evidence_selected") {
     if (detail.verdict && detail.verdict !== "ok") return `现有资料仍不足，正在确认是否需要补充采集。`;
     return `证据已经筛好，准备组织回答。`;
@@ -479,7 +499,7 @@ function renderMessages(forceScroll = false) {
   const box = $("messages");
   const shouldFollow = forceScroll || isNearBottom(box);
   box.innerHTML = session.messages.map((message, index) => `
-    <article class="message ${message.role}">
+    <article class="message ${message.role}" data-role="${escapeHtml(message.role)}" data-message-index="${index}" data-final-answer="${message.hasFinalAnswer ? "true" : "false"}">
       <div class="message-header">
         <span>${message.role === "user" ? "\u4f60" : escapeHtml(message.agent || "MCagent")}</span>
         <span>${fmtTime(message.time)}</span>
@@ -1602,16 +1622,33 @@ async function runCrawler() {
   $("runCrawler").disabled = true;
   $("runCrawler").textContent = "启动中";
   try {
+    const question = $("crawlerQuery") ? $("crawlerQuery").value.trim() : "";
     const payload = {
+      from_agent: "User",
+      to_agent: "CrawlerAgent",
+      content: question,
+      intent: "collection_request",
+      session_id: activeSession().id,
+      agent: "crawler_agent",
       source: $("crawlerSource").value,
-      query: $("crawlerQuery") ? $("crawlerQuery").value.trim() : "",
-      question: $("crawlerQuery") ? $("crawlerQuery").value.trim() : "",
+      query: question,
+      question,
       rounds: Number($("crawlerRounds").value || 1),
       interval_seconds: Number($("crawlerInterval").value || 0),
+      metadata: {
+        tool: "delegate_crawler",
+        source: $("crawlerSource").value,
+        requested_by: "user",
+        ui_entry: "crawler_panel",
+      },
     };
-    const data = await api("/api/jobs/start-crawler", { method: "POST", body: JSON.stringify(payload) });
-    renderJobs([data.job, ...state.jobs.filter((job) => job.id !== data.job.id)]);
-    addMessage("assistant", `爬虫agent补库任务已启动：${data.job.id}（${payload.rounds}轮）`, "系统");
+    const data = await api("/api/agent-message", { method: "POST", body: JSON.stringify(payload) });
+    if (data.job) {
+      renderJobs([data.job, ...state.jobs.filter((job) => job.id !== data.job.id)]);
+      addMessage("assistant", `CrawlerAgent 采集任务已启动：${data.job.id}（${payload.rounds}轮）`, "系统");
+    } else {
+      addMessage("assistant", agentReplyContent(data) || "CrawlerAgent 已收到采集消息。", "系统");
+    }
   } catch (error) {
     addMessage("assistant", `启动采集失败：${error.message}`, "系统");
   } finally {

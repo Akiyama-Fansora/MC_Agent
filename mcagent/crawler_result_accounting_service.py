@@ -87,6 +87,16 @@ class CrawlerResultAccountingService:
             result["ingest_skipped"] = "topic_discovery candidates are reviewed by Crawler LLM before follow-up collection"
             return accounting
 
+        if task_source == "browser_collect" and returncode == 0 and records_loaded > 0 and str(manifest.get("status") or "").lower() == "ok":
+            accounting["success_delta"] = 1
+            result["structured_collection_succeeded"] = True
+            if "rag" in delivery_target.lower() or "mcagent" in delivery_target.lower():
+                accounting["needs_ingest"] = True
+                result["ingest_deferred"] = "CrawlerAgent accepted structured browser records; ingest this accepted export after the collection loop finishes."
+            else:
+                result["ingest_skipped"] = "CrawlerAgent accepted structured browser records for the human-facing task; RAG ingest was not requested."
+            return accounting
+
         if returncode == 0 and bool(result.get("existing_evidence_reused", {}).get("matched")):
             accounting["success_delta"] = 1
             result["ingest_skipped"] = "Crawler reused relevant duplicate-skipped evidence that already exists in the local knowledge base."

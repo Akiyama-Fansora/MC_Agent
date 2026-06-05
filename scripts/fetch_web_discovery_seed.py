@@ -67,7 +67,7 @@ def slugify(value: str, fallback: str = "page") -> str:
     return cleaned[:90] or fallback
 
 
-def request_text(url: str, user_agent: str, timeout: int = 30, retries: int = 1) -> tuple[str, str, int]:
+def request_text(url: str, user_agent: str, timeout: int = 10, retries: int = 0) -> tuple[str, str, int]:
     request = urllib.request.Request(
         url,
         headers={
@@ -90,9 +90,9 @@ def request_text(url: str, user_agent: str, timeout: int = 30, retries: int = 1)
     raise RuntimeError(f"Failed to fetch {url}: {last_error}")
 
 
-def bing_rss_search(query: str, user_agent: str, limit: int) -> list[dict[str, Any]]:
+def bing_rss_search(query: str, user_agent: str, limit: int, request_timeout: int) -> list[dict[str, Any]]:
     url = "https://www.bing.com/search?format=rss&mkt=zh-CN&setlang=zh-Hans&q=" + quote(query, safe="")
-    content, _content_type, status = request_text(url, user_agent=user_agent, timeout=25, retries=1)
+    content, _content_type, status = request_text(url, user_agent=user_agent, timeout=request_timeout, retries=0)
     root = ET.fromstring(content)
     results: list[dict[str, Any]] = []
     for rank, item in enumerate(root.findall("./channel/item"), start=1):
@@ -117,10 +117,10 @@ def bing_rss_search(query: str, user_agent: str, limit: int) -> list[dict[str, A
     return results
 
 
-def bing_html_search(query: str, user_agent: str, limit: int) -> list[dict[str, Any]]:
+def bing_html_search(query: str, user_agent: str, limit: int, request_timeout: int) -> list[dict[str, Any]]:
     url = "https://www.bing.com/search?mkt=zh-CN&setlang=zh-Hans&q=" + quote(query, safe="")
     try:
-        content, _content_type, status = request_text(url, user_agent=user_agent, timeout=25, retries=1)
+        content, _content_type, status = request_text(url, user_agent=user_agent, timeout=request_timeout, retries=0)
     except RuntimeError:
         return []
     results: list[dict[str, Any]] = []
@@ -147,10 +147,10 @@ def bing_html_search(query: str, user_agent: str, limit: int) -> list[dict[str, 
     return results
 
 
-def so_html_search(query: str, user_agent: str, limit: int) -> list[dict[str, Any]]:
+def so_html_search(query: str, user_agent: str, limit: int, request_timeout: int) -> list[dict[str, Any]]:
     url = "https://www.so.com/s?q=" + quote(query, safe="")
     try:
-        content, _content_type, status = request_text(url, user_agent=user_agent, timeout=25, retries=1)
+        content, _content_type, status = request_text(url, user_agent=user_agent, timeout=request_timeout, retries=0)
     except RuntimeError:
         return []
     results: list[dict[str, Any]] = []
@@ -229,10 +229,10 @@ def search_noise_host(host: str) -> bool:
         return True
     return any(host == item or host.endswith("." + item) for item in SEARCH_SKIP_HOSTS)
 
-def github_repo_search(query: str, user_agent: str, limit: int) -> list[dict[str, Any]]:
+def github_repo_search(query: str, user_agent: str, limit: int, request_timeout: int) -> list[dict[str, Any]]:
     url = "https://api.github.com/search/repositories?" + urlencode({"q": f"{query} minecraft", "per_page": min(limit, 10)})
     try:
-        content, _content_type, status = request_text(url, user_agent=user_agent, timeout=25, retries=0)
+        content, _content_type, status = request_text(url, user_agent=user_agent, timeout=request_timeout, retries=0)
     except RuntimeError:
         return []
     try:
@@ -467,7 +467,28 @@ def fetch_web_discovery(
     max_pages: int,
     delay: float,
     force: bool,
+    request_timeout: int = 8,
+    max_variants: int = 3,
+    budget_seconds: float = 60.0,
 ) -> dict[str, Any]:
+    started_at = time.monotonic()
+
+    def remaining_budget() -> float:
+        return float(budget_seconds) - (time.monotonic() - started_at)
+
+    def budget_exhausted(stage: str) -> bool:
+        if remaining_budget() > max(1.0, min(float(request_timeout), 5.0)):
+            return False
+        errors.append(
+            {
+                "stage": stage,
+                "error": "budget_exhausted",
+                "budget_seconds": str(round(float(budget_seconds), 3)),
+                "elapsed_seconds": str(round(time.monotonic() - started_at, 3)),
+            }
+        )
+        return True
+
     run_dir = dest_root / "web_discovery" / datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     run_dir.mkdir(parents=True, exist_ok=True)
     raw_dir = run_dir / "raw_html"
@@ -480,14 +501,26 @@ def fetch_web_discovery(
     errors: list[dict[str, str]] = []
 
     search_results: list[dict[str, Any]] = []
-    for variant in query_variants(query):
+    for variant in query_variants(query)[: max(1, max_variants)]:
+        if budget_exhausted("search"):
+            break
+        per_request_timeout = max(1, min(int(request_timeout), int(max(1.0, remaining_budget()))))
         try:
-            search_results.extend(bing_rss_search(variant, user_agent=user_agent, limit=max_results))
+            search_results.extend(bing_rss_search(variant, user_agent=user_agent, limit=max_results, request_timeout=per_request_timeout))
         except Exception as exc:  # noqa: BLE001
             errors.append({"stage": "search", "engine": "bing_rss", "query": variant, "error": str(exc)})
-        search_results.extend(bing_html_search(variant, user_agent=user_agent, limit=max_results))
-        search_results.extend(so_html_search(variant, user_agent=user_agent, limit=max_results))
-        search_results.extend(github_repo_search(variant, user_agent=user_agent, limit=min(max_results, 6)))
+        if budget_exhausted("search"):
+            break
+        per_request_timeout = max(1, min(int(request_timeout), int(max(1.0, remaining_budget()))))
+        search_results.extend(bing_html_search(variant, user_agent=user_agent, limit=max_results, request_timeout=per_request_timeout))
+        if budget_exhausted("search"):
+            break
+        per_request_timeout = max(1, min(int(request_timeout), int(max(1.0, remaining_budget()))))
+        search_results.extend(so_html_search(variant, user_agent=user_agent, limit=max_results, request_timeout=per_request_timeout))
+        if budget_exhausted("search"):
+            break
+        per_request_timeout = max(1, min(int(request_timeout), int(max(1.0, remaining_budget()))))
+        search_results.extend(github_repo_search(variant, user_agent=user_agent, limit=min(max_results, 6), request_timeout=per_request_timeout))
         time.sleep(delay)
 
     seen_urls: set[str] = set()
@@ -527,13 +560,16 @@ def fetch_web_discovery(
             expanded_candidates.append(item | {"fetch_url": item["url"], "fetch_title": item.get("title", ""), "fetch_kind": "generic"})
 
     for item in expanded_candidates[: max(1, max_pages)]:
+        if budget_exhausted("fetch"):
+            break
         url = str(item["fetch_url"])
         content = ""
         content_type = ""
         status_code = 0
         raw_html = ""
         try:
-            content, content_type, status_code = request_text(url, user_agent=user_agent, timeout=30, retries=1)
+            per_request_timeout = max(1, min(int(request_timeout), int(max(1.0, remaining_budget()))))
+            content, content_type, status_code = request_text(url, user_agent=user_agent, timeout=per_request_timeout, retries=0)
             if "html" in content_type.lower() or re.search(r"<html|<body|<article|<main", content[:2000], flags=re.I):
                 raw_html = content
         except Exception as direct_exc:  # noqa: BLE001
@@ -638,9 +674,15 @@ def fetch_web_discovery(
         "export_dir": str(run_dir),
         "query": query,
         "query_variants": query_variants(query),
+        "max_variants": max(1, max_variants),
+        "request_timeout": request_timeout,
+        "budget_seconds": budget_seconds,
+        "elapsed_seconds": round(time.monotonic() - started_at, 3),
         "search_results": search_results[:100],
         "candidates": len(candidates),
+        "candidate_records": candidates[:100],
         "expanded_candidates": len(expanded_candidates),
+        "expanded_candidate_records": expanded_candidates[:100],
         "records": records,
         "skipped": skipped,
         "errors": errors,
@@ -655,6 +697,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--query", required=True)
     parser.add_argument("--max-results", type=int, default=10)
     parser.add_argument("--max-pages", type=int, default=8)
+    parser.add_argument("--max-variants", type=int, default=3)
+    parser.add_argument("--request-timeout", type=int, default=8)
+    parser.add_argument("--budget-seconds", type=float, default=60.0)
     parser.add_argument("--delay", type=float, default=0.25)
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--user-agent", default=DEFAULT_USER_AGENT)
@@ -671,6 +716,9 @@ def main() -> int:
         max_pages=max(1, min(args.max_pages, 30)),
         delay=max(0.0, args.delay),
         force=args.force,
+        request_timeout=max(1, min(int(args.request_timeout), 30)),
+        max_variants=max(1, min(int(args.max_variants), 12)),
+        budget_seconds=max(5.0, min(float(args.budget_seconds), 300.0)),
     )
     print(f"Exported to: {manifest['export_dir']}")
     print(f"Search results: {len(manifest['search_results'])}")

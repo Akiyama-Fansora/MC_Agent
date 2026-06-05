@@ -142,7 +142,7 @@ CAPABILITIES: dict[str, CrawlerCapability] = {
         profile="research",
         purpose="Search a local directory/file for terms and save matching snippets.",
         side_effects="read_filesystem_and_write_artifact",
-        required_any=("path", "root", "output_dir"),
+        required_any=("path", "root"),
         aliases=("grep_local", "local_search"),
         default_priority=106,
         default_limits={"max_files": 25},
@@ -298,7 +298,8 @@ def looks_like_minecraft_context(text: str) -> bool:
         return False
     return bool(
         re.search(
-            r"\b(?:minecraft|mc百科|mcmod|modrinth|curseforge|modpack|mod list|kubejs|ftb quests|packwiz|mrpack)\b|整合包|模组|光影|资源包|我的世界",
+            r"\b(?:minecraft|mcmod|modrinth|curseforge|modpack|mod list|kubejs|ftb quests|packwiz|mrpack)\b"
+            r"|MC百科|整合包|模组|光影|资源包|我的世界",
             value,
             flags=re.I,
         )
@@ -309,9 +310,9 @@ def default_sources_for_context(text: str, *, prefer_general_web: bool = False, 
     if not looks_like_minecraft_context(text):
         return ["web_discovery", "playwright", "fetch_url", "browser_collect", "save_artifact", "read_local_file", "search_local_files"]
     if prefer_general_web:
-        sources = ["web_discovery", "playwright", "modpack_download", "fetch_url", "followup", "mcmod", "modrinth"]
+        sources = ["web_discovery", "playwright", "fetch_url", "followup", "mcmod", "modrinth"]
     else:
-        sources = ["web_discovery", "playwright", "fetch_url", "modpack_download", "followup", "mcmod", "modrinth"]
+        sources = ["web_discovery", "playwright", "fetch_url", "followup", "mcmod", "modrinth"]
     if archive_negated:
         sources = [source for source in sources if source != "modpack_download"]
     return sources
@@ -334,14 +335,25 @@ def task_preflight(task: dict[str, Any], *, context_text: str = "", check_domain
             "objective_contract": "No tool should run until CrawlerAgent chooses a registered source.",
         }
     issues: list[str] = []
+    query_value = str(task.get("query") or "").strip()
     if capability.requires_query and not str(task.get("query") or "").strip():
         issues.append("query_required")
-    if capability.requires_url and not re.search(r"https?://", str(task.get("query") or ""), flags=re.I):
+    if capability.requires_url and not re.search(r"https?://", query_value, flags=re.I):
         issues.append("url_required")
+        if re.fullmatch(r"(?:use_|latest_|previous_|artifact_)?(?:artifact_)?url(?:_\d+)?|use_artifact_url|candidate_url|discovered_url", query_value, flags=re.I):
+            issues.append("placeholder_url_query")
     if capability.required_any and not any(str(task.get(key) or "").strip() for key in capability.required_any):
         issues.append(f"requires_any:{'|'.join(capability.required_any)}")
-    if check_domain and capability.domain == "minecraft" and not looks_like_minecraft_context("\n".join([context_text, str(task.get("query") or ""), str(task.get("reason") or "")])):
-        issues.append("domain_mismatch:minecraft")
+    if check_domain and capability.domain == "minecraft":
+        domain_text = "\n".join(
+            [
+                context_text,
+                str(task.get("query") or ""),
+                str(task.get("reason") or ""),
+            ]
+        )
+        if not looks_like_minecraft_context(domain_text):
+            issues.append("domain_mismatch:minecraft")
     return {
         "valid": not issues,
         "source": source,

@@ -119,6 +119,7 @@ def test_fastapi_agent_message_endpoint_dispatches() -> None:
         [
             '{"tool":"direct_answer","reason":"simple greeting","collection_target":"你好","delivery_target":"human"}',
             '{"proceed":true,"tool":"direct_answer","reason":"ok"}',
+            '{"missing_side_effect":false,"action":"allow","reason":"simple greeting has no required side effect"}',
             "你好，我是 CrawlerAgent。",
         ]
     )

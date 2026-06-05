@@ -1783,7 +1783,7 @@ def write_download_evidence(run_dir: Path, query: str, downloads: list[dict[str,
     return paths
 
 
-def discover_and_download(dest_root: Path, archive_root: Path, query: str, limit: int, download: bool, max_bytes: int, user_agent: str) -> dict[str, Any]:
+def discover_and_download(dest_root: Path, archive_root: Path, query: str, limit: int, download: bool, max_bytes: int, user_agent: str, quick_probe: bool = False) -> dict[str, Any]:
     run_dir = dest_root / "modpack_download" / datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     run_dir.mkdir(parents=True, exist_ok=True)
     archive_dir = archive_root / slugify(query, "modpack") / "pack_archive"
@@ -1811,18 +1811,23 @@ def discover_and_download(dest_root: Path, archive_root: Path, query: str, limit
     release_pages: list[dict[str, Any]] = []
     release_errors: list[dict[str, Any]] = []
     if not (modrinth_candidates or curseforge_candidates):
-        bbsmc_candidates, bbsmc_pages, bbsmc_blockers, bbsmc_errors = bbsmc_archive_candidates(query, user_agent=user_agent, limit=limit)
-        mcmod_pages, mcmod_errors = mcmod_external_pages(query, user_agent=user_agent, limit=limit)
-        official_pages, official_errors = discover_official_site_pages(query, user_agent=user_agent, limit=limit)
-        discovery_pages, discovery_errors = discover_public_pages(query, user_agent=user_agent, limit=limit)
-        seed_context_pages = prioritize_source_pages(mcmod_pages + official_pages + discovery_pages, limit=max(limit * 2, 12))
-        site_pages, site_errors = collect_public_site_pages(" ".join([query] + [str(page.get("url") or "") for page in seed_context_pages]), user_agent=user_agent, limit=limit)
-        xye_pages, xye_errors = xye_release_pages(mcmod_pages + site_pages, user_agent=user_agent, limit=limit)
-        yuque_pages, yuque_errors = yuque_doc_pages(query, user_agent=user_agent, limit=limit)
-        cloud_blockers, cloud_errors = cloud_drive_observations(bbsmc_pages + mcmod_pages + site_pages + xye_pages + yuque_pages, query, user_agent=user_agent, limit=limit)
+        fallback_limit = min(limit, 3) if quick_probe else limit
+        bbsmc_candidates, bbsmc_pages, bbsmc_blockers, bbsmc_errors = bbsmc_archive_candidates(query, user_agent=user_agent, limit=fallback_limit)
+        mcmod_pages, mcmod_errors = mcmod_external_pages(query, user_agent=user_agent, limit=fallback_limit)
+        if not quick_probe:
+            official_pages, official_errors = discover_official_site_pages(query, user_agent=user_agent, limit=limit)
+            discovery_pages, discovery_errors = discover_public_pages(query, user_agent=user_agent, limit=limit)
+            seed_context_pages = prioritize_source_pages(mcmod_pages + official_pages + discovery_pages, limit=max(limit * 2, 12))
+            site_pages, site_errors = collect_public_site_pages(" ".join([query] + [str(page.get("url") or "") for page in seed_context_pages]), user_agent=user_agent, limit=limit)
+            xye_pages, xye_errors = xye_release_pages(mcmod_pages + site_pages, user_agent=user_agent, limit=limit)
+            yuque_pages, yuque_errors = yuque_doc_pages(query, user_agent=user_agent, limit=limit)
+            cloud_blockers, cloud_errors = cloud_drive_observations(bbsmc_pages + mcmod_pages + site_pages + xye_pages + yuque_pages, query, user_agent=user_agent, limit=limit)
         release_candidates, release_pages, release_errors = public_release_candidates(
-            query, user_agent=user_agent, limit=limit, discovery_pages=prioritize_source_pages(mcmod_pages + official_pages + discovery_pages + site_pages + xye_pages, limit=max(limit * 2, 16))
-    )
+            query,
+            user_agent=user_agent,
+            limit=fallback_limit,
+            discovery_pages=prioritize_source_pages(mcmod_pages + official_pages + discovery_pages + site_pages + xye_pages, limit=max(fallback_limit * 2, 8)),
+        )
     web_candidates: list[dict[str, Any]] = []
     pages: list[dict[str, Any]] = []
     web_errors: list[dict[str, Any]] = []
@@ -1870,7 +1875,7 @@ def discover_and_download(dest_root: Path, archive_root: Path, query: str, limit
             if downloads:
                 break
     report = write_report(run_dir, query, candidates, downloads, pages, errors, blockers=blockers)
-    evidence_paths = write_download_evidence(run_dir, query, downloads)
+    evidence_paths = write_download_evidence(run_dir, query, downloads or candidates[:3])
     records = [
         {
             "title": f"Modpack archive discovery for {query}",
@@ -1940,6 +1945,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--query", required=True)
     parser.add_argument("--limit", type=int, default=8)
     parser.add_argument("--no-download", action="store_true")
+    parser.add_argument("--quick-probe", action="store_true", help="In no-download mode, keep discovery shallow and return objective candidate/blocker facts quickly.")
     parser.add_argument("--max-mb", type=int, default=2600)
     parser.add_argument("--user-agent", default=DEFAULT_USER_AGENT)
     return parser
@@ -1955,6 +1961,7 @@ def main() -> int:
         download=not args.no_download,
         max_bytes=max(1, args.max_mb) * 1024 * 1024,
         user_agent=args.user_agent,
+        quick_probe=bool(args.quick_probe and args.no_download),
     )
     print(f"Exported to: {manifest['export_dir']}")
     print(f"Candidates: {len(manifest['candidates'])}")

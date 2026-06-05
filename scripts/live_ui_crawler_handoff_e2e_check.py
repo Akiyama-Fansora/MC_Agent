@@ -81,27 +81,30 @@ def audit_from_job(job: dict) -> dict:
 
 def send_ui_question(page, question: str, *, answer_regex: str, timeout_seconds: int) -> str:  # noqa: ANN001
     before_articles = page.locator("article").count()
+    before_assistant = page.locator('article.message.assistant[data-final-answer="true"]').count()
     page.locator("textarea").fill(question, timeout=10000)
     page.locator('button[type="submit"]').click(timeout=10000)
     page.wait_for_function(
-        """([before, q, pattern]) => {
+        """([before, beforeAssistant, q, pattern]) => {
             const button = document.querySelector('button[type="submit"]');
             const articles = [...document.querySelectorAll('article')].map(a => a.innerText || '');
             if (articles.length < before + 2) return false;
-            const answer = articles[articles.length - 1] || '';
+            const finalAssistant = [...document.querySelectorAll('article.message.assistant[data-final-answer="true"]')];
+            if (finalAssistant.length < beforeAssistant + 1) return false;
+            const answer = finalAssistant[finalAssistant.length - 1]?.innerText || '';
             const hasQuestion = document.body.innerText.includes(q);
             const hasUseful = new RegExp(pattern, 'i').test(answer);
             const buttonReady = button && !button.disabled && button.innerText.length > 0;
             return hasQuestion && buttonReady && answer.length > 40 && hasUseful;
         }""",
-        arg=[before_articles, question, answer_regex],
+        arg=[before_articles, before_assistant, question, answer_regex],
         timeout=timeout_seconds * 1000,
     )
     page.wait_for_timeout(1000)
     return str(
         page.evaluate(
             """() => {
-                const articles = [...document.querySelectorAll('article')].map(a => a.innerText || '');
+                const articles = [...document.querySelectorAll('article.message.assistant[data-final-answer="true"]')].map(a => a.innerText || '');
                 return articles[articles.length - 1] || '';
             }"""
         )

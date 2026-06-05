@@ -81,6 +81,38 @@ def test_should_replan_requires_planner_source_and_no_success() -> None:
     )
 
 
+def test_should_replan_after_single_failed_plan_is_exhausted() -> None:
+    service = CrawlerLoopControlService()
+    assert_equal(
+        "replan_exhausted_single_task",
+        service.should_replan_after_plan_exhausted(
+            source="planner",
+            success_count=0,
+            bad_streak=1,
+            replan_count=0,
+            max_replans=2,
+            current_index=1,
+            task_count=1,
+            max_total_tasks=8,
+        ),
+        True,
+    )
+    assert_equal(
+        "keep_when_pending_tasks_exist",
+        service.should_replan_after_plan_exhausted(
+            source="planner",
+            success_count=0,
+            bad_streak=1,
+            replan_count=0,
+            max_replans=2,
+            current_index=1,
+            task_count=3,
+            max_total_tasks=8,
+        ),
+        False,
+    )
+
+
 def test_should_finish_after_useful_low_yield() -> None:
     service = CrawlerLoopControlService()
     assert_equal(
@@ -176,12 +208,190 @@ def test_should_finish_after_enough_success_at_task_budget() -> None:
     )
 
 
+def test_should_finish_after_gap_probe_satisfied() -> None:
+    service = CrawlerLoopControlService()
+    assert_equal(
+        "finish_gap_probe",
+        service.should_finish_after_gap_probe_satisfied(
+            source="planner",
+            task_results=[
+                {
+                    "source": "mcagent_context",
+                    "returncode": 0,
+                    "mcagent_gap_summary": "- No explicit gap list was found; use coverage goals.",
+                    "manifest_stats": {"records": 1},
+                },
+                {
+                    "source": "modpack_download",
+                    "returncode": 0,
+                    "manifest_stats": {"records": 2, "candidates": 1, "downloads": 0},
+                },
+            ],
+            candidate_count=1,
+            success_count=0,
+        ),
+        True,
+    )
+    assert_equal(
+        "keep_when_explicit_gaps",
+        service.should_finish_after_gap_probe_satisfied(
+            source="planner",
+            task_results=[
+                {"source": "mcagent_context", "returncode": 0, "mcagent_gap_summary": "- 缺少完整模组列表", "manifest_stats": {"records": 1}},
+                {"source": "web_discovery", "returncode": 0, "manifest_stats": {"records": 1}},
+            ],
+            candidate_count=1,
+            success_count=0,
+        ),
+        False,
+    )
+
+
+def test_should_finish_after_context_plus_external_checkpoint() -> None:
+    service = CrawlerLoopControlService()
+    task_results = [
+        {"source": "mcagent_context", "returncode": 0, "manifest_stats": {"records": 1}},
+        {"source": "web_discovery", "returncode": 0, "manifest_stats": {"records": 1, "candidates": 0}},
+        {"source": "playwright", "returncode": 0, "manifest_stats": {"records": 0}},
+        {"source": "playwright", "returncode": 0, "manifest_stats": {"records": 0}},
+    ]
+    assert_equal(
+        "finish_checkpoint",
+        service.should_finish_after_context_plus_external_checkpoint(
+            source="planner",
+            task_results=task_results,
+            candidate_count=1,
+            success_count=1,
+            bad_streak=2,
+            executed_count=4,
+        ),
+        True,
+    )
+    assert_equal(
+        "keep_without_context",
+        service.should_finish_after_context_plus_external_checkpoint(
+            source="planner",
+            task_results=task_results[1:],
+            candidate_count=1,
+            success_count=1,
+            bad_streak=2,
+            executed_count=4,
+        ),
+        False,
+    )
+    assert_equal(
+        "keep_before_low_yield",
+        service.should_finish_after_context_plus_external_checkpoint(
+            source="planner",
+            task_results=task_results,
+            candidate_count=1,
+            success_count=1,
+            bad_streak=1,
+            executed_count=4,
+        ),
+        False,
+    )
+
+
+def test_should_finish_after_gap_summary_handoff_success() -> None:
+    service = CrawlerLoopControlService()
+    assert_equal(
+        "finish_after_gap_handoff_success",
+        service.should_finish_after_gap_summary_handoff_success(
+            source="planner",
+            plan={
+                "mcagent_gap_summary": "本地资料库目前有入口页，但缺少玩法路线。",
+                "delivery_target": "MCagent/RAG",
+            },
+            task_results=[],
+            success_count=1,
+            executed_count=1,
+        ),
+        True,
+    )
+    assert_equal(
+        "keep_without_success",
+        service.should_finish_after_gap_summary_handoff_success(
+            source="planner",
+            plan={"mcagent_gap_summary": "缺少资料", "delivery_target": "MCagent/RAG"},
+            task_results=[],
+            success_count=0,
+            executed_count=1,
+        ),
+        False,
+    )
+    assert_equal(
+        "keep_without_gap_handoff",
+        service.should_finish_after_gap_summary_handoff_success(
+            source="planner",
+            plan={"delivery_target": "human"},
+            task_results=[],
+            success_count=1,
+            executed_count=1,
+        ),
+        False,
+    )
+    assert_equal(
+        "finish_when_gap_summary_is_in_context_result",
+        service.should_finish_after_gap_summary_handoff_success(
+            source="planner",
+            plan={"delivery_target": "MCagent/RAG"},
+            task_results=[
+                {"source": "mcagent_context", "returncode": 0, "mcagent_gap_summary": "本地资料库目前有入口页，但缺少玩法路线。"},
+                {"source": "playwright", "returncode": 0, "manifest_stats": {"records": 1}},
+            ],
+            success_count=1,
+            executed_count=2,
+        ),
+        True,
+    )
+
+
+def test_should_finish_after_rag_success_checkpoint() -> None:
+    service = CrawlerLoopControlService()
+    assert_equal(
+        "finish_fallback_rag_after_success",
+        service.should_finish_after_rag_success_checkpoint(
+            source="planner",
+            plan={"delivery_target": "MCagent/RAG", "strategy": "target_fallback_after_llm_planner_error"},
+            success_count=1,
+            executed_count=3,
+        ),
+        True,
+    )
+    assert_equal(
+        "keep_without_success",
+        service.should_finish_after_rag_success_checkpoint(
+            source="planner",
+            plan={"delivery_target": "MCagent/RAG", "strategy": "target_fallback_after_llm_planner_error"},
+            success_count=0,
+            executed_count=3,
+        ),
+        False,
+    )
+    assert_equal(
+        "keep_human_delivery",
+        service.should_finish_after_rag_success_checkpoint(
+            source="planner",
+            plan={"delivery_target": "human", "strategy": "target_fallback_after_llm_planner_error"},
+            success_count=1,
+            executed_count=3,
+        ),
+        False,
+    )
+
+
 if __name__ == "__main__":
     test_bad_result_increments_streak()
     test_good_result_resets_streak()
     test_records_pending_review_keeps_pressure()
     test_should_replan_requires_planner_source_and_no_success()
+    test_should_replan_after_single_failed_plan_is_exhausted()
     test_should_finish_after_useful_low_yield()
     test_should_finish_after_no_success_low_yield()
     test_should_finish_after_enough_success_at_task_budget()
+    test_should_finish_after_gap_probe_satisfied()
+    test_should_finish_after_context_plus_external_checkpoint()
+    test_should_finish_after_gap_summary_handoff_success()
+    test_should_finish_after_rag_success_checkpoint()
     print("crawler_loop_control_service_scenarios passed")

@@ -116,6 +116,18 @@ def test_blocked_preflight_result_is_returned_to_crawler_for_reflection() -> Non
     assert_equal("observation_status", result["observation"]["status"], "empty")
 
 
+def test_local_search_output_dir_is_not_a_search_root() -> None:
+    result = CrawlerTaskPreparationService().blocked_preflight_result(
+        task_source="search_local_files",
+        task={"query": "Farmer's Delight", "output_dir": r"D:\tmp\crawler-output", "reason": "LLM confused save destination with input root"},
+        context_text="Collect Farmer's Delight public web evidence for MCagent/RAG.",
+    )
+    assert result is not None
+    assert_equal("returncode", result["returncode"], 2)
+    assert_equal("preflight_valid", result["capability_preflight"]["valid"], False)
+    assert "requires_any:path|root" in result["capability_preflight"]["issues"]
+
+
 if __name__ == "__main__":
     test_build_payload_preserves_task_specific_fields()
     test_build_payload_falls_back_to_question_when_query_missing()
@@ -123,5 +135,6 @@ if __name__ == "__main__":
     test_browser_collect_recovers_url_path_and_count_from_original_question()
     test_empty_query_result_is_objective_failure_observation()
     test_blocked_preflight_result_is_returned_to_crawler_for_reflection()
+    test_local_search_output_dir_is_not_a_search_root()
     print("crawler_task_preparation_service_scenarios passed")
 

@@ -51,12 +51,12 @@ def assert_true(name: str, condition: bool, detail: str = "") -> None:
         raise AssertionError(f"{name}: {detail}")
 
 
-def base_report(*, verdict: str = "insufficient") -> EvidenceReport:
+def base_report(*, verdict: str = "insufficient", confidence: float = 0.5, selected_count: int = 1) -> EvidenceReport:
     return EvidenceReport(
         verdict=verdict,
         topic_detected="project",
-        confidence=0.5,
-        selected_count=1,
+        confidence=confidence,
+        selected_count=selected_count,
         candidate_count=3,
         reasons=["not enough"],
         final_context_k=4,
@@ -116,7 +116,42 @@ def test_evidence_service_runs_selector_and_supplements_in_order() -> None:
         call_log,
         ["prefer_parent", "modpack_manifest", "local_modpack_manifest", "project_keywords", "raw_html", "modpack_mod_list", "fallback_theme"],
     )
-    assert_equal("trace_statuses", [item["status"] for item in traces], ["selecting_evidence", "evidence_selected"])
+    statuses = [item["status"] for item in traces]
+    assert_equal("first_trace", statuses[0], "selecting_evidence")
+    assert_equal("last_trace", statuses[-1], "evidence_selected")
+    assert_equal(
+        "evidence_step_order",
+        [item["detail"].get("step") for item in traces if item["status"] == "evidence_step_started"],
+        ["prefer_parent_topic", "modpack_manifest", "local_modpack_manifest", "project_keyword_supplement", "raw_html_supplement", "modpack_mod_list_context", "theme_fallback"],
+    )
+
+
+def test_evidence_service_skips_expensive_supplements_when_evidence_is_already_enough() -> None:
+    selector_calls: list[dict[str, Any]] = []
+    call_log: list[str] = []
+    traces: list[dict[str, Any]] = []
+    service = build_service(
+        selector_selected=[make_result(1), make_result(2), make_result(3), make_result(4)],
+        selector_report=base_report(verdict="ok", confidence=0.95, selected_count=4),
+        selector_calls=selector_calls,
+        call_log=call_log,
+    )
+
+    result = service.select(
+        object(),
+        evidence_question="utopia gameplay",
+        rough_results=[make_result(1), make_result(2), make_result(3), make_result(4)],
+        retrieval_plan=None,
+        final_k=4,
+        add_trace=lambda stage, status, detail=None: traces.append({"stage": stage, "status": status, "detail": detail}) or traces[-1],
+    )
+
+    assert_equal("selected_count", len(result.selected), 4)
+    assert_equal("call_order", call_log, ["prefer_parent", "modpack_manifest", "local_modpack_manifest", "modpack_mod_list", "fallback_theme"])
+    assert_true(
+        "skip_trace",
+        any(item["status"] == "evidence_step_skipped" and item["detail"].get("step") == "expensive_supplements" for item in traces),
+    )
 
 
 def test_modpack_manifest_evidence_can_upgrade_objective_report() -> None:
@@ -206,6 +241,7 @@ def test_create_accepted_project_pages_are_strong_sources() -> None:
 
 if __name__ == "__main__":
     test_evidence_service_runs_selector_and_supplements_in_order()
+    test_evidence_service_skips_expensive_supplements_when_evidence_is_already_enough()
     test_modpack_manifest_evidence_can_upgrade_objective_report()
     test_fallback_theme_evidence_can_recover_sparse_selection()
     test_create_accepted_project_pages_are_strong_sources()

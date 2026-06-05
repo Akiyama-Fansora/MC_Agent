@@ -80,6 +80,137 @@ def test_failed_without_success_reports_all_sources_failed() -> None:
     assert_equal("verify_status", final["result"]["loop"][4]["status"], "failed")
 
 
+def test_candidate_only_probe_can_succeed_without_ingest() -> None:
+    final = build(
+        success_count=0,
+        candidate_count=2,
+        failure_count=0,
+        needs_ingest=False,
+        task_results=[
+            {"source": "mcagent_context", "returncode": 0, "manifest_stats": {"records": 1}},
+            {"source": "modpack_download", "returncode": 0, "manifest_stats": {"records": 2, "candidates": 1}},
+        ],
+        plan={"topic": "乌托邦整合包", "agent_finish_reason": "gap probe complete"},
+    )
+    assert_equal("status", final["status"], "succeeded")
+    assert_equal("error", final["error"], None)
+    assert_equal("verify_status", final["result"]["loop"][4]["status"], "done")
+
+
+def test_gap_probe_candidate_can_succeed_with_rejected_source() -> None:
+    final = build(
+        success_count=0,
+        candidate_count=1,
+        failure_count=1,
+        needs_ingest=False,
+        task_results=[
+            {"source": "mcagent_context", "returncode": 0, "manifest_stats": {"records": 1}},
+            {"source": "web_discovery", "returncode": 0, "manifest_stats": {"records": 0}, "empty_result": True},
+        ],
+        plan={
+            "topic": "Utopian Journey",
+            "agent_finish_reason": "MCagent/RAG returned usable local context with no explicit gap list, and Crawler collected at least one external probe/candidate; finish this inter-agent gap check instead of expanding into a full crawl.",
+        },
+    )
+    assert_equal("status", final["status"], "succeeded")
+    assert_equal("error", final["error"], None)
+    assert_equal("verify_status", final["result"]["loop"][4]["status"], "done")
+
+
+def test_context_checkpoint_candidate_can_succeed_with_rejected_sources() -> None:
+    final = build(
+        success_count=0,
+        candidate_count=1,
+        failure_count=3,
+        needs_ingest=False,
+        task_results=[
+            {"source": "mcagent_context", "returncode": 0, "manifest_stats": {"records": 1}},
+            {"source": "web_discovery", "returncode": 0, "manifest_stats": {"records": 1}, "off_topic_result": True},
+        ],
+        plan={
+            "topic": "Utopian Journey",
+            "agent_finish_reason": "Crawler has received MCagent/RAG context and found at least one external candidate or accepted source; recent follow-up tools are low-yield, so finish with the usable material and remaining gaps instead of exhausting slow browser tasks.",
+        },
+    )
+    assert_equal("status", final["status"], "succeeded")
+    assert_equal("error", final["error"], None)
+    assert_equal("verify_status", final["result"]["loop"][4]["status"], "done")
+
+
+def test_reflection_timeout_with_candidate_evidence_is_partial_success() -> None:
+    final = build(
+        success_count=0,
+        candidate_count=1,
+        failure_count=2,
+        needs_ingest=False,
+        task_results=[
+            {"source": "mcagent_context", "returncode": 0, "manifest_stats": {"records": 1}},
+            {"source": "web_discovery", "returncode": 0, "manifest_stats": {"records": 1}, "records_pending_review": True},
+            {"source": "web_discovery", "returncode": 0, "manifest_stats": {"records": 0}, "empty_result": True},
+        ],
+        plan={
+            "topic": "Utopian Journey",
+            "agent_finish_reason": "CrawlerAgent reflection timed out after 90s after repeated empty/off-topic observations; finish with the objective evidence already collected instead of executing more slow pending tasks blindly.",
+        },
+    )
+    assert_equal("status", final["status"], "succeeded")
+    assert_equal("error", final["error"], None)
+    assert_equal("verify_status", final["result"]["loop"][4]["status"], "done")
+
+
+def test_finish_reflection_reason_is_used_when_plan_finish_reason_missing() -> None:
+    final = build(
+        success_count=0,
+        candidate_count=1,
+        failure_count=1,
+        needs_ingest=False,
+        task_results=[
+            {"source": "mcagent_context", "returncode": 0, "manifest_stats": {"records": 1}},
+            {"source": "web_discovery", "returncode": 0, "manifest_stats": {"records": 1}, "records_pending_review": True},
+        ],
+        plan={
+            "topic": "Utopian Journey",
+            "agent_reflections": [
+                {
+                    "action": "finish",
+                    "planner": "runtime_reflection_timeout",
+                    "reason": "CrawlerAgent reflection timed out after 90s after repeated empty/off-topic observations; finish with the objective evidence already collected instead of executing more slow pending tasks blindly.",
+                }
+            ],
+        },
+    )
+    assert_equal("status", final["status"], "succeeded")
+    assert_equal("error", final["error"], None)
+
+
+def test_reflection_timeout_reason_survives_low_yield_done_summary() -> None:
+    final = build(
+        success_count=0,
+        candidate_count=1,
+        failure_count=2,
+        needs_ingest=False,
+        task_results=[
+            {"source": "mcagent_context", "returncode": 0, "manifest_stats": {"records": 1}},
+            {"source": "web_discovery", "returncode": 0, "manifest_stats": {"records": 0, "candidates": 12}, "empty_result": True},
+            {"source": "web_discovery", "returncode": 0, "manifest_stats": {"records": 0, "candidates": 1}, "empty_result": True},
+        ],
+        plan={
+            "topic": "Utopian Journey",
+            "agent_reflections": [
+                {
+                    "action": "finish",
+                    "planner": "runtime_reflection_timeout",
+                    "reason": "CrawlerAgent reflection timed out after 90s after repeated empty/off-topic observations; finish with the objective evidence already collected instead of executing more slow pending tasks blindly.",
+                    "done_summary": "CrawlerAgent stopped after repeated low-yield observations and a reflection timeout.",
+                }
+            ],
+        },
+    )
+    assert_equal("status", final["status"], "succeeded")
+    assert_equal("error", final["error"], None)
+    assert_equal("verify_status", final["result"]["loop"][4]["status"], "done")
+
+
 def test_stopped_job_keeps_error_clear() -> None:
     final = build(stop_requested=True, success_count=0, needs_ingest=True, task_results=[{}, {}], planned_tasks=[{}, {}, {}])
     assert_equal("status", final["status"], "stopped")
@@ -108,12 +239,18 @@ def test_finalization_moves_unqualified_modpack_internal_out_of_planned_tasks() 
     sources = [task["source"] for task in final["result"]["planned_tasks"]]
     assert_equal("planned_sources", sources, ["web_discovery", "modpack_internal"])
     assert_equal("blocked_count", len(final["result"]["blocked_planned_tasks"]), 1)
-    assert_equal("blocked_reason", final["result"]["blocked_planned_tasks"][0]["blocked_reason"], "modpack_internal_requires_archive_path")
+    assert_equal("blocked_reason", final["result"]["blocked_planned_tasks"][0]["blocked_reason"], "requires_any:zip|archive|archive_path|manifest_path|path")
 
 
 if __name__ == "__main__":
     test_success_with_ingest_builds_running_ingest_loop()
     test_failed_without_success_reports_all_sources_failed()
+    test_candidate_only_probe_can_succeed_without_ingest()
+    test_gap_probe_candidate_can_succeed_with_rejected_source()
+    test_context_checkpoint_candidate_can_succeed_with_rejected_sources()
+    test_reflection_timeout_with_candidate_evidence_is_partial_success()
+    test_finish_reflection_reason_is_used_when_plan_finish_reason_missing()
+    test_reflection_timeout_reason_survives_low_yield_done_summary()
     test_stopped_job_keeps_error_clear()
     test_reflection_failure_before_tools_is_reported_explicitly()
     test_finalization_moves_unqualified_modpack_internal_out_of_planned_tasks()

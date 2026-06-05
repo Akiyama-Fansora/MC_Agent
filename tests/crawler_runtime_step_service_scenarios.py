@@ -64,6 +64,26 @@ def test_duplicate_new_tasks_are_not_inserted() -> None:
     assert_equal("task_count", len(tasks), 1)
 
 
+def test_replan_can_replace_unexecuted_tail_when_task_budget_is_full() -> None:
+    service = CrawlerRuntimeStepService()
+    tasks = [
+        {"source": "web_discovery", "query": "old 1"},
+        {"source": "mcmod", "query": "old 2"},
+        {"source": "playwright", "query": "old 3"},
+        {"source": "modrinth", "query": "old 4"},
+    ]
+    result = service.apply_action(
+        tasks=tasks,
+        index=2,
+        reflection={"action": "replan", "tasks": [{"source": "fetch_url", "query": "https://www.mcmod.cn/modpack/1337.html"}]},
+        max_total_tasks=4,
+    )
+    assert_equal("continue_loop", result["continue_loop"], True)
+    assert_equal("inserted_source", tasks[2]["source"], "fetch_url")
+    assert_equal("task_count", len(tasks), 4)
+    assert_true("old_tail_removed", all(task["query"] != "old 4" for task in tasks))
+
+
 def test_selected_index_swaps_next_pending_task() -> None:
     service = CrawlerRuntimeStepService()
     tasks = [
@@ -134,10 +154,10 @@ if __name__ == "__main__":
     test_reflection_entry_preserves_contract()
     test_replan_inserts_unique_tasks_before_current_index()
     test_duplicate_new_tasks_are_not_inserted()
+    test_replan_can_replace_unexecuted_tail_when_task_budget_is_full()
     test_selected_index_swaps_next_pending_task()
     test_finish_returns_finish_reason()
     test_llm_plan_first_task_does_not_need_extra_reflection()
     test_rule_fallback_still_requires_crawler_reflection_before_tools()
     test_initial_llm_plan_entry_is_trace_only()
     print("crawler_runtime_step_service_scenarios passed")
-

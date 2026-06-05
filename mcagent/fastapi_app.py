@@ -9,7 +9,6 @@ from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
 from .agent_runtime import collection_tools_for_crawler, tool_catalog_prompt, tools_for_agent
-from .agent_message import make_agent_message
 from .config import AppConfig, load_config
 from .crawler_llm_planner import plan_crawler_tasks_resilient
 from .crawler_planner import plan_crawler_tasks, toolsets_payload
@@ -25,8 +24,6 @@ from .web_server import (
     _chat,
     _chat_impl,
     _delete_session,
-    _delegate_crawler_for_missing_data,
-    _has_likely_encoding_damage,
     _ingest_after_crawl,
     _job_to_dict,
     _jobs_payload,
@@ -38,12 +35,13 @@ from .web_server import (
     _session_summary,
     _start_job,
     _status_payload,
+    _user_message_fields,
 )
 
 
 def _stream_chat_events(config: AppConfig, payload: dict[str, Any]) -> Iterator[str]:
     def run(emit: Any) -> None:
-        result = _chat_impl(config, payload, emit=emit)
+        result = _send_agent_message(config, payload, emit=emit, **_user_message_fields(payload))
         emit("response", result)
         emit("done", {"ok": True})
 
@@ -127,17 +125,19 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     @app.post("/api/agent-message")
     async def agent_message(request: Request) -> dict[str, Any]:
         payload = await request.json()
-        message = make_agent_message(
-            str(payload.get("from_agent") or payload.get("from") or "User"),
-            str(payload.get("content") or payload.get("message") or payload.get("question") or ""),
-            str(payload.get("to_agent") or payload.get("to") or payload.get("agent") or "MCagent"),
+        return await run_in_threadpool(
+            _send_agent_message,
+            cfg(),
+            payload,
+            from_agent=str(payload.get("from_agent") or payload.get("from") or "User"),
+            content=str(payload.get("content") or payload.get("message") or payload.get("question") or ""),
+            to_agent=str(payload.get("to_agent") or payload.get("to") or payload.get("agent") or "MCagent"),
             intent=str(payload.get("intent") or ""),
             conversation_id=str(payload.get("session_id") or payload.get("conversation_id") or ""),
             reply_to=str(payload.get("reply_to") or ""),
             requires_reply=bool(payload.get("requires_reply", True)),
             metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
         )
-        return await run_in_threadpool(_send_agent_message, cfg(), payload, message)
 
     @app.post("/api/chat/stream")
     async def chat_stream(request: Request) -> StreamingResponse:
@@ -205,23 +205,6 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     @app.post("/api/jobs/start-ingest")
     def start_ingest() -> JSONResponse:
         job, created = _start_job("ingest", "Import crawler exports", lambda item: _run_ingest_job(item, cfg()))
-        return JSONResponse({"job": _job_to_dict(job), "created": created}, status_code=202 if created else 409)
-
-    @app.post("/api/jobs/start-crawler")
-    async def start_crawler(request: Request) -> JSONResponse:
-        payload = await request.json()
-        crawler_payload = dict(payload)
-        if _has_likely_encoding_damage(crawler_payload):
-            return JSONResponse(
-                {
-                    "error": "request text appears to be encoding-damaged; please resend as UTF-8 JSON",
-                    "hint": "Do not send Chinese JSON through a misconfigured PowerShell command. Use the web UI or a UTF-8 client.",
-                },
-                status_code=400,
-            )
-        crawler_payload.setdefault("agent", "crawler_agent")
-        question = str(crawler_payload.get("question") or crawler_payload.get("query") or "")
-        job, created = _delegate_crawler_for_missing_data(cfg(), crawler_payload, question)
         return JSONResponse({"job": _job_to_dict(job), "created": created}, status_code=202 if created else 409)
 
     @app.post("/api/jobs/stop")

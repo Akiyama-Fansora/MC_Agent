@@ -75,6 +75,16 @@ def test_direct_crawler_no_save_url_uses_temporary_extract_boundary() -> None:
     )
 
 
+def test_search_local_files_command_has_no_project_root_default() -> None:
+    command = web_server._round_command(
+        "search_local_files",
+        {"source": "search_local_files", "query": "Farmer's Delight", "output_dir": r"D:\tmp\crawler-output"},
+    )
+    joined = "\n".join(command)
+    assert_true("does_not_default_project_root", str(ROOT) not in joined, joined)
+    assert_true("empty_path_exposes_bad_payload", command[command.index("--path") + 1] == "", command)
+
+
 class FakeClient:
     def chat(self, messages: list[dict[str, Any]], *, temperature: float, max_tokens: int) -> str:  # noqa: ARG002
         return '{"handoff_brief":"调用关系：MCagent 将用户请求转交给 CrawlerAgent。","reason":"fake"}'
@@ -231,70 +241,62 @@ def test_direct_crawler_delegate_choice_is_corrected_to_temporary_extract() -> N
     assert_true("no_background_job", "job" not in result)
 
 
-def test_direct_crawler_mcagent_gap_request_forces_planned_workflow() -> None:
-    decision = {
-        "tool": "direct_answer",
-        "reason": "CrawlerAgent cannot ask MCagent directly.",
-        "collection_target": "问下MCAgent乌托邦整合包还缺哪些东西 你去网上找补给他",
-        "delivery_target": "human",
-    }
-    assert_true(
-        "forces_inter_agent_workflow",
-        web_server._should_force_crawler_mcagent_gap_workflow(
-            "crawler_agent",
-            "问下MCAgent乌托邦整合包还缺哪些东西 你去网上找补给他",
-            "direct_answer",
-            decision,
-        ),
+def test_structured_save_request_is_not_corrected_to_temporary_extract() -> None:
+    tmp = tempfile.TemporaryDirectory()
+    output_dir = Path(tmp.name) / "items"
+    question = (
+        "Use Crawler to open https://webscraper.io/test-sites/e-commerce/static/computers/laptops, "
+        "extract the first 5 products with name, price, and link, "
+        f"then save xlsx, csv, and json outputs to {output_dir}."
     )
-    assert_true(
-        "simple_direct_answer_not_forced",
-        not web_server._should_force_crawler_mcagent_gap_workflow(
-            "crawler_agent",
-            "你好",
-            "direct_answer",
-            {"tool": "direct_answer", "reason": "greeting"},
-        ),
+    fake_client = SequencedClient(
+        [
+            json.dumps(
+                {
+                    "tool": "delegate_crawler",
+                    "reason": "persistent structured browser collection is required",
+                    "collection_target": question,
+                    "delivery_target": "human",
+                    "action_plan": [{"step": 1, "tool": "delegate_crawler", "goal": "collect rows and save files"}],
+                },
+                ensure_ascii=False,
+            ),
+            '{"proceed":true,"tool":"delegate_crawler","reason":"confirmed persistent save"}',
+            '{"handoff_brief":"User directly asked CrawlerAgent to collect structured product rows and save xlsx/csv/json files.","reason":"handoff"}',
+        ]
     )
-    plan = web_server._default_mcagent_gap_action_plan()
-    assert_equal("plan_first_tool", plan[0]["tool"], "mcagent_context")
-    assert_equal("plan_second_tool", plan[1]["tool"], "delegate_crawler")
+    original_selector = web_server._selected_llm_client
+    original_delegate = web_server._start_crawler_job_from_crawler_tool
+    calls: list[dict[str, Any]] = []
 
+    def fake_delegate(config: AppConfig, payload: dict[str, Any], question: str, plan: dict[str, Any] | None = None):  # noqa: ARG001
+        calls.append({"payload": payload, "question": question, "plan": plan})
+        job = web_server.Job(id="structured-save-job", kind="crawler", title=question, status="queued", summary="queued")
+        job.result = {"plan": {"topic": question, "delivery_target": payload.get("delivery_target")}}
+        return job, True
 
-def test_direct_crawler_delegate_gap_request_is_rewritten_to_context_workflow() -> None:
-    decision = {
-        "tool": "delegate_crawler",
-        "reason": "collect after checking MCagent gaps",
-        "collection_target": "先检查MCagent本地资料中关于乌托邦整合包缺失的内容，然后去网上找补给他",
-        "delivery_target": "MCagent/RAG",
-    }
-    assert_true(
-        "forces_delegate_to_planned_workflow",
-        web_server._should_force_crawler_mcagent_gap_workflow(
-            "crawler_agent",
-            "问下MCAgent乌托邦整合包还缺哪些东西 你去网上找补给他",
-            "delegate_crawler",
-            decision,
-        ),
-    )
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake_client, "fake")  # type: ignore[assignment]
+    web_server._start_crawler_job_from_crawler_tool = fake_delegate  # type: ignore[assignment]
+    try:
+        result = web_server._chat_impl(
+            make_temp_config(Path(tmp.name)),
+            {
+                "agent": "crawler_agent",
+                "question": question,
+                "session_id": "structured-save-side-effect-test",
+                "model": "fake-model",
+            },
+        )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._start_crawler_job_from_crawler_tool = original_delegate  # type: ignore[assignment]
+        tmp.cleanup()
 
-
-def test_direct_crawler_router_error_gap_request_recovers_to_context_workflow() -> None:
-    decision = {
-        "tool": "router_error",
-        "reason": "Agent tool selector failed JSON parsing",
-        "collection_target": "问下MCAgent乌托邦整合包还缺哪些东西 你去网上找补给他",
-        "delivery_target": "",
-    }
-    assert_true(
-        "forces_router_error_to_planned_workflow",
-        web_server._should_force_crawler_mcagent_gap_workflow(
-            "crawler_agent",
-            "问下MCAgent乌托邦整合包还缺哪些东西 你去网上找补给他",
-            "router_error",
-            decision,
-        ),
-    )
+    statuses = [(step["stage"], step["status"]) for step in result.get("trace", [])]
+    assert_true("no_temporary_boundary_trace", ("decide", "side_effect_boundary_corrected") not in statuses, str(statuses))
+    assert_true("delegated", bool(calls), str(result))
+    assert_true("save_target_preserved", str(output_dir) in calls[0]["question"], calls[0]["question"])
+    assert_true("job_started", bool((result.get("job") or {}).get("id")), str(result))
 
 
 def test_mcagent_context_focus_expands_minecraft_utopia_aliases() -> None:
@@ -332,14 +334,20 @@ def test_successful_mcagent_context_filters_new_duplicate_context_tasks() -> Non
     assert_equal("remaining_sources", [item["source"] for item in filtered], ["web_discovery"])
 
 
-def test_runtime_status_request_bypasses_llm_router() -> None:
+def test_runtime_status_request_runs_after_agent_selects_status_tool() -> None:
     tmp = tempfile.TemporaryDirectory()
+    fake_client = SequencedClient(
+        [
+            json.dumps({"tool": "status", "reason": "inspect runtime state"}, ensure_ascii=False),
+            json.dumps({"proceed": True, "tool": "status", "reason": "confirmed"}, ensure_ascii=False),
+        ]
+    )
     original_selector = web_server._selected_llm_client
-    web_server._selected_llm_client = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("status must not call LLM"))  # type: ignore[assignment]
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake_client, "fake")  # type: ignore[assignment]
     try:
         result = web_server._chat_impl(
             make_temp_config(Path(tmp.name)),
-            {"agent": "mcagent_rag", "question": "状态", "session_id": "runtime-status-fast-path"},
+            {"agent": "mcagent_rag", "question": "状态", "session_id": "runtime-status-agent-selected"},
         )
     finally:
         web_server._selected_llm_client = original_selector  # type: ignore[assignment]
@@ -347,6 +355,8 @@ def test_runtime_status_request_bypasses_llm_router() -> None:
 
     statuses = [(step["stage"], step["status"]) for step in result.get("trace", [])]
     assert_true("status_tool_selected", ("decide", "tool_selected") in statuses)
+    assert_true("status_confirmed", ("status", "next_step_confirmed") in statuses)
+    assert_true("router_was_called", len(fake_client.calls) >= 2, str(len(fake_client.calls)))
     assert_true("status_answer", "本地库" in str(result.get("answer") or "") and bool(result.get("status")))
 
 
@@ -369,17 +379,24 @@ def test_mcagent_gap_delegation_overrides_human_delivery_to_rag() -> None:
         ]
     )
     original_selector = web_server._selected_llm_client
-    original_delegate = web_server._delegate_crawler_for_missing_data
+    original_send = web_server._send_agent_message
+    original_delegate = web_server._start_crawler_job_from_crawler_tool
     calls: list[dict[str, Any]] = []
 
-    def fake_delegate(config: AppConfig, payload: dict[str, Any], delegated_question: str, plan: dict[str, Any] | None = None):  # noqa: ARG001
-        calls.append({"payload": payload, "question": delegated_question, "plan": plan})
+    def fake_send(config: AppConfig, payload: dict[str, Any], *, from_agent: str, content: str, to_agent: str, emit: Any | None = None, metadata: dict[str, Any] | None = None, **kwargs: Any):  # noqa: ARG001
+        message = web_server.make_agent_message(from_agent, content, to_agent, metadata=metadata)
+        calls.append({"payload": {**payload, "delivery_target": message.metadata.get("delivery_target")}, "message": message, "question": message.content})
+        delegated_question = message.content
         job = web_server.Job(id="fake-mcagent-gap-job", kind="crawler", title=delegated_question, status="queued", summary="queued")
-        job.result = {"plan": {"topic": delegated_question, "delivery_target": payload.get("delivery_target")}}
-        return job, True
+        job.result = {"plan": {"topic": delegated_question, "delivery_target": message.metadata.get("delivery_target")}}
+        return {"answer": "我是 CrawlerAgent。采集任务已启动。", "agent": "crawler_agent", "job": web_server._job_to_dict(job)}
+
+    def fail_direct_start(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("MCagent must send AgentMessage to CrawlerAgent instead of starting crawler job directly")
 
     web_server._selected_llm_client = lambda *_args, **_kwargs: (fake_client, "fake")  # type: ignore[assignment]
-    web_server._delegate_crawler_for_missing_data = fake_delegate  # type: ignore[assignment]
+    web_server._send_agent_message = fake_send  # type: ignore[assignment]
+    web_server._start_crawler_job_from_crawler_tool = fail_direct_start  # type: ignore[assignment]
     try:
         result = web_server._chat_impl(
             make_temp_config(Path(tmp.name)),
@@ -392,13 +409,16 @@ def test_mcagent_gap_delegation_overrides_human_delivery_to_rag() -> None:
         )
     finally:
         web_server._selected_llm_client = original_selector  # type: ignore[assignment]
-        web_server._delegate_crawler_for_missing_data = original_delegate  # type: ignore[assignment]
+        web_server._send_agent_message = original_send  # type: ignore[assignment]
+        web_server._start_crawler_job_from_crawler_tool = original_delegate  # type: ignore[assignment]
         tmp.cleanup()
 
     assert_true("delegated", bool(calls))
+    assert_equal("message_from", calls[0]["message"].from_agent, "MCagent")
+    assert_equal("message_to", calls[0]["message"].to_agent, "CrawlerAgent")
     assert_equal("requested_by", result.get("delegation", {}).get("requested_by"), "user_via_mcagent")
     assert_equal("delivery_target", result.get("delegation", {}).get("delivery_target"), "MCagent/RAG")
-    assert_equal("payload_delivery", calls[0]["payload"].get("delivery_target"), "MCagent/RAG")
+    assert_equal("message_delivery", calls[0]["message"].metadata.get("delivery_target"), "MCagent/RAG")
 
 
 def test_delegate_confirmation_can_cancel_background_job() -> None:
@@ -436,7 +456,7 @@ def test_delegate_confirmation_can_cancel_background_job() -> None:
         ]
     )
     original_selector = web_server._selected_llm_client
-    original_delegate = web_server._delegate_crawler_for_missing_data
+    original_delegate = web_server._start_crawler_job_from_crawler_tool
     calls: list[dict[str, Any]] = []
 
     def fake_delegate(config: AppConfig, payload: dict[str, Any], delegated_question: str, plan: dict[str, Any] | None = None):  # noqa: ARG001
@@ -445,7 +465,7 @@ def test_delegate_confirmation_can_cancel_background_job() -> None:
         return job, True
 
     web_server._selected_llm_client = lambda *_args, **_kwargs: (fake_client, "fake")  # type: ignore[assignment]
-    web_server._delegate_crawler_for_missing_data = fake_delegate  # type: ignore[assignment]
+    web_server._start_crawler_job_from_crawler_tool = fake_delegate  # type: ignore[assignment]
     try:
         result = web_server._chat_impl(
             make_temp_config(Path(tmp.name)),
@@ -458,7 +478,7 @@ def test_delegate_confirmation_can_cancel_background_job() -> None:
         )
     finally:
         web_server._selected_llm_client = original_selector  # type: ignore[assignment]
-        web_server._delegate_crawler_for_missing_data = original_delegate  # type: ignore[assignment]
+        web_server._start_crawler_job_from_crawler_tool = original_delegate  # type: ignore[assignment]
         tmp.cleanup()
 
     assert_equal("no_background_job", calls, [])
@@ -467,21 +487,43 @@ def test_delegate_confirmation_can_cancel_background_job() -> None:
     assert_true("no_job_response", not result.get("job"), str(result.get("job")))
 
 
-def test_explicit_mcagent_to_crawler_handoff_starts_job_before_router() -> None:
+def test_explicit_mcagent_to_crawler_handoff_starts_job_after_agent_selects_delegate() -> None:
     tmp = tempfile.TemporaryDirectory()
     question = "\u8bf7\u5148\u68c0\u67e5\u672c\u5730\u8d44\u6599\u91cc\u4e4c\u6258\u90a6\u63a2\u9669\u4e4b\u65c5 / Utopian Journey \u6574\u5408\u5305\u8fd8\u7f3a\u54ea\u4e9b\u5185\u5bb9\uff0c\u7136\u540e\u8ba9 CrawlerAgent \u53bb\u7f51\u4e0a\u91c7\u96c6\u7f3a\u5931\u7684\u516c\u5f00\u8d44\u6599\u5e76\u5165\u5e93\u7ed9 MCagent/RAG \u4f7f\u7528\u3002"
-    original_delegate = web_server._delegate_crawler_for_missing_data
+    original_send = web_server._send_agent_message
+    original_delegate = web_server._start_crawler_job_from_crawler_tool
     original_selector = web_server._selected_llm_client
     calls: list[dict[str, Any]] = []
+    fake_client = SequencedClient(
+        [
+            json.dumps(
+                {
+                    "tool": "delegate_crawler",
+                    "reason": "Agent chose Crawler collection with RAG delivery.",
+                    "collection_target": question,
+                    "delivery_target": "MCagent/RAG",
+                },
+                ensure_ascii=False,
+            ),
+            json.dumps({"proceed": True, "tool": "delegate_crawler", "reason": "confirmed"}, ensure_ascii=False),
+            json.dumps({"handoff_brief": "MCagent transfers the user's collection request to CrawlerAgent.", "reason": "handoff"}, ensure_ascii=False),
+        ]
+    )
 
-    def fake_delegate(config: AppConfig, payload: dict[str, Any], delegated_question: str, plan: dict[str, Any] | None = None):  # noqa: ARG001
-        calls.append({"payload": payload, "question": delegated_question, "plan": plan})
+    def fake_send(config: AppConfig, payload: dict[str, Any], *, from_agent: str, content: str, to_agent: str, emit: Any | None = None, metadata: dict[str, Any] | None = None, **kwargs: Any):  # noqa: ARG001
+        message = web_server.make_agent_message(from_agent, content, to_agent, metadata=metadata)
+        calls.append({"payload": {**payload, "requested_by": message.metadata.get("requested_by"), "delivery_target": message.metadata.get("delivery_target")}, "message": message, "question": message.content})
+        delegated_question = message.content
         job = web_server.Job(id="fake-fast-handoff-job", kind="crawler", title=delegated_question, status="queued", summary="queued")
-        job.result = {"plan": {"topic": delegated_question, "delivery_target": payload.get("delivery_target")}}
-        return job, True
+        job.result = {"plan": {"topic": delegated_question, "delivery_target": message.metadata.get("delivery_target")}}
+        return {"answer": "我是 CrawlerAgent。采集任务已启动。", "agent": "crawler_agent", "job": web_server._job_to_dict(job)}
 
-    web_server._delegate_crawler_for_missing_data = fake_delegate  # type: ignore[assignment]
-    web_server._selected_llm_client = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("router should not be called"))  # type: ignore[assignment]
+    def fail_direct_start(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("MCagent must send AgentMessage to CrawlerAgent instead of starting crawler job directly")
+
+    web_server._send_agent_message = fake_send  # type: ignore[assignment]
+    web_server._start_crawler_job_from_crawler_tool = fail_direct_start  # type: ignore[assignment]
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake_client, "fake")  # type: ignore[assignment]
     try:
         result = web_server._chat_impl(
             make_temp_config(Path(tmp.name)),
@@ -493,7 +535,8 @@ def test_explicit_mcagent_to_crawler_handoff_starts_job_before_router() -> None:
             },
         )
     finally:
-        web_server._delegate_crawler_for_missing_data = original_delegate  # type: ignore[assignment]
+        web_server._send_agent_message = original_send  # type: ignore[assignment]
+        web_server._start_crawler_job_from_crawler_tool = original_delegate  # type: ignore[assignment]
         web_server._selected_llm_client = original_selector  # type: ignore[assignment]
         tmp.cleanup()
 
@@ -504,13 +547,14 @@ def test_explicit_mcagent_to_crawler_handoff_starts_job_before_router() -> None:
     assert_true("clean_target_no_agent_damage", "Crawle ent" not in calls[0]["question"] and "给 / 使用" not in calls[0]["question"], calls[0]["question"])
     assert_true("has_job", result.get("job", {}).get("id") == "fake-fast-handoff-job")
     statuses = [(item.get("stage"), item.get("status")) for item in result.get("trace") or []]
-    assert_true("fast_trace", ("delegate", "explicit_mcagent_handoff_fast_path") in statuses, str(statuses))
+    assert_true("tool_selected", ("decide", "tool_selected") in statuses, str(statuses))
+    assert_true("delegate_confirmed", ("delegate", "next_step_confirmed") in statuses, str(statuses))
 
 
 def test_recent_crawler_audit_question_answers_history_without_new_collection() -> None:
     tmp = tempfile.TemporaryDirectory()
     question = "刚才 Crawler 采集农夫乐事时，哪些来源被接受，哪些被拒绝，为什么？是否已经入库？"
-    original_delegate = web_server._delegate_crawler_for_missing_data
+    original_delegate = web_server._start_crawler_job_from_crawler_tool
     original_selector = web_server._selected_llm_client
     original_jobs = dict(web_server.JOBS)
     original_jobs_order = list(web_server.JOBS_ORDER)
@@ -520,8 +564,14 @@ def test_recent_crawler_audit_question_answers_history_without_new_collection() 
         calls.append({"payload": payload, "question": delegated_question, "plan": plan})
         return web_server.Job(id="should-not-start", kind="crawler", title="bad"), True
 
-    web_server._delegate_crawler_for_missing_data = fake_delegate  # type: ignore[assignment]
-    web_server._selected_llm_client = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("router should not be called"))  # type: ignore[assignment]
+    web_server._start_crawler_job_from_crawler_tool = fake_delegate  # type: ignore[assignment]
+    fake_client = SequencedClient(
+        [
+            json.dumps({"tool": "crawler_audit", "reason": "read recent Crawler audit"}, ensure_ascii=False),
+            json.dumps({"proceed": True, "tool": "crawler_audit", "reason": "confirmed"}, ensure_ascii=False),
+        ]
+    )
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake_client, "fake")  # type: ignore[assignment]
     try:
         with web_server.JOBS_LOCK:
             web_server.JOBS.clear()
@@ -540,7 +590,7 @@ def test_recent_crawler_audit_question_answers_history_without_new_collection() 
             web_server.JOBS.clear()
             web_server.JOBS.update(original_jobs)
             web_server.JOBS_ORDER[:] = original_jobs_order
-        web_server._delegate_crawler_for_missing_data = original_delegate  # type: ignore[assignment]
+        web_server._start_crawler_job_from_crawler_tool = original_delegate  # type: ignore[assignment]
         web_server._selected_llm_client = original_selector  # type: ignore[assignment]
         tmp.cleanup()
 
@@ -656,48 +706,6 @@ def test_recent_crawler_audit_question_matches_create_instead_of_higher_activity
     assert_true("mentions_create", "Create" in str((answer or {}).get("answer") or ""))
 
 
-def test_explicit_mcagent_to_crawler_type_discovery_stays_neutral() -> None:
-    question = (
-        "\u8bf7\u4f60\u4f5c\u4e3a MCagent \u8f6c\u8fbe CrawlerAgent\uff1a"
-        "\u4ee5\u519c\u592b\u4e50\u4e8b / Farmer's Delight \u4e3a\u4f8b\u5b50\u8fdb\u884c\u6293\u53d6\u6d4b\u8bd5\uff0c"
-        "Crawler \u81ea\u5df1\u5224\u65ad\u5b83\u662f\u6a21\u7ec4\u8fd8\u662f\u6574\u5408\u5305\uff1b"
-        "\u5982\u679c\u4e0d\u662f\u6574\u5408\u5305\uff0c\u4e0d\u8981\u5f3a\u884c\u8dd1\u5305\u4f53\u4e0b\u8f7d\u3002"
-    )
-    cleaned = web_server._clean_explicit_mcagent_crawler_collection_target(question)
-    assert_true("keeps_alias", "\u519c\u592b\u4e50\u4e8b / Farmer's Delight" in cleaned, cleaned)
-    assert_true("neutral_collection", "\u516c\u5f00\u8d44\u6599\u91c7\u96c6" in cleaned, cleaned)
-    assert_true("keeps_type_decision", "\u81ea\u884c\u5224\u65ad\u76ee\u6807\u7c7b\u578b" in cleaned, cleaned)
-    assert_true("no_forced_modpack_goal", "\u6574\u5408\u5305\u5b8c\u6574\u516c\u5f00\u8d44\u6599" not in cleaned, cleaned)
-    assert_true("no_forced_archive_gap", "\u4e0b\u8f7d/\u5305\u4f53\u7ebf\u7d22" not in cleaned, cleaned)
-
-
-def test_explicit_mcagent_to_crawler_preserves_coverage_goals() -> None:
-    question = (
-        "请先由 MCagent 检查本地资料里‘农夫乐事 / Farmer's Delight’还缺哪些公开资料，然后转达 CrawlerAgent 去采集补充，"
-        "交付给 MCagent/RAG 使用。CrawlerAgent 要自己判断这是模组还是整合包，不要强制包体下载；"
-        "需要覆盖简介、版本/加载器、下载/项目页、玩法机制、食物/烹饪系统、入库可引用资料，并在完成后说明哪些来源接受、哪些拒绝、拒绝原因、是否入库。"
-    )
-    cleaned = web_server._clean_explicit_mcagent_crawler_collection_target(question)
-    assert_true("keeps_alias", "农夫乐事 / Farmer's Delight" in cleaned, cleaned)
-    assert_true("keeps_version_loader", "版本/加载器" in cleaned, cleaned)
-    assert_true("keeps_project_page", "下载/项目页" in cleaned, cleaned)
-    assert_true("keeps_gameplay", "玩法机制" in cleaned, cleaned)
-    assert_true("keeps_cooking", "食物/烹饪系统" in cleaned, cleaned)
-    assert_true("keeps_type_decision", "自行判断目标类型" in cleaned, cleaned)
-    assert_true("no_forced_archive_gap", "下载/包体线索" not in cleaned, cleaned)
-
-
-def test_no_force_archive_download_does_not_block_crawler_handoff() -> None:
-    question = (
-        "请先由 MCagent 检查本地资料里‘农夫乐事 / Farmer's Delight’还缺哪些公开资料，"
-        "然后转达 CrawlerAgent 去采集补充，交付给 MCagent/RAG 使用。"
-        "CrawlerAgent 要自己判断这是模组还是整合包，不要强制包体下载；"
-        "采集完成后请保留自审报告：哪些来源被接受、哪些被拒绝、拒绝原因、是否入库。"
-    )
-    assert_equal("not_forbidden", web_server._forbids_crawler_handoff(question), False)
-    assert_equal("fast_handoff", web_server._should_start_explicit_mcagent_crawler_handoff_fast("mcagent_rag", question), True)
-
-
 def test_modrinth_plain_mod_task_does_not_parse_modpack_contents() -> None:
     command = web_server._round_command(
         "modrinth",
@@ -789,41 +797,19 @@ def test_modrinth_explicit_modpack_manifest_task_can_parse_contents() -> None:
     assert_true("has_modpack_contents", "--include-modpack-contents" in command, str(command))
 
 
-def test_mcagent_explicit_crawler_request_forces_planned_delegate() -> None:
-    question = "现在乌托邦整合包你本地还缺哪些资料，列出来，然后让 Crawler 去补充。"
-    decision = {
-        "tool": "answer",
-        "reason": "list gaps only",
-        "collection_target": question,
-        "delivery_target": "human",
-    }
-    assert_true(
-        "force_planned_delegate",
-        web_server._should_force_mcagent_planned_delegate("mcagent_rag", question, "answer", decision, []),
-    )
-    assert_true(
-        "respect_no_crawler",
-        not web_server._should_force_mcagent_planned_delegate(
-            "mcagent_rag",
-            "列出缺口，但不要交给 Crawler。",
-            "answer",
-            {"tool": "answer", "reason": "answer only", "collection_target": "", "delivery_target": "human"},
-            [],
-        ),
-    )
-
-
-def test_direct_crawler_mcagent_gap_request_delegates_when_local_empty() -> None:
+def test_direct_crawler_mcagent_gap_request_corrects_direct_answer_to_delegation() -> None:
     tmp = tempfile.TemporaryDirectory()
     fake_client = SequencedClient(
         [
             '{"tool":"direct_answer","reason":"CrawlerAgent cannot ask MCagent directly.","collection_target":"问下MCAgent乌托邦整合包还缺哪些东西 你去网上找补给他","delivery_target":"human"}',
             '{"proceed":true,"tool":"direct_answer","reason":"mistaken direct answer"}',
-            '{"handoff_brief":"用户直接委托 CrawlerAgent：先参考 MCagent/RAG 空缺，再采集乌托邦整合包缺失资料。","reason":"handoff"}',
+            '{"missing_side_effect":true,"tool":"delegate_crawler","action":"execute_selected_tool","reason":"用户要求先问 MCagent 再继续采集补给他，direct_answer 没有执行跨 Agent 沟通和后台采集。","collection_target":"问下MCAgent乌托邦整合包还缺哪些东西，然后去网上找补给他","delivery_target":"MCagent/RAG"}',
+            '{"proceed":true,"tool":"delegate_crawler","reason":"confirmed corrected delegation"}',
+            '{"handoff_brief":"CrawlerAgent 误选直接回答后，经完整性审查改为通过 AgentMessage 执行采集任务：先询问 MCagent 缺口，再补充乌托邦整合包资料。","reason":"handoff"}',
         ]
     )
     original_selector = web_server._selected_llm_client
-    original_delegate = web_server._delegate_crawler_for_missing_data
+    original_delegate = web_server._start_crawler_job_from_crawler_tool
     original_retrieve = web_server.RagRetrievalService.retrieve
     calls: list[dict[str, Any]] = []
 
@@ -834,11 +820,8 @@ def test_direct_crawler_mcagent_gap_request_delegates_when_local_empty() -> None
         return job, True
 
     web_server._selected_llm_client = lambda *_args, **_kwargs: (fake_client, "fake")  # type: ignore[assignment]
-    web_server._delegate_crawler_for_missing_data = fake_delegate  # type: ignore[assignment]
-    def fail_if_route_reads_rag(*args, **kwargs):  # noqa: ANN002, ANN003
-        raise AssertionError("direct Crawler mcagent_context+collection must run inside the Crawler job, not as chat-turn retrieval")
-
-    web_server.RagRetrievalService.retrieve = fail_if_route_reads_rag  # type: ignore[assignment]
+    web_server._start_crawler_job_from_crawler_tool = fake_delegate  # type: ignore[assignment]
+    web_server.RagRetrievalService.retrieve = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("corrected delegation should not run retrieval"))  # type: ignore[assignment]
     try:
         result = web_server._chat_impl(
             make_temp_config(Path(tmp.name)),
@@ -851,73 +834,22 @@ def test_direct_crawler_mcagent_gap_request_delegates_when_local_empty() -> None
         )
     finally:
         web_server._selected_llm_client = original_selector  # type: ignore[assignment]
-        web_server._delegate_crawler_for_missing_data = original_delegate  # type: ignore[assignment]
+        web_server._start_crawler_job_from_crawler_tool = original_delegate  # type: ignore[assignment]
         web_server.RagRetrievalService.retrieve = original_retrieve  # type: ignore[assignment]
         tmp.cleanup()
 
     statuses = [(step["stage"], step["status"]) for step in result.get("trace", [])]
-    assert_true("inter_agent_correction_trace", ("decide", "inter_agent_workflow_corrected") in statuses)
-    assert_true("delegated", bool(calls))
-    assert_equal("requested_by", result.get("delegation", {}).get("requested_by"), "user")
+    assert_true("direct_answer_selected", ("decide", "tool_selected") in statuses, str(statuses))
+    assert_true("completeness_gap_found", ("plan", "route_completeness_gap") in statuses, str(statuses))
+    assert_true("corrected_to_delegation", ("decide", "direct_answer_corrected_to_delegation") in statuses, str(statuses))
+    assert_true("delegate_confirmed", ("delegate", "next_step_confirmed") in statuses, str(statuses))
+    assert_true("delegated_after_correction", bool(calls), str(result))
+    assert_equal("agent_identity", result.get("agent"), "crawler_agent")
     assert_equal("delivery_target", result.get("delegation", {}).get("delivery_target"), "MCagent/RAG")
-    assert_true("mentions_topic", "乌托邦" in calls[0]["question"])
-    assert_true("clean_collection_target", "CrawlerAgent 应" not in calls[0]["question"] and "用户原始目标" not in calls[0]["question"])
-    summary = calls[0]["payload"].get("session_summary") or {}
-    assert_true("planning_instruction_carried", "mcagent_context" in str(summary.get("planning_instruction") or ""))
+    assert_true("started_crawler_job", "采集任务已启动" in str(result.get("answer") or ""), str(result.get("answer") or ""))
 
 
-def test_crawler_mcagent_context_with_collection_continues_to_delegate() -> None:
-    tmp = tempfile.TemporaryDirectory()
-    fake_client = SequencedClient(
-        [
-            '{"tool":"mcagent_context","reason":"inspect local gaps first","rag_focus":"乌托邦整合包缺口","collection_target":"问下MCAgent乌托邦整合包还缺哪些东西 你去网上找补给他","delivery_target":"MCagent/RAG","action_plan":[{"step":1,"tool":"mcagent_context","goal":"inspect local gaps"},{"step":2,"tool":"delegate_crawler","goal":"collect missing data"}]}',
-            '{"proceed":true,"tool":"mcagent_context","reason":"context first"}',
-            '{"handoff_brief":"用户直接委托 CrawlerAgent：根据 MCagent/RAG 缺口采集乌托邦整合包资料。","reason":"handoff"}',
-        ]
-    )
-    original_selector = web_server._selected_llm_client
-    original_delegate = web_server._delegate_crawler_for_missing_data
-    original_retrieve = web_server.RagRetrievalService.retrieve
-    calls: list[dict[str, Any]] = []
-
-    def fake_delegate(config: AppConfig, payload: dict[str, Any], question: str, plan: dict[str, Any] | None = None):  # noqa: ARG001
-        calls.append({"payload": payload, "question": question, "plan": plan})
-        job = web_server.Job(id="fake-crawler-job-2", kind="crawler", title=question, status="queued", summary="queued")
-        job.result = {"plan": {"topic": question, "delivery_target": payload.get("delivery_target")}}
-        return job, True
-
-    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake_client, "fake")  # type: ignore[assignment]
-    web_server._delegate_crawler_for_missing_data = fake_delegate  # type: ignore[assignment]
-    web_server.RagRetrievalService.retrieve = (  # type: ignore[assignment]
-        lambda self, *args, **kwargs: SimpleNamespace(retrieval_plan=None, rough_results=[], selected=[])
-    )
-    try:
-        result = web_server._chat_impl(
-            make_temp_config(Path(tmp.name)),
-            {
-                "agent": "crawler_agent",
-                "question": "问下MCAgent乌托邦整合包还缺哪些东西 你去网上找补给他",
-                "session_id": "direct-crawler-mcagent-context-then-delegate-test",
-                "model": "fake-model",
-            },
-        )
-    finally:
-        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
-        web_server._delegate_crawler_for_missing_data = original_delegate  # type: ignore[assignment]
-        web_server.RagRetrievalService.retrieve = original_retrieve  # type: ignore[assignment]
-        tmp.cleanup()
-
-    statuses = [(step["stage"], step["status"]) for step in result.get("trace", [])]
-    assert_true("mcagent_context_trace", ("decide", "mcagent_context_selected") in statuses)
-    assert_true("deferred_to_job", ("decide", "mcagent_context_deferred_to_crawler_job") in statuses)
-    assert_true("delegated_after_context", bool(calls))
-    assert_equal("delivery_target", result.get("delegation", {}).get("delivery_target"), "MCagent/RAG")
-    assert_true("job_task_keeps_clean_topic", "乌托邦" in calls[0]["question"] and "mcagent_context" not in calls[0]["question"])
-    summary = calls[0]["payload"].get("session_summary") or {}
-    assert_true("planning_instruction_carried", "mcagent_context" in str(summary.get("planning_instruction") or ""))
-
-
-def test_direct_crawler_delegate_choice_runs_as_crawler_context_workflow() -> None:
+def test_direct_crawler_delegate_choice_starts_crawler_job_without_forced_context_rewrite() -> None:
     tmp = tempfile.TemporaryDirectory()
     fake_client = SequencedClient(
         [
@@ -927,7 +859,7 @@ def test_direct_crawler_delegate_choice_runs_as_crawler_context_workflow() -> No
         ]
     )
     original_selector = web_server._selected_llm_client
-    original_delegate = web_server._delegate_crawler_for_missing_data
+    original_delegate = web_server._start_crawler_job_from_crawler_tool
     original_retrieve = web_server.RagRetrievalService.retrieve
     calls: list[dict[str, Any]] = []
 
@@ -938,7 +870,7 @@ def test_direct_crawler_delegate_choice_runs_as_crawler_context_workflow() -> No
         return job, True
 
     web_server._selected_llm_client = lambda *_args, **_kwargs: (fake_client, "fake")  # type: ignore[assignment]
-    web_server._delegate_crawler_for_missing_data = fake_delegate  # type: ignore[assignment]
+    web_server._start_crawler_job_from_crawler_tool = fake_delegate  # type: ignore[assignment]
     web_server.RagRetrievalService.retrieve = (  # type: ignore[assignment]
         lambda self, *args, **kwargs: SimpleNamespace(retrieval_plan=None, rough_results=[], selected=[])
     )
@@ -954,12 +886,13 @@ def test_direct_crawler_delegate_choice_runs_as_crawler_context_workflow() -> No
         )
     finally:
         web_server._selected_llm_client = original_selector  # type: ignore[assignment]
-        web_server._delegate_crawler_for_missing_data = original_delegate  # type: ignore[assignment]
+        web_server._start_crawler_job_from_crawler_tool = original_delegate  # type: ignore[assignment]
         web_server.RagRetrievalService.retrieve = original_retrieve  # type: ignore[assignment]
         tmp.cleanup()
 
     statuses = [(step["stage"], step["status"]) for step in result.get("trace", [])]
-    assert_true("inter_agent_correction_trace", ("decide", "inter_agent_workflow_corrected") in statuses)
+    assert_true("tool_selected", ("decide", "tool_selected") in statuses, str(statuses))
+    assert_true("delegate_confirmed", ("delegate", "next_step_confirmed") in statuses, str(statuses))
     assert_true("delegated", bool(calls))
     assert_equal("agent_identity", result.get("agent"), "crawler_agent")
     assert_equal("requested_by", result.get("delegation", {}).get("requested_by"), "user")
@@ -968,38 +901,245 @@ def test_direct_crawler_delegate_choice_runs_as_crawler_context_workflow() -> No
     assert_true("no_self_handoff_voice", "转交给 CrawlerAgent" not in str(result.get("answer") or ""))
     assert_true("clean_collection_target", "CrawlerAgent 应" not in calls[0]["question"] and "用户原始目标" not in calls[0]["question"])
     summary = calls[0]["payload"].get("session_summary") or {}
-    assert_true("planning_instruction_carried", "mcagent_context" in str(summary.get("planning_instruction") or ""))
+    assert_true("no_forced_planning_instruction", "mcagent_context" not in str(summary.get("planning_instruction") or ""))
+
+
+def test_crawler_collection_request_message_does_not_force_tool_choice() -> None:
+    tmp = tempfile.TemporaryDirectory()
+    fake_client = SequencedClient(
+        [
+            '{"tool":"answer","reason":"mistakenly treated delegated collection request as answer","collection_target":"Utopia gap fill","delivery_target":"MCagent/RAG"}',
+            '{"proceed":true,"tool":"answer","reason":"confirmed mistaken route"}',
+            '{"handoff_brief":"MCagent sent a collection request to CrawlerAgent through AgentMessage.","reason":"handoff"}',
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    original_delegate = web_server._start_crawler_job_from_crawler_tool
+    calls: list[dict[str, Any]] = []
+
+    def fake_delegate(config: AppConfig, payload: dict[str, Any], question: str, plan: dict[str, Any] | None = None):  # noqa: ARG001
+        calls.append({"payload": payload, "question": question, "plan": plan})
+        job = web_server.Job(id="collection-request-job", kind="crawler", title=question, status="queued", summary="queued")
+        job.result = {"plan": {"topic": question, "delivery_target": payload.get("delivery_target")}}
+        return job, True
+
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake_client, "fake")  # type: ignore[assignment]
+    web_server._start_crawler_job_from_crawler_tool = fake_delegate  # type: ignore[assignment]
+    try:
+        result = web_server._send_agent_message(
+            make_temp_config(Path(tmp.name)),
+            {
+                "session_id": "collection-request-contract",
+                "model": "fake-model",
+                "delivery_target": "MCagent/RAG",
+                "requested_by": "user_via_mcagent",
+            },
+            from_agent="MCagent",
+            content="Utopia gap fill",
+            to_agent="CrawlerAgent",
+            intent="collection_request",
+            conversation_id="collection-request-contract",
+            metadata={"tool": "delegate_crawler", "delivery_target": "MCagent/RAG", "requested_by": "user_via_mcagent"},
+        )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._start_crawler_job_from_crawler_tool = original_delegate  # type: ignore[assignment]
+        tmp.cleanup()
+
+    assert_true("job_not_forced", not calls, str(calls))
+    assert_true("no_job_response", not result.get("job"), str(result))
+    statuses = [(step.get("stage"), step.get("status")) for step in result.get("trace") or []]
+    assert_true("message_context_trace", ("message", "collection_request_received_for_agent_decision") in statuses, str(statuses))
+
+
+def test_crawler_collection_request_message_starts_job_after_crawler_selects_delegate() -> None:
+    tmp = tempfile.TemporaryDirectory()
+    fake_client = SequencedClient(
+        [
+            '{"tool":"delegate_crawler","reason":"CrawlerAgent accepts the received collection request and chooses background collection.","collection_target":"Utopia gap fill","delivery_target":"MCagent/RAG"}',
+            '{"proceed":true,"tool":"delegate_crawler","reason":"confirmed by CrawlerAgent"}',
+            '{"handoff_brief":"CrawlerAgent received MCagent collection request and chose to collect public evidence for MCagent/RAG.","reason":"handoff"}',
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    original_delegate = web_server._start_crawler_job_from_crawler_tool
+    calls: list[dict[str, Any]] = []
+
+    def fake_delegate(config: AppConfig, payload: dict[str, Any], question: str, plan: dict[str, Any] | None = None):  # noqa: ARG001
+        calls.append({"payload": payload, "question": question, "plan": plan})
+        job = web_server.Job(id="collection-request-job", kind="crawler", title=question, status="queued", summary="queued")
+        job.result = {"plan": {"topic": question, "delivery_target": payload.get("delivery_target")}}
+        return job, True
+
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake_client, "fake")  # type: ignore[assignment]
+    web_server._start_crawler_job_from_crawler_tool = fake_delegate  # type: ignore[assignment]
+    try:
+        result = web_server._send_agent_message(
+            make_temp_config(Path(tmp.name)),
+            {
+                "session_id": "collection-request-crawler-selects-delegate",
+                "model": "fake-model",
+                "delivery_target": "MCagent/RAG",
+                "requested_by": "user_via_mcagent",
+            },
+            from_agent="MCagent",
+            content="Utopia gap fill",
+            to_agent="CrawlerAgent",
+            intent="collection_request",
+            conversation_id="collection-request-crawler-selects-delegate",
+            metadata={"tool": "delegate_crawler", "delivery_target": "MCagent/RAG", "requested_by": "user_via_mcagent"},
+        )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._start_crawler_job_from_crawler_tool = original_delegate  # type: ignore[assignment]
+        tmp.cleanup()
+
+    assert_true("job_started_after_crawler_choice", bool(calls))
+    assert_equal("crawler_agent_started_own_tool", calls[0]["payload"].get("agent"), "crawler_agent")
+    assert_true("job_response", bool(result.get("job", {}).get("id")), str(result))
+    assert_equal("delegation_delivery", result.get("delegation", {}).get("delivery_target"), "MCagent/RAG")
+    statuses = [(step.get("stage"), step.get("status")) for step in result.get("trace") or []]
+    assert_true("message_context_trace", ("message", "collection_request_received_for_agent_decision") in statuses, str(statuses))
+    assert_true("tool_selected_trace", ("decide", "tool_selected") in statuses, str(statuses))
+
+def test_direct_crawler_planned_workflow_preserves_selected_action_plan_for_job() -> None:
+    tmp = tempfile.TemporaryDirectory()
+    fake_client = SequencedClient(
+        [
+            '{"tool":"planned_workflow","reason":"ask MCagent then collect","collection_target":"根据 MCagent/RAG 对乌托邦整合包的缺口，去网上补齐资料","delivery_target":"MCagent/RAG","action_plan":[{"step":1,"tool":"mcagent_context","goal":"询问 MCagent/RAG 本地已有证据和缺口"},{"step":2,"tool":"delegate_crawler","goal":"启动后台采集并交付给 MCagent/RAG"}]}',
+            '{"proceed":true,"tool":"planned_workflow","reason":"confirmed"}',
+            '{"handoff_brief":"用户直接委托 CrawlerAgent：先询问 MCagent/RAG 缺口，再采集乌托邦整合包资料。","reason":"handoff"}',
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    original_delegate = web_server._start_crawler_job_from_crawler_tool
+    original_retrieve = web_server.RagRetrievalService.retrieve
+    calls: list[dict[str, Any]] = []
+
+    def fake_delegate(config: AppConfig, payload: dict[str, Any], question: str, plan: dict[str, Any] | None = None):  # noqa: ARG001
+        calls.append({"payload": payload, "question": question, "plan": plan})
+        job = web_server.Job(id="fake-crawler-job-plan", kind="crawler", title=question, status="queued", summary="queued")
+        job.result = {"plan": {"topic": question, "delivery_target": payload.get("delivery_target")}}
+        return job, True
+
+    def fail_retrieve(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("CrawlerAgent planned_workflow should start a background job, not run chat-turn RAG retrieval")
+
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake_client, "fake")  # type: ignore[assignment]
+    web_server._start_crawler_job_from_crawler_tool = fake_delegate  # type: ignore[assignment]
+    web_server.RagRetrievalService.retrieve = fail_retrieve  # type: ignore[assignment]
+    try:
+        result = web_server._chat_impl(
+            make_temp_config(Path(tmp.name)),
+            {
+                "agent": "crawler_agent",
+                "question": "问下MCAgent乌托邦整合包还缺哪些东西 你去网上找补给他",
+                "session_id": "direct-crawler-planned-workflow-selected-plan-test",
+                "model": "fake-model",
+            },
+        )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._start_crawler_job_from_crawler_tool = original_delegate  # type: ignore[assignment]
+        web_server.RagRetrievalService.retrieve = original_retrieve  # type: ignore[assignment]
+        tmp.cleanup()
+
+    assert_true("delegated", bool(calls))
+    assert_equal("agent_identity", result.get("agent"), "crawler_agent")
+    summary = calls[0]["payload"].get("session_summary") or {}
+    selected = summary.get("selected_action_plan") or []
+    assert_true("selected_plan_preserved", any(isinstance(item, dict) and item.get("tool") == "mcagent_context" for item in selected), str(selected))
+    assert_true("answer_crawler_voice", str(result.get("answer") or "").startswith("我是 CrawlerAgent。"))
+
+
+def test_direct_crawler_mcagent_context_step_with_delegate_starts_background_job() -> None:
+    tmp = tempfile.TemporaryDirectory()
+    fake_client = SequencedClient(
+        [
+            '{"tool":"mcagent_context","reason":"ask MCagent first","collection_target":"乌托邦整合包缺口","delivery_target":"MCagent/RAG","action_plan":[{"step":1,"tool":"mcagent_context","goal":"询问 MCagent/RAG 本地已有证据和缺口"},{"step":2,"tool":"delegate_crawler","goal":"启动后台采集并交付给 MCagent/RAG"}]}',
+            '{"proceed":true,"tool":"mcagent_context","reason":"confirmed"}',
+            '{"handoff_brief":"CrawlerAgent 先问 MCagent，再继续采集。","reason":"handoff"}',
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    original_delegate = web_server._start_crawler_job_from_crawler_tool
+    original_retrieve = web_server.RagRetrievalService.retrieve
+    calls: list[dict[str, Any]] = []
+
+    def fake_delegate(config: AppConfig, payload: dict[str, Any], question: str, plan: dict[str, Any] | None = None):  # noqa: ARG001
+        calls.append({"payload": payload, "question": question, "plan": plan})
+        job = web_server.Job(id="fake-crawler-mcagent-context-job", kind="crawler", title=question, status="queued", summary="queued")
+        job.result = {"plan": {"topic": question, "delivery_target": payload.get("delivery_target")}}
+        return job, True
+
+    def fail_retrieve(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("CrawlerAgent mcagent_context+delegate workflow must start a background job, not answer with chat-turn RAG")
+
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake_client, "fake")  # type: ignore[assignment]
+    web_server._start_crawler_job_from_crawler_tool = fake_delegate  # type: ignore[assignment]
+    web_server.RagRetrievalService.retrieve = fail_retrieve  # type: ignore[assignment]
+    try:
+        result = web_server._chat_impl(
+            make_temp_config(Path(tmp.name)),
+            {
+                "agent": "crawler_agent",
+                "question": "问下MCAgent乌托邦整合包还缺哪些东西 你去网上找补给他",
+                "session_id": "direct-crawler-mcagent-context-plus-delegate-test",
+                "model": "fake-model",
+            },
+        )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._start_crawler_job_from_crawler_tool = original_delegate  # type: ignore[assignment]
+        web_server.RagRetrievalService.retrieve = original_retrieve  # type: ignore[assignment]
+        tmp.cleanup()
+
+    assert_true("delegated", bool(calls))
+    assert_true("job_response", bool(result.get("job", {}).get("id")), str(result))
+    statuses = [(step.get("stage"), step.get("status")) for step in result.get("trace") or []]
+    assert_true("deferred_context_step", ("decide", "mcagent_context_deferred_to_background_workflow") in statuses, str(statuses))
 
 
 def test_crawler_job_can_execute_mcagent_context_tool() -> None:
     tmp = tempfile.TemporaryDirectory()
-    original_retriever = web_server.Retriever
-    original_generate = web_server._generate_grounded_answer
+    original_send = web_server._send_agent_message
+    calls: list[dict[str, Any]] = []
 
-    class FakeRetriever:
-        def __init__(self, config: AppConfig):  # noqa: ARG002
-            pass
+    def fake_send(config: AppConfig, payload: dict[str, Any], *, from_agent: str, content: str, to_agent: str, emit: Any | None = None, conversation_id: str = "", **kwargs: Any) -> dict[str, Any]:  # noqa: ARG001
+        message = web_server.make_agent_message(from_agent, content, to_agent, conversation_id=conversation_id)
+        calls.append({"payload": payload, "message": message})
+        reply = web_server.make_agent_message(
+            "MCagent",
+            "MCagent 回复 CrawlerAgent：本地已有基础介绍，缺少完整模组列表、任务线和 Boss 攻略。",
+            "CrawlerAgent",
+            intent="agent_reply",
+            conversation_id=message.conversation_id,
+            reply_to=message.message_id,
+        )
+        return {
+            "answer": reply.content,
+            "agent": "mcagent_rag",
+            "agent_message": reply.to_dict(),
+            "sources": [
+                {
+                    "rank": 1,
+                    "score": 9.5,
+                    "title": "乌托邦探险之旅本地资料",
+                    "source_path": str(Path(tmp.name) / "utopia.md"),
+                    "url": "https://example.test/utopia",
+                    "text": "乌托邦探险之旅已有基础介绍，但缺少完整模组列表、任务线和 Boss 攻略。",
+                    "metadata": {},
+                }
+            ],
+            "evidence": {"verdict": "insufficient", "reasons": ["缺少完整模组列表", "缺少任务线"]},
+            "trace": [
+                {"stage": "message", "status": "received", "detail": message.to_dict()},
+                {"stage": "decide", "status": "tool_selected", "detail": {"tool": "answer"}},
+                {"stage": "retrieve", "status": "next_step_confirmed", "detail": {"tool": "local_rag_search"}},
+            ],
+        }
 
-        def search(self, query: str, top_k: int, plan: Any | None = None, session_summary: dict[str, Any] | None = None):  # noqa: ARG002
-            return [
-                SearchResult(
-                    rank=1,
-                    score=9.5,
-                    chunk_id=1,
-                    document_id=1,
-                    chunk_index=0,
-                    title="乌托邦探险之旅本地资料",
-                    source_path=str(Path(tmp.name) / "utopia.md"),
-                    url="https://example.test/utopia",
-                    text="乌托邦探险之旅已有基础介绍，但缺少完整模组列表、任务线和 Boss 攻略。",
-                    metadata={},
-                )
-            ]
-
-    web_server.Retriever = FakeRetriever  # type: ignore[assignment]
-    web_server._generate_grounded_answer = (  # type: ignore[assignment]
-        lambda *args, **kwargs: ("MCagent 回复 CrawlerAgent：本地已有基础介绍，缺少完整模组列表、任务线和 Boss 攻略。", "context")
-    )
+    web_server._send_agent_message = fake_send  # type: ignore[assignment]
     try:
         result = web_server._run_mcagent_context_tool(
             make_temp_config(Path(tmp.name)),
@@ -1008,25 +1148,71 @@ def test_crawler_job_can_execute_mcagent_context_tool() -> None:
             {"gaps": ["完整模组列表", "任务线"]},
         )
     finally:
-        web_server.Retriever = original_retriever  # type: ignore[assignment]
-        web_server._generate_grounded_answer = original_generate  # type: ignore[assignment]
+        web_server._send_agent_message = original_send  # type: ignore[assignment]
         tmp.cleanup()
 
     try:
         assert_equal("source", result["source"], "mcagent_context")
         assert_equal("returncode", result["returncode"], 0)
+        assert_true("used_message_bus", bool(calls))
+        assert_equal("request_tuple", calls[0]["message"].to_tuple()[0::2], ("CrawlerAgent", "MCagent"))
+        assert_equal("target_agent_payload", calls[0]["payload"].get("agent"), None)
         assert_true("mcagent_answer", "CrawlerAgent" in str(result.get("mcagent_answer") or ""))
         assert_true("has_gap_summary", "完整模组列表" in str(result.get("mcagent_gap_summary") or ""))
+        assert_equal("transport", result.get("transport"), "_send_agent_message")
         export_dir = Path(str(result.get("export_dir") or ""))
         manifest = json.loads((export_dir / "manifest.json").read_text(encoding="utf-8"))
         assert_equal("manifest_source", manifest["source"], "mcagent_context")
         assert_equal("inter_agent_from", manifest["inter_agent"]["from_agent"], "CrawlerAgent")
         assert_equal("inter_agent_to", manifest["inter_agent"]["to_agent"], "MCagent")
+        assert_equal("inter_agent_transport", manifest["inter_agent"]["transport"], "_send_agent_message")
         assert_true("reply_persisted", "CrawlerAgent" in manifest["inter_agent"]["reply"])
+        assert_true("mcagent_received_trace", any(item.get("stage") == "message" and item.get("status") == "received" for item in manifest.get("mcagent_trace") or []))
         assert_true("manifest_records", len(manifest.get("records") or []) == 1)
     finally:
         if result.get("export_dir"):
             shutil.rmtree(str(result["export_dir"]), ignore_errors=True)
+
+
+def test_mcagent_context_request_does_not_recursively_delegate_crawler() -> None:
+    tmp = tempfile.TemporaryDirectory()
+    fake_client = SequencedClient(
+        [
+            '{"tool":"planned_workflow","reason":"inspect local then delegate","collection_target":"乌托邦整合包资料缺口","delivery_target":"MCagent/RAG","action_plan":[{"step":1,"tool":"local_corpus_inventory","goal":"盘点本地资料"},{"step":2,"tool":"delegate_crawler","goal":"让 Crawler 补齐资料"}]}',
+            '{"proceed":true,"tool":"planned_workflow","reason":"confirmed"}',
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    original_delegate = web_server._start_crawler_job_from_crawler_tool
+    calls: list[dict[str, Any]] = []
+
+    def fake_delegate(config: AppConfig, payload: dict[str, Any], question: str, plan: dict[str, Any] | None = None):  # noqa: ARG001
+        calls.append({"payload": payload, "question": question, "plan": plan})
+        job = web_server.Job(id="should-not-start", kind="crawler", title=question, status="queued", summary="queued")
+        return job, True
+
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake_client, "fake")  # type: ignore[assignment]
+    web_server._start_crawler_job_from_crawler_tool = fake_delegate  # type: ignore[assignment]
+    try:
+        result = web_server._send_agent_message(
+            make_temp_config(Path(tmp.name)),
+            {"session_id": "context-only-no-recursive-delegate", "model": "fake-model"},
+            from_agent="CrawlerAgent",
+            content="请检查乌托邦整合包本地已有证据和缺口，然后告诉 CrawlerAgent 下一步补什么。",
+            to_agent="MCagent",
+            intent="mcagent_context_request",
+            conversation_id="context-only-no-recursive-delegate",
+            metadata={"tool": "mcagent_context"},
+        )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._start_crawler_job_from_crawler_tool = original_delegate  # type: ignore[assignment]
+        tmp.cleanup()
+
+    assert_equal("no_recursive_delegate", calls, [])
+    assert_true("suppressed_trace", any(step.get("stage") == "delegate" and step.get("status") == "suppressed_for_context_reply" for step in result.get("trace") or []))
+    reply = result.get("agent_message") or {}
+    assert_equal("reply_to_crawler", (reply.get("from_agent"), reply.get("to_agent")), ("MCagent", "CrawlerAgent"))
 
 
 def test_mcagent_context_tool_timeout_returns_objective_blocker() -> None:
@@ -1039,6 +1225,7 @@ def test_mcagent_context_tool_timeout_returns_objective_blocker() -> None:
 
     web_server._run_mcagent_context_tool_inner = slow_inner  # type: ignore[assignment]
     web_server.DEFAULT_MCAGENT_CONTEXT_TIMEOUT_SECONDS = 0.05  # type: ignore[assignment]
+    started = time.time()
     try:
         result = web_server._run_mcagent_context_tool(
             make_temp_config(Path(tempfile.gettempdir())),
@@ -1053,6 +1240,7 @@ def test_mcagent_context_tool_timeout_returns_objective_blocker() -> None:
     assert_equal("returncode", result["returncode"], 124)
     assert_equal("timed_out", result["timed_out"], True)
     assert_true("continue_download_route", "public archive/download discovery" in result["output"])
+    assert_true("returns_without_waiting_for_slow_inner", time.time() - started < 0.18)
 
 
 def test_mcagent_context_filters_off_topic_local_evidence() -> None:
@@ -1141,8 +1329,10 @@ def test_no_llm_mcagent_path_still_runs_evidence_selection() -> None:
         model = ""
         temperature = 0.0
         max_tokens = 400
+        is_streaming = False
 
         def __init__(self) -> None:
+            self.config = SimpleNamespace(paths=SimpleNamespace(db_path=Path("test.sqlite")))
             self.trace = SimpleNamespace(steps=[])
 
         def add_trace(self, stage, status, detail=None):
@@ -1216,6 +1406,329 @@ def test_no_llm_mcagent_path_still_runs_evidence_selection() -> None:
     titles = [item["title"] for item in result.get("sources") or []]
     assert_true("kept_on_topic", any("乌托邦" in title for title in titles), str(titles))
     assert_true("filtered_off_topic", not any("Boss直聘" in title for title in titles), str(titles))
+
+
+def test_pseudo_delegate_call_in_final_answer_is_removed_without_late_side_effect() -> None:
+    question = "现在乌托邦整合包你本地还缺哪些资料，列出来，然后让 Crawler 去补充。"
+    selected = [
+        SearchResult(
+            rank=1,
+            score=9.0,
+            chunk_id=1,
+            document_id=1,
+            chunk_index=0,
+            title="乌托邦探险之旅本地资料",
+            source_path="D:/magic/MC_Agent/data/crawler_exports/utopia/local.md",
+            url="https://example.test/utopia",
+            text="乌托邦探险之旅已有版本、下载地址，但缺少玩法路线和完整任务线。",
+            metadata={},
+        )
+    ]
+
+    class FakeRun:
+        original_question = ""
+        question = ""
+        agent = "mcagent_rag"
+        model = "fake-model"
+        temperature = 0.0
+        max_tokens = 400
+        is_streaming = False
+
+        def __init__(self) -> None:
+            self.original_question = question
+            self.question = question
+            self.config = SimpleNamespace(paths=SimpleNamespace(db_path=Path("test.sqlite")))
+            self.payload = {"agent": self.agent, "question": self.question, "session_id": "pseudo-delegate"}
+            self.trace = SimpleNamespace(steps=[])
+
+        def add_trace(self, stage, status, detail=None):
+            self.trace.steps.append({"stage": stage, "status": status, "detail": detail})
+            return self.trace.steps[-1]
+
+        def response(self, payload):
+            payload["trace"] = self.trace.steps
+            return payload
+
+    class FakeRouter:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def route(self, run, session_summary=None):
+            return SimpleNamespace(
+                tool_decision={"tool": "answer", "reason": "incorrect answer route"},
+                route_intent="answer",
+                action_plan=[],
+                rag_focus="乌托邦整合包资料缺口",
+                planned_workflow=False,
+                planned_delegate=False,
+            )
+
+        def confirm_next_step(self, *args, **kwargs):
+            return {"proceed": True, "tool": kwargs.get("proposed_tool"), "reason": "confirmed"}
+
+    class FakeRag:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def prepare(self, *args, **kwargs):
+            return SimpleNamespace(evidence_question="乌托邦整合包资料缺口", rough_k=8, final_k=6)
+
+        def retrieve(self, *args, **kwargs):
+            return SimpleNamespace(retrieval_plan=None, rough_results=selected, selected=selected)
+
+    class FakeEvidenceWorkflow:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def select(self, *args, **kwargs):
+            return SimpleNamespace(selected=selected, report=SimpleNamespace(verdict="ok", selected_count=1, reasons=[], to_dict=lambda: {"verdict": "ok"}))
+
+    fake_client = SequencedClient(
+        [
+            json.dumps({"missing_side_effect": False, "action": "allow", "reason": "local RAG route can answer first"}, ensure_ascii=False),
+            "本地已有版本和下载线索；缺少玩法路线、任务线和毕业目标。\n\ndelegate_crawler(\"请补充乌托邦整合包玩法路线、任务线和毕业目标资料\")",
+            json.dumps(
+                {
+                    "violation": True,
+                    "tool": "delegate_crawler",
+                    "action": "execute_selected_tool",
+                    "reason": "final answer wrote a tool call as text and the user asked to let Crawler fill gaps",
+                    "collection_target": "请补充乌托邦整合包玩法路线、任务线和毕业目标资料",
+                },
+                ensure_ascii=False,
+            ),
+        ]
+    )
+    calls: list[dict[str, Any]] = []
+
+    def fake_send(config: AppConfig, payload: dict[str, Any], *, from_agent: str, content: str, to_agent: str, emit: Any | None = None, metadata: dict[str, Any] | None = None, **kwargs: Any):  # noqa: ARG001
+        message = web_server.make_agent_message(from_agent, content, to_agent, metadata=metadata)
+        calls.append({"payload": payload, "message": message})
+        job = web_server.Job(id="pseudo-delegate-job", kind="crawler", title=content, status="queued", summary="queued")
+        job.result = {"plan": {"topic": content, "delivery_target": message.metadata.get("delivery_target")}}
+        return {"answer": "我是 CrawlerAgent。采集任务已启动。", "agent": "crawler_agent", "job": web_server._job_to_dict(job)}
+
+    original_context = web_server.build_agent_execution_context
+    original_router = web_server.LlmAgentToolRouterService
+    original_rag = web_server.RagRetrievalService
+    original_evidence = web_server.EvidenceWorkflowService
+    original_selector = web_server._selected_llm_client
+    original_send = web_server._send_agent_message
+    try:
+        web_server.build_agent_execution_context = lambda *args, **kwargs: FakeRun()  # type: ignore[assignment]
+        web_server.LlmAgentToolRouterService = FakeRouter  # type: ignore[assignment]
+        web_server.RagRetrievalService = FakeRag  # type: ignore[assignment]
+        web_server.EvidenceWorkflowService = FakeEvidenceWorkflow  # type: ignore[assignment]
+        web_server._selected_llm_client = lambda *_args, **_kwargs: (fake_client, "fake")  # type: ignore[assignment]
+        web_server._send_agent_message = fake_send  # type: ignore[assignment]
+        result = web_server._chat_impl(
+            SimpleNamespace(paths=SimpleNamespace(db_path=Path("test.sqlite"))),
+            {"agent": "mcagent_rag", "question": question, "session_id": "pseudo-delegate"},
+        )
+    finally:
+        web_server.build_agent_execution_context = original_context  # type: ignore[assignment]
+        web_server.LlmAgentToolRouterService = original_router  # type: ignore[assignment]
+        web_server.RagRetrievalService = original_rag  # type: ignore[assignment]
+        web_server.EvidenceWorkflowService = original_evidence  # type: ignore[assignment]
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._send_agent_message = original_send  # type: ignore[assignment]
+
+    assert_true("no_late_side_effect", not calls, str(calls))
+    assert_true("pseudo_not_returned", "delegate_crawler(" not in str(result.get("answer") or ""), result.get("answer", ""))
+    assert_true("no_job_returned", "job" not in result, str(result.get("job")))
+    statuses = [(item.get("stage"), item.get("status")) for item in result.get("trace") or []]
+    assert_true("protocol_trace", ("answer", "protocol_violation_detected") in statuses, str(statuses))
+    assert_true("pseudo_removed_trace", ("answer", "pseudo_tool_text_removed") in statuses, str(statuses))
+
+
+def test_unselected_pseudo_tool_text_is_removed_without_side_effect() -> None:
+    tmp = tempfile.TemporaryDirectory()
+    fake_client = SequencedClient(
+        [
+            json.dumps(
+                {
+                    "violation": True,
+                    "tool": "delegate_crawler",
+                    "action": "remove_pseudo_call",
+                    "reason": "user did not request a crawler side effect",
+                },
+                ensure_ascii=False,
+            )
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    try:
+        web_server._selected_llm_client = lambda *_args, **_kwargs: (fake_client, "fake")  # type: ignore[assignment]
+        review = web_server._final_answer_protocol_review(
+            make_temp_config(Path(tmp.name)),
+            agent="mcagent_rag",
+            model="fake-model",
+            original_question="请简单解释一下你能做什么。",
+            answer="我可以回答问题。\n\ndelegate_crawler(\"偷偷采集\")",
+            tool_decision={"tool": "answer", "reason": "simple explanation"},
+            action_plan=[],
+            planned_delegate=False,
+        )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        tmp.cleanup()
+    cleaned = web_server._strip_pseudo_tool_call_blocks("我可以回答问题。\n\ndelegate_crawler(\"偷偷采集\")")
+    assert_equal("review_removes", review.get("action"), "remove_pseudo_call")
+    assert_equal("pseudo_removed", cleaned, "我可以回答问题。")
+
+
+def test_local_rag_route_completeness_can_delegate_before_final_answer() -> None:
+    question = "现在乌托邦整合包你本地还缺哪些资料，列出来，然后让 Crawler 去补充。"
+    selected = [
+        SearchResult(
+            rank=1,
+            score=9.0,
+            chunk_id=1,
+            document_id=1,
+            chunk_index=0,
+            title="乌托邦探险之旅 本地资料盘点",
+            source_path="D:/magic/MC_Agent/data/crawler_exports/utopia/local.md",
+            url="https://example.test/utopia-local",
+            text="本地已有版本和下载线索，但缺少玩法路线、任务线和毕业目标。",
+            metadata={},
+        )
+    ]
+
+    class FakeRun:
+        original_question = "现在乌托邦整合包你本地还缺哪些资料，列出来，然后让 Crawler 去补充。"
+        question = "现在乌托邦整合包你本地还缺哪些资料，列出来，然后让 Crawler 去补充。"
+        agent = "mcagent_rag"
+        model = ""
+        temperature = 0.0
+        max_tokens = 400
+        is_streaming = False
+
+        def __init__(self) -> None:
+            self.config = SimpleNamespace(paths=SimpleNamespace(db_path=Path("test.sqlite")))
+            self.trace = SimpleNamespace(steps=[])
+
+        def add_trace(self, stage, status, detail=None):
+            self.trace.steps.append({"stage": stage, "status": status, "detail": detail})
+            return self.trace.steps[-1]
+
+        def response(self, payload):
+            payload["trace"] = self.trace.steps
+            return payload
+
+    class FakeRouter:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def route(self, run, session_summary=None):
+            return SimpleNamespace(
+                tool_decision={"tool": "answer", "reason": "incorrect answer route"},
+                route_intent="answer",
+                action_plan=[],
+                rag_focus="乌托邦整合包资料缺口",
+                planned_workflow=False,
+                planned_delegate=False,
+            )
+
+        def confirm_next_step(self, *args, **kwargs):
+            return {"proceed": True, "tool": kwargs.get("proposed_tool"), "reason": "confirmed"}
+
+    class FakeRag:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def prepare(self, *args, **kwargs):
+            return SimpleNamespace(evidence_question="乌托邦整合包资料缺口", rough_k=8, final_k=6)
+
+        def retrieve(self, *args, **kwargs):
+            return SimpleNamespace(retrieval_plan=None, rough_results=selected, selected=selected)
+
+    class FakeEvidenceWorkflow:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def select(self, *args, **kwargs):
+            return SimpleNamespace(selected=selected, report=SimpleNamespace(verdict="ok", selected_count=1, reasons=[], to_dict=lambda: {"verdict": "ok"}))
+
+    fake_client = SequencedClient(
+        [
+            json.dumps(
+                {
+                    "missing_side_effect": True,
+                    "tool": "delegate_crawler",
+                    "action": "execute_selected_tool",
+                    "reason": "用户请求包含先列本地缺口再让 Crawler 补充，local_rag_search 只覆盖第一步。",
+                    "collection_target": "补充乌托邦整合包玩法路线、任务线和毕业目标资料",
+                    "delivery_target": "MCagent/RAG",
+                },
+                ensure_ascii=False,
+            ),
+            "本地已有版本和下载线索；缺少玩法路线、任务线和毕业目标。\n\n我现在就将以上缺口转达给 CrawlerAgent，并已通过计划工作流委托 CrawlerAgent 去补齐。",
+            json.dumps({"handoff_brief": "MCagent sends local gaps to CrawlerAgent through AgentMessage.", "reason": "handoff"}, ensure_ascii=False),
+        ]
+    )
+    calls: list[dict[str, Any]] = []
+
+    def fake_send(config: AppConfig, payload: dict[str, Any], *, from_agent: str, content: str, to_agent: str, emit: Any | None = None, metadata: dict[str, Any] | None = None, **kwargs: Any):  # noqa: ARG001
+        message = web_server.make_agent_message(from_agent, content, to_agent, metadata=metadata)
+        calls.append({"payload": payload, "message": message})
+        job = web_server.Job(id="natural-delegate-job", kind="crawler", title=content, status="queued", summary="queued")
+        job.result = {"plan": {"topic": content, "delivery_target": message.metadata.get("delivery_target")}}
+        return {"answer": "我是 CrawlerAgent。采集任务已启动。", "agent": "crawler_agent", "job": web_server._job_to_dict(job)}
+
+    original_context = web_server.build_agent_execution_context
+    original_router = web_server.LlmAgentToolRouterService
+    original_rag = web_server.RagRetrievalService
+    original_evidence = web_server.EvidenceWorkflowService
+    original_selector = web_server._selected_llm_client
+    original_send = web_server._send_agent_message
+    try:
+        web_server.build_agent_execution_context = lambda *args, **kwargs: FakeRun()  # type: ignore[assignment]
+        web_server.LlmAgentToolRouterService = FakeRouter  # type: ignore[assignment]
+        web_server.RagRetrievalService = FakeRag  # type: ignore[assignment]
+        web_server.EvidenceWorkflowService = FakeEvidenceWorkflow  # type: ignore[assignment]
+        web_server._selected_llm_client = lambda *_args, **_kwargs: (fake_client, "fake")  # type: ignore[assignment]
+        web_server._send_agent_message = fake_send  # type: ignore[assignment]
+        result = web_server._chat_impl(
+            SimpleNamespace(paths=SimpleNamespace(db_path=Path("test.sqlite"))),
+            {"agent": "mcagent_rag", "question": question, "session_id": "natural-delegate"},
+        )
+    finally:
+        web_server.build_agent_execution_context = original_context  # type: ignore[assignment]
+        web_server.LlmAgentToolRouterService = original_router  # type: ignore[assignment]
+        web_server.RagRetrievalService = original_rag  # type: ignore[assignment]
+        web_server.EvidenceWorkflowService = original_evidence  # type: ignore[assignment]
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._send_agent_message = original_send  # type: ignore[assignment]
+
+    assert_true("sent_real_message", bool(calls))
+    assert_equal("message_from", calls[0]["message"].from_agent, "MCagent")
+    assert_equal("message_to", calls[0]["message"].to_agent, "CrawlerAgent")
+    assert_true("job_returned", bool(result.get("job", {}).get("id")), str(result.get("job")))
+    assert_equal("delegation_delivery", result.get("delegation", {}).get("delivery_target"), "MCagent/RAG")
+    statuses = [(item.get("stage"), item.get("status")) for item in result.get("trace") or []]
+    assert_true("completeness_trace", ("plan", "route_completeness_gap") in statuses, str(statuses))
+    assert_true("bus_sending_trace", ("message", "sending") in statuses, str(statuses))
+    assert_true("bus_reply_trace", ("message", "reply_received") in statuses, str(statuses))
+    assert_true("delegation_trace", ("delegate", "planned_workflow") in statuses, str(statuses))
+
+
+def test_conditional_delegate_suggestion_is_allowed_without_side_effect() -> None:
+    tmp = tempfile.TemporaryDirectory()
+    answer = "目前只能给出概要。如果需要，可以让 CrawlerAgent 继续补充公开资料。"
+    review = web_server._final_answer_protocol_review(
+        make_temp_config(Path(tmp.name)),
+        agent="mcagent_rag",
+        model="fake-model",
+        original_question="简单介绍一下这个项目。",
+        answer=answer,
+        tool_decision={"tool": "answer", "reason": "simple explanation"},
+        action_plan=[],
+        planned_delegate=False,
+        delegated_job_started=False,
+    )
+    tmp.cleanup()
+    assert_equal("conditional_allowed", review.get("action"), "allow")
+    assert_true("no_violation", not bool(review.get("violation")), str(review))
 
 
 def test_version_install_note_extracts_modpack_requirements() -> None:
@@ -1390,7 +1903,7 @@ def test_local_version_install_answer_ignores_wrong_modpack_sources() -> None:
     assert_equal("no_wrong_answer", answer, "")
 
 
-def test_version_install_fact_question_bypasses_llm_router() -> None:
+def test_version_install_fact_question_uses_agent_selected_local_rag_route() -> None:
     question = "What are the version and install requirements for Utopian Journey?"
     source = SearchResult(
         rank=1,
@@ -1422,6 +1935,7 @@ def test_version_install_fact_question_bypasses_llm_router() -> None:
         model = ""
         temperature = 0.0
         max_tokens = 400
+        is_streaming = False
 
         def __init__(self) -> None:
             self.trace = SimpleNamespace(steps=[])
@@ -1434,15 +1948,22 @@ def test_version_install_fact_question_bypasses_llm_router() -> None:
             payload["trace"] = self.trace.steps
             return payload
 
-    class RouterMustNotRun:
+    class FakeRouter:
         def __init__(self, *args, **kwargs) -> None:
             pass
 
-        def route(self, *args, **kwargs):
-            raise AssertionError("version/install local fact route should bypass LLM router")
+        def route(self, run, session_summary=None):
+            return SimpleNamespace(
+                tool_decision={"tool": "answer", "reason": "Agent chose local evidence search.", "rag_focus": question},
+                route_intent="answer",
+                action_plan=[],
+                rag_focus=question,
+                planned_workflow=False,
+                planned_delegate=False,
+            )
 
         def confirm_next_step(self, *args, **kwargs):
-            raise AssertionError("version/install local fact route should bypass LLM confirmations")
+            return {"proceed": True, "tool": kwargs.get("proposed_tool"), "reason": "confirmed by Agent"}
 
     class FakeRag:
         def __init__(self, *args, **kwargs) -> None:
@@ -1452,7 +1973,7 @@ def test_version_install_fact_question_bypasses_llm_router() -> None:
             return SimpleNamespace(evidence_question=question, rough_k=8, final_k=6)
 
         def retrieve(self, *args, **kwargs):
-            assert_true("planner_disabled", kwargs.get("use_planner") is False)
+            assert_true("planner_skipped_when_agent_supplied_rag_focus", kwargs.get("use_planner") is False)
             return SimpleNamespace(retrieval_plan=None, rough_results=[source], selected=[source])
 
     original_context = web_server.build_agent_execution_context
@@ -1463,7 +1984,7 @@ def test_version_install_fact_question_bypasses_llm_router() -> None:
     original_modpack_context = web_server._ensure_modpack_mod_list_context
     try:
         web_server.build_agent_execution_context = lambda *args, **kwargs: FakeRun()  # type: ignore[assignment]
-        web_server.LlmAgentToolRouterService = RouterMustNotRun  # type: ignore[assignment]
+        web_server.LlmAgentToolRouterService = FakeRouter  # type: ignore[assignment]
         web_server.RagRetrievalService = FakeRag  # type: ignore[assignment]
         web_server._supplement_project_keyword_results = lambda _config, _question, selected, _limit: selected  # type: ignore[assignment]
         web_server._supplement_raw_html_results = lambda _config, _question, selected, limit=8: selected  # type: ignore[assignment]
@@ -1488,31 +2009,407 @@ def test_version_install_fact_question_bypasses_llm_router() -> None:
     assert_true("answer_has_mc_version", "1.20.1" in answer, answer)
     assert_true("answer_has_loader", "Fabric" in answer, answer)
     statuses = [(item.get("stage"), item.get("status")) for item in result.get("trace") or []]
+    assert_true("rag_confirmed", ("retrieve", "next_step_confirmed") in statuses, str(statuses))
     assert_true("local_fact_trace", ("answer", "local_fact_answer") in statuses, str(statuses))
 
 
-def test_modpack_overview_with_version_does_not_use_narrow_fact_route() -> None:
-    assert_equal(
-        "overview_not_narrow_fact",
-        web_server._should_use_deterministic_local_fact_rag_route(
-            "mcagent_rag",
-            "乌托邦探险之旅 Utopian Journey 是什么整合包？请说明 Minecraft 版本和加载器。",
-            {},
-        ),
-        False,
-    )
+def test_agent_selected_local_corpus_inventory_route_executes_inventory_tool() -> None:
+    class FakeRun:
+        original_question = "本地都有哪些整合包和模组的资料 都简单介绍一下"
+        question = original_question
+        agent = "mcagent_rag"
+        model = ""
+        temperature = 0.0
+        max_tokens = 400
+
+        def __init__(self) -> None:
+            self.trace = SimpleNamespace(steps=[])
+
+        def add_trace(self, stage, status, detail=None):
+            self.trace.steps.append({"stage": stage, "status": status, "detail": detail})
+            return self.trace.steps[-1]
+
+        def response(self, payload):
+            payload["trace"] = self.trace.steps
+            return payload
+
+    def fail_rag(*_args, **_kwargs):
+        raise AssertionError("Agent-selected inventory route should not run regular RAG retrieval")
+
+    class FakeRouter:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def route(self, run, session_summary=None):
+            return SimpleNamespace(
+                tool_decision={"tool": "local_corpus_inventory", "reason": "Agent judged this as a local corpus coverage question."},
+                route_intent="local_corpus_inventory",
+                action_plan=[],
+                rag_focus="",
+                planned_workflow=False,
+                planned_delegate=False,
+            )
+
+        def confirm_next_step(self, *args, **kwargs):
+            return {"proceed": True, "tool": kwargs.get("proposed_tool"), "goal": kwargs.get("proposed_goal"), "reason": "confirmed by Agent"}
+
+    def fake_inventory(_config, _question):
+        return {
+            "answer": "本地资料库目前有 2 篇已入库文档。\n\n整合包：乌托邦探险之旅。\n模组：Create。",
+            "sources": [{"title": "乌托邦探险之旅", "document_id": 1}],
+            "context": "inventory context",
+            "agent": "mcagent_rag",
+        }
+
+    original_context = web_server.build_agent_execution_context
+    original_router = web_server.LlmAgentToolRouterService
+    original_rag = web_server.RagRetrievalService
+    original_inventory = web_server._local_corpus_inventory_answer
+    try:
+        web_server.build_agent_execution_context = lambda *args, **kwargs: FakeRun()  # type: ignore[assignment]
+        web_server.LlmAgentToolRouterService = FakeRouter  # type: ignore[assignment]
+        web_server.RagRetrievalService = fail_rag  # type: ignore[assignment]
+        web_server._local_corpus_inventory_answer = fake_inventory  # type: ignore[assignment]
+        result = web_server._chat_impl(
+            SimpleNamespace(paths=SimpleNamespace(db_path=Path("test.sqlite"))),
+            {"agent": "mcagent_rag", "question": FakeRun.original_question},
+        )
+    finally:
+        web_server.build_agent_execution_context = original_context  # type: ignore[assignment]
+        web_server.LlmAgentToolRouterService = original_router  # type: ignore[assignment]
+        web_server.RagRetrievalService = original_rag  # type: ignore[assignment]
+        web_server._local_corpus_inventory_answer = original_inventory  # type: ignore[assignment]
+
+    statuses = [item["status"] for item in result.get("trace") or []]
+    assert_true("tool_selected", any(item.get("detail", {}).get("tool") == "local_corpus_inventory" for item in result.get("trace") or []), str(result.get("trace")))
+    assert_true("inventory_confirmed", "inventory_next_step_confirmed" in statuses, str(statuses))
+    assert_true("inventory_scanning_trace", "inventory_scanning" in statuses, str(statuses))
+    assert_true("inventory_done_trace", "inventory_done" in statuses, str(statuses))
+    assert_true("answer", "本地资料库目前有" in result.get("answer", ""), result.get("answer", ""))
 
 
-def test_mixed_version_and_guide_question_does_not_use_narrow_fact_route() -> None:
-    assert_equal(
-        "mixed_guide_not_narrow_fact",
-        web_server._should_use_deterministic_local_fact_rag_route(
-            "mcagent_rag",
-            "农夫乐事 / Farmer's Delight 是什么？支持哪些加载器和版本？这些资料够不够回答新手怎么玩，请给一个从入门到中期的路线。",
-            {},
-        ),
-        False,
+def test_inventory_route_can_continue_to_delegate_when_agent_review_finds_missing_side_effect() -> None:
+    question = "现在某个资料主题你本地还缺哪些资料，列出来，然后让 Crawler 去补充。"
+
+    class FakeRun:
+        original_question = "现在某个资料主题你本地还缺哪些资料，列出来，然后让 Crawler 去补充。"
+        question = "现在某个资料主题你本地还缺哪些资料，列出来，然后让 Crawler 去补充。"
+        agent = "mcagent_rag"
+        model = ""
+        temperature = 0.0
+        max_tokens = 400
+        is_streaming = False
+
+        def __init__(self) -> None:
+            self.config = SimpleNamespace(paths=SimpleNamespace(db_path=Path("test.sqlite")))
+            self.trace = SimpleNamespace(steps=[])
+
+        def add_trace(self, stage, status, detail=None):
+            self.trace.steps.append({"stage": stage, "status": status, "detail": detail})
+            return self.trace.steps[-1]
+
+        def response(self, payload):
+            payload["trace"] = self.trace.steps
+            return payload
+
+    class FakeRouter:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def route(self, run, session_summary=None):
+            return SimpleNamespace(
+                tool_decision={"tool": "local_corpus_inventory", "reason": "inspect local coverage"},
+                route_intent="local_corpus_inventory",
+                action_plan=[],
+                rag_focus="",
+                planned_workflow=False,
+                planned_delegate=False,
+            )
+
+        def confirm_next_step(self, *args, **kwargs):
+            return {"proceed": True, "tool": kwargs.get("proposed_tool"), "goal": kwargs.get("proposed_goal"), "reason": "confirmed by Agent"}
+
+    def fake_inventory(_config, _question):
+        return {
+            "answer": "本地资料库目前有 2 篇相关文档，但缺少完整玩法路线和来源页。",
+            "sources": [{"title": "资料主题", "document_id": 1}],
+            "context": "inventory context",
+            "agent": "mcagent_rag",
+        }
+
+    fake_client = SequencedClient(
+        [
+            json.dumps(
+                {
+                    "missing_side_effect": True,
+                    "tool": "delegate_crawler",
+                    "action": "execute_selected_tool",
+                    "reason": "The user requested local gap listing and then a real Crawler handoff.",
+                    "collection_target": "请根据本地缺口补充该资料主题的完整玩法路线和来源页。",
+                    "delivery_target": "MCagent/RAG",
+                },
+                ensure_ascii=False,
+            ),
+            json.dumps({"handoff_brief": "MCagent sends inventory gaps to CrawlerAgent through AgentMessage.", "reason": "handoff"}, ensure_ascii=False),
+        ]
     )
+    calls: list[Any] = []
+
+    def fake_send(config: AppConfig, payload: dict[str, Any], *, from_agent: str, content: str, to_agent: str, emit: Any | None = None, metadata: dict[str, Any] | None = None, **kwargs: Any):  # noqa: ARG001
+        message = web_server.make_agent_message(from_agent, content, to_agent, metadata=metadata)
+        calls.append(message)
+        job = web_server.Job(id="inventory-delegate-job", kind="crawler", title=content, status="queued", summary="queued")
+        job.result = {"plan": {"topic": content, "delivery_target": message.metadata.get("delivery_target")}}
+        return {"answer": "我是 CrawlerAgent。采集任务已启动。", "agent": "crawler_agent", "job": web_server._job_to_dict(job)}
+
+    original_context = web_server.build_agent_execution_context
+    original_router = web_server.LlmAgentToolRouterService
+    original_inventory = web_server._local_corpus_inventory_answer
+    original_selector = web_server._selected_llm_client
+    original_send = web_server._send_agent_message
+    try:
+        web_server.build_agent_execution_context = lambda *args, **kwargs: FakeRun()  # type: ignore[assignment]
+        web_server.LlmAgentToolRouterService = FakeRouter  # type: ignore[assignment]
+        web_server._local_corpus_inventory_answer = fake_inventory  # type: ignore[assignment]
+        web_server._selected_llm_client = lambda *_args, **_kwargs: (fake_client, "fake")  # type: ignore[assignment]
+        web_server._send_agent_message = fake_send  # type: ignore[assignment]
+        result = web_server._chat_impl(
+            SimpleNamespace(paths=SimpleNamespace(db_path=Path("test.sqlite"))),
+            {"agent": "mcagent_rag", "question": question, "session_id": "inventory-delegate"},
+        )
+    finally:
+        web_server.build_agent_execution_context = original_context  # type: ignore[assignment]
+        web_server.LlmAgentToolRouterService = original_router  # type: ignore[assignment]
+        web_server._local_corpus_inventory_answer = original_inventory  # type: ignore[assignment]
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._send_agent_message = original_send  # type: ignore[assignment]
+
+    assert_true("sent_real_message", bool(calls))
+    assert_equal("message_to", calls[0].to_agent, "CrawlerAgent")
+    assert_true("job_returned", bool(result.get("job", {}).get("id")), str(result.get("job")))
+    statuses = [(item.get("stage"), item.get("status")) for item in result.get("trace") or []]
+    assert_true("completeness_trace", ("plan", "route_completeness_gap") in statuses, str(statuses))
+
+
+def test_local_corpus_inventory_is_not_keyword_forced_before_agent_choice() -> None:
+    class FakeRun:
+        original_question = "本地都有哪些整合包和模组的资料 都简单介绍一下"
+        question = original_question
+        agent = "mcagent_rag"
+        model = ""
+        temperature = 0.0
+        max_tokens = 400
+        is_streaming = False
+
+        def __init__(self) -> None:
+            self.config = SimpleNamespace(paths=SimpleNamespace(db_path=Path("test.sqlite")))
+            self.trace = SimpleNamespace(steps=[])
+
+        def add_trace(self, stage, status, detail=None):
+            self.trace.steps.append({"stage": stage, "status": status, "detail": detail})
+            return self.trace.steps[-1]
+
+        def response(self, payload):
+            payload["trace"] = self.trace.steps
+            return payload
+
+        def emit_delta(self, _text):
+            pass
+
+    class FakeRouter:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def route(self, run, session_summary=None):
+            return SimpleNamespace(
+                tool_decision={"tool": "direct_answer", "reason": "Agent chose to explain instead of inspecting local corpus."},
+                route_intent="direct_answer",
+                action_plan=[],
+                rag_focus="",
+                planned_workflow=False,
+                planned_delegate=False,
+            )
+
+        def confirm_next_step(self, *args, **kwargs):
+            raise AssertionError("direct answer route should not confirm inventory")
+
+    def fail_inventory(*_args, **_kwargs):
+        raise AssertionError("inventory tool must not run unless Agent selected local_corpus_inventory")
+
+    def fake_direct_answer(*_args, **_kwargs):
+        return "这是直接回答路径。"
+
+    original_context = web_server.build_agent_execution_context
+    original_router = web_server.LlmAgentToolRouterService
+    original_inventory = web_server._local_corpus_inventory_answer
+    original_direct = web_server._generate_direct_answer
+    original_direct_stream = web_server._generate_direct_answer_stream
+    try:
+        web_server.build_agent_execution_context = lambda *args, **kwargs: FakeRun()  # type: ignore[assignment]
+        web_server.LlmAgentToolRouterService = FakeRouter  # type: ignore[assignment]
+        web_server._local_corpus_inventory_answer = fail_inventory  # type: ignore[assignment]
+        web_server._generate_direct_answer = fake_direct_answer  # type: ignore[assignment]
+        web_server._generate_direct_answer_stream = fake_direct_answer  # type: ignore[assignment]
+        result = web_server._chat_impl(
+            SimpleNamespace(paths=SimpleNamespace(db_path=Path("test.sqlite"))),
+            {"agent": "mcagent_rag", "question": FakeRun.original_question},
+        )
+    finally:
+        web_server.build_agent_execution_context = original_context  # type: ignore[assignment]
+        web_server.LlmAgentToolRouterService = original_router  # type: ignore[assignment]
+        web_server._local_corpus_inventory_answer = original_inventory  # type: ignore[assignment]
+        web_server._generate_direct_answer = original_direct  # type: ignore[assignment]
+        web_server._generate_direct_answer_stream = original_direct_stream  # type: ignore[assignment]
+
+    statuses = [item["status"] for item in result.get("trace") or []]
+    assert_true("no_inventory_scan", "inventory_scanning" not in statuses, str(statuses))
+    assert_true("direct_answer", "这是直接回答路径。" in result.get("answer", ""), result.get("answer", ""))
+
+
+def test_status_runs_only_after_agent_selects_status_tool() -> None:
+    class FakeRun:
+        original_question = "状态"
+        question = original_question
+        agent = "mcagent_rag"
+        model = ""
+        temperature = 0.0
+        max_tokens = 400
+        is_streaming = False
+
+        def __init__(self) -> None:
+            self.config = SimpleNamespace(paths=SimpleNamespace(db_path=Path("test.sqlite")))
+            self.trace = SimpleNamespace(steps=[])
+
+        def add_trace(self, stage, status, detail=None):
+            self.trace.steps.append({"stage": stage, "status": status, "detail": detail})
+            return self.trace.steps[-1]
+
+        def response(self, payload):
+            payload["trace"] = self.trace.steps
+            return payload
+
+        def emit_delta(self, _text):
+            pass
+
+    class FakeRouter:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def route(self, run, session_summary=None):
+            return SimpleNamespace(
+                tool_decision={"tool": "direct_answer", "reason": "Agent chose not to inspect runtime status."},
+                route_intent="direct_answer",
+                action_plan=[],
+                rag_focus="",
+                planned_workflow=False,
+                planned_delegate=False,
+            )
+
+        def confirm_next_step(self, *args, **kwargs):
+            raise AssertionError("direct answer route should not confirm status")
+
+    original_context = web_server.build_agent_execution_context
+    original_router = web_server.LlmAgentToolRouterService
+    original_direct = web_server._generate_direct_answer
+    original_direct_stream = web_server._generate_direct_answer_stream
+    try:
+        web_server.build_agent_execution_context = lambda *args, **kwargs: FakeRun()  # type: ignore[assignment]
+        web_server.LlmAgentToolRouterService = FakeRouter  # type: ignore[assignment]
+        web_server._generate_direct_answer = lambda *args, **kwargs: "直接回答状态问题。"  # type: ignore[assignment]
+        web_server._generate_direct_answer_stream = lambda *args, **kwargs: "直接回答状态问题。"  # type: ignore[assignment]
+        result = web_server._chat_impl(
+            SimpleNamespace(paths=SimpleNamespace(db_path=Path("test.sqlite"))),
+            {"agent": "mcagent_rag", "question": FakeRun.original_question},
+        )
+    finally:
+        web_server.build_agent_execution_context = original_context  # type: ignore[assignment]
+        web_server.LlmAgentToolRouterService = original_router  # type: ignore[assignment]
+        web_server._generate_direct_answer = original_direct  # type: ignore[assignment]
+        web_server._generate_direct_answer_stream = original_direct_stream  # type: ignore[assignment]
+
+    statuses = [item["status"] for item in result.get("trace") or []]
+    assert_true("no_status_tool", "next_step_confirmed" not in [item["status"] for item in result.get("trace") or [] if item.get("stage") == "status"], str(statuses))
+    assert_true("direct_answer", "直接回答状态问题。" in result.get("answer", ""), result.get("answer", ""))
+
+
+def test_agent_selected_crawler_audit_route_reads_audit_tool() -> None:
+    class FakeRun:
+        original_question = "刚才 Crawler 采集农夫乐事时哪些来源被拒绝？"
+        question = original_question
+        agent = "mcagent_rag"
+        model = ""
+        temperature = 0.0
+        max_tokens = 400
+        is_streaming = False
+
+        def __init__(self) -> None:
+            self.config = SimpleNamespace(paths=SimpleNamespace(db_path=Path("test.sqlite")))
+            self.trace = SimpleNamespace(steps=[])
+
+        def add_trace(self, stage, status, detail=None):
+            self.trace.steps.append({"stage": stage, "status": status, "detail": detail})
+            return self.trace.steps[-1]
+
+        def response(self, payload):
+            payload["trace"] = self.trace.steps
+            return payload
+
+    class FakeRouter:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def route(self, run, session_summary=None):
+            return SimpleNamespace(
+                tool_decision={"tool": "crawler_audit", "reason": "Agent selected recent Crawler audit."},
+                route_intent="crawler_audit",
+                action_plan=[],
+                rag_focus="",
+                planned_workflow=False,
+                planned_delegate=False,
+            )
+
+        def confirm_next_step(self, *args, **kwargs):
+            return {"proceed": True, "tool": kwargs.get("proposed_tool"), "goal": kwargs.get("proposed_goal"), "reason": "confirmed"}
+
+    original_context = web_server.build_agent_execution_context
+    original_router = web_server.LlmAgentToolRouterService
+    original_audit = web_server._recent_crawler_audit_answer
+    try:
+        web_server.build_agent_execution_context = lambda *args, **kwargs: FakeRun()  # type: ignore[assignment]
+        web_server.LlmAgentToolRouterService = FakeRouter  # type: ignore[assignment]
+        web_server._recent_crawler_audit_answer = lambda _question: {"answer": "Crawler 自审：拒绝 1 个来源。", "sources": [], "context": "", "agent": "mcagent_rag", "job": {"id": "job-audit"}}  # type: ignore[assignment]
+        result = web_server._chat_impl(
+            SimpleNamespace(paths=SimpleNamespace(db_path=Path("test.sqlite"))),
+            {"agent": "mcagent_rag", "question": FakeRun.original_question},
+        )
+    finally:
+        web_server.build_agent_execution_context = original_context  # type: ignore[assignment]
+        web_server.LlmAgentToolRouterService = original_router  # type: ignore[assignment]
+        web_server._recent_crawler_audit_answer = original_audit  # type: ignore[assignment]
+
+    statuses = [(item.get("stage"), item.get("status")) for item in result.get("trace") or []]
+    assert_true("audit_confirmed", ("audit", "next_step_confirmed") in statuses, str(statuses))
+    assert_true("audit_answer", "Crawler 自审" in result.get("answer", ""), result.get("answer", ""))
+
+
+def test_chat_router_does_not_force_agent_tool_choice_with_keyword_fast_paths() -> None:
+    source = (ROOT / "mcagent" / "web_server.py").read_text(encoding="utf-8")
+    start = source.index("def _chat_impl")
+    end = source.index("\nclass MCagentHandler", start)
+    body = source[start:end]
+    forbidden = [
+        "_should_start_explicit_mcagent_crawler_handoff_fast",
+        "_should_force_mcagent_planned_delegate",
+        "_should_force_crawler_mcagent_gap_workflow",
+        "_should_use_deterministic_local_fact_rag_route",
+        "explicit_mcagent_handoff_fast_path",
+        "mcagent_delegate_workflow_corrected",
+        "inter_agent_workflow_corrected",
+        "Runtime-confirmed deterministic local fact route",
+    ]
+    for marker in forbidden:
+        assert_true(f"no_forced_route_{marker}", marker not in body, marker)
+    assert_true("side_effect_boundary_allowed", "side_effect_boundary_corrected" in body)
 
 
 def test_general_answer_path_skips_local_fact_answer_for_modpack_overview() -> None:
@@ -1524,13 +2421,67 @@ def test_general_answer_path_skips_local_fact_answer_for_modpack_overview() -> N
     )
 
 
-def test_mcagent_context_tool_uses_fast_structured_reply_instead_of_second_answer_llm() -> None:
+def test_mcagent_context_tool_uses_message_bus_instead_of_internal_mcagent_shortcut() -> None:
     source = (ROOT / "mcagent" / "web_server.py").read_text(encoding="utf-8")
     start = source.index("def _run_mcagent_context_tool")
     end = source.index("\ndef _crawler_reusable_duplicate_evidence", start)
     body = source[start:end]
     assert_true("no_second_grounded_answer_call", "_generate_grounded_answer(" not in body)
-    assert_true("fast_context_trace", "structured_fast_context" in body)
+    assert_true("uses_message_bus", "_send_agent_message(" in body)
+    assert_true("no_fake_fast_context_trace", "structured_fast_context" not in body)
+
+
+def test_mcagent_context_request_message_gets_light_reply_without_recursive_job() -> None:
+    class FakeRetriever:
+        def __init__(self, _config):
+            pass
+
+        def search(self, query, top_k=16, session_summary=None):  # noqa: ANN001, ANN002, ARG002
+            return [
+                SearchResult(
+                    rank=1,
+                    score=9.0,
+                    chunk_id=1,
+                    document_id=1,
+                    chunk_index=0,
+                    title="乌托邦探险之旅本地资料",
+                    source_path="D:/magic/MC_Agent/data/crawler_exports/demo.md",
+                    url=None,
+                    text="乌托邦探险之旅包含任务线、玩法路线、模组列表和配置说明。",
+                )
+            ]
+
+    original_retriever = web_server.Retriever
+    try:
+        web_server.Retriever = FakeRetriever  # type: ignore[assignment]
+        result = web_server._send_agent_message(
+            SimpleNamespace(paths=SimpleNamespace(db_path=Path("test.sqlite"))),
+            {"agent": "crawler_agent", "session_id": "mcagent-context-light-test"},
+            from_agent="CrawlerAgent",
+            content="请检查乌托邦整合包本地已有证据和缺口。",
+            to_agent="MCagent",
+            intent="mcagent_context_request",
+            metadata={"tool": "mcagent_context", "collection_target": "乌托邦整合包"},
+        )
+    finally:
+        web_server.Retriever = original_retriever  # type: ignore[assignment]
+
+    assert_true("answer", "本地已有证据候选" in result.get("answer", ""), result.get("answer", ""))
+    assert_equal("no_job", result.get("job"), None)
+    message = result.get("agent_message") if isinstance(result.get("agent_message"), dict) else {}
+    assert_equal("from", message.get("from_agent"), "MCagent")
+    assert_equal("to", message.get("to_agent"), "CrawlerAgent")
+    assert_equal("transport", result.get("evidence", {}).get("transport"), "_send_agent_message")
+
+
+def test_mcagent_to_crawler_delegation_uses_message_bus_not_job_starter() -> None:
+    source = (ROOT / "mcagent" / "web_server.py").read_text(encoding="utf-8")
+    start = source.index("def _prepare_and_start_crawler_delegation")
+    end = source.index("\ndef _delegation_handoff", start)
+    body = source[start:end]
+    assert_true("active_agent_gate", 'if active_agent == "crawler_agent"' in body)
+    assert_true("non_crawler_sends_message", "_send_agent_message(" in body)
+    assert_true("no_payload_agent_start_gate", 'delegate_payload.get("agent")' not in body)
 
 
 def test_crawler_topic_match_decision_comes_from_crawler_llm() -> None:
@@ -1655,6 +2606,50 @@ def test_zero_byte_artifact_is_visible_but_not_accepted_for_ingest() -> None:
         assert_equal("empty_not_ingested", roots, [])
         summary = web_server._crawler_result_summary([result], {"topic": "Farmer's Delight"})
         assert_equal("no_useful_records", summary["useful_records"], [])
+
+
+def test_structured_manifest_records_count_as_usable_objective_content() -> None:
+    with tempfile.TemporaryDirectory(prefix="mcagent-structured-manifest-") as tmp:
+        export_dir = Path(tmp)
+        (export_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "provider": "browser_collect",
+                    "status": "ok",
+                    "records": [
+                        {
+                            "name": "Packard 255 G2",
+                            "price": "416.99",
+                            "url": "https://webscraper.io/test-sites/e-commerce/static/product/31",
+                            "source": "https://webscraper.io/test-sites/e-commerce/static/computers/laptops",
+                        }
+                    ],
+                    "skipped": [],
+                    "errors": [],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        stats = web_server._crawler_manifest_stats(str(export_dir))
+        assert_equal("records", stats["records"], 1)
+        assert_equal("usable_records", stats["usable_records"], 1)
+        assert_equal("empty_records", stats["empty_records"], 0)
+        assert_true("record_bytes", int(stats["record_bytes"]) > 0)
+
+
+def test_structured_manifest_fields_are_visible_to_crawler_review() -> None:
+    record = {
+        "name": "Packard 255 G2",
+        "price": "416.99",
+        "url": "https://webscraper.io/test-sites/e-commerce/static/product/31",
+        "source": "https://webscraper.io/test-sites/e-commerce/static/computers/laptops",
+    }
+    assert_true("structured_has_content", web_server._crawler_record_has_content(record))
+    text = web_server._record_text_for_validation(record)
+    assert_true("name_visible", "Packard 255 G2" in text, text)
+    assert_true("price_visible", "416.99" in text, text)
+    assert_true("source_visible", "computers/laptops" in text, text)
 
 
 def test_job_readable_refreshes_legacy_manifest_stats() -> None:
@@ -1887,7 +2882,8 @@ def test_modpack_download_search_queries_use_readable_chinese_terms() -> None:
 
 def test_encoding_damage_guard_catches_mojibake_without_blocking_valid_chinese() -> None:
     good = {"question": "乌托邦探险之旅 整合包 .mrpack .zip"}
-    bad = {"question": "涔屾墭閭︽帰闄╀箣鏃?鏁村悎鍖?.mrpack .zip"}  # encoding-check: allow
+    mojibake = "".join(chr(code) for code in (0x6D94, 0x58AD, 0x95AD, 0x93C1, 0x9356, 0x934F))
+    bad = {"question": f"{mojibake}.mrpack .zip"}
     assert_equal("good_chinese", web_server._has_likely_encoding_damage(good), False)
     assert_equal("bad_mojibake", web_server._has_likely_encoding_damage(bad), True)
 
@@ -1979,8 +2975,101 @@ def test_modpack_download_reports_bbsmc_cloud_drive_blocker() -> None:
     assert_true("bbsmc_project_url", any(page.get("url") == "https://bbsmc.net/modpack/utopia-journey" for page in pages))
 
 
-def test_modpack_download_has_large_archive_timeout() -> None:
-    assert_equal("modpack_download_timeout", web_server._command_timeout("modpack_download"), 2400)
+def test_modpack_download_has_bounded_probe_timeout() -> None:
+    assert_equal("modpack_download_timeout", web_server._command_timeout("modpack_download"), 420)
+
+
+def test_mcmod_search_has_bounded_task_budget() -> None:
+    command = web_server._round_command("mcmod", {"query": "乌托邦探险之旅 模组列表", "search_limit": 50})
+    assert_equal("mcmod_timeout", web_server._command_timeout("mcmod"), 90)
+    assert_equal("mcmod_limit", command[command.index("--limit") + 1], "6")
+
+
+def test_public_discovery_tools_have_bounded_task_budget() -> None:
+    web_command = web_server._round_command("web_discovery", {"query": "乌托邦探险之旅 玩法", "search_limit": 50, "max_urls": 50})
+    playwright_command = web_server._round_command("playwright", {"query": "乌托邦探险之旅 玩法", "search_limit": 50, "max_urls": 50})
+    assert_equal("web_discovery_timeout", web_server._command_timeout("web_discovery"), 120)
+    assert_equal("playwright_timeout", web_server._command_timeout("playwright"), 150)
+    assert_equal("web_results", web_command[web_command.index("--max-results") + 1], "4")
+    assert_equal("web_pages", web_command[web_command.index("--max-pages") + 1], "3")
+    assert_equal("web_variants", web_command[web_command.index("--max-variants") + 1], "3")
+    assert_equal("web_request_timeout", web_command[web_command.index("--request-timeout") + 1], "8")
+    assert_equal("web_budget", web_command[web_command.index("--budget-seconds") + 1], "60")
+    assert_equal("playwright_results", playwright_command[playwright_command.index("--max-results") + 1], "3")
+    assert_equal("playwright_pages", playwright_command[playwright_command.index("--max-pages") + 1], "2")
+
+
+def test_crawler_reflection_timeout_continues_with_pending_task() -> None:
+    original_reflect = web_server.reflect_crawler_progress
+
+    def slow_reflect(*_args, **_kwargs):
+        time.sleep(2)
+        return {"action": "execute_pending"}
+
+    web_server.reflect_crawler_progress = slow_reflect  # type: ignore[assignment]
+    try:
+        started = time.monotonic()
+        decision = web_server._reflect_crawler_progress_with_timeout(
+            "collect target",
+            {"topic": "target"},
+            [{"source": "web_discovery", "empty_result": True}],
+            [{"source": "playwright", "query": "target"}],
+            session_summary={},
+            max_new_tasks=2,
+            timeout_seconds=1,
+        )
+    finally:
+        web_server.reflect_crawler_progress = original_reflect  # type: ignore[assignment]
+    elapsed = time.monotonic() - started
+    assert_true("timeout_returned_before_slow_reflect_finished", elapsed < 1.5, detail=f"elapsed={elapsed:.3f}s")
+    assert_equal("timeout_action", decision.get("action"), "execute_pending")
+    assert_equal("timeout_selected", decision.get("selected_index"), 0)
+    assert_equal("timeout_planner", decision.get("planner"), "runtime_reflection_timeout")
+    assert_true("timeout_issue", "reflection_timeout_continued_with_pending_task" in decision.get("contract", {}).get("issues", []))
+
+
+def test_crawler_reflection_timeout_finishes_after_repeated_low_yield() -> None:
+    original_reflect = web_server.reflect_crawler_progress
+
+    def slow_reflect(*_args, **_kwargs):
+        time.sleep(2)
+        return {"action": "execute_pending"}
+
+    web_server.reflect_crawler_progress = slow_reflect  # type: ignore[assignment]
+    try:
+        started = time.monotonic()
+        decision = web_server._reflect_crawler_progress_with_timeout(
+            "collect target",
+            {"topic": "target"},
+            [
+                {"source": "web_discovery", "empty_result": True},
+                {"source": "playwright", "empty_result": True},
+            ],
+            [{"source": "followup", "query": "target"}],
+            session_summary={},
+            max_new_tasks=2,
+            timeout_seconds=1,
+        )
+    finally:
+        web_server.reflect_crawler_progress = original_reflect  # type: ignore[assignment]
+    elapsed = time.monotonic() - started
+    assert_true("timeout_returned_before_slow_reflect_finished", elapsed < 1.5, detail=f"elapsed={elapsed:.3f}s")
+    assert_equal("timeout_action", decision.get("action"), "finish")
+    assert_equal("timeout_planner", decision.get("planner"), "runtime_reflection_timeout")
+    assert_true("timeout_issue", "reflection_timeout_finished_after_low_yield" in decision.get("contract", {}).get("issues", []))
+
+
+def test_modpack_download_defaults_to_probe_only_command() -> None:
+    command = web_server._round_command("modpack_download", {"query": "Utopian Journey", "search_limit": 3})
+    assert_true("probe_only", "--no-download" in command)
+    assert_true("quick_probe", "--quick-probe" in command)
+    assert_equal("limit", command[command.index("--limit") + 1], "3")
+
+
+def test_modpack_download_allows_explicit_full_download_command() -> None:
+    command = web_server._round_command("modpack_download", {"query": "Utopian Journey", "download": True})
+    assert_true("full_download", "--no-download" not in command)
+    assert_true("no_quick_probe_for_full_download", "--quick-probe" not in command)
 
 
 def test_modpack_archive_lookup_skips_corrupt_zip() -> None:
@@ -2305,6 +3394,62 @@ def test_job_to_dict_hides_unqualified_modpack_internal_from_history_view() -> N
     assert_equal("readable_blocked", len(payload["readable"]["blocked_planned_tasks"]), 1)
 
 
+def test_jobs_payload_is_lightweight_and_does_not_refresh_manifest_files() -> None:
+    original_jobs = dict(web_server.JOBS)
+    original_order = list(web_server.JOBS_ORDER)
+    original_manifest_stats = web_server._crawler_manifest_stats
+    huge_output = "A" * 200_000
+
+    def fail_manifest_refresh(_export_dir: str) -> dict:
+        raise AssertionError("/api/jobs must not refresh manifest files while building the polling payload")
+
+    job = web_server.Job(
+        id="light-jobs-payload",
+        kind="crawler",
+        title="Crawler",
+        status="running",
+        created_at=1.0,
+        started_at=1.0,
+        summary="running",
+        result={
+            "plan": {"topic": "通用技术资料采集", "delivery_target": "human"},
+            "planned_tasks": [{"source": "web_discovery", "query": "asyncio TaskGroup"}],
+            "tasks": [
+                {
+                    "source": "web_discovery",
+                    "query": "asyncio TaskGroup",
+                    "output": huge_output,
+                    "export_dir": "runtime/missing-manifest-dir",
+                    "manifest_stats": {"records": 1},
+                    "observation": {"status": "ok", "summary": "accepted"},
+                    "topic_validation": {"reason": "CrawlerAgent accepted relevant technical content."},
+                    "ingest_deferred": True,
+                }
+            ],
+        },
+    )
+    try:
+        web_server._crawler_manifest_stats = fail_manifest_refresh  # type: ignore[assignment]
+        with web_server.JOBS_LOCK:
+            web_server.JOBS.clear()
+            web_server.JOBS_ORDER.clear()
+            web_server.JOBS[job.id] = job
+            web_server.JOBS_ORDER.append(job.id)
+        payload = web_server._jobs_payload()
+    finally:
+        web_server._crawler_manifest_stats = original_manifest_stats  # type: ignore[assignment]
+        with web_server.JOBS_LOCK:
+            web_server.JOBS.clear()
+            web_server.JOBS.update(original_jobs)
+            web_server.JOBS_ORDER[:] = original_order
+
+    jobs = payload.get("jobs") if isinstance(payload, dict) else []
+    assert_equal("job_count", len(jobs), 1)
+    task = jobs[0]["result"]["tasks"][0]
+    assert_true("output_truncated", len(task.get("output") or "") < 2000)
+    assert_true("readable_present", bool(jobs[0].get("readable", {}).get("self_audit")))
+
+
 def test_modpack_download_evidence_is_manifest_fact_recall() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "mcagent.sqlite"
@@ -2396,29 +3541,24 @@ if __name__ == "__main__":
     test_version_fact_answer_requires_subject_in_title_or_source()
     test_direct_user_handoff_brief_rejects_wrong_mcagent_identity()
     test_direct_crawler_delegate_choice_is_corrected_to_temporary_extract()
-    test_direct_crawler_mcagent_gap_request_forces_planned_workflow()
-    test_direct_crawler_delegate_gap_request_is_rewritten_to_context_workflow()
-    test_direct_crawler_router_error_gap_request_recovers_to_context_workflow()
     test_mcagent_context_focus_expands_minecraft_utopia_aliases()
     test_successful_mcagent_context_prunes_duplicate_pending_context_tasks()
     test_successful_mcagent_context_filters_new_duplicate_context_tasks()
-    test_runtime_status_request_bypasses_llm_router()
     test_mcagent_gap_delegation_overrides_human_delivery_to_rag()
     test_delegate_confirmation_can_cancel_background_job()
-    test_explicit_mcagent_to_crawler_handoff_starts_job_before_router()
+    test_explicit_mcagent_to_crawler_handoff_starts_job_after_agent_selects_delegate()
     test_recent_crawler_audit_question_answers_history_without_new_collection()
     test_recent_crawler_audit_question_matches_create_instead_of_higher_activity_job()
-    test_explicit_mcagent_to_crawler_type_discovery_stays_neutral()
-    test_no_force_archive_download_does_not_block_crawler_handoff()
+    test_crawler_collection_request_message_does_not_force_tool_choice()
+    test_crawler_collection_request_message_starts_job_after_crawler_selects_delegate()
+    test_direct_crawler_planned_workflow_preserves_selected_action_plan_for_job()
+    test_direct_crawler_mcagent_context_step_with_delegate_starts_background_job()
     test_modrinth_plain_mod_task_does_not_parse_modpack_contents()
     test_known_modrinth_project_skips_are_reusable_existing_evidence()
     test_modrinth_slug_query_is_direct_project_candidate()
     test_modrinth_explicit_modpack_manifest_task_can_parse_contents()
-    test_mcagent_explicit_crawler_request_forces_planned_delegate()
-    test_direct_crawler_mcagent_gap_request_delegates_when_local_empty()
-    test_crawler_mcagent_context_with_collection_continues_to_delegate()
-    test_direct_crawler_delegate_choice_runs_as_crawler_context_workflow()
     test_crawler_job_can_execute_mcagent_context_tool()
+    test_mcagent_context_request_does_not_recursively_delegate_crawler()
     test_mcagent_context_tool_timeout_returns_objective_blocker()
     test_mcagent_context_filters_off_topic_local_evidence()
     test_specific_utopian_journey_filter_rejects_generic_utopian_sources()
@@ -2428,14 +3568,23 @@ if __name__ == "__main__":
     test_no_llm_mcagent_path_still_runs_evidence_selection()
     test_version_install_note_extracts_modpack_requirements()
     test_modpack_overview_surfaces_version_install_evidence()
-    test_version_install_fact_question_bypasses_llm_router()
-    test_modpack_overview_with_version_does_not_use_narrow_fact_route()
-    test_mixed_version_and_guide_question_does_not_use_narrow_fact_route()
+    test_agent_selected_local_corpus_inventory_route_executes_inventory_tool()
+    test_inventory_route_can_continue_to_delegate_when_agent_review_finds_missing_side_effect()
+    test_local_corpus_inventory_is_not_keyword_forced_before_agent_choice()
+    test_status_runs_only_after_agent_selects_status_tool()
+    test_agent_selected_crawler_audit_route_reads_audit_tool()
+    test_chat_router_does_not_force_agent_tool_choice_with_keyword_fast_paths()
     test_general_answer_path_skips_local_fact_answer_for_modpack_overview()
-    test_mcagent_context_tool_uses_fast_structured_reply_instead_of_second_answer_llm()
+    test_pseudo_delegate_call_in_final_answer_is_removed_without_late_side_effect()
+    test_unselected_pseudo_tool_text_is_removed_without_side_effect()
+    test_local_rag_route_completeness_can_delegate_before_final_answer()
+    test_conditional_delegate_suggestion_is_allowed_without_side_effect()
+    test_mcagent_context_tool_uses_message_bus_instead_of_internal_mcagent_shortcut()
+    test_mcagent_to_crawler_delegation_uses_message_bus_not_job_starter()
     test_crawler_topic_match_decision_comes_from_crawler_llm()
     test_crawler_summary_uses_only_llm_matched_record_indexes()
     test_zero_byte_artifact_is_visible_but_not_accepted_for_ingest()
+    test_structured_manifest_records_count_as_usable_objective_content()
     test_job_readable_refreshes_legacy_manifest_stats()
     test_duplicate_reuse_requires_crawler_llm_acceptance()
     test_modpack_internal_missing_archive_reports_objective_blocker()
@@ -2448,7 +3597,12 @@ if __name__ == "__main__":
     test_modpack_download_search_queries_use_readable_chinese_terms()
     test_encoding_damage_guard_catches_mojibake_without_blocking_valid_chinese()
     test_modpack_download_reports_bbsmc_cloud_drive_blocker()
-    test_modpack_download_has_large_archive_timeout()
+    test_modpack_download_has_bounded_probe_timeout()
+    test_mcmod_search_has_bounded_task_budget()
+    test_public_discovery_tools_have_bounded_task_budget()
+    test_crawler_reflection_timeout_continues_with_pending_task()
+    test_modpack_download_defaults_to_probe_only_command()
+    test_modpack_download_allows_explicit_full_download_command()
     test_modpack_archive_lookup_skips_corrupt_zip()
     test_record_validation_skips_binary_archive_body()
     test_modpack_download_follows_public_release_seed()
@@ -2462,6 +3616,7 @@ if __name__ == "__main__":
     test_modpack_internal_uses_curseforge_overrides_root()
     test_modpack_internal_detects_modrinth_overrides_layout()
     test_job_to_dict_hides_unqualified_modpack_internal_from_history_view()
+    test_jobs_payload_is_lightweight_and_does_not_refresh_manifest_files()
     test_modpack_download_evidence_is_manifest_fact_recall()
     test_local_modpack_archive_fact_answer_uses_download_evidence()
     print("web_server_side_effect_guard_scenarios passed")

@@ -120,7 +120,8 @@ class CrawlerReflectionSnapshotService:
         return {
             "query": data.get("query") or data.get("search_query") or "",
             "records": self._compact_items(data.get("records"), limit=3),
-            "candidates": self._compact_items(data.get("candidates"), limit=5),
+            "candidates": self._compact_items(data.get("candidate_records") or data.get("candidates"), limit=5),
+            "expanded_candidates": self._compact_items(data.get("expanded_candidate_records"), limit=5),
             "search_results": self._compact_items(data.get("search_results"), limit=5),
             "skipped": self._compact_items(data.get("skipped"), limit=5),
             "downloads": self._compact_items(data.get("downloads"), limit=3),
@@ -138,6 +139,11 @@ class CrawlerReflectionSnapshotService:
                 for key in (
                     "title",
                     "url",
+                    "fetch_url",
+                    "fetch_title",
+                    "fetch_kind",
+                    "snippet",
+                    "search_relevance",
                     "reason",
                     "status",
                     "status_code",

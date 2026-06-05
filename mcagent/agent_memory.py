@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,7 @@ from .crawler_planner import CONCEPTS
 
 
 MEMORY_PATH = PROJECT_ROOT / "data" / "agent_memory.jsonl"
+MEMORY_TAIL_BYTES = 2 * 1024 * 1024
 
 
 def append_memory_event(event_type: str, payload: dict[str, Any]) -> None:
@@ -26,9 +28,19 @@ def append_memory_event(event_type: str, payload: dict[str, Any]) -> None:
 def read_memory_events(limit: int = 40) -> list[dict[str, Any]]:
     if not MEMORY_PATH.exists():
         return []
-    lines = MEMORY_PATH.read_text(encoding="utf-8", errors="replace").splitlines()
+    safe_limit = max(1, int(limit or 1))
+    try:
+        size = MEMORY_PATH.stat().st_size
+        with MEMORY_PATH.open("rb") as handle:
+            if size > MEMORY_TAIL_BYTES:
+                handle.seek(max(0, size - MEMORY_TAIL_BYTES), os.SEEK_SET)
+                handle.readline()
+            data = handle.read()
+    except OSError:
+        return []
+    lines = data.decode("utf-8", errors="replace").splitlines()
     events = []
-    for line in lines[-max(1, limit) :]:
+    for line in lines[-safe_limit:]:
         try:
             events.append(json.loads(line))
         except json.JSONDecodeError:

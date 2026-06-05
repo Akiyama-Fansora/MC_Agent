@@ -66,6 +66,18 @@ def test_frontend_keeps_streamed_answer_when_connection_ends_badly() -> None:
     assert_true("sources_cleared_only_without_usable_answer", "renderSources([]);" in guarded_error_block.split("} else {", 1)[1])
 
 
+def test_frontend_crawler_panel_uses_agent_message_endpoint() -> None:
+    app = (ROOT / "frontend" / "static" / "app.js").read_text(encoding="utf-8")
+    start = app.index("async function runCrawler()")
+    end = app.index("\nfunction initEvents()", start)
+    body = app[start:end]
+    assert_true("crawler_panel_uses_message_endpoint", 'api("/api/agent-message"' in body)
+    assert_true("crawler_panel_from_agent", 'from_agent: "User"' in body)
+    assert_true("crawler_panel_to_agent", 'to_agent: "CrawlerAgent"' in body)
+    assert_true("crawler_panel_content", "content: question" in body)
+    assert_true("crawler_panel_no_legacy_start_endpoint", "/api/jobs/start-crawler" not in app)
+
+
 def test_crawler_tool_catalog_exposes_temporary_and_persistent_paths() -> None:
     runtime = (ROOT / "mcagent" / "agent_runtime.py").read_text(encoding="utf-8")
     assert_true("temporary_extract_tool", 'name="temporary_extract"' in runtime)
@@ -92,6 +104,7 @@ def main() -> int:
     test_frontend_does_not_show_fixed_three_way_prompt()
     test_frontend_uses_compact_job_card_instead_of_default_trace_noise()
     test_frontend_keeps_streamed_answer_when_connection_ends_badly()
+    test_frontend_crawler_panel_uses_agent_message_endpoint()
     test_crawler_tool_catalog_exposes_temporary_and_persistent_paths()
     test_router_prompt_does_not_hardcode_url_no_save_rule()
     print("agent_five_direction_matrix_scenarios passed")

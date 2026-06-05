@@ -74,7 +74,8 @@ def test_chat_records_user_to_agent_message() -> None:
     fake = SequencedClient(
         [
             '{"tool":"direct_answer","reason":"simple greeting","collection_target":"你好","delivery_target":"human"}',
-            '{"proceed":true,"tool":"direct_answer","reason":"ok"}',
+            '{"proceed":true,"tool":"direct_answer","goal":"greet user","reason":"simple greeting"}',
+            '{"missing_side_effect":false,"action":"allow","reason":"simple greeting has no required side effect"}',
             "你好，我是 CrawlerAgent。",
         ]
     )
@@ -103,7 +104,8 @@ def test_send_agent_message_dispatches_to_target_agent() -> None:
     fake = SequencedClient(
         [
             '{"tool":"direct_answer","reason":"simple greeting","collection_target":"你好","delivery_target":"human"}',
-            '{"proceed":true,"tool":"direct_answer","reason":"ok"}',
+            '{"proceed":true,"tool":"direct_answer","goal":"greet user","reason":"simple greeting"}',
+            '{"missing_side_effect":false,"action":"allow","reason":"simple greeting has no required side effect"}',
             "你好，我是 MCagent。",
         ]
     )
@@ -113,7 +115,10 @@ def test_send_agent_message_dispatches_to_target_agent() -> None:
         result = web_server._send_agent_message(
             make_temp_config(Path(tmp.name)),
             {"session_id": "message-bus-dispatch", "model": "fake-model"},
-            make_agent_message("User", "你好", "MCAgent", conversation_id="message-bus-dispatch"),
+            from_agent="User",
+            content="你好",
+            to_agent="MCAgent",
+            conversation_id="message-bus-dispatch",
         )
     finally:
         web_server._selected_llm_client = original_selector  # type: ignore[assignment]
@@ -128,10 +133,137 @@ def test_send_agent_message_dispatches_to_target_agent() -> None:
     assert_true("dispatch_reply_to", bool(reply.get("reply_to")))
 
 
+def test_message_bus_api_is_single_from_content_to_primitive() -> None:
+    import inspect
+
+    signature = inspect.signature(web_server._send_agent_message)
+    params = signature.parameters
+    for name in ("config", "payload", "from_agent", "content", "to_agent"):
+        assert_true(f"required_param_{name}", name in params)
+    assert_true("keyword_only_from", params["from_agent"].kind is inspect.Parameter.KEYWORD_ONLY)
+    assert_true("keyword_only_content", params["content"].kind is inspect.Parameter.KEYWORD_ONLY)
+    assert_true("keyword_only_to", params["to_agent"].kind is inspect.Parameter.KEYWORD_ONLY)
+    assert_true("no_message_param", "message" not in params)
+
+    source = (ROOT / "mcagent" / "web_server.py").read_text(encoding="utf-8")
+    assert_true("chat_uses_message_bus", "return _send_agent_message(config, payload, **fields)" in source)
+    assert_true("stream_uses_message_bus", "_send_agent_message(config, payload, emit=emit, **_user_message_fields(payload))" in source)
+    assert_true("no_object_bus_call", "_send_agent_message(config, payload, message" not in source)
+    assert_true("no_legacy_crawler_start_api", "/api/jobs/start-crawler" not in source)
+    assert_true("no_legacy_crawler_request_wrapper", "def _send_crawler_collection_request" not in source)
+    assert_true("collection_request_not_runtime_forced", "agent_message_contract" not in source)
+    assert_true("collection_request_only_context", "collection_request_received_for_agent_decision" in source)
+    start = source.index("def _start_crawler_job_from_crawler_tool")
+    end = source.index("\ndef _fallback_delegate_handoff_brief", start)
+    job_start_body = source[start:end]
+    assert_true("crawler_tool_requires_received_message", "_received_agent_message_for_tool(" in job_start_body)
+    assert_true("crawler_tool_does_not_forge_message", "make_agent_message(" not in job_start_body)
+
+
+def test_production_entries_do_not_bypass_message_bus_runtime() -> None:
+    web_source = (ROOT / "mcagent" / "web_server.py").read_text(encoding="utf-8")
+    fastapi_source = (ROOT / "mcagent" / "fastapi_app.py").read_text(encoding="utf-8")
+
+    chat_impl_refs = [
+        line.strip()
+        for line in web_source.splitlines()
+        if "_chat_impl(" in line
+    ]
+    assert_equal(
+        "web_server_chat_impl_refs",
+        chat_impl_refs,
+        [
+            "return _chat_impl(config, _agent_message_payload(payload, message), emit=emit)",
+            "def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = None) -> dict[str, Any]:",
+        ],
+    )
+    assert_true("fastapi_no_chat_impl", "_chat_impl(" not in fastapi_source)
+    assert_true("chat_wrapper_is_bus_only", "return _send_agent_message(config, payload, **fields)" in web_source)
+    assert_true(
+        "collaboration_start_uses_chat_wrapper",
+        '_send_json(self, _chat(config, payload | {"agent": "mcagent_rag"}))' in web_source,
+    )
+    assert_true(
+        "fastapi_collaboration_start_uses_chat_wrapper",
+        'return _chat(cfg(), payload | {"agent": "mcagent_rag"})' in fastapi_source,
+    )
+
+
+def test_crawler_job_start_requires_received_agent_message() -> None:
+    tmp = tempfile.TemporaryDirectory()
+    try:
+        config = make_temp_config(Path(tmp.name))
+        try:
+            web_server._start_crawler_job_from_crawler_tool(
+                config,
+                {
+                    "agent": "crawler_agent",
+                    "question": "采集公开资料",
+                    "session_id": "missing-agent-message",
+                    "source": "planner",
+                },
+                "采集公开资料",
+            )
+        except RuntimeError as exc:
+            assert_true("requires_agent_message", "AgentMessage" in str(exc), str(exc))
+        else:
+            raise AssertionError("Crawler job start accepted a direct call without an AgentMessage")
+    finally:
+        tmp.cleanup()
+
+
+def test_crawler_selected_delegate_marks_existing_message_before_job_start() -> None:
+    tmp = tempfile.TemporaryDirectory()
+    fake = SequencedClient(
+        [
+            '{"tool":"delegate_crawler","reason":"collect requested data","collection_target":"采集公开资料","delivery_target":"human"}',
+            '{"proceed":true,"tool":"delegate_crawler","reason":"ok"}',
+            '{"handoff_brief":"CrawlerAgent accepted the user collection request.","reason":"handoff"}',
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    original_start = web_server._start_crawler_job_from_crawler_tool
+    calls: list[dict[str, Any]] = []
+
+    def fake_start(config: AppConfig, payload: dict[str, Any], question: str, plan: dict[str, Any] | None = None):  # noqa: ARG001
+        message = message_from_payload(payload, default_to_agent="CrawlerAgent", default_content=question)
+        calls.append({"message": message, "payload": payload, "question": question})
+        job = web_server.Job(id="crawler-selected-delegate", kind="crawler", title=question, status="queued", summary="queued")
+        job.result = {"plan": {"topic": question, "delivery_target": payload.get("delivery_target")}}
+        return job, True
+
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake, "fake")  # type: ignore[assignment]
+    web_server._start_crawler_job_from_crawler_tool = fake_start  # type: ignore[assignment]
+    try:
+        result = web_server._send_agent_message(
+            make_temp_config(Path(tmp.name)),
+            {"session_id": "crawler-selected-delegate", "model": "fake-model"},
+            from_agent="User",
+            content="采集公开资料",
+            to_agent="CrawlerAgent",
+            conversation_id="crawler-selected-delegate",
+        )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._start_crawler_job_from_crawler_tool = original_start  # type: ignore[assignment]
+        tmp.cleanup()
+
+    assert_true("job_started", bool(calls))
+    message = calls[0]["message"]
+    assert_equal("message_tuple", message.to_tuple(), ("User", "采集公开资料", "CrawlerAgent"))
+    assert_equal("message_tool", message.metadata.get("tool"), "delegate_crawler")
+    assert_equal("message_intent", message.intent, "collection_request")
+    assert_true("response_job", bool(result.get("job", {}).get("id")), str(result))
+
+
 def main() -> int:
     test_agent_message_tuple_and_payload_normalization()
     test_chat_records_user_to_agent_message()
     test_send_agent_message_dispatches_to_target_agent()
+    test_message_bus_api_is_single_from_content_to_primitive()
+    test_production_entries_do_not_bypass_message_bus_runtime()
+    test_crawler_job_start_requires_received_agent_message()
+    test_crawler_selected_delegate_marks_existing_message_before_job_start()
     print("agent_message_bus_scenarios passed")
     return 0
 

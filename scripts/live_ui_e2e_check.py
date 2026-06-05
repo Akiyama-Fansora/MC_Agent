@@ -86,28 +86,31 @@ def main() -> int:
             require("selected_profile_present", bool(selected_profile), "model select has no value")
 
         before_articles = page.locator("article").count()
+        before_assistant = page.locator('article.message.assistant[data-final-answer="true"]').count()
         page.locator("textarea").fill(question, timeout=10000)
         page.locator('button[type="submit"]').click(timeout=10000)
 
         page.wait_for_function(
-            """([before, q, pattern]) => {
+            """([before, beforeAssistant, q, pattern]) => {
                 const button = document.querySelector('button[type="submit"]');
                 const articles = [...document.querySelectorAll('article')].map(a => a.innerText || '');
                 if (articles.length < before + 2) return false;
-                const answer = articles[articles.length - 1] || '';
+                const finalAssistant = [...document.querySelectorAll('article.message.assistant[data-final-answer="true"]')];
+                if (finalAssistant.length < beforeAssistant + 1) return false;
+                const answer = finalAssistant[finalAssistant.length - 1]?.innerText || '';
                 const hasQuestion = document.body.innerText.includes(q);
                 const hasUseful = new RegExp(pattern, 'i').test(answer);
                 const buttonReady = button && !button.disabled && button.innerText.length > 0;
                 return hasQuestion && buttonReady && answer.length > 120 && hasUseful;
             }""",
-            arg=[before_articles, question, answer_regex],
+            arg=[before_articles, before_assistant, question, answer_regex],
             timeout=args.timeout * 1000,
         )
         page.wait_for_timeout(1500)
 
         before_data = page.evaluate(
             """(q) => {
-                const articles = [...document.querySelectorAll('article')].map(a => a.innerText || '');
+                const articles = [...document.querySelectorAll('article.message.assistant[data-final-answer="true"]')].map(a => a.innerText || '');
                 const answer = articles[articles.length - 1] || '';
                 const storage = localStorage.getItem('mcagent.sessionsByAgent') || '';
                 return {

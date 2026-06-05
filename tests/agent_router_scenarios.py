@@ -102,6 +102,56 @@ def test_router_error_stops_before_confirmation() -> None:
     assert_equal("router_error_proceed", route.route_confirmation["proceed"], False)
 
 
+def test_no_persistence_routes_skip_second_llm_confirmation() -> None:
+    tmp, run = make_run("Temporarily read one URL and do not save anything.")
+    calls = {"confirm": 0}
+    try:
+        service = AgentToolRouterService(
+            decide_tool=lambda *args, **kwargs: {"tool": "temporary_extract", "reason": "read only without persistence"},
+            confirm_next_step=lambda *args, **kwargs: calls.__setitem__("confirm", calls["confirm"] + 1) or {"proceed": True},
+            action_plan_has_tool=lambda _plan, _tool: False,
+        )
+        route = service.route(run, session_summary={})
+    finally:
+        tmp.cleanup()
+
+    assert_equal("route", route.route_intent, "temporary_extract")
+    assert_equal("confirm_not_called", calls["confirm"], 0)
+    assert_equal("confirmation_planner", route.route_confirmation["planner"], "runtime")
+
+
+def test_direct_answer_can_be_corrected_when_side_effect_is_required() -> None:
+    tmp, run = make_run("问下MCAgent乌托邦整合包还缺哪些东西 你去网上找补给他")
+    calls = {"confirm": 0}
+    try:
+        service = AgentToolRouterService(
+            decide_tool=lambda *args, **kwargs: {"tool": "direct_answer", "reason": "claims it can relay"},
+            confirm_next_step=lambda *args, **kwargs: calls.__setitem__("confirm", calls["confirm"] + 1)
+            or {
+                "proceed": False,
+                "tool": "direct_answer",
+                "suggested_tool": "planned_workflow",
+                "goal": "ask MCagent then delegate Crawler",
+                "reason": "side effect required",
+                "action_plan": [
+                    {"step": 1, "tool": "mcagent_context", "goal": "ask MCagent for local gaps"},
+                    {"step": 2, "tool": "delegate_crawler", "goal": "collect missing public material"},
+                ],
+            },
+            action_plan_has_tool=lambda action_plan, tool: any(item.get("tool") == tool for item in action_plan if isinstance(item, dict)),
+        )
+        route = service.route(run, session_summary={})
+    finally:
+        tmp.cleanup()
+
+    assert_equal("confirm_called", calls["confirm"], 1)
+    assert_equal("corrected_route_executes_answer_branch", route.route_intent, "answer")
+    assert_true("planned_workflow", route.planned_workflow)
+    assert_true("planned_delegate", route.planned_delegate)
+    assert_equal("replacement_plan_steps", [item["tool"] for item in route.action_plan], ["mcagent_context", "delegate_crawler"])
+    assert_equal("confirmation_reason", route.route_confirmation["reason"], "side effect required")
+
+
 def test_router_marks_planned_delegate_without_executing_it() -> None:
     plan: list[dict[str, Any]] = [
         {"step": 1, "tool": "local_rag_search", "goal": "summarize local data"},
@@ -172,6 +222,30 @@ def test_llm_router_owns_prompt_and_json_parsing() -> None:
     assert_equal("json_parser", json_object_from_llm_text("prefix {\"ok\": true} suffix"), {"ok": True})
 
 
+def test_llm_router_allows_local_corpus_inventory_tool() -> None:
+    tmp, run = make_run("本地都有哪些整合包和模组的资料 都简单介绍一下")
+    fake = FakeClient('{"tool":"local_corpus_inventory","reason":"inspect local corpus coverage"}')
+    try:
+        service = LlmAgentToolRouterService(
+            select_client=lambda _config, _model, _temperature: (fake, "fake-router"),
+            action_plan_has_tool=lambda _plan, _tool: False,
+        )
+        decision = service.decide_tool(
+            run.config,
+            run.payload,
+            agent=run.agent,
+            original_question=run.original_question,
+            contextual_question=run.question,
+            session_summary={},
+            model=run.model,
+        )
+    finally:
+        tmp.cleanup()
+
+    assert_equal("inventory_tool", decision["tool"], "local_corpus_inventory")
+    assert_true("inventory_in_catalog", "local_corpus_inventory" in fake.calls[0]["messages"][1]["content"])
+
+
 def test_llm_router_repairs_malformed_json_before_router_error() -> None:
     tmp, run = make_run("hello")
     fake = SequencedFakeClient(
@@ -200,6 +274,37 @@ def test_llm_router_repairs_malformed_json_before_router_error() -> None:
     assert_equal("repaired_tool", decision["tool"], "planned_workflow")
     assert_equal("repair_call_count", len(fake.calls), 2)
     assert_true("repair_prompt", "Repair it" in fake.calls[1]["messages"][1]["content"])
+
+
+def test_llm_router_retries_compact_decision_when_repair_fails() -> None:
+    tmp, run = make_run("问下MCAgent乌托邦整合包还缺哪些东西 你去网上找补给他")
+    fake = SequencedFakeClient(
+        [
+            '{"tool":"planned_workflow","reason":"truncated',
+            '{"tool":"planned_workflow","reason":"still bad"',
+            '{"tool":"planned_workflow","reason":"retry ok","action_plan":[{"step":1,"tool":"mcagent_context","goal":"inspect gaps"},{"step":2,"tool":"delegate_crawler","goal":"collect"}],"delivery_target":"MCagent/RAG"}',
+        ]
+    )
+    try:
+        service = LlmAgentToolRouterService(
+            select_client=lambda _config, _model, _temperature: (fake, "fake-router"),
+            action_plan_has_tool=lambda _plan, _tool: False,
+        )
+        decision = service.decide_tool(
+            run.config,
+            run.payload,
+            agent="crawler_agent",
+            original_question=run.original_question,
+            contextual_question=run.question,
+            session_summary={},
+            model=run.model,
+        )
+    finally:
+        tmp.cleanup()
+
+    assert_equal("retry_tool", decision["tool"], "planned_workflow")
+    assert_equal("retry_call_count", len(fake.calls), 3)
+    assert_true("compact_retry_prompt", "Repeat the decision from scratch" in fake.calls[2]["messages"][1]["content"])
 
 
 def test_llm_router_error_does_not_choose_fallback_tool() -> None:
@@ -233,9 +338,13 @@ def main() -> int:
     test_router_records_decision_and_confirmation()
     test_router_respects_agent_suggested_tool()
     test_router_error_stops_before_confirmation()
+    test_no_persistence_routes_skip_second_llm_confirmation()
+    test_direct_answer_can_be_corrected_when_side_effect_is_required()
     test_router_marks_planned_delegate_without_executing_it()
     test_llm_router_owns_prompt_and_json_parsing()
+    test_llm_router_allows_local_corpus_inventory_tool()
     test_llm_router_repairs_malformed_json_before_router_error()
+    test_llm_router_retries_compact_decision_when_repair_fails()
     test_llm_router_error_does_not_choose_fallback_tool()
     print("AGENT ROUTER SCENARIOS PASSED")
     return 0

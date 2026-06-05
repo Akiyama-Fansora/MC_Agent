@@ -58,7 +58,7 @@ class CrawlerRuntimeStepService:
         new_tasks = [task for task in list(materialized_tasks if materialized_tasks is not None else reflection.get("tasks") or []) if isinstance(task, dict)]
 
         if action in {"add_tasks", "replan"} and new_tasks:
-            inserted = self._insert_unique(tasks, index, new_tasks, max_total_tasks)
+            inserted = self._insert_unique(tasks, index, new_tasks, max_total_tasks, replace_pending=action == "replan")
             if inserted:
                 return {"continue_loop": True, "finished": False, "inserted_tasks": inserted, "selected_offset": 0}
 
@@ -77,12 +77,17 @@ class CrawlerRuntimeStepService:
             return {"continue_loop": False, "finished": False, "inserted_tasks": [], "selected_offset": selected_offset}
         return {"continue_loop": False, "finished": False, "inserted_tasks": [], "selected_offset": 0}
 
-    def _insert_unique(self, tasks: list[dict[str, Any]], index: int, new_tasks: list[dict[str, Any]], max_total_tasks: int) -> list[dict[str, Any]]:
+    def _insert_unique(self, tasks: list[dict[str, Any]], index: int, new_tasks: list[dict[str, Any]], max_total_tasks: int, *, replace_pending: bool = False) -> list[dict[str, Any]]:
         seen_identities = {self.task_identity(task) for task in tasks}
         inserted: list[dict[str, Any]] = []
         for new_task in new_tasks:
             identity = self.task_identity(new_task)
-            if identity in seen_identities or len(tasks) + len(inserted) >= max_total_tasks:
+            if identity in seen_identities:
+                continue
+            while replace_pending and len(tasks) + len(inserted) >= max_total_tasks and len(tasks) > index:
+                removed = tasks.pop()
+                seen_identities.discard(self.task_identity(removed))
+            if len(tasks) + len(inserted) >= max_total_tasks:
                 continue
             inserted.append(new_task)
             seen_identities.add(identity)

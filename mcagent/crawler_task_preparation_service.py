@@ -42,6 +42,9 @@ FORWARDED_TASK_KEYS = (
     "content_ref",
     "artifact_ref",
     "user_agent",
+    "download",
+    "no_download",
+    "probe_only",
 )
 
 

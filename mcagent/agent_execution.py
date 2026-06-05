@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 from .agent_message import agent_reply_message_from_payload
 from .config import AppConfig
-from .llm_profiles import profiles_payload
+from .llm_profiles import profiles_payload, resolve_profile_from_model
 
 
 EmitFn = Callable[[str, Any], None]
@@ -79,6 +79,9 @@ def resolve_agent_model(config: AppConfig, payload: dict[str, Any], agent: str) 
     if raw_model.lower() in {"auto", "default", "assigned", "agent-default"}:
         raw_model = ""
     if raw_model:
+        profile = resolve_profile_from_model(config, raw_model, agent=agent)
+        if profile:
+            return f"profile:{profile['id']}"
         return raw_model
     assignment_key = "crawler_agent" if agent == "crawler_agent" else "mcagent_rag"
     assigned = profiles_payload(config).get("assignments", {}).get(assignment_key, "")

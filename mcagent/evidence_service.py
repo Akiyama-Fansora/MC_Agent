@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from typing import Any, Callable, Protocol
 
 from .config import AppConfig
@@ -69,22 +70,63 @@ class EvidenceWorkflowService:
     ) -> EvidenceWorkflowResult:
         add_trace("decide", "selecting_evidence", {"candidates": len(rough_results)})
         selected, report = self._selector_factory(final_k).select(evidence_question, rough_results, plan=retrieval_plan)
-        selected = self._prefer_parent_topic_results(evidence_question, selected, rough_results, final_k)
+        selected = self._run_step(
+            add_trace,
+            "prefer_parent_topic",
+            lambda: self._prefer_parent_topic_results(evidence_question, selected, rough_results, final_k),
+        )
 
-        modpack_list_selected = self._modpack_manifest_results(evidence_question, rough_results, final_k)
+        modpack_list_selected = self._run_step(
+            add_trace,
+            "modpack_manifest",
+            lambda: self._modpack_manifest_results(evidence_question, rough_results, final_k),
+        )
         if not modpack_list_selected:
-            modpack_list_selected = self._supplement_local_modpack_manifest_results(config, evidence_question, final_k)
+            modpack_list_selected = self._run_step(
+                add_trace,
+                "local_modpack_manifest",
+                lambda: self._supplement_local_modpack_manifest_results(config, evidence_question, final_k),
+            )
         if modpack_list_selected:
             selected = self._dedupe_results([*modpack_list_selected, *selected], final_k)
             report.verdict = "ok"
             report.reasons = []
             report.selected_count = len(selected)
 
-        selected = self._supplement_project_keyword_results(config, evidence_question, selected, final_k)
-        selected = self._supplement_raw_html_results(config, evidence_question, selected, final_k)
-        selected = self._ensure_modpack_mod_list_context(config, evidence_question, selected, rough_results, final_k)
+        if self._needs_expensive_supplement(selected, report, final_k):
+            selected = self._run_step(
+                add_trace,
+                "project_keyword_supplement",
+                lambda: self._supplement_project_keyword_results(config, evidence_question, selected, final_k),
+            )
+            selected = self._run_step(
+                add_trace,
+                "raw_html_supplement",
+                lambda: self._supplement_raw_html_results(config, evidence_question, selected, final_k),
+            )
+        else:
+            add_trace(
+                "decide",
+                "evidence_step_skipped",
+                {
+                    "step": "expensive_supplements",
+                    "reason": "EvidenceSelector already found enough objective local evidence; skip slow keyword/raw-HTML supplements for this turn.",
+                    "selected_count": len(selected),
+                    "final_context_k": final_k,
+                    "verdict": report.verdict,
+                },
+            )
+        selected = self._run_step(
+            add_trace,
+            "modpack_mod_list_context",
+            lambda: self._ensure_modpack_mod_list_context(config, evidence_question, selected, rough_results, final_k),
+        )
 
-        fallback_selected = self._fallback_theme_results(evidence_question, rough_results, final_k)
+        fallback_selected = self._run_step(
+            add_trace,
+            "theme_fallback",
+            lambda: self._fallback_theme_results(evidence_question, rough_results, final_k),
+        )
         if fallback_selected and len(selected) < min(4, final_k):
             selected = self._dedupe_results([*fallback_selected, *selected], final_k)
             if report.verdict != "ok":
@@ -94,3 +136,37 @@ class EvidenceWorkflowService:
 
         add_trace("decide", "evidence_selected", report.to_dict())
         return EvidenceWorkflowResult(selected=selected, report=report)
+
+    def _needs_expensive_supplement(self, selected: list[SearchResult], report: EvidenceReport, final_k: int) -> bool:
+        if report.verdict != "ok":
+            return True
+        enough_selected = len(selected) >= min(4, max(1, final_k))
+        high_confidence = float(report.confidence or 0.0) >= 0.75
+        return not (enough_selected and high_confidence)
+
+    def _run_step(self, add_trace: TraceFn, name: str, fn: Callable[[], list[SearchResult]]) -> list[SearchResult]:
+        started = time.monotonic()
+        add_trace("decide", "evidence_step_started", {"step": name})
+        try:
+            results = fn()
+        except Exception as exc:
+            add_trace(
+                "decide",
+                "evidence_step_failed",
+                {
+                    "step": name,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "elapsed_ms": round((time.monotonic() - started) * 1000),
+                },
+            )
+            raise
+        add_trace(
+            "decide",
+            "evidence_step_done",
+            {
+                "step": name,
+                "results": len(results),
+                "elapsed_ms": round((time.monotonic() - started) * 1000),
+            },
+        )
+        return results
