@@ -304,6 +304,14 @@ def test_mcagent_context_focus_expands_minecraft_utopia_aliases() -> None:
     assert_true("focus_keeps_user_topic", "乌托邦" in focus)
     assert_true("focus_adds_full_pack_name", "乌托邦探险之旅" in focus)
     assert_true("focus_adds_english_alias", "Utopian Journey" in focus)
+    assert_true("focus_drops_meta_words", "问" not in focus and "MCAgent" not in focus and "网上" not in focus and "补给他" not in focus)
+
+
+def test_mcagent_context_focus_keeps_gap_dimension_without_meta_instruction() -> None:
+    focus = web_server._mcagent_context_focus("先问 MCagent 本地关于乌托邦探险之旅还缺哪些玩法路线资料，然后你去网上补充给 MCagent/RAG。")
+    assert_true("focus_keeps_entity", "乌托邦探险之旅" in focus)
+    assert_true("focus_keeps_dimension", "玩法路线" in focus)
+    assert_true("focus_drops_handoff_meta", "先问" not in focus and "本地关于" not in focus and "然后" not in focus and "MCagent" not in focus)
 
 
 def test_successful_mcagent_context_prunes_duplicate_pending_context_tasks() -> None:
@@ -3542,6 +3550,7 @@ if __name__ == "__main__":
     test_direct_user_handoff_brief_rejects_wrong_mcagent_identity()
     test_direct_crawler_delegate_choice_is_corrected_to_temporary_extract()
     test_mcagent_context_focus_expands_minecraft_utopia_aliases()
+    test_mcagent_context_focus_keeps_gap_dimension_without_meta_instruction()
     test_successful_mcagent_context_prunes_duplicate_pending_context_tasks()
     test_successful_mcagent_context_filters_new_duplicate_context_tasks()
     test_mcagent_gap_delegation_overrides_human_delivery_to_rag()

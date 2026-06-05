@@ -1241,6 +1241,86 @@ def test_create_mod_fallback_does_not_inject_unrelated_component_queries() -> No
     assert_true("no_archive_first", not plan["tasks"] or plan["tasks"][0]["source"] != "modpack_download")
 
 
+def test_guide_fallback_builds_source_graph_queries_for_non_pack_mod() -> None:
+    question = (
+        "让 CrawlerAgent 去补充农夫乐事 Farmer's Delight 的新手入门资料，"
+        "包括核心玩法、食物制作、耕种机制、教程和 progression，完成后给 MCagent/RAG 用。"
+    )
+    plan = plan_crawler_tasks_rule_fallback(
+        question,
+        ROOT / "data" / "crawler_exports",
+        max_tasks=14,
+        planner_error="unit timeout",
+        session_summary={
+            "delivery_target": "MCagent/RAG",
+            "requested_by": "user_via_mcagent",
+            "collection_target": "农夫乐事 Farmer's Delight 新手入门资料",
+            "task_goal": question,
+        },
+    )
+    queries = [str(task.get("query") or "") for task in plan["tasks"]]
+    joined = "\n".join(queries).lower()
+    assert_true("target_kept", "farmer's delight" in joined or "农夫乐事" in joined)
+    assert_true("has_wiki_or_guide_node", "wiki" in joined or "guide" in joined)
+    assert_true("has_beginner_node", "beginner guide" in joined or "getting started" in joined or "新手" in joined or "入门" in joined)
+    assert_true("has_progression_node", "progression" in joined or "玩法路线" in joined)
+    assert_true("web_discovery_present", any(task["source"] == "web_discovery" for task in plan["tasks"]))
+    assert_true("playwright_more_than_one", sum(1 for task in plan["tasks"] if task["source"] == "playwright") >= 2)
+
+
+def test_selected_mcagent_context_query_is_clean_entity_plus_gap_dimension() -> None:
+    question = "先问 MCagent 本地关于乌托邦探险之旅还缺哪些玩法路线资料，然后你去网上补充给 MCagent/RAG。"
+    summary = {
+        "delivery_target": "MCagent/RAG",
+        "requested_by": "user",
+        "collection_target": "乌托邦探险之旅 玩法路线",
+        "task_goal": question,
+        "selected_action_plan": [
+            {"step": 1, "tool": "mcagent_context", "goal": "询问 MCagent/RAG 本地已有证据和缺口"},
+            {"step": 2, "tool": "delegate_crawler", "goal": "启动后台采集并交付给 MCagent/RAG"},
+        ],
+    }
+    plan = plan_crawler_tasks_rule_fallback(
+        question,
+        ROOT / "data" / "crawler_exports",
+        max_tasks=8,
+        planner_error="unit timeout",
+        session_summary=summary,
+    )
+    context_tasks = [task for task in plan["tasks"] if task["source"] == "mcagent_context"]
+    assert_equal("one_context_task", len(context_tasks), 1)
+    query = context_tasks[0]["query"]
+    assert_true("keeps_entity", "乌托邦探险之旅" in query)
+    assert_true("keeps_gap_dimension", "玩法路线" in query or "新手入门" in query or "教程" in query)
+    assert_true("drops_meta_words", "问" not in query and "MCagent" not in query and "本地关于" not in query and "然后" not in query)
+
+
+def test_plain_gap_context_query_names_gap_dimension() -> None:
+    question = "问下MCAgent乌托邦整合包还缺哪些东西 你去网上找补给他"
+    plan = plan_crawler_tasks_rule_fallback(
+        question,
+        ROOT / "data" / "crawler_exports",
+        max_tasks=8,
+        planner_error="unit timeout",
+        session_summary={
+            "delivery_target": "MCagent/RAG",
+            "requested_by": "user",
+            "collection_target": question,
+            "task_goal": question,
+            "selected_action_plan": [
+                {"step": 1, "tool": "mcagent_context", "goal": "询问 MCagent/RAG 本地已有证据和缺口"},
+                {"step": 2, "tool": "delegate_crawler", "goal": "启动后台采集并交付给 MCagent/RAG"},
+            ],
+        },
+    )
+    context_tasks = [task for task in plan["tasks"] if task["source"] == "mcagent_context"]
+    assert_equal("one_context_task", len(context_tasks), 1)
+    query = context_tasks[0]["query"]
+    assert_true("keeps_entity", "乌托邦" in query)
+    assert_true("names_gap", "缺口" in query)
+    assert_true("drops_meta_words", "问" not in query and "MCAgent" not in query and "补给他" not in query)
+
+
 def test_reflection_allows_url_seen_in_manifest_preview() -> None:
     original_client = crawler_llm_planner._planner_client
 
@@ -1493,7 +1573,7 @@ def test_gap_question_text_still_keeps_mcagent_context_first() -> None:
         session_summary={"delivery_target": "MCagent/RAG", "collection_target": question},
     )
     assert_equal("first_source", plan["tasks"][0]["source"], "mcagent_context")
-    assert_equal("first_query", plan["tasks"][0]["query"], "乌托邦整合包")
+    assert_equal("first_query", plan["tasks"][0]["query"], "乌托邦整合包 资料缺口")
 
 
 def test_fallback_confirmation_finish_is_overridden_for_target_bound_pending_task() -> None:
@@ -1540,6 +1620,33 @@ def test_rag_structured_evidence_request_does_not_force_browser_collect() -> Non
     sources = [task["source"] for task in plan["tasks"]]
     assert_true("no_browser_collect", "browser_collect" not in sources)
     assert_true("has_public_collection", any(source in sources for source in ("web_discovery", "playwright", "mcmod", "modrinth")))
+
+
+def test_long_rag_gap_description_downgrades_unqualified_browser_collect() -> None:
+    question = (
+        "补充‘乌托邦探险之旅’整合包的缺失资料，包括但不限于整合包详细描述、模组列表与核心功能、"
+        "任务线/进度指南、安装与故障排除、最新版本更新日志、社区攻略及常见问题解答。"
+        "本地现有资料仅限于少量介绍页面和零散模组条目，缺乏系统性的游玩指南和深度内容。"
+        "请收集可引用的公开网页、MC百科、Modrinth/CurseForge 页面、社区论坛帖子等资料，并保存入库以交付给MCagent/RAG"
+    )
+    plan = _sanitize_plan(
+        {
+            "topic": "乌托邦探险之旅",
+            "delivery_target": "MCagent/RAG",
+            "tasks": [
+                {"source": "browser_collect", "query": question, "reason": "collect description", "priority": 260, "fields": ["description"]},
+            ],
+        },
+        question,
+        ROOT / "data" / "crawler_exports",
+        max_tasks=8,
+        session_summary={"delivery_target": "MCagent/RAG", "collection_target": question, "task_goal": question},
+    )
+    sources = [task["source"] for task in plan["tasks"]]
+    assert_true("no_unqualified_browser_collect", "browser_collect" not in sources)
+    assert_true("uses_discovery_stack", any(source in sources for source in ("web_discovery", "playwright", "mcmod", "modrinth")))
+    joined = "\n".join(str(task.get("query") or "") for task in plan["tasks"])
+    assert_true("source_graph_queries_survive", "wiki" in joined.lower() or "guide" in joined.lower() or "玩法路线" in joined)
 
 
 def test_mcagent_reply_gap_handoff_does_not_prioritize_modpack_download() -> None:
@@ -1728,6 +1835,7 @@ if __name__ == "__main__":
     test_gap_question_text_still_keeps_mcagent_context_first()
     test_fallback_confirmation_finish_is_overridden_for_target_bound_pending_task()
     test_rag_structured_evidence_request_does_not_force_browser_collect()
+    test_long_rag_gap_description_downgrades_unqualified_browser_collect()
     test_mcagent_reply_gap_handoff_does_not_prioritize_modpack_download()
     test_mcagent_reported_gap_fallback_does_not_force_archive_first()
     test_llm_gap_plan_does_not_inject_modpack_download_without_archive_goal()
@@ -1740,6 +1848,9 @@ if __name__ == "__main__":
     test_type_discovery_request_does_not_force_modpack_archive_download()
     test_mcagent_gap_fill_request_does_not_force_archive_download_first()
     test_create_mod_fallback_does_not_inject_unrelated_component_queries()
+    test_guide_fallback_builds_source_graph_queries_for_non_pack_mod()
+    test_selected_mcagent_context_query_is_clean_entity_plus_gap_dimension()
+    test_plain_gap_context_query_names_gap_dimension()
     test_reflection_allows_url_seen_in_manifest_preview()
     test_job_planner_timeout_returns_executable_fallback()
     print("crawler_planner_timeout_scenarios passed")

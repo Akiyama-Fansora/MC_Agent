@@ -288,7 +288,7 @@ def _modern_chinese_modpack_target_hint(text: str) -> str:
 def _strip_modern_target_prefix(value: str) -> str:
     target = re.sub(r"\s+", " ", str(value or "")).strip(" ，,。；;：:")
     target = re.sub(
-        r"^(?:请你|请|麻烦|帮我|告诉|叫|让|派|通知|CrawlerAgent|Crawler|MCagent|MCAgent|获取|采集|收集|爬取|补齐|补充|整理|查找|搜索|关于|针对|这个|那个|完整|公开|资料|数据|信息|可引用的?|结构化的?|详尽的?)+\s*",
+        r"^(?:请你|请|麻烦|帮我|告诉|叫|让|派|通知|先|问|询问|问下|问问|咨询|CrawlerAgent|Crawler|MCagent|MCAgent|获取|采集|收集|爬取|补齐|补充|整理|查找|搜索|本地|本地关于|本地已有|本地上下文|关于|针对|这个|那个|完整|公开|资料|数据|信息|可引用的?|结构化的?|详尽的?)+\s*",
         "",
         target,
         flags=re.I,
@@ -497,14 +497,14 @@ def _strip_target_prefix(value: str) -> str:
     )
     target = _strip_leading_list_marker(target)
     target = re.sub(
-        r"^(?:MCagent|MCAgent|MC Agent|CrawlerAgent|Crawler|RAG|转达|请|先|让|把|将|根据|本地|库存|检查|本地库存|本地库存检查|发现的|检查发现的|本地库存检查发现的|缺失的|公开|资料|里|中|的|关于|有关)\s*",
+        r"^(?:MCagent|MCAgent|MC Agent|CrawlerAgent|Crawler|RAG|转达|请|先|让|把|将|问|询问|问下|问问|咨询|根据|本地|本地关于|本地已有|本地上下文|库存|检查|本地库存|本地库存检查|发现的|检查发现的|本地库存检查发现的|缺失的|公开|资料|里|中|的|关于|有关)\s*",
         "",
         target,
         flags=re.I,
     )
     while True:
         cleaned = re.sub(
-            r"^(?:根据|基于|按照|返回的|回复的|给出的|提供的|发现的|盘点的|检查的|审计的|分析的|对应的|相关的|本地|库存|检查|本地库存|本地库存检查|本地库存检查发现的|缺失的)\s*",
+            r"^(?:根据|基于|按照|返回的|回复的|给出的|提供的|发现的|盘点的|检查的|审计的|分析的|对应的|相关的|问|询问|问下|问问|咨询|本地|本地关于|本地已有|本地上下文|库存|检查|本地库存|本地库存检查|本地库存检查发现的|缺失的)\s*",
             "",
             target,
             flags=re.I,
@@ -572,6 +572,34 @@ def _clean_task_query(query: str, *, target_hint: str = "", topic: str = "") -> 
             return extracted
         return ""
     return value
+
+
+def _clean_mcagent_context_query(query: str, *, target_hint: str = "", context_text: str = "") -> str:
+    value = re.sub(r"\s+", " ", str(query or "").strip())
+    if not value:
+        return target_hint.strip()
+    value = re.sub(r"用户原始目标\s*[:：]", " ", value, flags=re.I)
+    value = re.sub(r"(?:先|先去|先帮我|先请)?\s*(?:问|询问|问下|问问|咨询)\s*(?:MC\s*Agent|MCagent|MCAgent|RAG)?\s*(?:本地|本地关于|本地已有|本地资料|本地上下文|知识库|资料库)?", " ", value, flags=re.I)
+    value = re.sub(r"(?:然后|再|之后)\s*(?:你)?\s*(?:去)?\s*(?:网上|联网|互联网上)?\s*(?:找|搜索|补充|补齐|采集|爬取|抓取|获取).*$", " ", value, flags=re.I)
+    value = re.sub(r"(?:根据|基于)\s*(?:MC\s*Agent|MCagent|MCAgent|RAG)\s*(?:指出|返回|提供|发现|报告|回答)?(?:的)?", " ", value, flags=re.I)
+    value = re.sub(r"(?i)MC\s*Agent|MCagent|\bRAG\b", " ", value)
+    value = re.sub(r"(本地关于|本地已有|本地上下文|本地资料库|本地资料|知识库|资料库|还缺哪些东西|还缺什么|缺哪些东西|缺什么|有哪些缺口|缺口有哪些|缺失哪些内容|缺失什么)", " ", value)
+    value = re.sub(r"(问下|询问|问问|查询|检查|你去|网上|联网|找|补给他|补给|补库|补充|采集|爬取|抓取|获取)", " ", value)
+    value = re.sub(r"(?:交付|提供|入库|保存|转达|转交|给)\s*(?:MC\s*Agent|MCagent|MCAgent|RAG|他|它)?", " ", value, flags=re.I)
+    value = re.sub(r"\s+", " ", value).strip(" ，。；;:：")
+    if target_hint and (not value or not _query_mentions_target(value, target_hint)):
+        guide_terms = []
+        if _needs_guide_source_graph(context_text):
+            guide_terms = ["玩法路线", "新手入门", "教程"]
+        value = " ".join([target_hint, *guide_terms]).strip()
+    elif target_hint and value and _query_mentions_target(value, target_hint) and _needs_guide_source_graph(context_text):
+        dimension_terms = [term for term in ("玩法路线", "新手入门", "教程") if term not in value]
+        if dimension_terms and re.sub(r"\s+", "", value.lower()) == re.sub(r"\s+", "", target_hint.lower()):
+            value = " ".join([value, *dimension_terms]).strip()
+    elif target_hint and value and _query_mentions_target(value, target_hint) and _is_gap_analysis_collection_context(context_text, "MCagent/RAG"):
+        if "缺口" not in value and re.sub(r"\s+", "", value.lower()) == re.sub(r"\s+", "", target_hint.lower()):
+            value = f"{value} 资料缺口"
+    return value or target_hint.strip()
 
 
 def _target_specificity_score(value: str) -> tuple[int, int]:
@@ -685,7 +713,7 @@ def _target_core_terms(target: str) -> list[str]:
     return [term for term in dict.fromkeys(terms) if term]
 
 
-def _target_queries(target: str) -> list[str]:
+def _target_queries(target: str, context_text: str = "") -> list[str]:
     if not target:
         return []
     base_terms = _target_core_terms(target)
@@ -703,7 +731,65 @@ def _target_queries(target: str) -> list[str]:
                 f"{base} 下载 CurseForge Modrinth",
             ]
         )
+    queries.extend(_guide_source_graph_queries(target, context_text))
     return list(dict.fromkeys(query for query in queries if 2 <= len(query) <= 80))
+
+
+GUIDE_CONTEXT_TERMS = (
+    "新手",
+    "入门",
+    "教程",
+    "攻略",
+    "玩法",
+    "路线",
+    "流程",
+    "任务线",
+    "开局",
+    "前期",
+    "中期",
+    "后期",
+    "机制",
+    "系统",
+    "guide",
+    "beginner",
+    "getting started",
+    "tutorial",
+    "progression",
+    "walkthrough",
+    "route",
+    "how to play",
+)
+
+
+def _needs_guide_source_graph(context_text: str) -> bool:
+    lowered = str(context_text or "").lower()
+    return any(term in lowered for term in GUIDE_CONTEXT_TERMS)
+
+
+def _guide_source_graph_queries(target: str, context_text: str) -> list[str]:
+    if not target or not _needs_guide_source_graph(context_text):
+        return []
+    base_terms = _target_core_terms(target)[:4] or [target]
+    query_templates = (
+        "{base} wiki",
+        "{base} guide",
+        "{base} beginner guide",
+        "{base} getting started",
+        "{base} tutorial",
+        "{base} progression",
+        "{base} walkthrough",
+        "{base} 新手",
+        "{base} 入门",
+        "{base} 教程",
+        "{base} 攻略",
+        "{base} 玩法路线",
+        "{base} 任务线",
+        "{base} 开局 前期",
+    )
+    queries: list[str] = []
+    for base in base_terms:
+        queries.extend(template.format(base=base) for template in query_templates)
+    return list(dict.fromkeys(query for query in queries if 2 <= len(query) <= 120))
 
 
 def _general_target_queries(target: str, context_text: str) -> list[str]:
@@ -719,6 +805,7 @@ def _general_target_queries(target: str, context_text: str) -> list[str]:
         queries.extend([f"{target} releases", f"{target} changelog"])
     if any(term in lowered for term in ("用法", "示例", "example", "usage", "教程")):
         queries.extend([f"{target} examples", f"{target} usage"])
+    queries.extend(_guide_source_graph_queries(target, context_text))
     return list(dict.fromkeys(query for query in queries if 2 <= len(query) <= 120))
 
 
@@ -799,6 +886,27 @@ def _target_bound_or_reject_query(query: str, target: str) -> str:
 
 def _target_bound_queries(queries: list[str], target: str) -> list[str]:
     return list(dict.fromkeys(bound for query in queries if (bound := _target_bound_or_reject_query(str(query), target))))
+
+
+def _prioritize_guide_queries(queries: list[str], context_text: str) -> list[str]:
+    normalized = list(dict.fromkeys(str(query).strip() for query in queries if str(query).strip()))
+    if not _needs_guide_source_graph(context_text):
+        return normalized
+    broad_queries: list[str] = []
+    source_graph_queries: list[str] = []
+    guide_queries: list[str] = []
+    other_queries: list[str] = []
+    for query in normalized:
+        lowered = query.lower()
+        if any(term in lowered for term in (" wiki", " guide", "beginner guide", "getting started", "tutorial", "progression", "walkthrough", " 新手", " 入门", " 攻略", "玩法路线", "任务线")):
+            source_graph_queries.append(query)
+        elif any(term in lowered for term in GUIDE_CONTEXT_TERMS):
+            guide_queries.append(query)
+        elif len(broad_queries) < 2:
+            broad_queries.append(query)
+        else:
+            other_queries.append(query)
+    return [*broad_queries, *source_graph_queries, *guide_queries, *other_queries]
 
 
 def _repair_task_queries_for_target(tasks: list[dict[str, Any]], target: str) -> list[dict[str, Any]]:
@@ -1138,6 +1246,7 @@ def _ensure_mcagent_context_first(
     if _has_delivered_mcagent_context(session_summary, context_text):
         return [task for task in tasks if str(task.get("source") or "") != "mcagent_context"]
     query = target.strip() or _collection_target_hint(context_text) or _question_subject_hint(context_text) or "MCagent/RAG gaps"
+    query = _clean_mcagent_context_query(query, target_hint=target, context_text=context_text) or query
     selected_context_task = next(
         (
             dict(task)
@@ -1154,7 +1263,11 @@ def _ensure_mcagent_context_first(
         "search_limit": 8,
         "max_urls": 8,
     }
-    context_task["query"] = str(context_task.get("query") or query).strip() or query
+    context_task["query"] = _clean_mcagent_context_query(
+        str(context_task.get("query") or query),
+        target_hint=target,
+        context_text=context_text,
+    ) or query
     context_task["priority"] = max(_priority_value(context_task.get("priority"), 0), 260)
     output: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
@@ -1191,6 +1304,7 @@ def _tasks_from_selected_action_plan(session_summary: dict[str, Any] | None, tar
     selected: list[dict[str, Any]] = []
     seen_tools: set[str] = set()
     query = target.strip() or _collection_target_hint(context_text) or _question_subject_hint(context_text) or "CrawlerAgent selected action plan"
+    query = _clean_mcagent_context_query(query, target_hint=target, context_text=context_text) or query
     for index, step in enumerate(raw_steps):
         if not isinstance(step, dict):
             continue
@@ -1203,10 +1317,13 @@ def _tasks_from_selected_action_plan(session_summary: dict[str, Any] | None, tar
         if source == "delegate_crawler":
             continue
         reason = str(step.get("goal") or step.get("reason") or "CrawlerAgent selected this tool in its action_plan.").strip()
+        task_query = query
+        if source == "mcagent_context":
+            task_query = _clean_mcagent_context_query(query, target_hint=target, context_text=context_text) or query
         selected.append(
             {
                 "source": source,
-                "query": query,
+                "query": task_query,
                 "reason": reason,
                 "priority": 300 - index,
                 "from_selected_action_plan": True,
@@ -1313,7 +1430,10 @@ def _structured_browser_constraints(session_summary: dict[str, Any] | None, ques
         or max_items
         or re.search(r"商品|价格|字段|前\s*\d+\s*(?:个|条|款)?|top\s*\d+|extract\s+\d+|structured\s+(?:fields?|items?|rows?|products?)|items?", combined_text, flags=re.I)
     )
-    has_structured_request = bool(output_dir or has_tabular_output or has_row_or_field_intent)
+    # Field words such as "description/简介" are common in RAG corpus
+    # collection goals. browser_collect is only appropriate when there is an
+    # objective page to open plus structured extraction signals.
+    has_structured_request = bool(start_url and (output_dir or has_tabular_output or has_row_or_field_intent))
     return {
         "enabled": has_structured_request,
         "output_dir": output_dir,
@@ -1446,6 +1566,43 @@ def _prefer_structured_browser_task(tasks: list[dict[str, Any]], question: str, 
     if constraints["max_items"]:
         browser_task["max_items"] = constraints["max_items"]
     return [browser_task]
+
+
+def _drop_unqualified_browser_collect_tasks(
+    tasks: list[dict[str, Any]],
+    *,
+    session_summary: dict[str, Any] | None,
+    question: str,
+) -> list[dict[str, Any]]:
+    constraints = _structured_browser_constraints(session_summary, question)
+    output: list[dict[str, Any]] = []
+    for task in tasks:
+        if str(task.get("source") or "") != "browser_collect":
+            output.append(task)
+            continue
+        query = str(task.get("query") or "").strip()
+        has_task_url = bool(_is_url_query(query) or str(task.get("start_url") or "").strip())
+        has_task_structure = bool(
+            str(task.get("output_dir") or "").strip()
+            or task.get("fields")
+            or task.get("max_items")
+            or str(task.get("format") or task.get("artifact_format") or "").strip()
+        )
+        if has_task_url and (has_task_structure or constraints.get("enabled")):
+            output.append(task)
+            continue
+        downgraded = dict(task)
+        downgraded["source"] = "web_discovery"
+        downgraded["reason"] = (
+            str(downgraded.get("reason") or "")
+            + " Downgraded from browser_collect because no objective URL plus structured extraction/output constraint was present; use discovery first and let CrawlerAgent review results."
+        ).strip()
+        downgraded.pop("fields", None)
+        downgraded.pop("max_items", None)
+        downgraded.pop("output_dir", None)
+        downgraded.pop("start_url", None)
+        output.append(downgraded)
+    return output
 
 
 def _objective_archive_evidence_seen(results: list[dict[str, Any]]) -> bool:
@@ -1730,9 +1887,10 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
             return fallback
     minecraft_context = _looks_like_minecraft_domain_context(context_text)
     coverage_only_queries = _target_bound_queries(coverage_only_queries, target)
-    base_queries = _target_queries(target) if minecraft_context else _general_target_queries(target, context_text)
+    base_queries = _target_queries(target, context_text) if minecraft_context else _general_target_queries(target, context_text)
     queries = [*coverage_only_queries, *base_queries]
     queries = list(dict.fromkeys(query for query in queries if query))
+    queries = _prioritize_guide_queries(queries, context_text)
     sources = _default_collection_sources_for_context(context_text, prefer_general_web=prefer_external, archive_negated=archive_negated)
     if modpack_archive_goal:
         sources = ["modpack_download", "modrinth", "web_discovery", "playwright", "fetch_url", "followup", "mcmod"]
@@ -1767,14 +1925,14 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
         elif source == "fetch_url":
             source_queries = [query for query in queries[:6] if _is_url_query(query)]
         elif source == "playwright":
-            source_queries = queries[:2]
+            source_queries = queries[:4] if _needs_guide_source_graph(context_text) else queries[:2]
         elif source == "mcmod":
             if prefer_external:
                 source_queries = [target, *queries[:2]]
             else:
                 source_queries = queries[:12]
         elif prefer_external and source in {"web_discovery"}:
-            source_queries = queries[:5]
+            source_queries = queries[:8] if _needs_guide_source_graph(context_text) else queries[:5]
         else:
             source_queries = queries[:12]
         for offset, query in enumerate(source_queries):
@@ -1811,6 +1969,8 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
     tasks = _drop_unqualified_modpack_internal_tasks(tasks, context_text=context_text)
     tasks = _prioritize_modpack_archive_tasks(tasks, target, context_text, intent_text, session_summary)
     tasks = _defer_modpack_download_when_archive_not_explicit(tasks, target, context_text, intent_text, session_summary)
+    tasks = _drop_unqualified_local_file_tasks(tasks, session_summary=session_summary, question=question)
+    tasks = _drop_unqualified_browser_collect_tasks(tasks, session_summary=session_summary, question=question)
     is_modpack = bool(re.search(r"整合包|modpack", context_text, flags=re.I))
     if not _looks_like_minecraft_domain_context(context_text):
         minecraft_coverage_goals = []
@@ -2155,7 +2315,7 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
         core_terms = _target_core_terms(target_hint)
         has_target = any(any(term.lower() in query.lower() for term in core_terms) for query in queries)
         if not has_target or any(_looks_like_agent_target(query) for query in queries[:2]):
-            queries = [*_target_queries(target_hint), *queries]
+            queries = [*_target_queries(target_hint, _planner_context_text(question, session_summary)), *queries]
     coverage_queries = _coverage_queries(question, session_summary, target_hint or topic)
     if coverage_queries and (target_hint or topic):
         coverage_queries = _target_bound_queries(coverage_queries, target_hint or topic)
@@ -2180,6 +2340,7 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
         and _valid_coverage_query(query, target_hint or topic, _planner_context_text(question, session_summary))
     ][:16]
     queries = [query for query in queries if query]
+    queries = _prioritize_guide_queries(queries, _planner_context_text(question, session_summary))
 
     raw_sources = raw.get("sources")
     if not isinstance(raw_sources, list):
@@ -2300,11 +2461,11 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
         elif source == "fetch_url":
             source_queries = [query for query in queries[:4] if "http://" in query.lower() or "https://" in query.lower()]
         elif source == "playwright":
-            source_queries = queries[:2]
+            source_queries = queries[:4] if _needs_guide_source_graph(context_text) else queries[:2]
         elif source == "mcmod":
             source_queries = queries[:14]
         else:
-            source_queries = queries[:5]
+            source_queries = queries[:8] if source == "web_discovery" and _needs_guide_source_graph(context_text) else queries[:5]
         for offset, query in enumerate(source_queries):
             task = _task(
                 source,
@@ -2348,6 +2509,7 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
     tasks = _defer_modpack_download_when_archive_not_explicit(tasks, target_hint or topic, context_text, intent_text, session_summary)
     tasks = _repair_task_queries_for_target(tasks, target_hint or topic)
     tasks = _drop_unqualified_local_file_tasks(tasks, session_summary=session_summary, question=question)
+    tasks = _drop_unqualified_browser_collect_tasks(tasks, session_summary=session_summary, question=question)
     tasks = _prefer_structured_browser_task(tasks, question, session_summary)
     if not tasks:
         fallback = plan_crawler_tasks(question, source_dir, max_tasks=max_tasks, include_completed=True)

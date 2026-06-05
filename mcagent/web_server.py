@@ -6617,9 +6617,14 @@ def _needs_general_grounded_answer(question: str) -> bool:
 
 def _mcagent_context_focus(question: str, collection_target: str = "") -> str:
     value = str(collection_target or question or "").strip()
+    value = re.sub(r"用户原始目标\s*[:：]", " ", value, flags=re.I)
+    value = re.sub(r"(?:先|先去|先帮我|先请)?\s*(?:问|询问|问下|问问|咨询)\s*(?:MC\s*Agent|MCagent|MCAgent|RAG)?\s*(?:本地|本地关于|本地已有|本地资料|本地上下文|知识库|资料库)?", " ", value, flags=re.I)
+    value = re.sub(r"(?:然后|再|之后)\s*(?:你)?\s*(?:去)?\s*(?:网上|联网|互联网上)?\s*(?:找|搜索|补充|补齐|采集|爬取|抓取|获取).*$", " ", value, flags=re.I)
+    value = re.sub(r"(?:根据|基于)\s*(?:MC\s*Agent|MCagent|MCAgent|RAG)\s*(?:指出|返回|提供|发现|报告|回答)?(?:的)?", " ", value, flags=re.I)
     value = re.sub(r"(?i)MC\s*Agent|MCagent|\bRAG\b", " ", value)
     value = re.sub(r"(还缺哪些东西|还缺什么|缺哪些东西|缺什么|有哪些缺口|缺口有哪些|缺失哪些内容|缺失什么)", " ", value)
-    value = re.sub(r"(问下|查询|检查|本地资料库|本地资料|知识库|资料库|你去|网上|联网|找|补给他|补给|补库|补充|采集|爬取|抓取|获取)", " ", value)
+    value = re.sub(r"(本地关于|本地已有|本地上下文|问下|询问|问问|查询|检查|本地资料库|本地资料|知识库|资料库|你去|网上|联网|找|补给他|补给|补库|补充|采集|爬取|抓取|获取)", " ", value)
+    value = re.sub(r"(?:交付|提供|入库|保存|转达|转交|给)\s*(?:MC\s*Agent|MCagent|MCAgent|RAG|他|它)?", " ", value, flags=re.I)
     value = re.sub(r"\s+", " ", value).strip(" ，。；;:：")
     value = _expand_mcagent_context_aliases(value)
     return value or str(question or "").strip()
