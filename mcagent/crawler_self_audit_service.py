@@ -60,6 +60,7 @@ class CrawlerSelfAuditService:
             "accepted_sources": accepted[:12],
             "rejected_sources": rejected[:12],
             "pending_review_sources": pending[:12],
+            "source_decisions": self._source_decisions(accepted, rejected, pending),
             "principle": "Tools expose objective outputs; CrawlerAgent review decides accept, reject, retry, or ignore for this job.",
         }
 
@@ -112,6 +113,33 @@ class CrawlerSelfAuditService:
             f"ingest={ingest_status}",
         ]
         return "; ".join(pieces)
+
+    def _source_decisions(
+        self,
+        accepted: list[dict[str, Any]],
+        rejected: list[dict[str, Any]],
+        pending: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        decisions: list[dict[str, Any]] = []
+        for decision, items in (
+            ("accepted", accepted),
+            ("rejected", rejected),
+            ("pending_review", pending),
+        ):
+            for item in items[:12]:
+                decisions.append(
+                    {
+                        "source": item.get("source"),
+                        "query": item.get("query"),
+                        "decision": decision,
+                        "reason": item.get("accepted_reason") if decision == "accepted" else item.get("rejected_reason") or item.get("summary"),
+                        "next_action": item.get("next_action"),
+                        "ingest_decision": item.get("ingest_decision"),
+                        "entered_rag": bool(item.get("ingest_decision") in {"deferred", "done"}),
+                        "export_dir": item.get("export_dir"),
+                    }
+                )
+        return decisions
 
     def _review_note(
         self,

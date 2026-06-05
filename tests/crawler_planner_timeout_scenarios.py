@@ -79,6 +79,16 @@ def test_rule_fallback_extracts_domain_target_from_agent_handoff() -> None:
     assert_true("includes_known_alias", any("乌托邦探险之旅" in query or "Utopian Journey" in query for query in queries))
 
 
+def test_mcagent_context_query_cleaning_does_not_leave_ask_suffix() -> None:
+    query = crawler_llm_planner._clean_mcagent_context_query(
+        "问下MCAgent乌托邦整合包还缺哪些东西 你去网上找补给他",
+        target_hint="乌托邦整合包",
+        context_text="问下MCAgent乌托邦整合包还缺哪些东西 你去网上找补给他",
+    )
+    assert_true("no_leftover_suffix", not query.startswith("下 "), query)
+    assert_true("keeps_target", "乌托邦整合包" in query, query)
+
+
 def test_rule_fallback_rejects_numbered_action_plan_fragments_as_targets() -> None:
     question = utopia_question()
     plan = plan_crawler_tasks_rule_fallback(

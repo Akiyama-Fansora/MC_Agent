@@ -62,6 +62,16 @@ CrawlerAgent 可用工具：
 - modpack_download/modpack_internal：发现公开整合包包体，并解析 manifest、modlist、任务、配置、脚本和配方。
 - ingest_to_rag：把采集资料清洗入库。
 
+### CrawlerAgent 模型先验
+
+CrawlerAgent 可以使用自身 LLM 的模型知识，但只能作为采集前的先验假设：
+
+- 模型先验可以包含目标识别、别名、可能来源图、短搜索线索和待验证问题。
+- 模型先验只能驱动工具选择和查询规划，必须标记为 `hypothesis_only` / `planning_only`。
+- 模型先验不能直接作为证据、引用来源、accepted source 或 RAG 入库内容。
+- 工具仍只呈现客观观察；CrawlerAgent 必须用工具结果验证先验，再由自审决定接受、拒绝、复核或重试。
+- 前端和任务报告可以展示模型先验，但必须和 self-audit、accepted/rejected sources 分开显示。
+
 ## 3. MCagent 工作流
 
 1. 接收用户原始消息。

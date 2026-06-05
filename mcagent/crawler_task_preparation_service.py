@@ -110,6 +110,7 @@ class CrawlerTaskPreparationService:
         task_query: str,
         question: str,
     ) -> None:
+        session_summary = base_payload.get("session_summary") if isinstance(base_payload.get("session_summary"), dict) else {}
         combined = "\n".join(
             str(item or "")
             for item in (
@@ -118,6 +119,11 @@ class CrawlerTaskPreparationService:
                 base_payload.get("original_user_request"),
                 base_payload.get("query"),
                 base_payload.get("source_question"),
+                session_summary.get("original_user_message"),
+                session_summary.get("original_question"),
+                session_summary.get("source_question"),
+                session_summary.get("collection_target"),
+                session_summary.get("task_goal"),
             )
         )
         if not str(task_payload.get("start_url") or "").strip():
@@ -150,7 +156,7 @@ class CrawlerTaskPreparationService:
     @staticmethod
     def _extract_max_items(text: str) -> int | None:
         value = str(text or "")
-        match = re.search(r"(?:前|top\s*)\s*(\d{1,3})\s*(?:个|items?|条|款)?", value, flags=re.I)
+        match = re.search(r"(?:前|first|top\s*)\s*(\d{1,3})\s*(?:个|items?|products?|records?|rows?|条|款)?", value, flags=re.I)
         if not match:
             match = re.search(r"(\d{1,3})\s*(?:个|条|款)\s*(?:商品|产品|items?|records?)", value, flags=re.I)
         if not match:

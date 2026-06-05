@@ -57,6 +57,7 @@ class JobReadableViewService:
         status = str(job.get("status") or "")
         target = self._display_target(plan, str(job.get("title") or ""))
         goals = [str(item) for item in (plan.get("coverage_goals") or []) if str(item).strip()]
+        model_prior = plan.get("model_prior") if isinstance(plan.get("model_prior"), dict) else {}
         current_query = str(current_task.get("query") or "") if current_task else ""
         current_source = self.source_label(str(current_task.get("source") or "")) if current_task else ""
         current_reason = str(current_task.get("reason") or "") if current_task else ""
@@ -93,6 +94,7 @@ class JobReadableViewService:
             "target": target,
             "delivery_target": str(plan.get("delivery_target") or ""),
             "coverage_goals": goals[:5],
+            "model_prior": self._model_prior_summary(model_prior),
             "current_index": current_index,
             "total_tasks": len(planned),
             "progress_percent": progress_percent,
@@ -139,6 +141,20 @@ class JobReadableViewService:
                 off_topic=off_topic,
             ),
             "timeline": timeline,
+        }
+
+    def _model_prior_summary(self, prior: dict[str, Any]) -> dict[str, Any]:
+        if not prior:
+            return {}
+        return {
+            "target": str(prior.get("target") or ""),
+            "aliases": [str(item) for item in list(prior.get("aliases") or [])[:6] if str(item).strip()],
+            "likely_source_graph": [str(item) for item in list(prior.get("likely_source_graph") or [])[:8] if str(item).strip()],
+            "search_leads": [str(item) for item in list(prior.get("search_leads") or [])[:8] if str(item).strip()],
+            "verification_questions": [str(item) for item in list(prior.get("verification_questions") or [])[:6] if str(item).strip()],
+            "evidence_status": str(prior.get("evidence_status") or "hypothesis_only"),
+            "allowed_use": str(prior.get("allowed_use") or "planning_only"),
+            "forbidden_use": str(prior.get("forbidden_use") or ""),
         }
 
     def _current_index(self, job: dict[str, Any], tasks: list[Any], planned: list[Any]) -> int:

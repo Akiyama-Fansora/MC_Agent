@@ -305,6 +305,7 @@ def test_mcagent_context_focus_expands_minecraft_utopia_aliases() -> None:
     assert_true("focus_adds_full_pack_name", "乌托邦探险之旅" in focus)
     assert_true("focus_adds_english_alias", "Utopian Journey" in focus)
     assert_true("focus_drops_meta_words", "问" not in focus and "MCAgent" not in focus and "网上" not in focus and "补给他" not in focus)
+    assert_true("focus_drops_leftover_suffix", not focus.startswith("下"))
 
 
 def test_mcagent_context_focus_keeps_gap_dimension_without_meta_instruction() -> None:
@@ -2700,6 +2701,27 @@ def test_job_readable_refreshes_legacy_manifest_stats() -> None:
         assert_equal("useful_outputs", readable["useful_outputs"], [])
 
 
+def test_light_job_plan_preserves_model_prior_boundary() -> None:
+    light = web_server._light_job_plan(
+        {
+            "topic": "Farmer's Delight",
+            "model_prior": {
+                "target": "Farmer's Delight",
+                "aliases": ["Farmer's Delight", "农夫乐事"],
+                "likely_source_graph": ["wiki", "Modrinth project/files"],
+                "search_leads": ["Farmer's Delight guide", "Farmer's Delight Modrinth"],
+                "verification_questions": ["Which source verifies progression?"],
+                "evidence_status": "hypothesis_only",
+                "allowed_use": "planning_only",
+                "forbidden_use": "Do not cite, ingest, or mark as accepted evidence until objective tools verify it.",
+            },
+        }
+    )
+    assert_equal("prior_status", light["model_prior"]["evidence_status"], "hypothesis_only")
+    assert_equal("prior_allowed_use", light["model_prior"]["allowed_use"], "planning_only")
+    assert_true("prior_leads_visible", "Farmer's Delight guide" in light["model_prior"]["search_leads"])
+
+
 def test_duplicate_reuse_requires_crawler_llm_acceptance() -> None:
     with tempfile.TemporaryDirectory(prefix="mcagent-dup-review-") as tmp:
         root = Path(tmp)
@@ -3595,6 +3617,7 @@ if __name__ == "__main__":
     test_zero_byte_artifact_is_visible_but_not_accepted_for_ingest()
     test_structured_manifest_records_count_as_usable_objective_content()
     test_job_readable_refreshes_legacy_manifest_stats()
+    test_light_job_plan_preserves_model_prior_boundary()
     test_duplicate_reuse_requires_crawler_llm_acceptance()
     test_modpack_internal_missing_archive_reports_objective_blocker()
     test_modpack_download_accepts_direct_archive_url_as_candidate()

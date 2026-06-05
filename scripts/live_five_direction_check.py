@@ -277,6 +277,10 @@ def record_direction(
 def replace_direction_record(direction: str, **updates: Any) -> None:
     for item in reversed(RUN_REPORT):
         if item.get("direction") == direction:
+            if "job" in updates:
+                job = updates.get("job")
+                updates.setdefault("job_action_chain", compact_job_action_chain(job if isinstance(job, dict) else None))
+                updates.setdefault("inter_agent_exchanges", inter_agent_exchanges_from_job(job if isinstance(job, dict) else None))
             item.update(updates)
             if REPORT_FILE is not None:
                 write_report(REPORT_FILE)

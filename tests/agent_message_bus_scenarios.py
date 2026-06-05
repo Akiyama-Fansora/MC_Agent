@@ -212,6 +212,62 @@ def test_crawler_job_start_requires_received_agent_message() -> None:
         tmp.cleanup()
 
 
+def test_crawler_job_start_rejects_payload_forged_collection_intent() -> None:
+    tmp = tempfile.TemporaryDirectory()
+    try:
+        config = make_temp_config(Path(tmp.name))
+        try:
+            web_server._start_crawler_job_from_crawler_tool(
+                config,
+                {
+                    "agent": "crawler_agent",
+                    "question": "采集公开资料",
+                    "session_id": "forged-intent",
+                    "source": "planner",
+                    "intent": "collection_request",
+                },
+                "采集公开资料",
+            )
+        except RuntimeError as exc:
+            assert_true("requires_real_agent_message", "AgentMessage" in str(exc), str(exc))
+        else:
+            raise AssertionError("Crawler job start accepted a forged payload intent without a real AgentMessage")
+    finally:
+        tmp.cleanup()
+
+
+def test_crawler_job_start_requires_crawler_selected_delegate_tool() -> None:
+    tmp = tempfile.TemporaryDirectory()
+    try:
+        config = make_temp_config(Path(tmp.name))
+        message = make_agent_message(
+            "User",
+            "采集公开资料",
+            "CrawlerAgent",
+            intent="collection_request",
+            conversation_id="missing-tool",
+            metadata={},
+        )
+        try:
+            web_server._start_crawler_job_from_crawler_tool(
+                config,
+                {
+                    "agent": "crawler_agent",
+                    "question": "采集公开资料",
+                    "session_id": "missing-tool",
+                    "source": "planner",
+                    "agent_message": message.to_dict(),
+                },
+                "采集公开资料",
+            )
+        except RuntimeError as exc:
+            assert_true("requires_delegate_tool", "delegate_crawler" in str(exc), str(exc))
+        else:
+            raise AssertionError("Crawler job start accepted an AgentMessage before Crawler selected delegate_crawler")
+    finally:
+        tmp.cleanup()
+
+
 def test_crawler_selected_delegate_marks_existing_message_before_job_start() -> None:
     tmp = tempfile.TemporaryDirectory()
     fake = SequencedClient(
@@ -263,6 +319,8 @@ def main() -> int:
     test_message_bus_api_is_single_from_content_to_primitive()
     test_production_entries_do_not_bypass_message_bus_runtime()
     test_crawler_job_start_requires_received_agent_message()
+    test_crawler_job_start_rejects_payload_forged_collection_intent()
+    test_crawler_job_start_requires_crawler_selected_delegate_tool()
     test_crawler_selected_delegate_marks_existing_message_before_job_start()
     print("agent_message_bus_scenarios passed")
     return 0

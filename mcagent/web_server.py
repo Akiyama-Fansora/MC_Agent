@@ -333,6 +333,18 @@ def _light_job_plan(plan: dict[str, Any]) -> dict[str, Any]:
             for key in ("topic", "delivery_target", "reason")
             if raw_plan.get(key)
         }
+    model_prior = plan.get("model_prior") if isinstance(plan.get("model_prior"), dict) else {}
+    if model_prior:
+        light["model_prior"] = {
+            "target": _tail_text(str(model_prior.get("target") or ""), 160),
+            "aliases": [str(item)[:100] for item in list(model_prior.get("aliases") or [])[:6] if str(item).strip()],
+            "likely_source_graph": [str(item)[:140] for item in list(model_prior.get("likely_source_graph") or [])[:8] if str(item).strip()],
+            "search_leads": [str(item)[:120] for item in list(model_prior.get("search_leads") or [])[:8] if str(item).strip()],
+            "verification_questions": [str(item)[:160] for item in list(model_prior.get("verification_questions") or [])[:6] if str(item).strip()],
+            "evidence_status": str(model_prior.get("evidence_status") or "hypothesis_only"),
+            "allowed_use": str(model_prior.get("allowed_use") or "planning_only"),
+            "forbidden_use": _tail_text(str(model_prior.get("forbidden_use") or ""), 240),
+        }
     refs = plan.get("artifact_refs") if isinstance(plan.get("artifact_refs"), list) else []
     if refs:
         light["artifact_refs"] = [_light_artifact_ref(item) for item in refs[-20:] if isinstance(item, dict)]
@@ -1496,7 +1508,9 @@ def _command_timeout(source: str) -> int:
         return 120
     if source == "playwright":
         return 150
-    if source in {"followup", "fetch_url", "browser_collect", "save_artifact", "read_local_file", "search_local_files"}:
+    if source == "browser_collect":
+        return 150
+    if source in {"followup", "fetch_url", "save_artifact", "read_local_file", "search_local_files"}:
         return 360
     if source == "modrinth":
         return 240
@@ -6618,7 +6632,7 @@ def _needs_general_grounded_answer(question: str) -> bool:
 def _mcagent_context_focus(question: str, collection_target: str = "") -> str:
     value = str(collection_target or question or "").strip()
     value = re.sub(r"用户原始目标\s*[:：]", " ", value, flags=re.I)
-    value = re.sub(r"(?:先|先去|先帮我|先请)?\s*(?:问|询问|问下|问问|咨询)\s*(?:MC\s*Agent|MCagent|MCAgent|RAG)?\s*(?:本地|本地关于|本地已有|本地资料|本地上下文|知识库|资料库)?", " ", value, flags=re.I)
+    value = re.sub(r"(?:先|先去|先帮我|先请)?\s*(?:问下|问问|询问|咨询|问)\s*(?:MC\s*Agent|MCagent|MCAgent|RAG)?\s*(?:本地|本地关于|本地已有|本地资料|本地上下文|知识库|资料库)?", " ", value, flags=re.I)
     value = re.sub(r"(?:然后|再|之后)\s*(?:你)?\s*(?:去)?\s*(?:网上|联网|互联网上)?\s*(?:找|搜索|补充|补齐|采集|爬取|抓取|获取).*$", " ", value, flags=re.I)
     value = re.sub(r"(?:根据|基于)\s*(?:MC\s*Agent|MCagent|MCAgent|RAG)\s*(?:指出|返回|提供|发现|报告|回答)?(?:的)?", " ", value, flags=re.I)
     value = re.sub(r"(?i)MC\s*Agent|MCagent|\bRAG\b", " ", value)
@@ -6769,7 +6783,7 @@ def _drop_duplicate_mcagent_context_tasks(new_tasks: list[dict[str, Any]], task_
 
 
 def _expand_mcagent_context_aliases(value: str) -> str:
-    text = str(value or "").strip()
+    text = _strip_context_focus_leftover_prefix(str(value or "").strip())
     if not text:
         return text
     lowered = text.lower()
@@ -6780,7 +6794,11 @@ def _expand_mcagent_context_aliases(value: str) -> str:
             if alias.lower() not in lowered:
                 text = f"{text} {alias}"
                 lowered = text.lower()
-    return text
+    return _strip_context_focus_leftover_prefix(text)
+
+
+def _strip_context_focus_leftover_prefix(value: str) -> str:
+    return re.sub(r"^(?:下|一下)\s*(?=[\u4e00-\u9fffA-Za-z0-9])", "", str(value or "").strip())
 
 
 def _clean_crawler_task_question(question: str) -> str:
@@ -7376,6 +7394,9 @@ def _payload_with_agent_message_tool(payload: dict[str, Any], *, tool: str, inte
 
 
 def _received_agent_message_for_tool(payload: dict[str, Any], *, expected_agent: str, expected_tool: str) -> AgentMessage:
+    raw_message = payload.get("agent_message")
+    if not isinstance(raw_message, (dict, AgentMessage)):
+        raise RuntimeError("Tool execution requires a received AgentMessage from the From-Content-To bus.")
     message = message_from_payload(
         payload,
         default_to_agent=_agent_display_name(str(payload.get("agent") or expected_agent)),
@@ -7384,8 +7405,8 @@ def _received_agent_message_for_tool(payload: dict[str, Any], *, expected_agent:
     metadata = message.metadata if isinstance(message.metadata, dict) else {}
     if message.to_agent_id != expected_agent:
         raise RuntimeError("Tool execution requires an AgentMessage addressed to the executing Agent.")
-    if str(metadata.get("tool") or "") != expected_tool and message.intent != "collection_request":
-        raise RuntimeError("Crawler collection requires a received From-Content-To AgentMessage before tool execution.")
+    if str(metadata.get("tool") or "") != expected_tool:
+        raise RuntimeError("Crawler collection requires the receiving Agent to select delegate_crawler on a received From-Content-To AgentMessage before tool execution.")
     return message
 
 
@@ -7987,10 +8008,6 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
         generate_grounded_answer_stream=_generate_grounded_answer_stream,
         repair_answer=_repair_list_answer,
         status_answer=_crawler_monitor_answer,
-    )
-    router = LlmAgentToolRouterService(
-        select_client=_selected_llm_client,
-        action_plan_has_tool=_action_plan_has_tool,
     )
     if context_only_agent_message and planned_delegate:
         planned_delegate = False

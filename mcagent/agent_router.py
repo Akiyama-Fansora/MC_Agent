@@ -247,7 +247,7 @@ class LlmAgentToolRouterService(AgentToolRouterService):
                 "下面是本项目统一 Agent Runtime 暴露给当前 Agent 的工具目录。工具目录是能力说明，不是关键词触发规则。\n"
                 f"{catalog}\n"
                 "角色与工具关系：active_agent 只能从自己的工具目录中选择下一步；工具目录描述能力与副作用，不提供关键词触发规则。\n"
-                "交付对象判断：delivery_target 是任务语义的一部分。根据用户目标、会话上下文和工具副作用判断交付给 human、MCagent/RAG 或两者，而不是按固定句式判断。\n"
+                "交付对象判断：delivery_target 是任务语义的一部分。根据用户目标、会话上下文和工具副作用判断交付给 human、MCagent/RAG 或两者，而不是按固定句式判断。若用户让当前 Agent 先询问某个 Agent，再“补给他/交给他/给它用”，代词通常指向刚被询问或被委托的 Agent；例如先问 MCagent 再补给他，应交付给 MCagent/RAG。\n"
                 "如果 active_agent 是 MCagent：你不是通用关键词路由器，而是 Minecraft 资料 Agent。第一步先按语义判断用户是否在问 Minecraft 相关内容，包括整合包、模组、物品、Boss、玩法、服务器、版本、教程、MC百科/Modrinth/CurseForge、或本地 Minecraft 资料库。若是 MC 相关，优先考虑本地 RAG 证据是否能回答；若资料不足再规划委托 Crawler。若明确不是 MC 相关，可 direct_answer 或说明能力边界。不要把这个领域判断写成关键词触发规则，要结合会话上下文和用户真实意图。\n"
                 "重要原则：不要用关键词触发。必须按语义判断。不要把游戏内“获取某物/如何获得”误判成 Crawler 采集任务。\n"
                 "MCagent 的本地 RAG 当前主要服务 Minecraft 资料库；CrawlerAgent 不限于 Minecraft，应按用户给定目标采集合法、可访问的公开资料或本地资料。\n"

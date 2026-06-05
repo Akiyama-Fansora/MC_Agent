@@ -9,6 +9,7 @@ from .config import load_config
 from .crawler_planner import decompose_crawler_queries, plan_crawler_tasks
 from .crawler_reflection_decision_service import CrawlerReflectionDecisionService
 from .crawler_reflection_service import CrawlerReflectionSnapshotService
+from .crawler_model_prior_service import CrawlerModelPriorService
 from .crawler_capabilities import (
     default_sources_for_context,
     is_domain_source,
@@ -219,6 +220,21 @@ def _english_modpack_target_hint(text: str) -> str:
     value = re.sub(r"\s+", " ", str(text or "")).strip()
     if not value:
         return ""
+    target_first_patterns = [
+        r"\bfor\s+(?:the\s+)?(?P<target>[A-Z][A-Za-z0-9][A-Za-z0-9 _'.:+-]{1,60}?)(?:\s*,|\s+including\b|\s+with\b|\s+and\b|[.;:]|$)",
+        r"\b(?:target|topic|subject)\s*(?:is|:)\s*(?P<target>[A-Z][A-Za-z0-9][A-Za-z0-9 _'.:+-]{1,60}?)(?:\s*,|\s+including\b|\s+with\b|\s+and\b|[.;:]|$)",
+    ]
+    if re.search(r"\b(?:minecraft\s+)?modpack\b", value, flags=re.I):
+        for pattern in target_first_patterns:
+            match = re.search(pattern, value, flags=re.I)
+            if not match:
+                continue
+            raw_target = str(match.group("target") or "")
+            raw_target = re.sub(r"\s+(?:Minecraft\s+)?modpack$", "", raw_target, flags=re.I)
+            raw_target = re.sub(r"\s+Minecraft$", "", raw_target, flags=re.I)
+            target = _clean_target_hint(_strip_target_suffix(raw_target), max_len=80)
+            if target and not _function_only_target(target) and not re.fullmatch(r"Minecraft|MC|Modpack|Archive|Download|Public|Data|Files?|Routes?", target, flags=re.I):
+                return target
     direct_patterns = [
         r"\bfor\s+(?:the\s+)?([A-Z][A-Za-z0-9][A-Za-z0-9 _'.:+-]{1,60}?)\s+(?:Minecraft\s+)?modpack\b",
         r"\b(?:Minecraft\s+)?modpack\s+([A-Z][A-Za-z0-9][A-Za-z0-9 _'.:+-]{1,60}?)(?:\s+(?:and|to|with|public|complete|download|archive)\b|[,.;:]|\(|$)",
@@ -339,6 +355,9 @@ def _embedded_modpack_target_hint(text: str) -> str:
 def _session_target_hint(session_summary: dict[str, Any] | None = None) -> str:
     if not isinstance(session_summary, dict):
         return ""
+    authoritative = _authoritative_session_target(session_summary)
+    if authoritative:
+        return authoritative
     candidates: list[tuple[int, str]] = []
     weighted_keys = [
         ("original_user_message", 90),
@@ -362,13 +381,13 @@ def _session_target_hint(session_summary: dict[str, Any] | None = None) -> str:
         extracted = _collection_target_hint(value) or _general_collection_target_hint(value) or _question_subject_hint(value)
         if extracted:
             cleaned = _clean_target_hint(extracted, max_len=80) or extracted
-            if _looks_like_broken_target(cleaned):
+            if _looks_like_broken_target(cleaned) or _looks_like_numbered_action_list(cleaned) or _function_only_target(cleaned):
                 continue
             candidates.append((weight, cleaned))
             continue
         value = _strip_delivery_recipient(value)
         value = _clean_target_hint(value, max_len=80)
-        if value:
+        if value and not _looks_like_numbered_action_list(value) and not _function_only_target(value):
             candidates.append((weight, value))
     if not candidates:
         return ""
@@ -376,6 +395,317 @@ def _session_target_hint(session_summary: dict[str, Any] | None = None) -> str:
     for weight, candidate in candidates:
         deduped[candidate] = max(deduped.get(candidate, 0), weight)
     return sorted(deduped, key=lambda item: (deduped[item], *_target_specificity_score(item)), reverse=True)[0]
+
+
+def _authoritative_session_target(session_summary: dict[str, Any] | None = None) -> str:
+    if not isinstance(session_summary, dict):
+        return ""
+    candidates: list[tuple[int, str]] = []
+    for key, weight in (("authoritative_task_goal", 100), ("task_goal", 95), ("collection_target", 80)):
+        value = str(session_summary.get(key) or "").strip()
+        if not value:
+            continue
+        field_candidates = [
+            (_collection_target_hint(value), 35),
+            (_clean_authoritative_target_text(value), 20),
+            (_question_subject_hint(value), 10),
+            (_general_collection_target_hint(value), -20),
+        ]
+        for candidate, candidate_bonus in field_candidates:
+            candidate = str(candidate or "").strip()
+            candidate = _normalize_authoritative_entity(candidate) or candidate
+            if (
+                candidate
+                and not _looks_like_numbered_action_list(candidate)
+                and not _looks_like_agent_target(candidate)
+                and not _function_only_target(candidate)
+            ):
+                adjusted_weight = weight - (40 if _mcagent_context_query_has_meta_noise(candidate) else 0)
+                adjusted_weight += candidate_bonus
+                candidates.append((adjusted_weight, candidate))
+    if not candidates:
+        return ""
+    deduped: dict[str, int] = {}
+    for weight, candidate in candidates:
+        deduped[candidate] = max(deduped.get(candidate, 0), weight)
+    return sorted(deduped, key=lambda item: (deduped[item], *_target_specificity_score(item)), reverse=True)[0]
+
+
+def _clean_authoritative_target_text(value: str) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip(" \t\r\n:：,，.。;；")
+    if not text:
+        return ""
+    if _looks_like_numbered_action_list(text):
+        return ""
+    quoted = _quoted_authoritative_target(text)
+    if quoted:
+        return quoted
+    mixed = _mixed_cn_en_authoritative_entity(text)
+    if mixed:
+        return mixed
+    english = _english_authoritative_entity(text)
+    if english:
+        return english
+    leading = _leading_authoritative_entity(text)
+    if leading:
+        return leading
+    original = text
+    if re.search(r"(?:collect|crawl|scrape|gather|search|find|补充|采集|收集|获取|整理|查找|交付|handoff|MCagent|MCAgent|RAG|Crawler)", text, flags=re.I):
+        text = _strip_delivery_recipient(text)
+        text = re.sub(r"^(?:collect|crawl|scrape|gather|search|find|补充|采集|收集|获取|整理|查找)\s+", "", text, flags=re.I)
+        text = re.sub(r"^(?:MCagent|MCAgent|MC Agent)\s*(?:转达|handoff)?\s*[:：]?\s*", "", text, flags=re.I)
+        text = re.sub(r"^(?:获取|采集|收集|补充|整理|查找)\s*", "", text, flags=re.I)
+        text = re.sub(r"\s+(?:for|to)\s+(?:MCagent|MCAgent|RAG|human)\b.*$", "", text, flags=re.I)
+    text = re.sub(r"(?:公开资料|完整资料|详细资料|资料|数据|内容|信息)$", "", text).strip(" \t\r\n:：,，.。;；")
+    text = re.sub(
+        r"^(?:\u9488\u5bf9|\u83b7\u53d6|\u91c7\u96c6|\u6536\u96c6|\u8865\u5145|\u6574\u7406|\u67e5\u627e)\s*",
+        "",
+        text,
+        flags=re.I,
+    )
+    text = re.sub(r"^(?:\u95ee\u4e0b|\u8be2\u95ee|\u8ba9|tell|ask)\s*(?:MCagent|MCAgent|CrawlerAgent|Crawler)?\s*", "", text, flags=re.I)
+    text = re.split(r"(?:\u8fd8\u7f3a|\u7f3a\u54ea\u4e9b|\u54ea\u4e9b\u4e1c\u897f|\u7f3a\u5931|\u7f3a\u5c11)", text, maxsplit=1)[0]
+    text = re.sub(
+        r"(?:\u6574\u5408\u5305|\u6a21\u7ec4|modpack|mod)?\s*(?:\u91c7\u96c6|\u83b7\u53d6|\u6536\u96c6|\u8865\u5145|\u6574\u7406|\u67e5\u627e)\s*(?:\u5b8c\u6574)?(?:\u516c\u5f00)?(?:\u7f3a\u5931|\u7f3a\u5c11|\u7f3a\u53e3)?(?:\u8d44\u6599|\u6570\u636e|\u5185\u5bb9|\u4fe1\u606f)?(?:\u5e76\u4ea4\u4ed8.*|\u4f9b.*)?$",
+        "",
+        text,
+        flags=re.I,
+    )
+    text = re.sub(
+        r"(?:\u6574\u5408\u5305|\u6a21\u7ec4|modpack|mod)?\s*(?:\u5b8c\u6574|\u516c\u5f00|\u7f3a\u5931|\u7f3a\u5c11|\u7f3a\u53e3)+(?:\u8d44\u6599|\u6570\u636e|\u5185\u5bb9|\u4fe1\u606f)?(?:\u5e76\u4ea4\u4ed8.*|\u4f9b.*)?$",
+        "",
+        text,
+        flags=re.I,
+    ).strip(" \t\r\n:：,，.。;；")
+    if not text and original:
+        text = original
+    if not (2 <= len(text) <= 90):
+        return ""
+    if not re.search(r"[\u4e00-\u9fffA-Za-z0-9]", text):
+        return ""
+    compact = re.sub(r"\s+", "", text)
+    if any(re.fullmatch(pattern, compact, flags=re.I) for pattern in GENERIC_TARGET_PATTERNS):
+        return ""
+    if _function_only_target(text):
+        return ""
+    return text
+
+
+def _function_only_target(value: str) -> bool:
+    compact = re.sub(r"\s+", "", str(value or "").lower())
+    if not compact:
+        return True
+    blocked = {
+        "\u4e0b\u8f7d",
+        "\u4e0b\u8f7d\u8d44\u6599",
+        "\u8d44\u6599",
+        "\u516c\u5f00\u8d44\u6599",
+        "\u516c\u5f00\u7f51\u9875",
+        "\u6574\u5408\u5305",
+        "\u6a21\u7ec4",
+        "\u73a9\u6cd5\u8def\u7ebf",
+        "\u65b0\u624b\u5165\u95e8",
+        "\u65b0\u624b\u653b\u7565",
+        "\u6559\u7a0b",
+        "\u653b\u7565",
+        "\u5165\u5e93",
+        "download",
+        "docs",
+        "documentation",
+        "guide",
+        "tutorial",
+        "modpack",
+        "mod",
+        "minecraft",
+        "mc",
+        "\u8be5\u6574\u5408\u5305",
+        "\u8fd9\u4e2a\u6574\u5408\u5305",
+        "\u90a3\u4e2a\u6574\u5408\u5305",
+    }
+    if compact in blocked:
+        return True
+    if _english_descriptor_target(value):
+        return True
+    return bool(re.fullmatch(r"(?:\u53cd\u9988\u7684|\u8fd4\u56de\u7684|\u56de\u590d\u7684)?(?:\u8be5|\u8fd9\u4e2a|\u90a3\u4e2a)(?:\u6574\u5408\u5305|\u6a21\u7ec4|modpack|mod)", compact, flags=re.I))
+
+
+def _looks_like_numbered_action_list(value: str) -> bool:
+    text = str(value or "").strip()
+    if len(re.findall(r"(?:^|\s)\d{1,2}\s*[\).、:：]", text)) >= 2:
+        return True
+    if "\\n" in text and len(re.findall(r"\d{1,2}\s*[\).、:：]", text)) >= 2:
+        return True
+    return False
+
+
+def _quoted_authoritative_target(text: str) -> str:
+    for match in re.finditer(r"[\"'“”‘’《》「」『』](?P<body>[^\"'“”‘’《》「」『』]{2,90})[\"'“”‘’《》「」『』]", str(text or "")):
+        body = _normalize_authoritative_entity(match.group("body"))
+        if body:
+            return body
+    return ""
+
+
+def _leading_authoritative_entity(text: str) -> str:
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    value = re.sub(r"^(?:MCagent|MCAgent|MC Agent)\s*(?:转达|handoff)?\s*[:：]?\s*", "", value, flags=re.I)
+    value = re.sub(r"^(?:请你|请|让\s*CrawlerAgent|让\s*Crawler|告诉\s*CrawlerAgent|获取|采集|收集|补充|整理|查找)\s*", "", value, flags=re.I)
+    slash = _slash_alias_entity(value)
+    if slash:
+        return slash
+    patterns = [
+        r"(?P<entity>[\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9_ .+\-]{1,60}\s*/\s*[A-Za-z][A-Za-z0-9_ .+'\-\(\)]{1,60})\s*(?:整合包|modpack|模组|mod|完整|公开|资料|数据|内容|信息|[,，:：。；;]|$)",
+        r"(?P<entity>[A-Za-z][A-Za-z0-9_ .+'\-\(\)]{1,70})\s*(?:modpack|整合包|mod|模组|完整|公开|资料|数据|内容|信息|[,，:：。；;]|$)",
+        r"(?P<entity>[\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9_ .+\-]{1,60})\s*(?:整合包|modpack|模组|mod|完整|公开|资料|数据|内容|信息|[,，:：。；;]|$)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, value, flags=re.I)
+        if match:
+            entity = _normalize_authoritative_entity(match.group("entity"))
+            if entity:
+                return entity
+    return ""
+
+
+def _slash_alias_entity(text: str) -> str:
+    match = re.search(
+        r"(?P<cn>[\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9_ .+\-]{1,60})\s*/\s*(?P<en>[A-Za-z][A-Za-z0-9_ .+'\-\(\)]{2,60})",
+        str(text or ""),
+        flags=re.I,
+    )
+    if not match:
+        return ""
+    cn = _normalize_authoritative_entity(match.group("cn"))
+    en = _normalize_authoritative_entity(match.group("en"))
+    if cn and en:
+        return f"{cn} / {en}"
+    return en or cn
+
+
+def _mixed_cn_en_authoritative_entity(text: str) -> str:
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    patterns = [
+        r"(?P<cn>[\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9_ .+\-]{1,30})\s+(?P<en>[A-Za-z][A-Za-z0-9_ .+'\-\(\)]{2,60}?)(?=\s+(?:\u7684|\u65b0\u624b|\u5165\u95e8|\u6559\u7a0b|\u653b\u7565|\u73a9\u6cd5|\u8d44\u6599)|\s+(?:modpack|guide|docs?|wiki|tutorial|progression)\b|[,，。；;:]|$)",
+        r"(?P<cn>[\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9_ .+\-]{1,30})\s*/\s*(?P<en>[A-Za-z][A-Za-z0-9_ .+'\-\(\)]{2,60})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, value, flags=re.I)
+        if not match:
+            continue
+        cn = _normalize_authoritative_entity(match.group("cn"))
+        en = _normalize_authoritative_entity(match.group("en"))
+        if cn and en:
+            return f"{cn} {en}"
+        if en:
+            return en
+    return ""
+
+
+def _english_authoritative_entity(text: str) -> str:
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    patterns = [
+        r"\bfor\s+(?:the\s+)?(?P<entity>[A-Z][A-Za-z0-9_ .+'\-\(\)]{1,70}?)\s+(?:Minecraft\s+)?modpack\b",
+        r"\b(?:Minecraft\s+)?modpack\s+(?P<entity>[A-Z][A-Za-z0-9_ .+'\-\(\)]{1,70}?)(?:\s+(?:and|to|with|public|complete|download|archive)\b|[,.;:]|$)",
+    ]
+    candidates: list[str] = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, value, flags=re.I):
+            entity = _normalize_authoritative_entity(match.group("entity"))
+            if entity and not _function_only_target(entity) and not _english_descriptor_target(entity):
+                candidates.append(entity)
+    if not candidates:
+        return ""
+    return sorted(candidates, key=lambda item: (1 if re.fullmatch(r"[A-Z][A-Za-z0-9_+'\-\(\)]{1,40}", item) else 0, -len(item)), reverse=True)[0]
+
+
+def _english_descriptor_target(value: str) -> bool:
+    lowered = re.sub(r"\s+", " ", str(value or "").strip().lower())
+    return lowered in {
+        "complete public",
+        "public data",
+        "complete public data",
+        "public fully automatic",
+        "automatic",
+        "fully automatic",
+    }
+
+
+def _normalize_authoritative_entity(value: str) -> str:
+    entity = re.sub(r"\s+", " ", str(value or "")).strip(" \t\r\n:：,，.。;；\"'“”‘’《》「」『』")
+    entity = _strip_target_noise_prefix(entity)
+    if _looks_like_numbered_action_list(entity):
+        return ""
+    slash_match = re.search(
+        r"(?P<prefix>[\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9_ .+\-]{1,60})\s*/\s*(?P<en>[A-Za-z][A-Za-z0-9_ .+'\-\(\)]{2,60})",
+        entity,
+        flags=re.I,
+    )
+    if slash_match:
+        prefix = slash_match.group("prefix")
+        cn_parts = re.findall(r"[\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9_ .+\-]{1,30}$", prefix)
+        cn = cn_parts[-1].strip() if cn_parts else prefix.strip()
+        cn = re.sub(r"^(?:\u8bf7\u5148|\u68c0\u67e5|\u672c\u5730|\u8d44\u6599\u91cc|\u672c\u5730\u8d44\u6599\u91cc|\u5173\u4e8e|\u6709\u5173)\s*", "", cn)
+        en = re.split(r"\s+(?:\u6574\u5408\u5305|\u6a21\u7ec4|modpack|mod|\u8fd8|\u7f3a|\u5b8c\u6574|\u516c\u5f00|\u8d44\u6599)", slash_match.group("en"), maxsplit=1, flags=re.I)[0].strip()
+        if cn and en:
+            return f"{cn} / {en}"
+    entity = re.sub(
+        r"^(?:\u8d44\u6599\u91cc|\u672c\u5730\u8d44\u6599\u91cc|\u5173\u4e8e|\u6709\u5173|\u9488\u5bf9|\u83b7\u53d6|\u91c7\u96c6|\u6536\u96c6|\u8865\u5145|\u6574\u7406|\u67e5\u627e|collect|crawl|scrape|gather|search|find)\s*",
+        "",
+        entity,
+        flags=re.I,
+    )
+    entity = re.sub(r"^(?:complete|public|official|detailed)?\s*(?:minecraft\s+)?(?:modpack\s+)?(?:data|docs?|documentation|info|information|overview|sources?)\s+(?:for|about|on)\s+", "", entity, flags=re.I)
+    entity = re.sub(r"^(?:\u95ee\u4e0b|\u8be2\u95ee|\u8ba9|tell|ask)\s*(?:MCagent|MCAgent|CrawlerAgent|Crawler)?\s*", "", entity, flags=re.I)
+    entity = re.sub(r"^.*(?:\u8d44\u6599\u91cc|\u672c\u5730\u8d44\u6599\u91cc)", "", entity)
+    entity = re.split(r"(?:\u8fd8\u7f3a|\u7f3a\u54ea\u4e9b|\u54ea\u4e9b\u4e1c\u897f|\u7f3a\u5931|\u7f3a\u5c11)", entity, maxsplit=1)[0]
+    entity = re.sub(r"(?:\u8d44\u6599|\u6570\u636e|\u5185\u5bb9|\u4fe1\u606f)$", "", entity).strip()
+    entity = re.sub(
+        r"(?:\u6574\u5408\u5305|\u6a21\u7ec4|modpack|mod)?\s*(?:\u91c7\u96c6|\u83b7\u53d6|\u6536\u96c6|\u8865\u5145|\u6574\u7406|\u67e5\u627e)\s*(?:\u5b8c\u6574)?(?:\u516c\u5f00)?(?:\u7f3a\u5931|\u7f3a\u5c11|\u7f3a\u53e3)?(?:\u8d44\u6599|\u6570\u636e|\u5185\u5bb9|\u4fe1\u606f)?(?:\u5e76\u4ea4\u4ed8.*|\u4f9b.*)?$",
+        "",
+        entity,
+        flags=re.I,
+    )
+    entity = re.sub(
+        r"(?:\u6574\u5408\u5305|\u6a21\u7ec4|modpack|mod)?\s*(?:\u5b8c\u6574|\u516c\u5f00|\u7f3a\u5931|\u7f3a\u5c11|\u7f3a\u53e3)+(?:\u8d44\u6599|\u6570\u636e|\u5185\u5bb9|\u4fe1\u606f)?(?:\u5e76\u4ea4\u4ed8.*|\u4f9b.*)?$",
+        "",
+        entity,
+        flags=re.I,
+    )
+    entity = re.sub(r"\s*(?:modpack|模组|mod)$", "", entity, flags=re.I).strip()
+    if not (2 <= len(entity) <= 90):
+        return ""
+    if _looks_like_agent_target(entity):
+        return ""
+    compact = re.sub(r"\s+", "", entity)
+    if any(re.fullmatch(pattern, compact, flags=re.I) for pattern in GENERIC_TARGET_PATTERNS):
+        return ""
+    return entity
+
+
+def _strip_target_noise_prefix(value: str) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    text = re.sub(
+        r"^(?:\u6839\u636e|\u57fa\u4e8e|\u6309\u7167)\s*(?:MCagent|MCAgent|MC Agent|CrawlerAgent|Crawler|RAG)?\s*(?:\u8fd4\u56de|\u56de\u590d|\u62a5\u544a|\u53d1\u73b0|\u76d8\u70b9)?(?:\u7684)?\s*",
+        "",
+        text,
+        flags=re.I,
+    )
+    text = re.sub(
+        r"^(?:\u672c\u5730\u5173\u4e8e|\u672c\u5730|\u672c\u5730\u8d44\u6599|\u672c\u5730\u77e5\u8bc6\u5e93|\u8d44\u6599\u91cc|\u672c\u5730\u8d44\u6599\u91cc)(?:\u4e2d|\u91cc)?(?:\u7f3a\u5931|\u7f3a\u5c11|\u53d1\u73b0|\u62a5\u544a)?(?:\u7684)?\s*",
+        "",
+        text,
+        flags=re.I,
+    )
+    text = re.sub(
+        r"^(?:\u5e93\u5b58|\u76d8\u70b9|\u68c0\u67e5|\u5e93\u5b58\u68c0\u67e5|\u672c\u5730\u5e93\u5b58\u68c0\u67e5)(?:\u53d1\u73b0|\u53d1\u73b0\u7684|\u7684)?\s*",
+        "",
+        text,
+        flags=re.I,
+    )
+    text = re.sub(r"^(?:\u73b0\u5728|\u5f53\u524d)\s*", "", text)
+    text = re.split(r"(?:\u4f60\u672c\u5730|\u8fd8\u7f3a|\u7f3a\u54ea\u4e9b)", text, maxsplit=1)[0]
+    text = re.sub(r"^\u7684\s*", "", text)
+    return text
 
 
 GENERIC_TARGET_PATTERNS = (
@@ -423,6 +753,7 @@ def _looks_like_list_fragment_target(value: str) -> bool:
 
 def _clean_target_hint(value: Any, *, max_len: int = 90) -> str:
     target = re.sub(r"\s+", " ", str(value or "")).strip(" ：:，,。；;？?！!")
+    target = _strip_target_noise_prefix(target)
     if not target:
         return ""
     slash_parts = re.split(r"\s*(?:/|／)\s*", target, maxsplit=1)
@@ -470,7 +801,7 @@ def _clean_target_hint(value: Any, *, max_len: int = 90) -> str:
         return ""
     if not re.search(r"[\u4e00-\u9fffA-Za-z0-9]", target):
         return ""
-    return target
+    return _strip_target_noise_prefix(target)
 
 
 def _strip_target_prefix(value: str) -> str:
@@ -562,6 +893,8 @@ def _clean_task_query(query: str, *, target_hint: str = "", topic: str = "") -> 
     value = re.sub(r"\s+", " ", str(query or "").strip())
     if not value or _is_url_query(value):
         return value
+    if _placeholder_query(value):
+        return ""
     target = target_hint or topic
     cleaned_value = _clean_target_hint(value, max_len=90)
     if target and cleaned_value and _query_mentions_target(cleaned_value, target):
@@ -579,7 +912,7 @@ def _clean_mcagent_context_query(query: str, *, target_hint: str = "", context_t
     if not value:
         return target_hint.strip()
     value = re.sub(r"用户原始目标\s*[:：]", " ", value, flags=re.I)
-    value = re.sub(r"(?:先|先去|先帮我|先请)?\s*(?:问|询问|问下|问问|咨询)\s*(?:MC\s*Agent|MCagent|MCAgent|RAG)?\s*(?:本地|本地关于|本地已有|本地资料|本地上下文|知识库|资料库)?", " ", value, flags=re.I)
+    value = re.sub(r"(?:先|先去|先帮我|先请)?\s*(?:问下|问问|询问|咨询|问)\s*(?:MC\s*Agent|MCagent|MCAgent|RAG)?\s*(?:本地|本地关于|本地已有|本地资料|本地上下文|知识库|资料库)?", " ", value, flags=re.I)
     value = re.sub(r"(?:然后|再|之后)\s*(?:你)?\s*(?:去)?\s*(?:网上|联网|互联网上)?\s*(?:找|搜索|补充|补齐|采集|爬取|抓取|获取).*$", " ", value, flags=re.I)
     value = re.sub(r"(?:根据|基于)\s*(?:MC\s*Agent|MCagent|MCAgent|RAG)\s*(?:指出|返回|提供|发现|报告|回答)?(?:的)?", " ", value, flags=re.I)
     value = re.sub(r"(?i)MC\s*Agent|MCagent|\bRAG\b", " ", value)
@@ -587,6 +920,8 @@ def _clean_mcagent_context_query(query: str, *, target_hint: str = "", context_t
     value = re.sub(r"(问下|询问|问问|查询|检查|你去|网上|联网|找|补给他|补给|补库|补充|采集|爬取|抓取|获取)", " ", value)
     value = re.sub(r"(?:交付|提供|入库|保存|转达|转交|给)\s*(?:MC\s*Agent|MCagent|MCAgent|RAG|他|它)?", " ", value, flags=re.I)
     value = re.sub(r"\s+", " ", value).strip(" ，。；;:：")
+    if target_hint and _mcagent_context_query_has_meta_noise(value):
+        value = target_hint.strip()
     if target_hint and (not value or not _query_mentions_target(value, target_hint)):
         guide_terms = []
         if _needs_guide_source_graph(context_text):
@@ -652,6 +987,63 @@ def _crawler_memory_digest(limit: int = 8) -> dict[str, Any]:
         "lessons": lessons[-4:],
         "recent_events": recent[-limit:],
     }
+
+
+def _crawler_model_prior(
+    *,
+    question: str,
+    target_hint: str,
+    context_text: str,
+    session_summary: dict[str, Any] | None = None,
+    learned_memory: dict[str, Any] | None = None,
+    client: OpenAICompatibleClient | None = None,
+    model_label: str = "",
+) -> dict[str, Any]:
+    return CrawlerModelPriorService(client=client, model_label=model_label).build(
+        question=question,
+        target_hint=target_hint,
+        context_text=context_text,
+        session_summary=session_summary,
+        learned_memory=learned_memory,
+    )
+
+
+def _prior_search_leads(model_prior: dict[str, Any] | None, target: str) -> list[str]:
+    if not isinstance(model_prior, dict):
+        return []
+    leads = model_prior.get("search_leads")
+    if not isinstance(leads, list):
+        return []
+    output: list[str] = []
+    for lead in leads:
+        query = str(lead or "").strip()
+        if not query or _is_url_query(query) or _placeholder_query(query):
+            continue
+        if target:
+            bounded = _target_bound_or_reject_query(query, target)
+            if not bounded and _prior_lead_matches_alias(query, model_prior):
+                bounded = f"{target} {query}"
+            query = bounded or ""
+        if query and not _placeholder_query(query) and _valid_coverage_query(query, target, ""):
+            output.append(query)
+    return list(dict.fromkeys(output))[:12]
+
+
+def _prior_lead_matches_alias(query: str, model_prior: dict[str, Any] | None) -> bool:
+    if not isinstance(model_prior, dict):
+        return False
+    query_key = _loose_entity_key(query)
+    if not query_key:
+        return False
+    aliases = model_prior.get("aliases")
+    if not isinstance(aliases, list):
+        aliases = []
+    target = str(model_prior.get("target") or "")
+    for alias in [target, *aliases]:
+        alias_key = _loose_entity_key(str(alias or ""))
+        if alias_key and (alias_key in query_key or query_key in alias_key):
+            return True
+    return False
 
 
 def _question_subject_hint(question: str) -> str:
@@ -824,7 +1216,14 @@ def _query_mentions_target(query: str, target: str) -> bool:
         compact = re.sub(r"\s+", "", term.lower())
         if compact and compact in query_compact:
             return True
+        loose = _loose_entity_key(term)
+        if loose and loose in _loose_entity_key(query):
+            return True
     return False
+
+
+def _loose_entity_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", str(value or "").lower())
 
 
 def _repair_query_bad_target_prefix(query: str, target: str) -> str:
@@ -1268,6 +1667,9 @@ def _ensure_mcagent_context_first(
         target_hint=target,
         context_text=context_text,
     ) or query
+    if target and _mcagent_context_query_has_meta_noise(str(context_task.get("query") or "")):
+        guide_terms = ["玩法路线", "新手入门", "教程"] if _needs_guide_source_graph(context_text) else ["资料缺口"]
+        context_task["query"] = " ".join([target, *guide_terms]).strip()
     context_task["priority"] = max(_priority_value(context_task.get("priority"), 0), 260)
     output: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
@@ -1293,6 +1695,10 @@ def _ensure_mcagent_context_first(
         seen.add(key)
         output.append(task)
     return output
+
+
+def _mcagent_context_query_has_meta_noise(value: str) -> bool:
+    return bool(re.search(r"\u95ee|\u7136\u540e|\u672c\u5730\u5173\u4e8e|MC\s*Agent|MCagent|MCAgent|RAG", str(value or ""), flags=re.I))
 
 
 def _tasks_from_selected_action_plan(session_summary: dict[str, Any] | None, target: str, context_text: str) -> list[dict[str, Any]]:
@@ -1706,6 +2112,8 @@ def _valid_coverage_query(query: str, target: str = "", context_text: str = "") 
     value = re.sub(r"\s+", " ", str(query).strip())
     if not (2 <= len(value) <= 80):
         return False
+    if _placeholder_query(value):
+        return False
     compact = re.sub(r"\s+", "", value).lower()
     if any(re.fullmatch(pattern, compact, flags=re.I) for pattern in GENERIC_TARGET_PATTERNS):
         return False
@@ -1722,6 +2130,49 @@ def _valid_coverage_query(query: str, target: str = "", context_text: str = "") 
     if _is_gap_analysis_collection_context(context_text, "MCagent/RAG") and _literal_gap_meta_query(value):
         return False
     return True
+
+
+def _placeholder_query(query: str) -> bool:
+    value = re.sub(r"\s+", " ", str(query or "").strip())
+    if not value:
+        return True
+    compact = re.sub(r"[\s_\-:：.,;，。；'\"`]+", "", value).lower()
+    exact_placeholders = {
+        "query",
+        "searchquery",
+        "shortquery",
+        "shortsearchquery",
+        "shorttask",
+        "taskquery",
+        "searchterm",
+        "keyword",
+        "keywords",
+        "placeholder",
+        "todo",
+        "tbd",
+        "n/a",
+        "na",
+        "unknown",
+        "none",
+        "null",
+        "example",
+        "sample",
+        "test",
+        "yourquery",
+        "inputquery",
+        "targetquery",
+    }
+    if compact in exact_placeholders:
+        return True
+    if re.fullmatch(r"(?:short|brief|focused|specific)?(?:search|source|tool|task)?query\d*", compact, flags=re.I):
+        return True
+    if re.fullmatch(r"(?:enter|fill|put|insert|provide)(?:a|the)?(?:search)?query(?:here)?", compact, flags=re.I):
+        return True
+    if re.fullmatch(r"(?:topic|target|subject|entity)(?:or)?(?:question|query)?", compact, flags=re.I):
+        return True
+    if re.fullmatch(r"(?:replace|change|edit)(?:this|me)?", compact, flags=re.I):
+        return True
+    return False
 
 
 def _known_components(session_summary: dict[str, Any] | None = None) -> list[str]:
@@ -1886,9 +2337,18 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
                 fallback["planner_error"] = planner_error
             return fallback
     minecraft_context = _looks_like_minecraft_domain_context(context_text)
+    learned_memory = _crawler_memory_digest(limit=8)
+    model_prior = _crawler_model_prior(
+        question=question,
+        target_hint=target,
+        context_text=context_text,
+        session_summary=session_summary,
+        learned_memory=learned_memory,
+    )
     coverage_only_queries = _target_bound_queries(coverage_only_queries, target)
     base_queries = _target_queries(target, context_text) if minecraft_context else _general_target_queries(target, context_text)
-    queries = [*coverage_only_queries, *base_queries]
+    prior_queries = _prior_search_leads(model_prior, target)
+    queries = [*coverage_only_queries, *prior_queries, *base_queries]
     queries = list(dict.fromkeys(query for query in queries if query))
     queries = _prioritize_guide_queries(queries, context_text)
     sources = _default_collection_sources_for_context(context_text, prefer_general_web=prefer_external, archive_negated=archive_negated)
@@ -1971,6 +2431,7 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
     tasks = _defer_modpack_download_when_archive_not_explicit(tasks, target, context_text, intent_text, session_summary)
     tasks = _drop_unqualified_local_file_tasks(tasks, session_summary=session_summary, question=question)
     tasks = _drop_unqualified_browser_collect_tasks(tasks, session_summary=session_summary, question=question)
+    tasks = _sanitize_mcagent_context_tasks(tasks, target=target, context_text=context_text)
     is_modpack = bool(re.search(r"整合包|modpack", context_text, flags=re.I))
     if not _looks_like_minecraft_domain_context(context_text):
         minecraft_coverage_goals = []
@@ -2001,6 +2462,7 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
             "record blocked, empty, duplicate, and off-topic routes for CrawlerAgent review",
         ],
         "known_components": _known_components(session_summary),
+        "model_prior": model_prior,
         "success_criteria": [
             "保存 Markdown、manifest 和来源 URL",
             "支持 raw_html 的抓取器保存原始 HTML",
@@ -2166,6 +2628,8 @@ def _normalize_task(raw: dict[str, Any], reason: str, fallback_priority: int) ->
     query = str(raw.get("query") or "").strip()
     if source not in ALLOWED_SOURCES or not (2 <= len(query) <= 260):
         return None
+    if _placeholder_query(query):
+        return None
     if _generic_standalone_query(query) or _query_is_delivery_target(query):
         return None
     defaults = SOURCE_DEFAULTS.get(source, {})
@@ -2207,6 +2671,8 @@ def _normalize_task(raw: dict[str, Any], reason: str, fallback_priority: int) ->
 
 def _generic_standalone_query(query: str) -> bool:
     value = re.sub(r"\s+", " ", str(query).strip())
+    if _placeholder_query(value):
+        return True
     compact = re.sub(r"\s+", "", value).lower()
     if compact in GENERIC_COLLECTION_TERMS:
         return True
@@ -2272,9 +2738,119 @@ def _select_diverse_tasks(tasks: list[dict[str, Any]], max_tasks: int) -> list[d
     return selected[:max_tasks]
 
 
+def _prior_lead_tasks(
+    model_prior: dict[str, Any],
+    *,
+    target: str,
+    context_text: str,
+    delivery_target: str,
+    requested_by: str,
+    existing_tasks: list[dict[str, Any]],
+    max_tasks: int,
+) -> list[dict[str, Any]]:
+    leads = _prior_search_leads(model_prior, target)
+    if not leads:
+        return []
+    prefer_general = _prefer_general_web_first(context_text, delivery_target, requested_by)
+    source_order = ["web_discovery", "playwright"] if prefer_general or not _looks_like_minecraft_domain_context(context_text) else ["mcmod", "web_discovery", "playwright"]
+    if _looks_like_minecraft_domain_context(context_text) and "modrinth" not in source_order:
+        source_order.append("modrinth")
+    existing = {
+        (str(task.get("source") or ""), re.sub(r"\s+", " ", str(task.get("query") or "").strip()).lower())
+        for task in existing_tasks
+    }
+    tasks: list[dict[str, Any]] = []
+    budget = max(1, min(len(leads), max(2, max_tasks // 2)))
+    for index, query in enumerate(leads[:budget]):
+        source = source_order[index % len(source_order)]
+        if source == "playwright" and not _needs_guide_source_graph(context_text):
+            source = "web_discovery"
+        key = (source, query.lower())
+        if key in existing:
+            continue
+        task = _normalize_task(
+            {
+                "source": source,
+                "query": query,
+                "reason": "Crawler model prior suggested this unverified lead; execute an objective tool to verify or reject it before any citation or ingest.",
+                "priority": 134 - index,
+                "search_limit": 8 if source != "playwright" else 6,
+                "max_urls": 8 if source != "playwright" else 4,
+                "metadata": {"model_prior_use": "planning_only", "evidence_status": "hypothesis_only"},
+            },
+            "model prior verification lead",
+            120,
+        )
+        if task:
+            task["from_model_prior"] = True
+            tasks.append(task)
+            existing.add(key)
+    return tasks
+
+
+def _mark_tasks_covered_by_prior(tasks: list[dict[str, Any]], model_prior: dict[str, Any], target: str) -> None:
+    prior_keys = {_loose_entity_key(query) for query in _prior_search_leads(model_prior, target)}
+    if not prior_keys:
+        return
+    for task in tasks:
+        query = str(task.get("query") or "")
+        query_key = _loose_entity_key(query)
+        if query_key and query_key in prior_keys:
+            task["from_model_prior"] = True
+            task["priority"] = max(_priority_value(task.get("priority"), 0), 138)
+            metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+            metadata = dict(metadata)
+            metadata.setdefault("model_prior_use", "planning_only")
+            metadata.setdefault("evidence_status", "hypothesis_only")
+            task["metadata"] = metadata
+
+
+def _bind_prior_alias_tasks(tasks: list[dict[str, Any]], model_prior: dict[str, Any], target: str) -> None:
+    if not target:
+        return
+    for task in tasks:
+        query = str(task.get("query") or "").strip()
+        if not query or _is_url_query(query):
+            continue
+        if task.get("from_model_prior") and target not in query:
+            task["query"] = f"{target} {query}"
+            continue
+        if _query_mentions_target(query, target):
+            continue
+        if _prior_lead_matches_alias(query, model_prior):
+            task["query"] = f"{target} {query}"
+
+
+def _drop_placeholder_tasks(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for task in tasks:
+        query = str(task.get("query") or "").strip()
+        if _placeholder_query(query):
+            continue
+        output.append(task)
+    return output
+
+
+def _sanitize_mcagent_context_tasks(tasks: list[dict[str, Any]], *, target: str, context_text: str) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for task in tasks:
+        if str(task.get("source") or "") != "mcagent_context":
+            output.append(task)
+            continue
+        item = dict(task)
+        query = _clean_mcagent_context_query(str(item.get("query") or ""), target_hint=target, context_text=context_text)
+        if target and _mcagent_context_query_has_meta_noise(query):
+            guide_terms = ["玩法路线", "新手入门", "教程"] if _needs_guide_source_graph(context_text) else ["资料缺口"]
+            query = " ".join([target, *guide_terms]).strip()
+        item["query"] = query or target or str(item.get("query") or "")
+        output.append(item)
+    return output
+
+
 def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tasks: int, session_summary: dict[str, Any] | None = None) -> dict[str, Any]:
     question = _strip_delivery_recipient(question)
-    target_hint = _clean_target_hint(_session_target_hint(session_summary) or _collection_target_hint(question) or _question_subject_hint(question) or _general_collection_target_hint(_planner_context_text(question, session_summary)), max_len=80)
+    context_text = _planner_context_text(question, session_summary)
+    target_hint = _clean_target_hint(_session_target_hint(session_summary) or _collection_target_hint(question) or _question_subject_hint(question) or _general_collection_target_hint(context_text), max_len=80)
     topic = str(raw.get("topic") or "").strip()
     if target_hint and (not topic or _looks_like_agent_target(topic) or _looks_like_broken_target(topic)):
         topic = target_hint
@@ -2288,6 +2864,17 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
         topic = target_hint
     if not target_hint and any(re.fullmatch(pattern, re.sub(r"\s+", "", topic), flags=re.I) for pattern in GENERIC_TARGET_PATTERNS):
         topic = _collection_target_hint(question) or _question_subject_hint(question) or ""
+    model_prior = raw.get("model_prior") if isinstance(raw.get("model_prior"), dict) else {}
+    if model_prior:
+        model_prior = CrawlerModelPriorService()._normalize(model_prior, fallback={})
+    else:
+        model_prior = _crawler_model_prior(
+            question=question,
+            target_hint=target_hint or topic,
+            context_text=context_text,
+            session_summary=session_summary,
+            learned_memory=_crawler_memory_digest(limit=8),
+        )
     package_type = str(raw.get("package_type") or "").strip()
     delivery_target = str(raw.get("delivery_target") or "").strip()
     cleaning_policy = str(raw.get("cleaning_policy") or "").strip()
@@ -2324,6 +2911,9 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
         # task order first so a broad entity probe such as "落幕曲" is not
         # displaced by narrower helper phrases like "落幕曲 Boss".
         queries = [*queries, *coverage_queries]
+    prior_queries = _prior_search_leads(model_prior, target_hint or topic)
+    if prior_queries:
+        queries = [*queries, *prior_queries]
     fallback_items = [str(item) for item in fallback.get("items") or []]
     fallback_queries = [str(item) for item in fallback.get("queries") or []]
     if len(fallback_items) >= 3:
@@ -2345,7 +2935,6 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
     raw_sources = raw.get("sources")
     if not isinstance(raw_sources, list):
         raw_sources = []
-    context_text = _planner_context_text(question, session_summary)
     intent_text = _planner_intent_text(question, session_summary)
     archive_negated = _modpack_archive_negated(intent_text)
     minecraft_context = _looks_like_minecraft_domain_context(context_text)
@@ -2495,6 +3084,18 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
                 task["max_items"] = max_items
             if fields and not task.get("fields"):
                 task["fields"] = fields
+    prior_tasks = _prior_lead_tasks(
+        model_prior,
+        target=target_hint or topic,
+        context_text=context_text,
+        delivery_target=delivery_target,
+        requested_by=str((session_summary or {}).get("requested_by") or ""),
+        existing_tasks=tasks,
+        max_tasks=max_tasks,
+    )
+    if prior_tasks:
+        tasks = [*tasks, *prior_tasks]
+    _mark_tasks_covered_by_prior(tasks, model_prior, target_hint or topic)
     _rebalance_general_web_tasks(
         tasks,
         prefer_general_web=_prefer_general_web_first(
@@ -2508,12 +3109,15 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
     tasks = _prioritize_modpack_archive_tasks(tasks, target_hint or topic, context_text, intent_text, session_summary)
     tasks = _defer_modpack_download_when_archive_not_explicit(tasks, target_hint or topic, context_text, intent_text, session_summary)
     tasks = _repair_task_queries_for_target(tasks, target_hint or topic)
+    _bind_prior_alias_tasks(tasks, model_prior, target_hint or topic)
     tasks = _drop_unqualified_local_file_tasks(tasks, session_summary=session_summary, question=question)
     tasks = _drop_unqualified_browser_collect_tasks(tasks, session_summary=session_summary, question=question)
     tasks = _prefer_structured_browser_task(tasks, question, session_summary)
+    tasks = _sanitize_mcagent_context_tasks(tasks, target=target_hint or topic, context_text=context_text)
+    tasks = _drop_placeholder_tasks(tasks)
     if not tasks:
         fallback = plan_crawler_tasks(question, source_dir, max_tasks=max_tasks, include_completed=True)
-        tasks = list(fallback.get("tasks") or [])
+        tasks = _drop_placeholder_tasks(list(fallback.get("tasks") or []))
     return {
         "question": question,
         "strategy": str(raw.get("strategy") or "crawler_llm_planner"),
@@ -2526,6 +3130,7 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
         "cleaning_policy": cleaning_policy,
         "coverage_goals": coverage_goals,
         "known_components": _known_components(session_summary),
+        "model_prior": model_prior,
         "success_criteria": success_criteria,
         "subqueries": queries,
         "sources": sources,
@@ -2559,6 +3164,15 @@ def _legacy_long_plan_crawler_tasks_with_llm(question: str, source_dir: Path, *,
         max_len=80,
     )
     learned_memory = _crawler_memory_digest(limit=8)
+    model_prior = _crawler_model_prior(
+        question=question,
+        target_hint=target_hint,
+        context_text=_planner_context_text(question, session_summary),
+        session_summary=session_summary,
+        learned_memory=learned_memory,
+        client=client,
+        model_label=label,
+    )
     schema = {
         "topic": "short target entity, e.g. a product, paper, website, Minecraft modpack, company, dataset, or local file target",
         "package_type": "general|document|product|site|repository|dataset|modpack|mod|item|guide|unknown",
@@ -2598,6 +3212,7 @@ def _legacy_long_plan_crawler_tasks_with_llm(question: str, source_dir: Path, *,
             "Use this compact Agent Runtime tool catalog as capability context, not as keyword triggers:\n"
             f"{tool_catalog}\n"
             "Decide target entity, target ecosystem, coverage goals, short source-specific queries, and ordered tasks. Tools execute after your JSON plan.\n"
+            "Before tools, you may use your model knowledge only as Model Prior: unverified hypotheses, aliases, and source leads. Model Prior is not evidence. Do not cite, ingest, or mark it accepted until objective tools verify it.\n"
             "The authoritative collection target is the current handoff/task goal. Prior current_topic/topics are background memory only; never let old session topics override collection_target/task_goal.\n"
             "CrawlerAgent is a general-purpose crawler. Minecraft is only one optional domain toolset. For non-Minecraft targets, do not choose mcmod, modrinth, mediawiki, ftbwiki, createwiki, modpack_download, or modpack_internal.\n"
             "Think in capability groups: general discovery/search, exact URL fetch, browser rendering or structured extraction, local file inspection, artifact persistence, then domain-specific tools only when the source ecosystem calls for them.\n"
@@ -2629,6 +3244,7 @@ def _legacy_long_plan_crawler_tasks_with_llm(question: str, source_dir: Path, *,
             f"用户问题: {question}\n"
             f"采集目标提示: {target_hint or '未明确，请从问题和会话摘要判断'}\n"
             f"会话摘要: {_compact_json(session_summary or {}, limit=2500)}\n"
+            f"Model Prior（hypothesis only）: {_compact_json(model_prior, limit=1400)}\n"
             f"Crawler 可回忆经验: {_compact_json(learned_memory, limit=1200)}\n"
             f"规则 fallback: {_compact_json(fallback, limit=1000)}\n"
             f"JSON schema example: {_compact_json(schema, limit=1800)}"
@@ -2641,8 +3257,10 @@ def _legacy_long_plan_crawler_tasks_with_llm(question: str, source_dir: Path, *,
     try:
         raw = _json_from_text(text)
         raw["_planner_model"] = label
+        raw["model_prior"] = model_prior
     except Exception:
         raw = _repair_planner_json(client, text, label=label, schema=schema)
+        raw["model_prior"] = model_prior
     return _sanitize_plan(raw, question, source_dir, max_tasks, session_summary=session_summary)
 
 
@@ -2669,16 +3287,28 @@ def _quick_recovery_plan_with_llm(
     client, label = _planner_client()
     context = _planner_context_text(question, session_summary)
     target = _clean_target_hint(_session_target_hint(session_summary) or _collection_target_hint(question) or _question_subject_hint(question), max_len=80)
+    learned_memory = _crawler_memory_digest(limit=8)
+    model_prior = _crawler_model_prior(
+        question=question,
+        target_hint=target,
+        context_text=context,
+        session_summary=session_summary,
+        learned_memory=learned_memory,
+        client=client,
+        model_label=label,
+    )
     failure_line = f"Previous planner error: {planner_error}\n" if planner_error else ""
     prompt = (
         "JSON only. You are CrawlerAgent planning executable tool actions, not answering.\n"
         "Schema: {\"topic\":\"\",\"delivery_target\":\"MCagent/RAG|human\",\"coverage_goals\":[\"\"],\"tasks\":[{\"source\":\"mcagent_context|web_discovery|playwright|fetch_url|browser_collect|mcmod|modrinth|modpack_download|modpack_internal|save_artifact|read_local_file|search_local_files\",\"query\":\"\",\"reason\":\"\",\"priority\":100}],\"reason\":\"\"}.\n"
         "Use 2-4 tasks. Keep strings short. Use source, not action/tool.\n"
+        "Use Model Prior below only as hypothesis/planning guidance. Do not cite, ingest, or treat it as verified evidence; create objective tool tasks to verify it.\n"
         "If user asks to ask MCagent gaps then collect, first task source=mcagent_context. Later tasks use positive coverage queries, not '还缺哪些/what missing'.\n"
         "Use Minecraft sources only for Minecraft/modpack targets. Do not invent exact URLs.\n"
         f"{failure_line}"
         f"Question: {question}\n"
         f"Target hint: {target}\n"
+        f"Model Prior (hypothesis only): {_compact_json(model_prior, limit=1200)}\n"
         f"Session summary: {_compact_json(session_summary or {}, limit=500)}\n"
         f"Context: {context[:400]}\n"
     )
@@ -2694,6 +3324,7 @@ def _quick_recovery_plan_with_llm(
     raw = _json_from_text(raw_text)
     raw["_planner_model"] = label
     raw["strategy"] = strategy
+    raw["model_prior"] = model_prior
     if planner_error:
         raw["planner_recovered_from_error"] = planner_error
     return _sanitize_plan(raw, question, source_dir, max_tasks, session_summary=session_summary)
