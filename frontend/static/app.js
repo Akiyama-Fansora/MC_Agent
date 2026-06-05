@@ -715,7 +715,7 @@ function renderJobTimeline(readable, key = "") {
   const timeline = readable?.timeline || [];
   if (!timeline.length) return "";
   return `
-    <details class="message-section trace-panel compact-details" ${detailsAttrs(key || "timeline")}>
+    <details class="message-section trace-panel compact-details" ${detailsAttrs(key || "timeline", true)}>
       <summary>
         <span>采集过程详情</span>
         <span>${timeline.length} 条</span>
@@ -829,7 +829,7 @@ function renderJobReadable(readable, key = "") {
   const detailCount = Number(readable.blocked_outputs?.length || 0) + Number(readable.timeline?.length || 0);
   return `
     ${renderJobActorPanel(readable, headline, displayStatus, progressText)}
-    <details class="message-section job-readable compact-job" ${detailsAttrs(key || "job")}>
+    <details class="message-section job-readable compact-job" ${detailsAttrs(key || "job", true)}>
       <summary>
         <span>查看采集详情</span>
         <span>${escapeHtml(displayStatus)}${detailCount ? ` · ${detailCount} 条细节` : ""}</span>
@@ -852,7 +852,7 @@ function renderJobReadable(readable, key = "") {
             ${renderBlockedOutputs(readable) || `<div class="compact-empty">暂无明显限制。</div>`}
           </div>
         </div>
-        <details class="compact-details" ${detailsAttrs(`${key || "job"}:meta`)}>
+        <details class="compact-details" ${detailsAttrs(`${key || "job"}:meta`, true)}>
           <summary>任务元信息</summary>
           <div class="job-readable-grid compact-grid">
             ${readable.delivery_target ? statRow("交付对象", readable.delivery_target) : ""}
