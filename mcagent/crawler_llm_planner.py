@@ -75,6 +75,9 @@ def _collection_target_hint(question: str) -> str:
     embedded_target = _embedded_modpack_target_hint(text)
     if embedded_target:
         return embedded_target
+    inventory_target = _inventory_modpack_entity_hint(text)
+    if inventory_target:
+        return inventory_target
     general_subject_patterns = [
         r"(?:请|麻烦|帮我|帮忙)?\s*(?:获取|采集|收集|爬取|整理|查找|补充|补齐)\s*(?P<target>[^，,。；;：:\n]{2,90}?)(?:的)?(?:完整)?(?:公开|基础|详细|相关)?(?:资料|数据|内容|信息|介绍|项目介绍|下载页线索|玩法入门)",
         r"(?:collect|crawl|scrape|gather)\s+(?P<target>[A-Za-z][A-Za-z0-9_ .+'’:-]{1,80}?)(?:\s+(?:public|official|basic|detailed|project)?\s*(?:docs?|documentation|data|info|information|overview|sources?)\b|[,.;:]|$)",
@@ -177,6 +180,29 @@ def _handoff_gap_entity_hint(text: str) -> str:
             target = f"{target}{suffix}"
         target = _clean_target_hint(target, max_len=80)
         if target:
+            return target
+    return ""
+
+
+def _inventory_modpack_entity_hint(text: str) -> str:
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not value:
+        return ""
+    patterns = [
+        r"(?:^|[,，。；;：:])\s*(?:请|后|本地|库存|检查|盘点|发现|的|缺失列表|缺口列表|\s)*\s*(?P<target>[\u4e00-\u9fffA-Za-z0-9_ （）()+.·-]{2,60}?)(?P<suffix>整合包|modpack)(?:相关(?:的)?|对应(?:的)?|公开(?:的)?|详细(?:的)?|完整(?:的)?)?(?:Minecraft|MC)?(?:资料|数据|内容|信息)",
+        r"(?P<target>[\u4e00-\u9fffA-Za-z0-9_ （）()+.·-]{2,60}?)(?P<suffix>整合包|modpack)(?:相关(?:的)?|对应(?:的)?)(?:Minecraft|MC)?(?:资料|数据|内容|信息)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, value, flags=re.I)
+        if not match:
+            continue
+        target = _strip_modern_target_prefix(match.group("target"))
+        target = re.sub(r"^(?:请|本地|后|的|缺失列表|缺口列表|库存|检查|盘点|发现)\s*", "", target)
+        suffix = str(match.group("suffix") or "")
+        if suffix and not re.search(r"(整合包|modpack)$", target, flags=re.I):
+            target = f"{target}{suffix}"
+        target = _clean_target_hint(target, max_len=80)
+        if target and not re.fullmatch(r"(?:Minecraft|MC)(?:整合包|modpack)?", target, flags=re.I):
             return target
     return ""
 
@@ -920,6 +946,7 @@ def _clean_mcagent_context_query(query: str, *, target_hint: str = "", context_t
     value = re.sub(r"(问下|询问|问问|查询|检查|你去|网上|联网|找|补给他|补给|补库|补充|采集|爬取|抓取|获取)", " ", value)
     value = re.sub(r"(?:交付|提供|入库|保存|转达|转交|给)\s*(?:MC\s*Agent|MCagent|MCAgent|RAG|他|它)?", " ", value, flags=re.I)
     value = re.sub(r"\s+", " ", value).strip(" ，。；;:：")
+    value = _compact_mcagent_context_query(value, target_hint=target_hint, context_text=context_text)
     if target_hint and _mcagent_context_query_has_meta_noise(value):
         value = target_hint.strip()
     if target_hint and (not value or not _query_mentions_target(value, target_hint)):
@@ -935,6 +962,115 @@ def _clean_mcagent_context_query(query: str, *, target_hint: str = "", context_t
         if "缺口" not in value and re.sub(r"\s+", "", value.lower()) == re.sub(r"\s+", "", target_hint.lower()):
             value = f"{value} 资料缺口"
     return value or target_hint.strip()
+
+
+def _compact_mcagent_context_query(value: str, *, target_hint: str = "", context_text: str = "") -> str:
+    raw = " ".join(part for part in (context_text, target_hint, value) if str(part or "").strip())
+    cleaned = _strip_mcagent_context_inventory_noise(value)
+    target = _clean_target_hint(target_hint, max_len=90) if target_hint else ""
+    entity = target or _mcagent_context_entity_hint(cleaned) or _mcagent_context_entity_hint(raw) or cleaned
+    entity = _strip_mcagent_context_inventory_noise(entity)
+    if target and cleaned and _query_mentions_target(cleaned, target) and len(cleaned) <= 120 and not _mcagent_context_cleaned_query_still_noisy(cleaned, raw):
+        entity = cleaned
+    dimensions = _mcagent_context_dimension_terms(raw)
+    parts = [entity, *[term for term in dimensions if term and term not in entity]]
+    compact = " ".join(part for part in parts if part).strip()
+    compact = re.sub(r"\s+", " ", compact).strip(" ，。；;:：")
+    if len(compact) > 180:
+        compact = compact[:180].rsplit(" ", 1)[0].strip() or compact[:180].strip()
+    return compact
+
+
+def _mcagent_context_cleaned_query_still_noisy(cleaned: str, raw: str) -> bool:
+    compact = re.sub(r"\s+", "", str(cleaned or ""))
+    raw_text = str(raw or "")
+    if not compact:
+        return True
+    if compact.startswith(("的", "请", "后", "根据", "基于", "本地", "库存", "发现")):
+        return True
+    if re.search(r"(?:本地|库存|已入库|已有).{0,20}\d+\s*(?:篇|条|个|份|项)", raw_text):
+        return True
+    if re.search(r"(?:缺失列表|缺口列表|本地已有|本地库存|资料库|知识库)", raw_text):
+        return True
+    return False
+
+
+def _strip_mcagent_context_inventory_noise(value: str) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        return ""
+    text = re.sub(r"(?i)\b(?:mcagent|mca?gent|rag|crawleragent|crawler)\b", " ", text)
+    text = re.sub(r"(?:本地|库存|资料库|知识库|已入库|已有|现有|盘点|检查|审计|报告|回复|回答|发现|缺失列表|缺口列表|缺失项|缺口项|缺失|缺少|还缺|不足|待补|需要补)(?:的)?", " ", text)
+    text = re.sub(r"(?:整合包|模组|资料|数据|内容|来源|文档|chunk|chunks?)\s*\d+\s*(?:篇|条|个|份|项)?", " ", text, flags=re.I)
+    text = re.sub(r"\d+\s*(?:篇|条|个|份|项)\s*(?:整合包|模组|资料|数据|内容|来源|文档)?", " ", text)
+    text = re.sub(r"(?:请|后|根据|基于|简单|介绍|一下|哪些|什么|可以回答|能回答|覆盖|包括|相关|Minecraft资料)", " ", text, flags=re.I)
+    return re.sub(r"\s+", " ", text).strip(" ，。；;:：")
+
+
+def _mcagent_context_entity_hint(value: str) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        return ""
+    if "乌托邦" in text or re.search(r"utopian\s+journey|utopia-journey", text, flags=re.I):
+        return "乌托邦探险之旅 Utopian Journey MC 1.20.1 Fabric 整合包"
+    if "香草纪元" in text or re.search(r"vanilla\s*era|vanillaera|fares\s*chron", text, flags=re.I):
+        return "香草纪元 VanillaEra 食旅纪行 整合包"
+    if "农夫乐事" in text or re.search(r"farmer'?s\s+delight|farmers[- ]delight", text, flags=re.I):
+        return "农夫乐事 Farmer's Delight"
+    explicit = _collection_target_hint(text)
+    if explicit:
+        return explicit
+    patterns = [
+        r"([A-Za-z][A-Za-z0-9_ .+'’:-]{2,70})\s*(?:Minecraft\s+)?(?:modpack|mod)\b",
+        r"([\u4e00-\u9fffA-Za-z0-9_ （）()+.·' -]{2,70}?)(?:整合包|modpack)",
+        r"([A-Za-z][A-Za-z0-9_ .+'’:-]{2,70}|[\u4e00-\u9fff]{2,30})\s*(?:模组|mod)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.I)
+        if not match:
+            continue
+        entity = _strip_mcagent_context_inventory_noise(match.group(1))
+        if entity:
+            suffix = "整合包" if re.search(r"整合包|modpack", match.group(0), flags=re.I) and "整合包" not in entity and "modpack" not in entity.lower() else ""
+            return f"{entity}{suffix}".strip()
+    tokens = [
+        item
+        for item in re.findall(r"[A-Za-z][A-Za-z0-9_+'’:-]{2,}|[\u4e00-\u9fff]{2,}", text)
+        if item not in {"资料", "数据", "内容", "信息", "公开", "完整", "详细", "本地", "网络", "网上", "相关", "对应", "玩法", "路线", "教程", "攻略", "列表", "清单"}
+        and item.lower() not in {"minecraft", "modpack", "mod", "guide", "wiki", "docs", "documentation"}
+    ]
+    return " ".join(tokens[:4]).strip()
+
+
+def _mcagent_context_dimension_terms(value: str) -> list[str]:
+    text = str(value or "")
+    lowered = text.lower()
+    dimensions: list[str] = []
+    checks = [
+        ("模组列表", ("模组列表", "mod list", "mods list", "modlist")),
+        ("任务线", ("任务线", "任务系统", "ftb任务", "ftb quests", "questline", "quests")),
+        ("Boss", ("Boss", "boss", "首领")),
+        ("玩法路线", ("玩法路线", "游玩路线", "进度指南", "进度路线", "毕业路线", "毕业攻略", "progression", "walkthrough", "route")),
+        ("新手入门", ("新手", "入门", "开局", "beginner", "getting started")),
+        ("玩法指南", ("玩法指南", "攻略", "教程", "guide", "tutorial", "how to play")),
+        ("版本与安装", ("版本", "安装", "兼容", "version", "install", "loader")),
+        ("下载/包体", ("下载", "包体", ".mrpack", ".zip", "archive", "download")),
+        ("配置文件", ("配置文件", "manifest", "overrides", "config")),
+        ("更新日志", ("更新日志", "changelog", "release")),
+    ]
+    for label, needles in checks:
+        if any((needle.lower() in lowered) if re.search(r"[A-Za-z]", needle) else (needle in text) for needle in needles):
+            dimensions.append(label)
+    if re.search(r"缺口|缺失|缺少|还缺|不足|待补|需要补", text):
+        dimensions.insert(0, "资料缺口")
+    output: list[str] = []
+    seen: set[str] = set()
+    for item in dimensions:
+        key = item.lower()
+        if key not in seen:
+            seen.add(key)
+            output.append(item)
+    return output[:8]
 
 
 def _target_specificity_score(value: str) -> tuple[int, int]:

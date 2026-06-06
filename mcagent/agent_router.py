@@ -24,7 +24,8 @@ class TraceCapableRun(Protocol):
 DecisionFn = Callable[..., dict[str, Any]]
 ConfirmFn = Callable[..., dict[str, Any]]
 ActionPlanHasToolFn = Callable[[list[Any], str], bool]
-ClientSelectorFn = Callable[[AppConfig, str, float], tuple[Any, str]]
+ClientSelectorFn = Callable[..., tuple[Any, str]]
+ROUTER_LLM_TIMEOUT_SECONDS = 35
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,6 +211,12 @@ class LlmAgentToolRouterService(AgentToolRouterService):
             action_plan_has_tool=action_plan_has_tool,
         )
 
+    def _client_for_agent(self, config: AppConfig, model: str, temperature: float, agent: str) -> tuple[Any, str]:
+        try:
+            return self._select_client(config, model, temperature, agent=agent, timeout_seconds=ROUTER_LLM_TIMEOUT_SECONDS)
+        except TypeError:
+            return self._select_client(config, model, temperature)
+
     def decide_tool(
         self,
         config: AppConfig,
@@ -220,7 +227,7 @@ class LlmAgentToolRouterService(AgentToolRouterService):
         contextual_question: str,
         session_summary: dict[str, Any],
         model: str,
-    ) -> dict[str, Any]:
+        ) -> dict[str, Any]:
         if agent == "retriever_only" or bool(payload.get("no_llm")):
             return {
                 "tool": "answer",
@@ -228,7 +235,7 @@ class LlmAgentToolRouterService(AgentToolRouterService):
                 "planner": "runtime",
             }
         try:
-            client, label = self._select_client(config, model, 0.0)
+            client, label = self._client_for_agent(config, model, 0.0, agent)
             catalog = tool_catalog_prompt(agent)
             allowed_tools = "|".join(tool_names_for_agent(agent))
             allowed_step_tools = "|".join(name for name in tool_names_for_agent(agent) if name != "planned_workflow")
@@ -325,7 +332,7 @@ class LlmAgentToolRouterService(AgentToolRouterService):
         if agent == "retriever_only" or bool(payload.get("no_llm")):
             return {"proceed": True, "tool": proposed_tool, "goal": proposed_goal, "reason": "runtime mode confirmed", "planner": "runtime"}
         try:
-            client, label = self._select_client(config, model, 0.0)
+            client, label = self._client_for_agent(config, model, 0.0, agent)
             catalog = tool_catalog_prompt(agent, include_principles=True)
             allowed_tools = ", ".join(tool_names_for_agent(agent))
             prompt = (

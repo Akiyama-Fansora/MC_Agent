@@ -1331,6 +1331,46 @@ def test_plain_gap_context_query_names_gap_dimension() -> None:
     assert_true("drops_meta_words", "问" not in query and "MCAgent" not in query and "补给他" not in query)
 
 
+def test_inventory_summary_context_query_compacts_to_target_and_dimensions() -> None:
+    question = (
+        "请 本地 后 的缺失列表，乌托邦整合包相关的Minecraft资料 "
+        "本地已有整合包311篇 模组资料98篇 缺少模组列表 任务线 Boss 玩法指南"
+    )
+    assert_equal("inventory_entity_hint", _collection_target_hint(question), "乌托邦整合包")
+    plan = _sanitize_plan(
+        {
+            "topic": "乌托邦整合包",
+            "target_hint": "乌托邦整合包",
+            "delivery_target": "MCagent/RAG",
+            "sources": ["mcagent_context", "web_discovery", "playwright"],
+            "tasks": [
+                {"source": "mcagent_context", "query": question, "reason": "ask local gaps", "priority": 100},
+                {"source": "web_discovery", "query": "乌托邦整合包 模组列表 任务线 Boss 玩法指南", "reason": "public coverage", "priority": 90},
+            ],
+        },
+        question,
+        ROOT / "data" / "crawler_exports",
+        max_tasks=8,
+        session_summary={
+            "delivery_target": "MCagent/RAG",
+            "collection_target": question,
+            "task_goal": question,
+            "selected_action_plan": [
+                {"step": 1, "tool": "mcagent_context", "goal": "询问 MCagent/RAG 本地已有证据和缺口"},
+                {"step": 2, "tool": "delegate_crawler", "goal": "启动后台采集并交付给 MCagent/RAG"},
+            ],
+        },
+    )
+    context_tasks = [task for task in plan["tasks"] if task["source"] == "mcagent_context"]
+    assert_equal("one_context_task", len(context_tasks), 1)
+    query = context_tasks[0]["query"]
+    assert_true("keeps_target", "乌托邦" in query)
+    assert_true("keeps_gap_dimension", all(term in query for term in ("资料缺口", "模组列表", "任务线", "Boss", "玩法指南")))
+    assert_true(f"bounded_query: {query}", len(query) <= 180)
+    assert_true("drops_inventory_counts", "311" not in query and "98" not in query and "本地已有" not in query)
+    assert_true("drops_prompt_leftover", "请 本地 后" not in query and not query.startswith(("请", "后", "下")))
+
+
 def test_reflection_allows_url_seen_in_manifest_preview() -> None:
     original_client = crawler_llm_planner._planner_client
 
@@ -1861,6 +1901,7 @@ if __name__ == "__main__":
     test_guide_fallback_builds_source_graph_queries_for_non_pack_mod()
     test_selected_mcagent_context_query_is_clean_entity_plus_gap_dimension()
     test_plain_gap_context_query_names_gap_dimension()
+    test_inventory_summary_context_query_compacts_to_target_and_dimensions()
     test_reflection_allows_url_seen_in_manifest_preview()
     test_job_planner_timeout_returns_executable_fallback()
     print("crawler_planner_timeout_scenarios passed")

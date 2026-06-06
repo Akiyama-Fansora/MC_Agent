@@ -315,6 +315,19 @@ def test_mcagent_context_focus_keeps_gap_dimension_without_meta_instruction() ->
     assert_true("focus_drops_handoff_meta", "先问" not in focus and "本地关于" not in focus and "然后" not in focus and "MCagent" not in focus)
 
 
+def test_mcagent_context_focus_compacts_inventory_noise_to_entity_and_dimensions() -> None:
+    noisy = (
+        "请 本地 后 的缺失列表，乌托邦整合包相关的Minecraft资料 "
+        "本地已有整合包311篇 模组资料98篇 缺少模组列表 任务线 Boss 玩法指南"
+    )
+    focus = web_server._mcagent_context_focus(noisy, noisy)
+    assert_true("keeps_entity_alias", "乌托邦探险之旅" in focus and "Utopian Journey" in focus)
+    assert_true("keeps_dimensions", all(term in focus for term in ("资料缺口", "模组列表", "任务线", "Boss", "玩法指南")))
+    assert_true("bounded_focus", len(focus) <= 220, focus)
+    assert_true("drops_inventory_counts", "311" not in focus and "98" not in focus and "本地已有" not in focus)
+    assert_true("drops_leftover_words", "请 本地 后" not in focus and not focus.startswith(("请", "后", "下")))
+
+
 def test_successful_mcagent_context_prunes_duplicate_pending_context_tasks() -> None:
     tasks = [
         {"source": "mcagent_context", "query": "乌托邦缺口"},
@@ -558,6 +571,50 @@ def test_explicit_mcagent_to_crawler_handoff_starts_job_after_agent_selects_dele
     statuses = [(item.get("stage"), item.get("status")) for item in result.get("trace") or []]
     assert_true("tool_selected", ("decide", "tool_selected") in statuses, str(statuses))
     assert_true("delegate_confirmed", ("delegate", "next_step_confirmed") in statuses, str(statuses))
+
+
+def test_explicit_mcagent_to_crawler_handoff_relays_before_heavy_router() -> None:
+    tmp = tempfile.TemporaryDirectory()
+    question = "让MCagent转达Crawler去获取乌托邦整合包资料，先问MCagent本地缺口，再采集公开网页补入RAG。"
+    original_send = web_server._send_agent_message
+    original_router = web_server.LlmAgentToolRouterService
+    calls: list[dict[str, Any]] = []
+
+    def fake_send(config: AppConfig, payload: dict[str, Any], *, from_agent: str, content: str, to_agent: str, metadata: dict[str, Any] | None = None, **kwargs: Any):  # noqa: ARG001
+        calls.append({"payload": payload, "from_agent": from_agent, "content": content, "to_agent": to_agent, "metadata": metadata or {}, "kwargs": kwargs})
+        job = web_server.Job(id="relay-job", kind="crawler", title=content, status="queued", summary="queued")
+        return {"answer": "我是 CrawlerAgent。已启动后台采集任务。", "agent": "crawler_agent", "job": web_server._job_to_dict(job)}
+
+    class ForbiddenRouter:
+        def __init__(self, *args, **kwargs):  # noqa: ANN001
+            raise AssertionError("explicit MCagent->Crawler relay should not enter the heavy MCagent router before sending the AgentMessage")
+
+    web_server._send_agent_message = fake_send  # type: ignore[assignment]
+    web_server.LlmAgentToolRouterService = ForbiddenRouter  # type: ignore[assignment]
+    try:
+        result = web_server._chat_impl(
+            make_temp_config(Path(tmp.name)),
+            {
+                "agent": "mcagent_rag",
+                "question": question,
+                "session_id": "explicit-relay-light-path",
+                "model": "fake-model",
+            },
+        )
+    finally:
+        web_server._send_agent_message = original_send  # type: ignore[assignment]
+        web_server.LlmAgentToolRouterService = original_router  # type: ignore[assignment]
+        tmp.cleanup()
+
+    assert_equal("one_message", len(calls), 1)
+    assert_equal("from_agent", calls[0]["from_agent"], "MCagent")
+    assert_equal("to_agent", calls[0]["to_agent"], "CrawlerAgent")
+    assert_equal("tool", calls[0]["metadata"].get("tool"), "delegate_crawler")
+    assert_equal("requested_by", calls[0]["metadata"].get("requested_by"), "user_via_mcagent")
+    assert_equal("delivery_target", calls[0]["metadata"].get("delivery_target"), "MCagent/RAG")
+    assert_true("content_keeps_target", "乌托邦整合包" in calls[0]["content"], calls[0]["content"])
+    assert_true("answer_prefix", "MCagent 已通过 From-Content-To" in result.get("answer", ""), result.get("answer", ""))
+    assert_equal("job", result.get("job", {}).get("id"), "relay-job")
 
 
 def test_recent_crawler_audit_question_answers_history_without_new_collection() -> None:
@@ -2441,6 +2498,8 @@ def test_mcagent_context_tool_uses_message_bus_instead_of_internal_mcagent_short
 
 
 def test_mcagent_context_request_message_gets_light_reply_without_recursive_job() -> None:
+    tmp = tempfile.TemporaryDirectory()
+
     class FakeRetriever:
         def __init__(self, _config):
             pass
@@ -2464,7 +2523,7 @@ def test_mcagent_context_request_message_gets_light_reply_without_recursive_job(
     try:
         web_server.Retriever = FakeRetriever  # type: ignore[assignment]
         result = web_server._send_agent_message(
-            SimpleNamespace(paths=SimpleNamespace(db_path=Path("test.sqlite"))),
+            make_temp_config(Path(tmp.name)),
             {"agent": "crawler_agent", "session_id": "mcagent-context-light-test"},
             from_agent="CrawlerAgent",
             content="请检查乌托邦整合包本地已有证据和缺口。",
@@ -2474,6 +2533,7 @@ def test_mcagent_context_request_message_gets_light_reply_without_recursive_job(
         )
     finally:
         web_server.Retriever = original_retriever  # type: ignore[assignment]
+        tmp.cleanup()
 
     assert_true("answer", "本地已有证据候选" in result.get("answer", ""), result.get("answer", ""))
     assert_equal("no_job", result.get("job"), None)
@@ -2481,6 +2541,63 @@ def test_mcagent_context_request_message_gets_light_reply_without_recursive_job(
     assert_equal("from", message.get("from_agent"), "MCagent")
     assert_equal("to", message.get("to_agent"), "CrawlerAgent")
     assert_equal("transport", result.get("evidence", {}).get("transport"), "_send_agent_message")
+
+
+def test_chat_runtime_timeout_returns_objective_blocker() -> None:
+    tmp = tempfile.TemporaryDirectory()
+    original_send = web_server._send_agent_message
+
+    def slow_send(*_args, **_kwargs):  # noqa: ANN001
+        time.sleep(0.25)
+        return {"answer": "too late"}
+
+    web_server._send_agent_message = slow_send  # type: ignore[assignment]
+    started = time.time()
+    try:
+        result = web_server._chat(
+            make_temp_config(Path(tmp.name)),
+            {"agent": "mcagent_rag", "question": "让MCagent转达Crawler采集资料", "chat_timeout_seconds": 0.05},
+        )
+    finally:
+        web_server._send_agent_message = original_send  # type: ignore[assignment]
+        tmp.cleanup()
+
+    assert_true("returns_before_slow_send_finishes", time.time() - started < 0.2)
+    assert_true("timed_out", bool(result.get("timed_out")))
+    assert_true("objective_blocker", "超过" in result.get("answer", "") and "任务列表" in result.get("answer", ""))
+
+
+def test_delegate_handoff_brief_uses_bounded_llm_timeout() -> None:
+    tmp = tempfile.TemporaryDirectory()
+    original_selector = web_server._selected_llm_client
+    seen_timeouts: list[int] = []
+
+    class FakeClient:
+        def chat(self, _messages, *, temperature=None, max_tokens=None):  # noqa: ANN001, ARG002
+            return '{"handoff_brief":"brief","reason":"ok"}'
+
+    def fake_selector(_config, _model, _temperature, **kwargs):  # noqa: ANN001
+        seen_timeouts.append(int(kwargs.get("timeout_seconds") or 0))
+        return FakeClient(), "fake"
+
+    web_server._selected_llm_client = fake_selector  # type: ignore[assignment]
+    try:
+        brief, reason = web_server._build_delegate_handoff_brief(
+            make_temp_config(Path(tmp.name)),
+            model="fake-model",
+            original_question="让 MCagent 转达 Crawler 采集资料",
+            collection_target="采集资料",
+            session_summary={},
+            requested_by="user_via_mcagent",
+            delivery_target="MCagent/RAG",
+        )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        tmp.cleanup()
+
+    assert_equal("brief", brief, "brief")
+    assert_equal("reason", reason, "ok")
+    assert_true("bounded_handoff_timeout", bool(seen_timeouts) and 1 <= seen_timeouts[0] <= 30, str(seen_timeouts))
 
 
 def test_mcagent_to_crawler_delegation_uses_message_bus_not_job_starter() -> None:
@@ -3573,6 +3690,7 @@ if __name__ == "__main__":
     test_direct_crawler_delegate_choice_is_corrected_to_temporary_extract()
     test_mcagent_context_focus_expands_minecraft_utopia_aliases()
     test_mcagent_context_focus_keeps_gap_dimension_without_meta_instruction()
+    test_mcagent_context_focus_compacts_inventory_noise_to_entity_and_dimensions()
     test_successful_mcagent_context_prunes_duplicate_pending_context_tasks()
     test_successful_mcagent_context_filters_new_duplicate_context_tasks()
     test_mcagent_gap_delegation_overrides_human_delivery_to_rag()
@@ -3584,6 +3702,7 @@ if __name__ == "__main__":
     test_crawler_collection_request_message_starts_job_after_crawler_selects_delegate()
     test_direct_crawler_planned_workflow_preserves_selected_action_plan_for_job()
     test_direct_crawler_mcagent_context_step_with_delegate_starts_background_job()
+    test_explicit_mcagent_to_crawler_handoff_relays_before_heavy_router()
     test_modrinth_plain_mod_task_does_not_parse_modpack_contents()
     test_known_modrinth_project_skips_are_reusable_existing_evidence()
     test_modrinth_slug_query_is_direct_project_candidate()
@@ -3612,6 +3731,9 @@ if __name__ == "__main__":
     test_conditional_delegate_suggestion_is_allowed_without_side_effect()
     test_mcagent_context_tool_uses_message_bus_instead_of_internal_mcagent_shortcut()
     test_mcagent_to_crawler_delegation_uses_message_bus_not_job_starter()
+    test_mcagent_context_request_message_gets_light_reply_without_recursive_job()
+    test_chat_runtime_timeout_returns_objective_blocker()
+    test_delegate_handoff_brief_uses_bounded_llm_timeout()
     test_crawler_topic_match_decision_comes_from_crawler_llm()
     test_crawler_summary_uses_only_llm_matched_record_indexes()
     test_zero_byte_artifact_is_visible_but_not_accepted_for_ingest()

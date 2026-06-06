@@ -146,7 +146,7 @@ def test_message_bus_api_is_single_from_content_to_primitive() -> None:
     assert_true("no_message_param", "message" not in params)
 
     source = (ROOT / "mcagent" / "web_server.py").read_text(encoding="utf-8")
-    assert_true("chat_uses_message_bus", "return _send_agent_message(config, payload, **fields)" in source)
+    assert_true("chat_uses_message_bus", "executor.submit(_send_agent_message, config, payload, **fields)" in source)
     assert_true("stream_uses_message_bus", "_send_agent_message(config, payload, emit=emit, **_user_message_fields(payload))" in source)
     assert_true("no_object_bus_call", "_send_agent_message(config, payload, message" not in source)
     assert_true("no_legacy_crawler_start_api", "/api/jobs/start-crawler" not in source)
@@ -178,7 +178,7 @@ def test_production_entries_do_not_bypass_message_bus_runtime() -> None:
         ],
     )
     assert_true("fastapi_no_chat_impl", "_chat_impl(" not in fastapi_source)
-    assert_true("chat_wrapper_is_bus_only", "return _send_agent_message(config, payload, **fields)" in web_source)
+    assert_true("chat_wrapper_is_bus_only", "executor.submit(_send_agent_message, config, payload, **fields)" in web_source)
     assert_true(
         "collaboration_start_uses_chat_wrapper",
         '_send_json(self, _chat(config, payload | {"agent": "mcagent_rag"}))' in web_source,

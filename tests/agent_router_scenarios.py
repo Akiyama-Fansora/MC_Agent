@@ -307,6 +307,40 @@ def test_llm_router_retries_compact_decision_when_repair_fails() -> None:
     assert_true("compact_retry_prompt", "Repeat the decision from scratch" in fake.calls[2]["messages"][1]["content"])
 
 
+def test_llm_router_selects_client_for_active_agent() -> None:
+    tmp, run = make_run("请 CrawlerAgent 采集公开资料")
+    fake = FakeClient('{"tool":"delegate_crawler","reason":"collect public data","collection_target":"公开资料","delivery_target":"MCagent/RAG"}')
+    seen_agents: list[str] = []
+
+    seen_timeouts: list[int] = []
+
+    def select_client(_config, _model, _temperature, *, agent, timeout_seconds=None):  # noqa: ANN001
+        seen_agents.append(agent)
+        seen_timeouts.append(int(timeout_seconds or 0))
+        return fake, f"{agent}-router"
+
+    try:
+        service = LlmAgentToolRouterService(
+            select_client=select_client,
+            action_plan_has_tool=lambda _plan, _tool: False,
+        )
+        decision = service.decide_tool(
+            run.config,
+            run.payload,
+            agent="crawler_agent",
+            original_question=run.original_question,
+            contextual_question=run.question,
+            session_summary={},
+            model=run.model,
+        )
+    finally:
+        tmp.cleanup()
+
+    assert_equal("selector_agent", seen_agents, ["crawler_agent"])
+    assert_true("bounded_router_timeout", 1 <= seen_timeouts[0] <= 60)
+    assert_equal("planner_label", decision["planner"], "crawler_agent-router")
+
+
 def test_llm_router_error_does_not_choose_fallback_tool() -> None:
     tmp, run = make_run("介绍乌托邦")
     try:
@@ -345,6 +379,7 @@ def main() -> int:
     test_llm_router_allows_local_corpus_inventory_tool()
     test_llm_router_repairs_malformed_json_before_router_error()
     test_llm_router_retries_compact_decision_when_repair_fails()
+    test_llm_router_selects_client_for_active_agent()
     test_llm_router_error_does_not_choose_fallback_tool()
     print("AGENT ROUTER SCENARIOS PASSED")
     return 0

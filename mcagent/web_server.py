@@ -88,6 +88,9 @@ AUTO_ANSWER_MAX_TOKENS = 3000
 ANSWER_MAX_TOKENS_CAP = 6000
 DEFAULT_CRAWLER_PLANNER_TIMEOUT_SECONDS = 110
 DEFAULT_MCAGENT_CONTEXT_TIMEOUT_SECONDS = 120
+DEFAULT_CHAT_RUNTIME_TIMEOUT_SECONDS = 75
+HANDOFF_BRIEF_LLM_TIMEOUT_SECONDS = 20
+RUNTIME_REVIEW_LLM_TIMEOUT_SECONDS = 20
 MAX_JOBS = 40
 GROW_PROGRESS_PATH = PROJECT_ROOT / "runtime" / "grow_knowledge_base_progress.json"
 JOBS_HISTORY_PATH = PROJECT_ROOT / "runtime" / "jobs_history.json"
@@ -3798,13 +3801,19 @@ def _should_use_llm_retrieval_planner(original_question: str, contextual_questio
     return bool(intent and intent.question_type in {"recipe"} and len(intent.keywords) >= 5)
 
 
-def _selected_llm_client(config: AppConfig, model: str, temperature: float, agent: str = "mcagent_rag") -> tuple[OpenAICompatibleClient, str]:
+def _selected_llm_client(
+    config: AppConfig,
+    model: str,
+    temperature: float,
+    agent: str = "mcagent_rag",
+    timeout_seconds: int | None = None,
+) -> tuple[OpenAICompatibleClient, str]:
     profile = resolve_profile_from_model(config, model, agent=agent)
     if profile:
         return client_from_profile(
             profile,
             temperature=temperature,
-            timeout_seconds=max(config.ollama.timeout_seconds, int(profile.get("timeout_seconds") or 180)),
+            timeout_seconds=int(timeout_seconds or profile.get("timeout_seconds") or config.ollama.timeout_seconds or 180),
         )
     if model.startswith("cloud:deepseek:"):
         template = profile_by_id(config, "deepseek-template") or {
@@ -3819,13 +3828,13 @@ def _selected_llm_client(config: AppConfig, model: str, temperature: float, agen
         return client_from_profile(
             template,
             temperature=temperature,
-            timeout_seconds=max(config.ollama.timeout_seconds, int(template.get("timeout_seconds") or 180)),
+            timeout_seconds=int(timeout_seconds or template.get("timeout_seconds") or config.ollama.timeout_seconds or 180),
         )
     endpoint_config = OllamaConfig(
         base_url=config.ollama.base_url,
         model=model or config.ollama.model,
         temperature=temperature,
-        timeout_seconds=config.ollama.timeout_seconds,
+        timeout_seconds=int(timeout_seconds or config.ollama.timeout_seconds),
     )
     return OllamaOpenAIClient(endpoint_config), f"Ollama {endpoint_config.model}"
 
@@ -6280,7 +6289,7 @@ def _build_delegate_handoff_brief(
         delivery_target=delivery_target,
     )
     try:
-        client, label = _selected_llm_client(config, model, 0.0)
+        client, label = _selected_llm_client(config, model, 0.0, timeout_seconds=HANDOFF_BRIEF_LLM_TIMEOUT_SECONDS)
         caller_text = "用户直接委托 CrawlerAgent" if requested_by == "user" else "用户经 MCagent 转达给 CrawlerAgent" if requested_by == "user_via_mcagent" else "MCagent 委托 CrawlerAgent"
         prompt = (
             "你是 Agent Runtime 的 CrawlerAgent 任务说明整理器。\n"
@@ -6419,7 +6428,7 @@ def _delegation_handoff(payload: dict[str, Any], original_question: str, cleaned
         requested_by = explicit
     elif agent == "crawler_agent":
         requested_by = "user"
-    elif _user_explicitly_asked_mcagent_to_tell_crawler(original_question):
+    elif _user_requested_mcagent_crawler_handoff(original_question):
         requested_by = "user_via_mcagent"
     else:
         requested_by = "mcagent"
@@ -6432,6 +6441,19 @@ def _delegation_handoff(payload: dict[str, Any], original_question: str, cleaned
 
 
 def _user_explicitly_asked_mcagent_to_tell_crawler(question: str) -> bool:
+    if not _user_requested_mcagent_crawler_handoff(question):
+        return False
+    text = str(question or "")
+    if re.search(r"(刚才|之前|上次|最近|历史|记录|进度|状态|结果|自审|审计|接受|拒绝|为什么|是否已经|有没有)(?:.*)(?:Crawler|爬虫|采集|来源|入库|任务)", text, flags=re.I):
+        return False
+    if re.search(r"(先|首先|先让|先请|先帮我)?\s*(?:盘点|检查|检索|查询|看看|列出|介绍).{0,24}(?:本地|库存|资料库|知识库|已有资料|有哪些资料)", text):
+        return False
+    if re.search(r"(?:本地还缺|还缺哪些资料|缺哪些资料|缺口|列出来|列出).{0,40}(?:Crawler|爬虫).{0,20}(?:补充|补齐|采集|获取)", text, flags=re.I):
+        return False
+    return True
+
+
+def _user_requested_mcagent_crawler_handoff(question: str) -> bool:
     text = str(question or "")
     if not re.search(r"Crawler|爬虫", text, flags=re.I):
         return False
@@ -6630,6 +6652,7 @@ def _needs_general_grounded_answer(question: str) -> bool:
 
 
 def _mcagent_context_focus(question: str, collection_target: str = "") -> str:
+    raw = " ".join(part for part in (str(collection_target or "").strip(), str(question or "").strip()) if part)
     value = str(collection_target or question or "").strip()
     value = re.sub(r"用户原始目标\s*[:：]", " ", value, flags=re.I)
     value = re.sub(r"(?:先|先去|先帮我|先请)?\s*(?:问下|问问|询问|咨询|问)\s*(?:MC\s*Agent|MCagent|MCAgent|RAG)?\s*(?:本地|本地关于|本地已有|本地资料|本地上下文|知识库|资料库)?", " ", value, flags=re.I)
@@ -6640,8 +6663,94 @@ def _mcagent_context_focus(question: str, collection_target: str = "") -> str:
     value = re.sub(r"(本地关于|本地已有|本地上下文|问下|询问|问问|查询|检查|本地资料库|本地资料|知识库|资料库|你去|网上|联网|找|补给他|补给|补库|补充|采集|爬取|抓取|获取)", " ", value)
     value = re.sub(r"(?:交付|提供|入库|保存|转达|转交|给)\s*(?:MC\s*Agent|MCagent|MCAgent|RAG|他|它)?", " ", value, flags=re.I)
     value = re.sub(r"\s+", " ", value).strip(" ，。；;:：")
+    value = _compact_mcagent_context_focus(value, raw)
     value = _expand_mcagent_context_aliases(value)
     return value or str(question or "").strip()
+
+
+def _compact_mcagent_context_focus(value: str, raw_context: str = "") -> str:
+    raw = f"{raw_context} {value}".strip()
+    cleaned = _strip_mcagent_inventory_focus_noise(value)
+    entity = _mcagent_context_entity_from_text(cleaned) or _mcagent_context_entity_from_text(raw)
+    if not entity:
+        entity = cleaned
+    entity = _strip_mcagent_inventory_focus_noise(entity)
+    entity = re.sub(r"\s+", " ", entity).strip(" ，。；;:：")
+    dimensions = _mcagent_context_dimension_terms(raw)
+    parts = [entity, *[term for term in dimensions if term not in entity]]
+    compact = " ".join(part for part in parts if part).strip()
+    if len(compact) > 220:
+        compact = compact[:220].rsplit(" ", 1)[0].strip() or compact[:220].strip()
+    return compact
+
+
+def _strip_mcagent_inventory_focus_noise(value: str) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        return ""
+    text = re.sub(r"(?i)\b(?:mcagent|mca?gent|rag|crawleragent|crawler)\b", " ", text)
+    text = re.sub(r"(?:本地|库存|资料库|知识库|已入库|已有|现有|盘点|检查|审计|报告|回复|回答|发现|缺失列表|缺口列表|缺失项|缺口项|缺失|缺少|还缺|不足|待补|需要补)(?:的)?", " ", text)
+    text = re.sub(r"(?:整合包|模组|资料|数据|内容|来源|文档|chunk|chunks?)\s*\d+\s*(?:篇|条|个|份|项)?", " ", text, flags=re.I)
+    text = re.sub(r"\d+\s*(?:篇|条|个|份|项)\s*(?:整合包|模组|资料|数据|内容|来源|文档)?", " ", text)
+    text = re.sub(r"(?:请|后|根据|基于|简单|介绍|一下|哪些|什么|可以回答|能回答|覆盖|包括|相关|Minecraft资料)", " ", text, flags=re.I)
+    text = re.sub(r"\s+", " ", text).strip(" ，。；;:：")
+    return _strip_context_focus_leftover_prefix(text)
+
+
+def _mcagent_context_entity_from_text(value: str) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        return ""
+    if "乌托邦" in text or re.search(r"utopian\s+journey|utopia-journey", text, flags=re.I):
+        return "乌托邦探险之旅 Utopian Journey MC 1.20.1 Fabric 整合包"
+    if "香草纪元" in text or re.search(r"vanilla\s*era|vanillaera|fares\s*chron", text, flags=re.I):
+        return "香草纪元 VanillaEra 食旅纪行 整合包"
+    if "农夫乐事" in text or re.search(r"farmer'?s\s+delight|farmers[- ]delight", text, flags=re.I):
+        return "农夫乐事 Farmer's Delight"
+    patterns = [
+        r"([A-Za-z][A-Za-z0-9_ .+'’:-]{2,70})\s*(?:Minecraft\s+)?(?:modpack|mod)\b",
+        r"([\u4e00-\u9fffA-Za-z0-9_ （）()+.·' -]{2,70}?)(?:整合包|modpack)",
+        r"([A-Za-z][A-Za-z0-9_ .+'’:-]{2,70}|[\u4e00-\u9fff]{2,30})\s*(?:模组|mod)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.I)
+        if not match:
+            continue
+        entity = _strip_mcagent_inventory_focus_noise(match.group(1))
+        if entity and not re.fullmatch(r"(?:资料|数据|内容|信息|公开|完整|详细|本地|网络|网上|相关|对应)", entity, flags=re.I):
+            suffix = "整合包" if re.search(r"整合包|modpack", match.group(0), flags=re.I) and "整合包" not in entity and "modpack" not in entity.lower() else ""
+            return f"{entity}{suffix}".strip()
+    tokens = [
+        item
+        for item in re.findall(r"[A-Za-z][A-Za-z0-9_+'’:-]{2,}|[\u4e00-\u9fff]{2,}", text)
+        if item not in {"资料", "数据", "内容", "信息", "公开", "完整", "详细", "本地", "网络", "网上", "相关", "对应", "玩法", "路线", "教程", "攻略", "列表", "清单"}
+        and item.lower() not in {"minecraft", "modpack", "mod", "guide", "wiki", "docs", "documentation"}
+    ]
+    return " ".join(tokens[:4]).strip()
+
+
+def _mcagent_context_dimension_terms(value: str) -> list[str]:
+    text = str(value or "")
+    lowered = text.lower()
+    dimensions: list[str] = []
+    checks = [
+        ("模组列表", ("模组列表", "mod list", "mods list", "modlist")),
+        ("任务线", ("任务线", "任务系统", "ftb任务", "ftb quests", "questline", "quests")),
+        ("Boss", ("Boss", "boss", "首领")),
+        ("玩法路线", ("玩法路线", "游玩路线", "进度指南", "进度路线", "毕业路线", "毕业攻略", "progression", "walkthrough", "route")),
+        ("新手入门", ("新手", "入门", "开局", "beginner", "getting started")),
+        ("玩法指南", ("玩法指南", "攻略", "教程", "guide", "tutorial", "how to play")),
+        ("版本与安装", ("版本", "安装", "兼容", "version", "install", "loader")),
+        ("下载/包体", ("下载", "包体", ".mrpack", ".zip", "archive", "download")),
+        ("配置文件", ("配置文件", "manifest", "overrides", "config")),
+        ("更新日志", ("更新日志", "changelog", "release")),
+    ]
+    for label, needles in checks:
+        if any((needle.lower() in lowered) if re.search(r"[A-Za-z]", needle) else (needle in text) for needle in needles):
+            dimensions.append(label)
+    if re.search(r"缺口|缺失|缺少|还缺|不足|待补|需要补", text):
+        dimensions.insert(0, "资料缺口")
+    return _dedupe_strings(dimensions)[:8]
 
 
 def _filter_mcagent_context_evidence(
@@ -6803,7 +6912,7 @@ def _strip_context_focus_leftover_prefix(value: str) -> str:
 
 def _clean_crawler_task_question(question: str) -> str:
     value = str(question).strip()
-    value = re.sub(r"^\s*(?:\u8bf7|\u9ebb\u70e6|\u5e2e\u6211|\u5e2e\u5fd9)?\s*(?:\u544a\u8bc9|\u53eb|\u8ba9|\u6d3e|\u901a\u77e5)?\s*(?:MCagent|MCAgent|MC Agent)?\s*(?:\u53bb)?\s*(?:\u544a\u8bc9|\u53eb|\u8ba9|\u6d3e|\u901a\u77e5)?\s*(?:CrawlerAgent|Crawler|\u722c\u866bAgent|\u722c\u866bagent|\u722c\u866b)\s*(?:\u4f60|\u4ed6)?\s*(?:\u8ba9\u4ed6)?\s*(?:\u53bb|\u6765|\u5e2e\u6211|\u5e2e\u5fd9|\u7ee7\u7eed)?\s*(?:\u6536\u96c6|\u91c7\u96c6|\u83b7\u53d6|\u6293\u53d6|\u722c\u53d6|\u8865\u5145|\u8865\u5e93|\u66f4\u65b0\u8d44\u6599)?\s*", "", value, flags=re.I)
+    value = re.sub(r"^\s*(?:\u8bf7|\u9ebb\u70e6|\u5e2e\u6211|\u5e2e\u5fd9)?\s*(?:\u544a\u8bc9|\u53eb|\u8ba9|\u6d3e|\u901a\u77e5|\u8f6c\u8fbe|\u8f6c\u4ea4|\u4ea4\u7ed9)?\s*(?:MCagent|MCAgent|MC Agent)?\s*(?:\u53bb)?\s*(?:\u544a\u8bc9|\u53eb|\u8ba9|\u6d3e|\u901a\u77e5|\u8f6c\u8fbe|\u8f6c\u4ea4|\u4ea4\u7ed9)?\s*(?:CrawlerAgent|Crawler|\u722c\u866bAgent|\u722c\u866bagent|\u722c\u866b)\s*(?:\u4f60|\u4ed6)?\s*(?:\u8ba9\u4ed6)?\s*(?:\u53bb|\u6765|\u5e2e\u6211|\u5e2e\u5fd9|\u7ee7\u7eed)?\s*(?:\u6536\u96c6|\u91c7\u96c6|\u83b7\u53d6|\u6293\u53d6|\u722c\u53d6|\u8865\u5145|\u8865\u5e93|\u66f4\u65b0\u8d44\u6599)?\s*", "", value, flags=re.I)
     value = re.sub(
         r"^\s*(?:\u8bf7|\u9ebb\u70e6|\u5e2e\u6211|\u5e2e\u5fd9|\u5e2e)?\s*(?:\u7ed9|\u4e3a)?\s*(?:MCagent|MCAgent|MC Agent|RAG|\u672c\u5730\u8d44\u6599\u5e93|\u77e5\u8bc6\u5e93)\s*(?:\u53bb|\u6765)?\s*(?:\u6536\u96c6|\u91c7\u96c6|\u83b7\u53d6|\u6293\u53d6|\u722c\u53d6|\u8865\u5145|\u8865\u5e93|\u66f4\u65b0\u8d44\u6599)\s*",
         "",
@@ -7673,7 +7782,7 @@ def _final_answer_protocol_review(
     if not has_pseudo_tool_call and not may_claim_side_effect:
         return {"violation": False, "action": "allow", "reason": "No tool-call syntax or unexecuted side-effect claim in final answer.", "tool": ""}
     try:
-        client, label = _selected_llm_client(config, model, 0.0, agent=agent)
+        client, label = _selected_llm_client(config, model, 0.0, agent=agent, timeout_seconds=RUNTIME_REVIEW_LLM_TIMEOUT_SECONDS)
         prompt = (
             "你是当前 Agent 的最终回答协议审计器。只判断最终回答是否把工具调用写成了普通文本，"
             "或者是否声称已经/即将执行跨 Agent 交付、后台任务、采集、保存、入库等真实副作用但运行时并未执行。不要回答用户问题。\n"
@@ -7738,7 +7847,7 @@ def _tool_route_completeness_review(
     """Ask the active Agent whether an early-return tool covered the whole user request."""
 
     try:
-        client, label = _selected_llm_client(config, model, 0.0, agent=agent)
+        client, label = _selected_llm_client(config, model, 0.0, agent=agent, timeout_seconds=RUNTIME_REVIEW_LLM_TIMEOUT_SECONDS)
         prompt = (
             "你是当前 Agent 的工具路线完整性审计器。不要回答用户问题，只判断本轮已执行工具是否覆盖了用户原始请求中的所有可执行动作。\n"
             "协议：用户、MCagent、CrawlerAgent 的跨 Agent 沟通必须通过 AgentMessage(from_agent, content, to_agent) 真实发送。"
@@ -7937,7 +8046,132 @@ def _crawler_job_identity_haystack(job: dict[str, Any]) -> str:
 
 def _chat(config: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
     fields = _user_message_fields(payload)
-    return _send_agent_message(config, payload, **fields)
+    timeout_value = str(payload.get("chat_timeout") or payload.get("chat_timeout_seconds") or "").strip()
+    try:
+        timeout_seconds = float(timeout_value or DEFAULT_CHAT_RUNTIME_TIMEOUT_SECONDS)
+    except ValueError:
+        timeout_seconds = DEFAULT_CHAT_RUNTIME_TIMEOUT_SECONDS
+    timeout_seconds = min(max(0.01, timeout_seconds), 240)
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(_send_agent_message, config, payload, **fields)
+    try:
+        return future.result(timeout=timeout_seconds)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+        return _chat_timeout_result(payload, fields, timeout_seconds)
+    finally:
+        if future.done():
+            executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _chat_timeout_result(payload: dict[str, Any], fields: dict[str, str], timeout_seconds: float) -> dict[str, Any]:
+    agent = str(payload.get("agent") or fields.get("to_agent") or "mcagent_rag")
+    answer = (
+        f"这轮 Agent 对话超过 {timeout_seconds} 秒还没有返回，运行时已停止等待前端请求继续挂起。\n\n"
+        "这通常表示工具选择、下一步确认、本地检索或模型调用耗时过长。"
+        "本次响应不会声称已经完成未确认的副作用；请查看任务列表确认是否已有后台 Crawler 任务被创建。"
+    )
+    return {
+        "answer": answer,
+        "sources": [],
+        "context": "",
+        "agent": agent,
+        "timed_out": True,
+        "timeout_seconds": timeout_seconds,
+        "trace": [
+            {
+                "stage": "runtime",
+                "status": "chat_timeout",
+                "detail": {
+                    "from_agent": fields.get("from_agent"),
+                    "to_agent": fields.get("to_agent"),
+                    "intent": fields.get("intent"),
+                    "timeout_seconds": timeout_seconds,
+                    "side_effect_status": "unknown; inspect /api/jobs for any background job created before timeout",
+                },
+            }
+        ],
+    }
+
+
+def _relay_user_crawler_request_via_message_bus(
+    config: AppConfig,
+    payload: dict[str, Any],
+    *,
+    original_question: str,
+    question: str,
+    model: str,
+    trace: list[dict[str, Any]],
+    add_trace: Any,
+    session_summary: dict[str, Any],
+) -> dict[str, Any]:
+    collection_question = _clean_crawler_task_question(original_question or question)
+    delivery_target = str(payload.get("delivery_target") or _infer_delivery_target(original_question, session_summary) or "MCagent/RAG")
+    message_payload = dict(payload)
+    message_payload["agent"] = "crawler_agent"
+    message_payload["model"] = model
+    message_payload["requested_by"] = "user_via_mcagent"
+    message_payload["delivery_target"] = delivery_target
+    message_payload["preserve_crawler_request"] = True
+    message_payload["session_summary"] = {
+        **dict(session_summary or {}),
+        "requested_by": "user_via_mcagent",
+        "handoff_from": "MCagent",
+        "original_user_request": original_question,
+        "collection_target": collection_question,
+        "task_goal": collection_question,
+        "delivery_target": delivery_target,
+        "message_transport": "From-Content-To",
+    }
+    metadata = {
+        "tool": "delegate_crawler",
+        "requested_by": "user_via_mcagent",
+        "delivery_target": delivery_target,
+    }
+    add_trace(
+        "message",
+        "explicit_user_handoff_relayed",
+        {
+            "reason": "User explicitly asked MCagent to relay a collection request to CrawlerAgent; MCagent sends one From-Content-To AgentMessage and lets CrawlerAgent choose tools.",
+            "to_agent": "CrawlerAgent",
+            "delivery_target": delivery_target,
+            "collection_question": collection_question,
+        },
+    )
+    response = _send_agent_message(
+        config,
+        message_payload,
+        from_agent="MCagent",
+        content=collection_question,
+        to_agent="CrawlerAgent",
+        intent="collection_request",
+        conversation_id=str(payload.get("session_id") or ""),
+        metadata=metadata,
+    )
+    answer = str(response.get("answer") or "").strip()
+    if answer and "转达" not in answer[:80]:
+        answer = "MCagent 已通过 From-Content-To 消息把你的请求转达给 CrawlerAgent。\n\n" + answer
+        response["answer"] = answer
+    response.setdefault("agent", "mcagent_rag")
+    response["delegation"] = {
+        "requested_by": "user_via_mcagent",
+        "delivery_target": delivery_target,
+        "task": collection_question,
+        "handoff_brief": "",
+    }
+    job_data = response.get("job") if isinstance(response.get("job"), dict) else {}
+    if job_data:
+        response.setdefault(
+            "collaboration",
+            [
+                {"speaker": "User", "state": "请求", "text": original_question},
+                {"speaker": "MCagent", "state": "转达", "text": "通过 From-Content-To 消息把采集目标交给 CrawlerAgent。"},
+                {"speaker": "Crawler", "state": "接收", "text": f"任务 {job_data.get('id')}，状态 {job_data.get('status')}。"},
+            ],
+        )
+    response["trace"] = [*trace, *list(response.get("trace") or [])] if isinstance(response.get("trace"), list) else list(trace)
+    return response
 
 
 def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = None) -> dict[str, Any]:
@@ -7969,6 +8203,22 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
     retrieval_note = ""
     session_summary = _session_summary(payload)
     session_summary = _session_summary_with_received_message(session_summary, incoming_message)
+    if (
+        agent == "mcagent_rag"
+        and incoming_message.from_agent_id == "user"
+        and _user_explicitly_asked_mcagent_to_tell_crawler(original_question)
+        and not _forbids_crawler_handoff(original_question)
+    ):
+        return _relay_user_crawler_request_via_message_bus(
+            config,
+            payload,
+            original_question=original_question,
+            question=question,
+            model=model,
+            trace=trace,
+            add_trace=add_trace,
+            session_summary=session_summary,
+        )
     if agent == "mcagent_rag":
         contextual_question, retrieval_note, rewritten = _contextualize_question(payload, question)
         if rewritten:
