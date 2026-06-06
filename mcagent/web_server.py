@@ -6348,6 +6348,7 @@ def _prepare_and_start_crawler_delegation(
     augmented_summary.setdefault("source_question", current_question or original_question)
     if action_plan:
         augmented_summary["selected_action_plan"] = [dict(step) for step in action_plan if isinstance(step, dict)]
+    prepare_started = time.time()
     delegation_plan = CrawlerDelegationService(
         delegation_handoff=_delegation_handoff,
         infer_delivery_target=_infer_delivery_target,
@@ -6364,10 +6365,24 @@ def _prepare_and_start_crawler_delegation(
         planning_instruction=planning_instruction,
         delivery_target=delivery_target,
     )
-    add_trace("delegate", "handoff_brief", {"brief": delegation_plan.handoff_brief, "reason": delegation_plan.brief_reason})
+    add_trace(
+        "delegate",
+        "handoff_brief",
+        {
+            "brief": delegation_plan.handoff_brief,
+            "reason": delegation_plan.brief_reason,
+            "elapsed_ms": round((time.time() - prepare_started) * 1000),
+        },
+    )
     if active_agent == "crawler_agent":
+        start_started = time.time()
         delegate_payload = _payload_with_agent_message_tool(delegation_plan.delegate_payload, tool="delegate_crawler", intent="collection_request")
         job, created = _start_crawler_job_from_crawler_tool(config, delegate_payload, delegation_plan.collection_question)
+        add_trace(
+            "delegate",
+            "crawler_job_start_returned",
+            {"job_id": job.id, "status": job.status, "created": created, "elapsed_ms": round((time.time() - start_started) * 1000)},
+        )
         response = None
     else:
         from_agent = "MCagent" if delegation_plan.requested_by in {"mcagent", "user_via_mcagent"} else "User"
@@ -6386,6 +6401,7 @@ def _prepare_and_start_crawler_delegation(
             },
         )
         add_trace("message", "sending", message.to_dict())
+        message_started = time.time()
         response = _send_agent_message(
             config,
             delegation_plan.delegate_payload,
@@ -6408,6 +6424,7 @@ def _prepare_and_start_crawler_delegation(
                 "reply": response.get("agent_message"),
                 "job_id": job.id,
                 "job_status": job.status,
+                "elapsed_ms": round((time.time() - message_started) * 1000),
             },
         )
     note = _crawler_delegation_note_for(
@@ -6444,7 +6461,9 @@ def _user_explicitly_asked_mcagent_to_tell_crawler(question: str) -> bool:
     if not _user_requested_mcagent_crawler_handoff(question):
         return False
     text = str(question or "")
-    if re.search(r"(刚才|之前|上次|最近|历史|记录|进度|状态|结果|自审|审计|接受|拒绝|为什么|是否已经|有没有)(?:.*)(?:Crawler|爬虫|采集|来源|入库|任务)", text, flags=re.I):
+    if re.search(r"(刚才|之前|上次|最近|历史|进度|状态|结果|为什么|是否已经|有没有)(?:.*)(?:Crawler|爬虫|采集|来源|入库|任务)", text, flags=re.I):
+        return False
+    if re.search(r"(?:自审|审计|接受|拒绝)(?:.*)(?:结果|报告|记录|详情|状态|历史)", text, flags=re.I):
         return False
     if re.search(r"(先|首先|先让|先请|先帮我)?\s*(?:盘点|检查|检索|查询|看看|列出|介绍).{0,24}(?:本地|库存|资料库|知识库|已有资料|有哪些资料)", text):
         return False

@@ -49,6 +49,27 @@ def make_run(question: str = "介绍乌托邦"):
     return tmp, run
 
 
+def make_crawler_collection_run(question: str = "采集公开资料"):
+    tmp = tempfile.TemporaryDirectory()
+    config = make_temp_config(Path(tmp.name))
+    payload = {
+        "question": question,
+        "agent": "crawler_agent",
+        "model": "router-model",
+        "agent_message": {
+            "from_agent": "MCagent",
+            "from_agent_id": "mcagent_rag",
+            "to_agent": "CrawlerAgent",
+            "to_agent_id": "crawler_agent",
+            "content": question,
+            "intent": "collection_request",
+            "metadata": {"tool": "delegate_crawler", "delivery_target": "MCagent/RAG"},
+        },
+    }
+    run = build_agent_execution_context(config, payload, token_resolver=lambda *_args: 1200)
+    return tmp, run
+
+
 def test_router_records_decision_and_confirmation() -> None:
     tmp, run = make_run()
     try:
@@ -172,6 +193,32 @@ def test_router_marks_planned_delegate_without_executing_it() -> None:
     assert_true("planned_workflow", route.planned_workflow)
     assert_true("planned_delegate", route.planned_delegate)
     assert_equal("action_plan_kept", route.action_plan, plan)
+
+
+def test_crawler_collection_request_reuses_agent_decision_confirmation() -> None:
+    tmp, run = make_crawler_collection_run("采集乌托邦整合包公开资料并补入 RAG")
+    calls = {"confirm": 0}
+    try:
+        service = AgentToolRouterService(
+            decide_tool=lambda *args, **kwargs: {
+                "tool": "delegate_crawler",
+                "reason": "CrawlerAgent chose background collection after reading the AgentMessage.",
+                "collection_target": "采集乌托邦整合包公开资料并补入 RAG",
+                "delivery_target": "MCagent/RAG",
+            },
+            confirm_next_step=lambda *args, **kwargs: calls.__setitem__("confirm", calls["confirm"] + 1) or {"proceed": True},
+            action_plan_has_tool=lambda _plan, _tool: False,
+        )
+        route = service.route(run, session_summary={})
+    finally:
+        tmp.cleanup()
+
+    assert_equal("route", route.route_intent, "delegate_crawler")
+    assert_equal("confirm_not_called", calls["confirm"], 0)
+    assert_true("reused_agent_decision", bool(route.route_confirmation.get("reused_agent_decision")), str(route.route_confirmation))
+    assert_equal("planner", route.route_confirmation.get("planner"), "runtime_reused_agent_decision")
+    selected = [step for step in run.trace.steps if step["stage"] == "decide" and step["status"] == "tool_selected"][0]
+    assert_true("decision_elapsed", "elapsed_ms" in selected["detail"], str(selected))
 
 
 class FakeClient:
@@ -375,6 +422,7 @@ def main() -> int:
     test_no_persistence_routes_skip_second_llm_confirmation()
     test_direct_answer_can_be_corrected_when_side_effect_is_required()
     test_router_marks_planned_delegate_without_executing_it()
+    test_crawler_collection_request_reuses_agent_decision_confirmation()
     test_llm_router_owns_prompt_and_json_parsing()
     test_llm_router_allows_local_corpus_inventory_tool()
     test_llm_router_repairs_malformed_json_before_router_error()

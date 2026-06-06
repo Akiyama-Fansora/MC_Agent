@@ -617,6 +617,19 @@ def test_explicit_mcagent_to_crawler_handoff_relays_before_heavy_router() -> Non
     assert_equal("job", result.get("job", {}).get("id"), "relay-job")
 
 
+def test_explicit_handoff_with_source_audit_requirements_still_relays_fast() -> None:
+    question = (
+        "让MCagent转达Crawler去获取 Playwright Python Trace Viewer 和网络录制相关的公开官方资料。"
+        "要求：Crawler自己判断来源是否可用，记录接受/拒绝原因，保存为可引用资料；"
+        "这不是Minecraft资料，不要用MC专用来源。"
+    )
+    assert_true("handoff_detected", web_server._user_requested_mcagent_crawler_handoff(question))
+    assert_true("explicit_handoff", web_server._user_explicitly_asked_mcagent_to_tell_crawler(question))
+    cleaned = web_server._clean_crawler_task_question(question)
+    assert_true("cleaned_keeps_target", "Playwright Python Trace Viewer" in cleaned, cleaned)
+    assert_true("cleaned_drops_relay_prefix", not cleaned.startswith("让MCagent"), cleaned)
+
+
 def test_recent_crawler_audit_question_answers_history_without_new_collection() -> None:
     tmp = tempfile.TemporaryDirectory()
     question = "刚才 Crawler 采集农夫乐事时，哪些来源被接受，哪些被拒绝，为什么？是否已经入库？"
@@ -2608,6 +2621,8 @@ def test_mcagent_to_crawler_delegation_uses_message_bus_not_job_starter() -> Non
     assert_true("active_agent_gate", 'if active_agent == "crawler_agent"' in body)
     assert_true("non_crawler_sends_message", "_send_agent_message(" in body)
     assert_true("no_payload_agent_start_gate", 'delegate_payload.get("agent")' not in body)
+    assert_true("handoff_elapsed_trace", '"elapsed_ms": round((time.time() - prepare_started) * 1000)' in body)
+    assert_true("message_elapsed_trace", '"elapsed_ms": round((time.time() - message_started) * 1000)' in body)
 
 
 def test_crawler_topic_match_decision_comes_from_crawler_llm() -> None:
@@ -3703,6 +3718,7 @@ if __name__ == "__main__":
     test_direct_crawler_planned_workflow_preserves_selected_action_plan_for_job()
     test_direct_crawler_mcagent_context_step_with_delegate_starts_background_job()
     test_explicit_mcagent_to_crawler_handoff_relays_before_heavy_router()
+    test_explicit_handoff_with_source_audit_requirements_still_relays_fast()
     test_modrinth_plain_mod_task_does_not_parse_modpack_contents()
     test_known_modrinth_project_skips_are_reusable_existing_evidence()
     test_modrinth_slug_query_is_direct_project_candidate()

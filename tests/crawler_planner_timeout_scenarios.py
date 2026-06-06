@@ -578,6 +578,53 @@ def test_general_domain_sanitize_filters_minecraft_tool_noise() -> None:
     assert_true("filters_source_list", all(source not in {"mcmod", "modrinth", "modpack_download", "modpack_internal"} for source in plan["sources"]))
 
 
+def test_non_minecraft_negation_does_not_create_minecraft_queries() -> None:
+    question = (
+        "Playwright Python Trace Viewer 和网络录制相关的公开官方资料。"
+        "要求：Crawler自己判断来源是否可用，记录接受/拒绝原因，保存为可引用资料；"
+        "这不是Minecraft资料，不要用MC专用来源。"
+    )
+    raw = {
+        "topic": "Playwright Python Trace Viewer 和网络录制相关的公开官方",
+        "package_type": "unknown",
+        "delivery_target": "MCagent/RAG",
+        "sources": ["web_discovery", "playwright", "fetch_url", "browser_collect", "save_artifact", "read_local_file", "search_local_files"],
+        "subqueries": [
+            "Playwright Python Trace Viewer 和网络录制相关的公开官方",
+            "Playwright Python Trace Viewer 和网络录制相关的公开官方 整合包",
+            "Playwright Python Trace Viewer 和网络录制相关的公开官方 MC百科",
+            "Playwright Python Trace Viewer 和网络录制相关的公开官方 Modrinth",
+            "playwright trace viewer official documentation",
+        ],
+        "tasks": [],
+        "model_prior": {
+            "target": "Playwright Python Trace Viewer 和网络录制相关的公开官方",
+            "aliases": ["Playwright Python Trace Viewer 和网络录制相关的公开官方"],
+            "search_leads": [
+                "Playwright Python Trace Viewer 和网络录制相关的公开官方 Modrinth",
+                "Playwright Python Trace Viewer docs",
+            ],
+        },
+    }
+    plan = _sanitize_plan(
+        raw,
+        question,
+        ROOT / "data" / "crawler_exports",
+        max_tasks=8,
+        session_summary={"delivery_target": "MCagent/RAG", "collection_target": question, "task_goal": question},
+    )
+    all_queries = "\n".join([*plan["subqueries"], *[task["query"] for task in plan["tasks"]]])
+    assert_true(
+        f"no_mc_query_noise: {all_queries}",
+        not any(term in all_queries for term in ("MC百科", "Modrinth", "CurseForge", "整合包", "模组列表")),
+    )
+    sources = [task["source"] for task in plan["tasks"]]
+    assert_true(
+        f"general_sources_only: {sources}",
+        all(source not in {"mcmod", "modrinth", "modpack_download", "modpack_internal"} for source in sources),
+    )
+
+
 def test_ungrounded_exact_url_is_discovered_before_fetch() -> None:
     raw = {
         "topic": "Utopian Journey",
@@ -1864,6 +1911,7 @@ if __name__ == "__main__":
     test_sanitized_plan_limits_slow_mcmod_fanout()
     test_general_domain_fallback_does_not_default_to_minecraft_tools()
     test_general_domain_sanitize_filters_minecraft_tool_noise()
+    test_non_minecraft_negation_does_not_create_minecraft_queries()
     test_gap_collection_rejects_literal_missing_as_web_topic()
     test_reflection_replaces_literal_gap_pending_query()
     test_reflection_llm_failure_continues_existing_pending_task()

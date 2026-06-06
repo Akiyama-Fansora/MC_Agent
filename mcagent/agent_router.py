@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 import re
+import time
 from typing import Any, Callable, Protocol
 
 from .config import AppConfig
@@ -54,6 +55,7 @@ class AgentToolRouterService:
         self._action_plan_has_tool = action_plan_has_tool
 
     def route(self, run: TraceCapableRun, *, session_summary: dict[str, Any]) -> AgentRouteDecision:
+        decision_started = time.time()
         tool_decision = self._decide_tool(
             run.config,
             run.payload,
@@ -66,7 +68,16 @@ class AgentToolRouterService:
         route_intent = str(tool_decision.get("tool") or "answer")
         action_plan = tool_decision.get("action_plan") if isinstance(tool_decision.get("action_plan"), list) else []
         rag_focus = str(tool_decision.get("rag_focus") or "").strip()
-        run.add_trace("decide", "tool_selected", {"tool": route_intent, "original_question": run.original_question, "decision": tool_decision})
+        run.add_trace(
+            "decide",
+            "tool_selected",
+            {
+                "tool": route_intent,
+                "original_question": run.original_question,
+                "decision": tool_decision,
+                "elapsed_ms": round((time.time() - decision_started) * 1000),
+            },
+        )
         if action_plan:
             run.add_trace("plan", "created", {"steps": action_plan})
         if rag_focus:
@@ -112,6 +123,37 @@ class AgentToolRouterService:
                 planned_delegate=False,
             )
 
+        if self._can_reuse_collection_request_decision(run, route_intent=route_intent, action_plan=action_plan):
+            route_confirmation = {
+                "proceed": True,
+                "tool": route_intent,
+                "suggested_tool": "",
+                "goal": str(tool_decision.get("reason") or "Execute the CrawlerAgent-selected collection route."),
+                "reason": (
+                    "CrawlerAgent already selected this collection route after receiving a From-Content-To "
+                    "collection_request AgentMessage; runtime reuses that Agent decision instead of asking a "
+                    "second LLM to confirm the same side effect."
+                ),
+                "concern": "",
+                "planner": "runtime_reused_agent_decision",
+                "reused_agent_decision": True,
+            }
+            run.add_trace("decide", "next_step_confirmed", route_confirmation)
+            planned_workflow = route_intent == "planned_workflow"
+            planned_delegate = planned_workflow and self._action_plan_has_tool(action_plan, "delegate_crawler")
+            if planned_workflow:
+                route_intent = "answer"
+            return AgentRouteDecision(
+                route_intent=route_intent,
+                tool_decision=tool_decision,
+                route_confirmation=route_confirmation,
+                action_plan=action_plan,
+                rag_focus=rag_focus,
+                planned_workflow=planned_workflow,
+                planned_delegate=planned_delegate,
+            )
+
+        confirmation_started = time.time()
         route_confirmation = self._confirm_next_step(
             run.config,
             run.payload,
@@ -123,6 +165,8 @@ class AgentToolRouterService:
             proposed_goal=str(tool_decision.get("reason") or "确认本轮应执行的工具路径。"),
             context={"tool_decision": tool_decision, "action_plan": action_plan},
         )
+        route_confirmation = dict(route_confirmation or {})
+        route_confirmation.setdefault("elapsed_ms", round((time.time() - confirmation_started) * 1000))
         run.add_trace("decide", "next_step_confirmed", route_confirmation)
         if not bool(route_confirmation.get("proceed", True)):
             suggested_tool = str(route_confirmation.get("suggested_tool") or route_confirmation.get("tool") or "").strip()
@@ -147,6 +191,35 @@ class AgentToolRouterService:
             rag_focus=rag_focus,
             planned_workflow=planned_workflow,
             planned_delegate=planned_delegate,
+        )
+
+    def _can_reuse_collection_request_decision(
+        self,
+        run: TraceCapableRun,
+        *,
+        route_intent: str,
+        action_plan: list[Any],
+    ) -> bool:
+        if run.agent != "crawler_agent":
+            return False
+        if route_intent == "delegate_crawler":
+            selected_collection_route = True
+        elif route_intent == "planned_workflow" and self._action_plan_has_tool(action_plan, "delegate_crawler"):
+            selected_collection_route = True
+        else:
+            selected_collection_route = False
+        if not selected_collection_route:
+            return False
+        raw_message = run.payload.get("agent_message")
+        if not isinstance(raw_message, dict):
+            return False
+        metadata = raw_message.get("metadata") if isinstance(raw_message.get("metadata"), dict) else {}
+        return (
+            str(raw_message.get("to_agent_id") or run.payload.get("agent") or "") == "crawler_agent"
+            and (
+                str(raw_message.get("intent") or "") == "collection_request"
+                or str(metadata.get("tool") or "") == "delegate_crawler"
+            )
         )
 
 

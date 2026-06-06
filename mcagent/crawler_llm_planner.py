@@ -2268,6 +2268,20 @@ def _valid_coverage_query(query: str, target: str = "", context_text: str = "") 
     return True
 
 
+def _minecraft_query_noise_in_non_minecraft_context(query: str, context_text: str) -> bool:
+    if _looks_like_minecraft_domain_context(context_text):
+        return False
+    value = str(query or "")
+    return bool(
+        re.search(
+            r"\b(?:minecraft|mcmod|modrinth|curseforge|modpack|mrpack|ftb\s*quests?|kubejs|packwiz)\b"
+            r"|MC百科|整合包|模组列表|新手攻略|玩法\s*教程|下载\s*CurseForge\s*Modrinth|我的世界",
+            value,
+            flags=re.I,
+        )
+    )
+
+
 def _placeholder_query(query: str) -> bool:
     value = re.sub(r"\s+", " ", str(query or "").strip())
     if not value:
@@ -2486,6 +2500,7 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
     prior_queries = _prior_search_leads(model_prior, target)
     queries = [*coverage_only_queries, *prior_queries, *base_queries]
     queries = list(dict.fromkeys(query for query in queries if query))
+    queries = [query for query in queries if not _minecraft_query_noise_in_non_minecraft_context(query, context_text)]
     queries = _prioritize_guide_queries(queries, context_text)
     sources = _default_collection_sources_for_context(context_text, prefer_general_web=prefer_external, archive_negated=archive_negated)
     if modpack_archive_goal:
@@ -2568,6 +2583,11 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
     tasks = _drop_unqualified_local_file_tasks(tasks, session_summary=session_summary, question=question)
     tasks = _drop_unqualified_browser_collect_tasks(tasks, session_summary=session_summary, question=question)
     tasks = _sanitize_mcagent_context_tasks(tasks, target=target, context_text=context_text)
+    tasks = [
+        task
+        for task in tasks
+        if not _minecraft_query_noise_in_non_minecraft_context(str(task.get("query") or ""), context_text)
+    ]
     is_modpack = bool(re.search(r"整合包|modpack", context_text, flags=re.I))
     if not _looks_like_minecraft_domain_context(context_text):
         minecraft_coverage_goals = []
@@ -3064,6 +3084,7 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
         if not (_query_is_delivery_target(query, target_hint))
         and not _generic_standalone_query(query)
         and _valid_coverage_query(query, target_hint or topic, _planner_context_text(question, session_summary))
+        and not _minecraft_query_noise_in_non_minecraft_context(query, context_text)
     ][:16]
     queries = [query for query in queries if query]
     queries = _prioritize_guide_queries(queries, _planner_context_text(question, session_summary))
@@ -3138,6 +3159,8 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
                     task["query"] = bounded_query
                     query = str(task.get("query") or "").strip()
                 if not _is_url_query(query) and not _valid_coverage_query(query, target_hint or topic, context_text):
+                    continue
+                if _minecraft_query_noise_in_non_minecraft_context(query, context_text):
                     continue
                 tasks.append(task)
     if coverage_queries and len(tasks) < max_tasks:
@@ -3251,6 +3274,11 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
     tasks = _prefer_structured_browser_task(tasks, question, session_summary)
     tasks = _sanitize_mcagent_context_tasks(tasks, target=target_hint or topic, context_text=context_text)
     tasks = _drop_placeholder_tasks(tasks)
+    tasks = [
+        task
+        for task in tasks
+        if not _minecraft_query_noise_in_non_minecraft_context(str(task.get("query") or ""), context_text)
+    ]
     if not tasks:
         fallback = plan_crawler_tasks(question, source_dir, max_tasks=max_tasks, include_completed=True)
         tasks = _drop_placeholder_tasks(list(fallback.get("tasks") or []))

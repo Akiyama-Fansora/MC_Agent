@@ -296,6 +296,39 @@ def looks_like_minecraft_context(text: str) -> bool:
     value = str(text or "")
     if not value.strip():
         return False
+    negative_only = re.search(
+        r"(?:不是|非|不要|不用|别用|禁止|避免|not|non[-\s]?|do\s+not|don't|avoid).{0,24}"
+        r"(?:minecraft|mc\s*专用|mc\b|mc百科|modrinth|curseforge|modpack|整合包|模组)",
+        value,
+        flags=re.I,
+    ) or re.search(
+        r"(?:minecraft|mc\s*专用|mc\b|mc百科|modrinth|curseforge|modpack|整合包|模组).{0,24}"
+        r"(?:不是|非|不要|不用|别用|禁止|避免|not|non[-\s]?|do\s+not|don't|avoid)",
+        value,
+        flags=re.I,
+    )
+    if negative_only:
+        positive_text = re.sub(
+            r"(?:不是|非|不要|不用|别用|禁止|避免|not|non[-\s]?|do\s+not|don't|avoid).{0,40}"
+            r"(?:minecraft|mc\s*专用|mc\b|mc百科|modrinth|curseforge|modpack|整合包|模组).{0,40}",
+            " ",
+            value,
+            flags=re.I,
+        )
+        positive_text = re.sub(
+            r"(?:minecraft|mc\s*专用|mc\b|mc百科|modrinth|curseforge|modpack|整合包|模组).{0,40}"
+            r"(?:不是|非|不要|不用|别用|禁止|避免|not|non[-\s]?|do\s+not|don't|avoid).{0,40}",
+            " ",
+            positive_text,
+            flags=re.I,
+        )
+        if not re.search(
+            r"\b(?:minecraft|mcmod|modrinth|curseforge|modpack|mod list|kubejs|ftb quests|packwiz|mrpack)\b"
+            r"|MC百科|整合包|模组|光影|资源包|我的世界",
+            positive_text,
+            flags=re.I,
+        ):
+            return False
     return bool(
         re.search(
             r"\b(?:minecraft|mcmod|modrinth|curseforge|modpack|mod list|kubejs|ftb quests|packwiz|mrpack)\b"
