@@ -8413,6 +8413,96 @@ def _is_collection_request_agent_message(message: AgentMessage) -> bool:
     )
 
 
+def _handle_direct_answer_route(
+    *,
+    config: AppConfig,
+    agent: str,
+    model: str,
+    original_question: str,
+    question: str,
+    tool_decision: dict[str, Any],
+    route_confirmation: dict[str, Any],
+    action_plan: list[dict[str, Any]],
+    executor: AgentToolExecutor,
+    run: Any,
+    session_summary: dict[str, Any],
+    add_trace: Any,
+) -> dict[str, Any]:
+    completeness = _tool_route_completeness_review(
+        config,
+        agent=agent,
+        model=model,
+        original_question=original_question,
+        selected_tool="direct_answer",
+        tool_answer=str(tool_decision.get("reason") or ""),
+        tool_decision=tool_decision,
+        route_confirmation=route_confirmation,
+        action_plan=action_plan,
+    )
+    if completeness.get("missing_side_effect"):
+        add_trace("plan", "route_completeness_gap", completeness)
+        if str(completeness.get("tool") or "").strip() == "delegate_crawler" and str(completeness.get("action") or "").strip() == "execute_selected_tool":
+            collection_target = str(completeness.get("collection_target") or tool_decision.get("collection_target") or original_question or question).strip()
+            add_trace(
+                "decide",
+                "direct_answer_missing_side_effect_not_executed",
+                {
+                    "reason": "Completeness review found a possible missing side effect, but runtime will not add delegate_crawler after the Agent selected direct_answer.",
+                    "collection_target": collection_target,
+                    "required_agent_selection": "delegate_crawler or planned_workflow with delegate_crawler",
+                },
+            )
+    return executor.direct_answer(run, session_summary=session_summary)
+
+
+def _handle_crawler_audit_route(
+    *,
+    agent: str,
+    original_question: str,
+    tool_decision: dict[str, Any],
+    route_confirmation: dict[str, Any],
+    executor: AgentToolExecutor,
+    run: Any,
+    session_summary: dict[str, Any],
+    trace: list[dict[str, Any]],
+    add_trace: Any,
+) -> dict[str, Any]:
+    audit_confirmation = _reuse_route_confirmation(
+        route_confirmation,
+        proposed_tool="crawler_audit",
+        proposed_goal=str(tool_decision.get("reason") or "Read recent Crawler audit details."),
+    )
+    add_trace("audit", "next_step_confirmed", audit_confirmation)
+    if not bool(audit_confirmation.get("proceed", True)):
+        suggested_tool = str(audit_confirmation.get("suggested_tool") or audit_confirmation.get("tool") or "").strip()
+        if suggested_tool in {"answer", "direct_answer"}:
+            return executor.direct_answer(run, session_summary=session_summary, mode="direct_after_audit_cancelled")
+    audit_answer = _recent_crawler_audit_answer(original_question) or {
+        "answer": "我没有在最近任务历史中找到能匹配这轮问题的 Crawler 自审记录。",
+        "sources": [],
+        "context": "",
+        "agent": agent,
+    }
+    add_trace("answer", "recent_crawler_audit", {"source": "jobs", "job_id": (audit_answer.get("job") or {}).get("id")})
+    return _with_trace(audit_answer, trace)
+
+
+def _handle_status_route(
+    *,
+    route_confirmation: dict[str, Any],
+    executor: AgentToolExecutor,
+    run: Any,
+    add_trace: Any,
+) -> dict[str, Any]:
+    status_confirmation = _reuse_route_confirmation(
+        route_confirmation,
+        proposed_tool="status",
+        proposed_goal="读取采集、入库和后台任务状态。",
+    )
+    add_trace("status", "next_step_confirmed", status_confirmation)
+    return executor.status(run)
+
+
 def _reuse_route_confirmation(route_confirmation: dict[str, Any], *, proposed_tool: str, proposed_goal: str) -> dict[str, Any]:
     value = dict(route_confirmation or {})
     current_tool = str(value.get("tool") or value.get("suggested_tool") or "").strip()
@@ -9078,50 +9168,32 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
     if route_intent == "router_error":
         return executor.router_error(run, tool_decision)
     if route_intent == "direct_answer":
-        completeness = _tool_route_completeness_review(
-            config,
+        return _handle_direct_answer_route(
+            config=config,
             agent=agent,
             model=model,
             original_question=original_question,
-            selected_tool="direct_answer",
-            tool_answer=str(tool_decision.get("reason") or ""),
+            question=question,
             tool_decision=tool_decision,
             route_confirmation=route_confirmation,
             action_plan=action_plan,
+            executor=executor,
+            run=run,
+            session_summary=session_summary,
+            add_trace=add_trace,
         )
-        if completeness.get("missing_side_effect"):
-            add_trace("plan", "route_completeness_gap", completeness)
-            if str(completeness.get("tool") or "").strip() == "delegate_crawler" and str(completeness.get("action") or "").strip() == "execute_selected_tool":
-                collection_target = str(completeness.get("collection_target") or tool_decision.get("collection_target") or original_question or question).strip()
-                add_trace(
-                    "decide",
-                    "direct_answer_missing_side_effect_not_executed",
-                    {
-                        "reason": "Completeness review found a possible missing side effect, but runtime will not add delegate_crawler after the Agent selected direct_answer.",
-                        "collection_target": collection_target,
-                        "required_agent_selection": "delegate_crawler or planned_workflow with delegate_crawler",
-                    },
-                )
-        return executor.direct_answer(run, session_summary=session_summary)
     if route_intent == "crawler_audit":
-        audit_confirmation = _reuse_route_confirmation(
-            route_confirmation,
-            proposed_tool="crawler_audit",
-            proposed_goal=str(tool_decision.get("reason") or "Read recent Crawler audit details."),
+        return _handle_crawler_audit_route(
+            agent=agent,
+            original_question=original_question,
+            tool_decision=tool_decision,
+            route_confirmation=route_confirmation,
+            executor=executor,
+            run=run,
+            session_summary=session_summary,
+            trace=trace,
+            add_trace=add_trace,
         )
-        add_trace("audit", "next_step_confirmed", audit_confirmation)
-        if not bool(audit_confirmation.get("proceed", True)):
-            suggested_tool = str(audit_confirmation.get("suggested_tool") or audit_confirmation.get("tool") or "").strip()
-            if suggested_tool in {"answer", "direct_answer"}:
-                return executor.direct_answer(run, session_summary=session_summary, mode="direct_after_audit_cancelled")
-        audit_answer = _recent_crawler_audit_answer(original_question) or {
-            "answer": "我没有在最近任务历史中找到能匹配这轮问题的 Crawler 自审记录。",
-            "sources": [],
-            "context": "",
-            "agent": agent,
-        }
-        add_trace("answer", "recent_crawler_audit", {"source": "jobs", "job_id": (audit_answer.get("job") or {}).get("id")})
-        return _with_trace(audit_answer, trace)
     if route_intent == "local_corpus_inventory":
         inventory_confirmation = _reuse_route_confirmation(
             route_confirmation,
@@ -9569,13 +9641,7 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
             trace,
         )
     if route_intent == "status":
-        status_confirmation = _reuse_route_confirmation(
-            route_confirmation,
-            proposed_tool="status",
-            proposed_goal="读取采集、入库和后台任务状态。",
-        )
-        add_trace("status", "next_step_confirmed", status_confirmation)
-        return executor.status(run)
+        return _handle_status_route(route_confirmation=route_confirmation, executor=executor, run=run, add_trace=add_trace)
 
     if (
         agent == "mcagent_rag"

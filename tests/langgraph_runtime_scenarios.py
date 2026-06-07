@@ -635,6 +635,69 @@ def test_crawler_loop_control_finishes_after_rag_success_checkpoint() -> None:
     assert_true("loop_finish_reflection", any(item.get("action") == "finish" for item in plan.get("agent_reflections") or []), str(plan))
 
 
+def test_direct_answer_route_helper_does_not_execute_unselected_delegate() -> None:
+    class FakeRun:
+        original_question = "ask crawler to collect later"
+        question = original_question
+        agent = "crawler_agent"
+        model = "fake"
+        temperature = 0.0
+        max_tokens = 100
+        is_streaming = False
+
+        def __init__(self) -> None:
+            self.config = None
+            self.trace = []
+
+        def add_trace(self, stage, status, detail=None):  # noqa: ANN001
+            item = {"stage": stage, "status": status, "detail": detail}
+            self.trace.append(item)
+            return item
+
+        def emit_delta(self, text: str) -> None:
+            raise AssertionError(text)
+
+        def response(self, payload: dict[str, Any]) -> dict[str, Any]:
+            payload["trace"] = self.trace
+            return payload
+
+    original_review = web_server._tool_route_completeness_review
+    try:
+        web_server._tool_route_completeness_review = lambda *_args, **_kwargs: {  # type: ignore[assignment]
+            "missing_side_effect": True,
+            "tool": "delegate_crawler",
+            "action": "execute_selected_tool",
+            "collection_target": "collect public data",
+        }
+        run = FakeRun()
+        executor = web_server.AgentToolExecutor(
+            generate_direct_answer=lambda *_args, **_kwargs: "direct answer only",
+            generate_direct_answer_stream=lambda *_args, **_kwargs: "direct answer only",
+            status_answer=lambda _config: {"answer": "status"},
+        )
+        result = web_server._handle_direct_answer_route(
+            config=make_temp_config(Path(tempfile.gettempdir())),
+            agent="crawler_agent",
+            model="fake",
+            original_question=run.original_question,
+            question=run.question,
+            tool_decision={"tool": "direct_answer", "collection_target": "collect public data"},
+            route_confirmation={},
+            action_plan=[],
+            executor=executor,
+            run=run,
+            session_summary={},
+            add_trace=run.add_trace,
+        )
+    finally:
+        web_server._tool_route_completeness_review = original_review  # type: ignore[assignment]
+    statuses = [(item.get("stage"), item.get("status")) for item in result.get("trace") or []]
+    assert_true("direct_answer_returned", result.get("answer") == "direct answer only", str(result))
+    assert_true("missing_side_effect_visible", ("plan", "route_completeness_gap") in statuses, str(statuses))
+    assert_true("delegate_not_executed", ("decide", "direct_answer_missing_side_effect_not_executed") in statuses, str(statuses))
+    assert_true("no_job", not result.get("job"), str(result))
+
+
 def main() -> int:
     test_conversation_graph_routes_only_by_message_target()
     test_conversation_graph_can_dispatch_to_crawler_node()
@@ -651,6 +714,7 @@ def main() -> int:
     test_crawler_task_step_executes_command_and_records_accounting()
     test_crawler_task_step_ignores_unbacked_tool_record_claims()
     test_crawler_loop_control_finishes_after_rag_success_checkpoint()
+    test_direct_answer_route_helper_does_not_execute_unselected_delegate()
     print("LANGGRAPH RUNTIME SCENARIOS PASSED")
     return 0
 
