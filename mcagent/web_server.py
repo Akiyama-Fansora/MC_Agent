@@ -3254,6 +3254,386 @@ def _record_crawler_task_result_metadata(
     return records_loaded
 
 
+def _apply_crawler_task_accounting(
+    *,
+    result: dict[str, Any],
+    task_source: str,
+    task_payload: dict[str, Any],
+    question: str,
+    payload: dict[str, Any],
+    plan: dict[str, Any],
+    tasks: list[dict[str, Any]],
+    index: int,
+    max_total_tasks: int,
+    result_accounting: CrawlerResultAccountingService,
+) -> dict[str, Any]:
+    accounting = result_accounting.apply(
+        result=result,
+        task_source=task_source,
+        delivery_target=str(plan.get("delivery_target") or payload.get("delivery_target") or ""),
+        followup_query=str(task_payload.get("query") or question),
+    )
+    accepted_export_dirs: list[str] = []
+    accepted_ingest_roots: list[str] = []
+    if accounting.get("needs_ingest") and result.get("export_dir"):
+        accepted_export_dirs.append(str(result.get("export_dir") or ""))
+        accepted_ingest_roots.extend(_crawler_accepted_ingest_roots(result))
+    followup_task = accounting.get("followup_task") if isinstance(accounting.get("followup_task"), dict) else None
+    inserted_followup = False
+    if followup_task and _crawler_task_identity(followup_task) not in {_crawler_task_identity(existing) for existing in tasks} and len(tasks) < max_total_tasks:
+        tasks.insert(index, followup_task)
+        inserted_followup = True
+        plan.setdefault("agent_reflections", []).append(
+            {
+                "at_index": index,
+                "action": "add_tasks",
+                "reason": "公开整合包包体已下载，下一步应解析内部文件，而不是继续只搜网页。",
+                "planner": "executor objective result",
+                "tasks": [followup_task],
+            }
+        )
+    return {
+        "success_delta": int(accounting.get("success_delta") or 0),
+        "candidate_delta": int(accounting.get("candidate_delta") or 0),
+        "failure_delta": int(accounting.get("failure_delta") or 0),
+        "needs_ingest": bool(accounting.get("needs_ingest")),
+        "accepted_export_dirs": accepted_export_dirs,
+        "accepted_ingest_roots": accepted_ingest_roots,
+        "inserted_followup": inserted_followup,
+        "followup_task": followup_task if inserted_followup else None,
+    }
+
+
+def _execute_crawler_task_step(
+    *,
+    job: Job,
+    config: AppConfig,
+    payload: dict[str, Any],
+    task: dict[str, Any],
+    question: str,
+    plan: dict[str, Any],
+    tasks: list[dict[str, Any]],
+    index: int,
+    task_results: list[dict[str, Any]],
+    session_summary: dict[str, Any] | None,
+    artifact_refs: ArtifactReferenceService,
+    task_preparation: CrawlerTaskPreparationService,
+    result_accounting: CrawlerResultAccountingService,
+    job_progress: CrawlerJobProgressService,
+    max_total_tasks: int,
+) -> dict[str, Any]:
+    prepared_task = _prepare_crawler_task_execution(
+        payload=payload,
+        task=task,
+        question=question,
+        plan=plan,
+        current_index=index,
+        artifact_refs=artifact_refs,
+        task_preparation=task_preparation,
+    )
+    task_source = prepared_task["task_source"]
+    task_payload = prepared_task["task_payload"]
+    preflight_task = prepared_task["preflight_task"]
+    preflight_context = prepared_task["preflight_context"]
+    preflight_result = task_preparation.blocked_preflight_result(
+        task_source=task_source,
+        task=preflight_task,
+        context_text=preflight_context,
+    )
+    if preflight_result is not None:
+        task_results.append(preflight_result)
+        plan.setdefault("agent_reflections", []).append(
+            {
+                "at_index": index,
+                "action": "blocked_by_capability_preflight",
+                "reason": "Executor objective preflight found the selected crawler tool call is missing required inputs or domain contract.",
+                "planner": "crawler capability registry",
+                "task": {"source": task_source, "query": str(task_payload.get("query") or "")},
+                "contract": preflight_result.get("capability_preflight") or {},
+            }
+        )
+        _update_job(job, **job_progress.empty_query_blocked(source_label=_source_label(task_source), task_results=task_results, tasks=tasks, plan=plan))
+        return {
+            "task_source": task_source,
+            "task_payload": task_payload,
+            "result": preflight_result,
+            "records_loaded": 0,
+            "failure_delta": 1,
+            "bad_streak_delta": 1,
+            "continue_loop": True,
+            "blocked": True,
+        }
+    if not str(task_payload.get("query") or "").strip():
+        result = task_preparation.empty_query_result(task_source=task_source, task=task)
+        task_results.append(result)
+        _update_job(job, **job_progress.empty_query_blocked(source_label=_source_label(task_source), task_results=task_results, tasks=tasks, plan=plan))
+        return {
+            "task_source": task_source,
+            "task_payload": task_payload,
+            "result": result,
+            "records_loaded": 0,
+            "failure_delta": 1,
+            "bad_streak_delta": 1,
+            "continue_loop": True,
+            "blocked": True,
+        }
+    _update_job(
+        job,
+        **job_progress.executing(
+            index=index,
+            task_count=len(tasks),
+            source_label=_source_label(task_source),
+            query=str(task_payload["query"]),
+            reason=str(task.get("reason") or ""),
+            task_results=task_results,
+            tasks=tasks,
+            plan=plan,
+        ),
+    )
+    if task_source == "mcagent_context":
+        result = _run_mcagent_context_tool(config, task_payload, plan, session_summary)
+    else:
+        result = _run_crawler_command(_round_command(task_source, task_payload), task_source, job=job)
+    records_loaded = _record_crawler_task_result_metadata(
+        result=result,
+        task=task,
+        task_source=task_source,
+        task_payload=task_payload,
+        question=question,
+        plan=plan,
+        result_index=len(task_results) + 1,
+        artifact_refs=artifact_refs,
+    )
+    accounting_update = _apply_crawler_task_accounting(
+        result=result,
+        task_source=task_source,
+        task_payload=task_payload,
+        question=question,
+        payload=payload,
+        plan=plan,
+        tasks=tasks,
+        index=index,
+        max_total_tasks=max_total_tasks,
+        result_accounting=result_accounting,
+    )
+    result["observation"] = classify_crawler_tool_result(result).to_dict()
+    task_results.append(result)
+    return {
+        "task_source": task_source,
+        "task_payload": task_payload,
+        "result": result,
+        "records_loaded": records_loaded,
+        "success_delta": int(accounting_update.get("success_delta") or 0),
+        "candidate_delta": int(accounting_update.get("candidate_delta") or 0),
+        "failure_delta": int(accounting_update.get("failure_delta") or 0),
+        "needs_ingest": bool(accounting_update.get("needs_ingest")),
+        "accepted_export_dirs": list(accounting_update.get("accepted_export_dirs") or []),
+        "accepted_ingest_roots": list(accounting_update.get("accepted_ingest_roots") or []),
+        "continue_loop": False,
+        "blocked": False,
+    }
+
+
+def _finish_crawler_loop(plan: dict[str, Any], *, index: int, reason: str, planner: str) -> dict[str, Any]:
+    plan["agent_finish_reason"] = reason
+    plan.setdefault("agent_reflections", []).append(
+        {
+            "at_index": index,
+            "action": "finish",
+            "reason": reason,
+            "planner": planner,
+        }
+    )
+    return {"action": "finish", "bad_streak": None, "replan_count": None}
+
+
+def _apply_crawler_loop_control_after_task(
+    *,
+    job: Job,
+    config: AppConfig,
+    payload: dict[str, Any],
+    source: str,
+    question: str,
+    plan: dict[str, Any],
+    tasks: list[dict[str, Any]],
+    task_results: list[dict[str, Any]],
+    index: int,
+    success_count: int,
+    candidate_count: int,
+    bad_streak: int,
+    replan_count: int,
+    max_replans: int,
+    max_total_tasks: int,
+    loop_control: CrawlerLoopControlService,
+    job_progress: CrawlerJobProgressService,
+) -> dict[str, Any]:
+    loop_signal = loop_control.update_bad_streak(result=task_results[-1], current_bad_streak=bad_streak) if task_results else {"bad_streak": bad_streak}
+    bad_streak = int(loop_signal.get("bad_streak") or 0)
+    if loop_control.should_replan(
+        source=source,
+        success_count=success_count,
+        bad_streak=bad_streak,
+        replan_count=replan_count,
+        max_replans=max_replans,
+        task_count=len(tasks),
+        max_total_tasks=max_total_tasks,
+    ):
+        replan_count += 1
+        _update_job(job, **job_progress.replanning(bad_streak=bad_streak, replan_count=replan_count, max_replans=max_replans, task_results=task_results, tasks=tasks, plan=plan))
+        remaining_slots = max(0, max_total_tasks - len(tasks))
+        new_tasks = _replan_crawler_tasks(
+            question,
+            config,
+            plan,
+            task_results,
+            tasks,
+            max_new_tasks=min(6, remaining_slots),
+        )
+        new_tasks = _drop_duplicate_mcagent_context_tasks(new_tasks, task_results)
+        if new_tasks:
+            tasks.extend(new_tasks)
+        return {"action": "continue", "bad_streak": 0, "replan_count": replan_count, "new_tasks": new_tasks}
+    if loop_control.should_replan_after_plan_exhausted(
+        source=source,
+        success_count=success_count,
+        bad_streak=bad_streak,
+        replan_count=replan_count,
+        max_replans=max_replans,
+        current_index=index,
+        task_count=len(tasks),
+        max_total_tasks=max_total_tasks,
+    ):
+        replan_count += 1
+        _update_job(job, **job_progress.replanning(bad_streak=bad_streak, replan_count=replan_count, max_replans=max_replans, task_results=task_results, tasks=tasks, plan=plan))
+        remaining_slots = max(0, max_total_tasks - len(tasks))
+        new_tasks = _replan_crawler_tasks(
+            question,
+            config,
+            plan,
+            task_results,
+            tasks,
+            max_new_tasks=min(6, remaining_slots),
+        )
+        new_tasks = _drop_duplicate_mcagent_context_tasks(new_tasks, task_results)
+        if new_tasks:
+            tasks.extend(new_tasks)
+            plan.setdefault("agent_reflections", []).append(
+                {
+                    "at_index": index,
+                    "action": "replan_after_plan_exhausted",
+                    "reason": "The initial executable plan was exhausted with no usable evidence; CrawlerAgent replanned from the objective failed observation instead of finalizing immediately.",
+                    "planner": "Crawler replan LLM",
+                    "tasks": new_tasks,
+                }
+            )
+            return {"action": "continue", "bad_streak": 0, "replan_count": replan_count, "new_tasks": new_tasks}
+        plan.setdefault("agent_reflections", []).append(
+            {
+                "at_index": index,
+                "action": "replan_after_plan_exhausted_no_tasks",
+                "reason": "The initial executable plan failed, but CrawlerAgent did not produce additional executable tasks.",
+                "planner": "Crawler replan LLM",
+            }
+        )
+        return {"action": "continue", "bad_streak": bad_streak, "replan_count": replan_count, "new_tasks": []}
+    if loop_control.should_finish_after_gap_probe_satisfied(
+        source=source,
+        task_results=task_results,
+        candidate_count=candidate_count,
+        success_count=success_count,
+    ):
+        return _finish_crawler_loop(
+            plan,
+            index=index,
+            reason="MCagent/RAG returned usable local context with no explicit gap list, and Crawler collected at least one external probe/candidate; finish this inter-agent gap check instead of expanding into a full crawl.",
+            planner="executor inter-agent gap guard",
+        )
+    if loop_control.should_finish_after_gap_summary_handoff_success(
+        source=source,
+        plan=plan,
+        task_results=task_results,
+        success_count=success_count,
+        executed_count=len(task_results),
+    ):
+        return _finish_crawler_loop(
+            plan,
+            index=index,
+            reason="Crawler received a concrete MCagent/RAG gap handoff and has collected at least one usable external evidence batch; finish now so the accepted material can be ingested and MCagent can answer from it, instead of exhausting every slow source.",
+            planner="executor gap-summary handoff success guard",
+        )
+    if loop_control.should_finish_after_rag_success_checkpoint(
+        source=source,
+        plan=plan,
+        success_count=success_count,
+        executed_count=len(task_results),
+    ):
+        return _finish_crawler_loop(
+            plan,
+            index=index,
+            reason="Crawler has already collected usable evidence for MCagent/RAG; finish now so accepted material can be ingested instead of spending the job budget on slower follow-up discovery.",
+            planner="executor RAG success checkpoint",
+        )
+    if _crawler_requested_output_dir(payload, plan) and success_count > 0:
+        return _finish_crawler_loop(
+            plan,
+            index=index,
+            reason="Crawler collected usable evidence for a user-specified local delivery path; finish now so the result can be exported instead of continuing slower broad searches.",
+            planner="executor user-output delivery checkpoint",
+        )
+    if loop_control.should_finish_after_context_plus_external_checkpoint(
+        source=source,
+        task_results=task_results,
+        candidate_count=candidate_count,
+        success_count=success_count,
+        bad_streak=bad_streak,
+        executed_count=len(task_results),
+    ):
+        return _finish_crawler_loop(
+            plan,
+            index=index,
+            reason="Crawler has received MCagent/RAG context and found at least one external candidate or accepted source; recent follow-up tools are low-yield, so finish with the usable material and remaining gaps instead of exhausting slow browser tasks.",
+            planner="executor context-plus-external checkpoint",
+        )
+    if loop_control.should_finish_after_enough_success(
+        source=source,
+        success_count=success_count,
+        executed_count=len(task_results),
+        task_count=len(tasks),
+        max_total_tasks=max_total_tasks,
+    ):
+        return _finish_crawler_loop(
+            plan,
+            index=index,
+            reason="Crawler collected enough useful evidence and reached the job task budget; finish now with the accepted evidence and remaining gaps instead of extending the task list again.",
+            planner="executor task-budget guard",
+        )
+    if loop_control.should_finish_after_useful_low_yield(
+        source=source,
+        success_count=success_count,
+        bad_streak=bad_streak,
+        executed_count=len(task_results),
+    ):
+        return _finish_crawler_loop(
+            plan,
+            index=index,
+            reason="Useful crawler evidence was collected, and recent follow-up tasks became low-yield; finish now and report remaining gaps instead of exhausting similar searches.",
+            planner="executor low-yield guard",
+        )
+    if loop_control.should_finish_after_no_success_low_yield(
+        source=source,
+        success_count=success_count,
+        bad_streak=bad_streak,
+        executed_count=len(task_results),
+    ):
+        return _finish_crawler_loop(
+            plan,
+            index=index,
+            reason="Several crawler actions produced no usable external evidence; finish now with a clear blocked/low-yield report instead of continuing similar searches.",
+            planner="executor no-success low-yield guard",
+        )
+    return {"action": "continue", "bad_streak": bad_streak, "replan_count": replan_count, "new_tasks": []}
+
+
 def _run_crawler_job_legacy_loop(job: Job, payload: dict[str, Any], config: AppConfig) -> None:
     source = _source_alias(str(payload.get("source") or "planner"))
     question = str(payload.get("source_question") or payload.get("question") or payload.get("query") or "").strip()
@@ -3460,101 +3840,35 @@ def _run_crawler_job_legacy_loop(job: Job, payload: dict[str, Any], config: AppC
                 plan.setdefault("agent_reflections", []).append(runtime_step.initial_llm_plan_entry(task=tasks[index]))
             task = tasks[index]
             index += 1
-            prepared_task = _prepare_crawler_task_execution(
+            step = _execute_crawler_task_step(
+                job=job,
+                config=config,
                 payload=payload,
                 task=task,
                 question=question,
                 plan=plan,
-                current_index=index,
+                tasks=tasks,
+                index=index,
+                task_results=task_results,
+                session_summary=session_summary,
                 artifact_refs=artifact_refs,
                 task_preparation=task_preparation,
+                result_accounting=result_accounting,
+                job_progress=job_progress,
+                max_total_tasks=max_total_tasks,
             )
-            task_source = prepared_task["task_source"]
-            task_payload = prepared_task["task_payload"]
-            preflight_task = prepared_task["preflight_task"]
-            preflight_context = prepared_task["preflight_context"]
-            preflight_result = task_preparation.blocked_preflight_result(
-                task_source=task_source,
-                task=preflight_task,
-                context_text=preflight_context,
-            )
-            if preflight_result is not None:
-                task_results.append(preflight_result)
-                failure_count += 1
-                bad_streak += 1
-                plan.setdefault("agent_reflections", []).append(
-                    {
-                        "at_index": index,
-                        "action": "blocked_by_capability_preflight",
-                        "reason": "Executor objective preflight found the selected crawler tool call is missing required inputs or domain contract.",
-                        "planner": "crawler capability registry",
-                        "task": {"source": task_source, "query": str(task_payload.get("query") or "")},
-                        "contract": preflight_result.get("capability_preflight") or {},
-                    }
-                )
-                _update_job(job, **job_progress.empty_query_blocked(source_label=_source_label(task_source), task_results=task_results, tasks=tasks, plan=plan))
+            task_source = str(step.get("task_source") or "")
+            result = step.get("result") if isinstance(step.get("result"), dict) else {}
+            records_loaded = int(step.get("records_loaded") or 0)
+            success_count += int(step.get("success_delta") or 0)
+            candidate_count += int(step.get("candidate_delta") or 0)
+            failure_count += int(step.get("failure_delta") or 0)
+            bad_streak += int(step.get("bad_streak_delta") or 0)
+            needs_ingest = needs_ingest or bool(step.get("needs_ingest"))
+            accepted_export_dirs.extend(list(step.get("accepted_export_dirs") or []))
+            accepted_ingest_roots.extend(list(step.get("accepted_ingest_roots") or []))
+            if step.get("continue_loop"):
                 continue
-            if not str(task_payload.get("query") or "").strip():
-                result = task_preparation.empty_query_result(task_source=task_source, task=task)
-                task_results.append(result)
-                failure_count += 1
-                bad_streak += 1
-                _update_job(job, **job_progress.empty_query_blocked(source_label=_source_label(task_source), task_results=task_results, tasks=tasks, plan=plan))
-                continue
-            _update_job(
-                job,
-                **job_progress.executing(
-                    index=index,
-                    task_count=len(tasks),
-                    source_label=_source_label(task_source),
-                    query=str(task_payload["query"]),
-                    reason=str(task.get("reason") or ""),
-                    task_results=task_results,
-                    tasks=tasks,
-                    plan=plan,
-                ),
-            )
-            if task_source == "mcagent_context":
-                result = _run_mcagent_context_tool(config, task_payload, plan, session_summary)
-            else:
-                result = _run_crawler_command(_round_command(task_source, task_payload), task_source, job=job)
-            records_loaded = _record_crawler_task_result_metadata(
-                result=result,
-                task=task,
-                task_source=task_source,
-                task_payload=task_payload,
-                question=question,
-                plan=plan,
-                result_index=len(task_results) + 1,
-                artifact_refs=artifact_refs,
-            )
-            accounting = result_accounting.apply(
-                result=result,
-                task_source=task_source,
-                delivery_target=str(plan.get("delivery_target") or payload.get("delivery_target") or ""),
-                followup_query=str(task_payload.get("query") or question),
-            )
-            success_count += int(accounting.get("success_delta") or 0)
-            candidate_count += int(accounting.get("candidate_delta") or 0)
-            failure_count += int(accounting.get("failure_delta") or 0)
-            needs_ingest = needs_ingest or bool(accounting.get("needs_ingest"))
-            if accounting.get("needs_ingest") and result.get("export_dir"):
-                accepted_export_dirs.append(str(result.get("export_dir") or ""))
-                accepted_ingest_roots.extend(_crawler_accepted_ingest_roots(result))
-            followup_task = accounting.get("followup_task") if isinstance(accounting.get("followup_task"), dict) else None
-            if followup_task and _crawler_task_identity(followup_task) not in {_crawler_task_identity(existing) for existing in tasks} and len(tasks) < max_total_tasks:
-                tasks.insert(index, followup_task)
-                plan.setdefault("agent_reflections", []).append(
-                    {
-                        "at_index": index,
-                        "action": "add_tasks",
-                        "reason": "公开整合包包体已下载，下一步应解析内部文件，而不是继续只搜网页。",
-                        "planner": "executor objective result",
-                        "tasks": [followup_task],
-                    }
-                )
-            result["observation"] = classify_crawler_tool_result(result).to_dict()
-            task_results.append(result)
             if task_source == "mcagent_context" and result["returncode"] == 0 and records_loaded > 0:
                 removed_context_tasks = _prune_pending_mcagent_context_tasks_after_success(tasks, index)
                 if removed_context_tasks:
@@ -3576,220 +3890,28 @@ def _run_crawler_job_legacy_loop(job: Job, payload: dict[str, Any], config: AppC
                     topic_discovery_review.record_review(plan=plan, result=result, task_results_count=len(task_results), discovered_tasks=discovered_tasks)
                 elif result.get("topic_discovery_review_error"):
                     topic_discovery_review.record_review(plan=plan, result=result, task_results_count=len(task_results), discovered_tasks=[])
-            loop_signal = loop_control.update_bad_streak(result=result, current_bad_streak=bad_streak)
-            bad_streak = int(loop_signal.get("bad_streak") or 0)
-            if loop_control.should_replan(
+            loop_update = _apply_crawler_loop_control_after_task(
+                job=job,
+                config=config,
+                payload=payload,
                 source=source,
+                question=question,
+                plan=plan,
+                tasks=tasks,
+                task_results=task_results,
+                index=index,
                 success_count=success_count,
+                candidate_count=candidate_count,
                 bad_streak=bad_streak,
                 replan_count=replan_count,
                 max_replans=max_replans,
-                task_count=len(tasks),
                 max_total_tasks=max_total_tasks,
-            ):
-                replan_count += 1
-                _update_job(job, **job_progress.replanning(bad_streak=bad_streak, replan_count=replan_count, max_replans=max_replans, task_results=task_results, tasks=tasks, plan=plan))
-                remaining_slots = max(0, max_total_tasks - len(tasks))
-                new_tasks = _replan_crawler_tasks(
-                    question,
-                    config,
-                    plan,
-                    task_results,
-                    tasks,
-                    max_new_tasks=min(6, remaining_slots),
-                )
-                new_tasks = _drop_duplicate_mcagent_context_tasks(new_tasks, task_results)
-                if new_tasks:
-                    tasks.extend(new_tasks)
-                bad_streak = 0
-            elif loop_control.should_replan_after_plan_exhausted(
-                source=source,
-                success_count=success_count,
-                bad_streak=bad_streak,
-                replan_count=replan_count,
-                max_replans=max_replans,
-                current_index=index,
-                task_count=len(tasks),
-                max_total_tasks=max_total_tasks,
-            ):
-                replan_count += 1
-                _update_job(job, **job_progress.replanning(bad_streak=bad_streak, replan_count=replan_count, max_replans=max_replans, task_results=task_results, tasks=tasks, plan=plan))
-                remaining_slots = max(0, max_total_tasks - len(tasks))
-                new_tasks = _replan_crawler_tasks(
-                    question,
-                    config,
-                    plan,
-                    task_results,
-                    tasks,
-                    max_new_tasks=min(6, remaining_slots),
-                )
-                new_tasks = _drop_duplicate_mcagent_context_tasks(new_tasks, task_results)
-                if new_tasks:
-                    tasks.extend(new_tasks)
-                    plan.setdefault("agent_reflections", []).append(
-                        {
-                            "at_index": index,
-                            "action": "replan_after_plan_exhausted",
-                            "reason": "The initial executable plan was exhausted with no usable evidence; CrawlerAgent replanned from the objective failed observation instead of finalizing immediately.",
-                            "planner": "Crawler replan LLM",
-                            "tasks": new_tasks,
-                        }
-                    )
-                    bad_streak = 0
-                else:
-                    plan.setdefault("agent_reflections", []).append(
-                        {
-                            "at_index": index,
-                            "action": "replan_after_plan_exhausted_no_tasks",
-                            "reason": "The initial executable plan failed, but CrawlerAgent did not produce additional executable tasks.",
-                            "planner": "Crawler replan LLM",
-                        }
-                    )
-            elif loop_control.should_finish_after_gap_probe_satisfied(
-                source=source,
-                task_results=task_results,
-                candidate_count=candidate_count,
-                success_count=success_count,
-            ):
-                finish_reason = "MCagent/RAG returned usable local context with no explicit gap list, and Crawler collected at least one external probe/candidate; finish this inter-agent gap check instead of expanding into a full crawl."
-                plan["agent_finish_reason"] = finish_reason
-                plan.setdefault("agent_reflections", []).append(
-                    {
-                        "at_index": index,
-                        "action": "finish",
-                        "reason": finish_reason,
-                        "planner": "executor inter-agent gap guard",
-                    }
-                )
-                break
-            elif loop_control.should_finish_after_gap_summary_handoff_success(
-                source=source,
-                plan=plan,
-                task_results=task_results,
-                success_count=success_count,
-                executed_count=len(task_results),
-            ):
-                finish_reason = (
-                    "Crawler received a concrete MCagent/RAG gap handoff and has collected at least one usable external evidence batch; "
-                    "finish now so the accepted material can be ingested and MCagent can answer from it, instead of exhausting every slow source."
-                )
-                plan["agent_finish_reason"] = finish_reason
-                plan.setdefault("agent_reflections", []).append(
-                    {
-                        "at_index": index,
-                        "action": "finish",
-                        "reason": finish_reason,
-                        "planner": "executor gap-summary handoff success guard",
-                    }
-                )
-                break
-            elif loop_control.should_finish_after_rag_success_checkpoint(
-                source=source,
-                plan=plan,
-                success_count=success_count,
-                executed_count=len(task_results),
-            ):
-                finish_reason = (
-                    "Crawler has already collected usable evidence for MCagent/RAG; finish now so accepted material can be ingested instead of spending the job budget on slower follow-up discovery."
-                )
-                plan["agent_finish_reason"] = finish_reason
-                plan.setdefault("agent_reflections", []).append(
-                    {
-                        "at_index": index,
-                        "action": "finish",
-                        "reason": finish_reason,
-                        "planner": "executor RAG success checkpoint",
-                    }
-                )
-                break
-            elif _crawler_requested_output_dir(payload, plan) and success_count > 0:
-                finish_reason = (
-                    "Crawler collected usable evidence for a user-specified local delivery path; finish now so the result can be exported "
-                    "instead of continuing slower broad searches."
-                )
-                plan["agent_finish_reason"] = finish_reason
-                plan.setdefault("agent_reflections", []).append(
-                    {
-                        "at_index": index,
-                        "action": "finish",
-                        "reason": finish_reason,
-                        "planner": "executor user-output delivery checkpoint",
-                    }
-                )
-                break
-            elif loop_control.should_finish_after_context_plus_external_checkpoint(
-                source=source,
-                task_results=task_results,
-                candidate_count=candidate_count,
-                success_count=success_count,
-                bad_streak=bad_streak,
-                executed_count=len(task_results),
-            ):
-                finish_reason = (
-                    "Crawler has received MCagent/RAG context and found at least one external candidate or accepted source; "
-                    "recent follow-up tools are low-yield, so finish with the usable material and remaining gaps instead of exhausting slow browser tasks."
-                )
-                plan["agent_finish_reason"] = finish_reason
-                plan.setdefault("agent_reflections", []).append(
-                    {
-                        "at_index": index,
-                        "action": "finish",
-                        "reason": finish_reason,
-                        "planner": "executor context-plus-external checkpoint",
-                    }
-                )
-                break
-            elif loop_control.should_finish_after_enough_success(
-                source=source,
-                success_count=success_count,
-                executed_count=len(task_results),
-                task_count=len(tasks),
-                max_total_tasks=max_total_tasks,
-            ):
-                finish_reason = "Crawler collected enough useful evidence and reached the job task budget; finish now with the accepted evidence and remaining gaps instead of extending the task list again."
-                plan["agent_finish_reason"] = finish_reason
-                plan.setdefault("agent_reflections", []).append(
-                    {
-                        "at_index": index,
-                        "action": "finish",
-                        "reason": finish_reason,
-                        "planner": "executor task-budget guard",
-                    }
-                )
-                break
-            elif loop_control.should_finish_after_useful_low_yield(
-                source=source,
-                success_count=success_count,
-                bad_streak=bad_streak,
-                executed_count=len(task_results),
-            ):
-                finish_reason = "Useful crawler evidence was collected, and recent follow-up tasks became low-yield; finish now and report remaining gaps instead of exhausting similar searches."
-                plan["agent_finish_reason"] = finish_reason
-                plan.setdefault("agent_reflections", []).append(
-                    {
-                        "at_index": index,
-                        "action": "finish",
-                        "reason": finish_reason,
-                        "planner": "executor low-yield guard",
-                    }
-                )
-                break
-            elif loop_control.should_finish_after_no_success_low_yield(
-                source=source,
-                success_count=success_count,
-                bad_streak=bad_streak,
-                executed_count=len(task_results),
-            ):
-                finish_reason = "Several crawler actions produced no usable external evidence; finish now with a clear blocked/low-yield report instead of continuing similar searches."
-                plan["agent_finish_reason"] = finish_reason
-                plan.setdefault("agent_reflections", []).append(
-                    {
-                        "at_index": index,
-                        "action": "finish",
-                        "reason": finish_reason,
-                        "planner": "executor no-success low-yield guard",
-                    }
-                )
+                loop_control=loop_control,
+                job_progress=job_progress,
+            )
+            bad_streak = int(loop_update.get("bad_streak") if loop_update.get("bad_streak") is not None else bad_streak)
+            replan_count = int(loop_update.get("replan_count") if loop_update.get("replan_count") is not None else replan_count)
+            if loop_update.get("action") == "finish":
                 break
         collection_summary = _crawler_result_summary(task_results, plan)
         user_delivery = _export_crawler_user_delivery(payload=payload, plan=plan, task_results=task_results, collection_summary=collection_summary)
@@ -8282,7 +8404,7 @@ def _mcagent_context_message_reply(
 def _is_collection_request_agent_message(message: AgentMessage) -> bool:
     metadata = message.metadata if isinstance(message.metadata, dict) else {}
     return message.to_agent_id == "crawler_agent" and (
-        message.intent == "collection_request" or str(metadata.get("tool") or "") == "delegate_crawler"
+        message.intent == "collection_request" or str(metadata.get("tool") or "") in {"collection_request", "delegate_crawler"}
     )
 
 
@@ -8757,7 +8879,7 @@ def _relay_user_crawler_request_via_message_bus(
         "message_transport": "From-Content-To",
     }
     metadata = {
-        "tool": "delegate_crawler",
+        "tool": "collection_request",
         "requested_by": "user_via_mcagent",
         "delivery_target": delivery_target,
     }
@@ -8904,22 +9026,15 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
         )
     if route_intent == "mcagent_context":
         proposed_collection = _clean_inter_agent_collection_target(original_question, str(tool_decision.get("collection_target") or ""))
-        if agent == "crawler_agent" and collection_request_agent_message:
-            route_intent = "delegate_crawler"
-            action_plan = list(action_plan or [])
-            if not _action_plan_has_tool(action_plan, "mcagent_context"):
-                action_plan.insert(0, {"step": 1, "tool": "mcagent_context", "goal": proposed_collection or original_question})
-            if not _action_plan_has_tool(action_plan, "delegate_crawler"):
-                action_plan.append({"step": len(action_plan) + 1, "tool": "delegate_crawler", "goal": proposed_collection or original_question})
+        if agent == "crawler_agent" and collection_request_agent_message and _action_plan_has_tool(action_plan, "delegate_crawler"):
+            route_intent = "planned_workflow"
+            planned_workflow = True
             planned_delegate = True
-            tool_decision = dict(tool_decision)
-            tool_decision["tool"] = "delegate_crawler"
-            tool_decision["collection_target"] = proposed_collection or str(tool_decision.get("collection_target") or original_question or question).strip()
             add_trace(
                 "decide",
-                "mcagent_context_promoted_to_crawler_job",
+                "mcagent_context_preserved_inside_crawler_workflow",
                 {
-                    "reason": "CrawlerAgent received a collection_request AgentMessage and selected mcagent_context as its first step. Run that step inside the background Crawler job, then let CrawlerAgent continue deciding whether to collect.",
+                    "reason": "CrawlerAgent selected mcagent_context and delegate_crawler in its own action_plan; runtime preserves that CrawlerAgent plan inside the background job.",
                     "planned_delegate": planned_delegate,
                     "action_plan": action_plan,
                 },

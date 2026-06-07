@@ -766,7 +766,7 @@ def test_explicit_mcagent_to_crawler_handoff_relays_before_heavy_router() -> Non
     assert_equal("one_message", len(calls), 1)
     assert_equal("from_agent", calls[0]["from_agent"], "MCagent")
     assert_equal("to_agent", calls[0]["to_agent"], "CrawlerAgent")
-    assert_equal("tool", calls[0]["metadata"].get("tool"), "delegate_crawler")
+    assert_equal("tool", calls[0]["metadata"].get("tool"), "collection_request")
     assert_equal("requested_by", calls[0]["metadata"].get("requested_by"), "user_via_mcagent")
     assert_equal("delivery_target", calls[0]["metadata"].get("delivery_target"), "MCagent/RAG")
     assert_true("content_keeps_target", "乌托邦整合包" in calls[0]["content"], calls[0]["content"])
@@ -1186,6 +1186,59 @@ def test_crawler_collection_request_message_does_not_force_tool_choice() -> None
     assert_true("no_job_response", not result.get("job"), str(result))
     statuses = [(step.get("stage"), step.get("status")) for step in result.get("trace") or []]
     assert_true("message_context_trace", ("message", "collection_request_received_for_agent_decision") in statuses, str(statuses))
+
+
+def test_crawler_collection_request_preserves_mcagent_context_choice_without_forcing_delegate() -> None:
+    tmp = tempfile.TemporaryDirectory()
+    fake_client = SequencedClient(
+        [
+            '{"tool":"mcagent_context","reason":"CrawlerAgent chooses to ask MCagent for local gaps first.","collection_target":"Utopia gap fill","delivery_target":"MCagent/RAG"}',
+            '{"proceed":true,"tool":"mcagent_context","reason":"confirmed by CrawlerAgent"}',
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    original_delegate = web_server._start_crawler_job_from_crawler_tool
+    original_retriever = web_server.RagRetrievalService.retrieve
+    calls: list[dict[str, Any]] = []
+
+    def fake_delegate(config: AppConfig, payload: dict[str, Any], question: str, plan: dict[str, Any] | None = None):  # noqa: ARG001
+        calls.append({"payload": payload, "question": question, "plan": plan})
+        job = web_server.Job(id="unexpected-forced-job", kind="crawler", title=question, status="queued", summary="queued")
+        return job, True
+
+    def fake_retrieve(self, config: AppConfig, *, agent: str, original_question: str, question: str, session_summary: dict[str, Any], preparation: Any, use_planner: bool, add_trace: Any):  # noqa: ANN001, ARG002
+        return SimpleNamespace(retrieval_plan={}, rough_results=[], selected=[])
+
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake_client, "fake")  # type: ignore[assignment]
+    web_server._start_crawler_job_from_crawler_tool = fake_delegate  # type: ignore[assignment]
+    web_server.RagRetrievalService.retrieve = fake_retrieve  # type: ignore[assignment]
+    try:
+        result = web_server._send_agent_message(
+            make_temp_config(Path(tmp.name)),
+            {
+                "session_id": "collection-request-crawler-selects-context-only",
+                "model": "fake-model",
+                "delivery_target": "MCagent/RAG",
+                "requested_by": "user_via_mcagent",
+            },
+            from_agent="MCagent",
+            content="Utopia gap fill",
+            to_agent="CrawlerAgent",
+            intent="collection_request",
+            conversation_id="collection-request-crawler-selects-context-only",
+            metadata={"tool": "collection_request", "delivery_target": "MCagent/RAG", "requested_by": "user_via_mcagent"},
+        )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._start_crawler_job_from_crawler_tool = original_delegate  # type: ignore[assignment]
+        web_server.RagRetrievalService.retrieve = original_retriever  # type: ignore[assignment]
+        tmp.cleanup()
+
+    assert_true("job_not_forced_after_mcagent_context_choice", not calls, str(calls))
+    assert_true("no_job_response", not result.get("job"), str(result))
+    statuses = [(step.get("stage"), step.get("status")) for step in result.get("trace") or []]
+    assert_true("message_context_trace", ("message", "collection_request_received_for_agent_decision") in statuses, str(statuses))
+    assert_true("mcagent_context_selected", ("decide", "mcagent_context_selected") in statuses, str(statuses))
 
 
 def test_crawler_collection_request_message_starts_job_after_crawler_selects_delegate() -> None:
@@ -3975,6 +4028,7 @@ if __name__ == "__main__":
     test_recent_crawler_audit_question_answers_history_without_new_collection()
     test_recent_crawler_audit_question_matches_create_instead_of_higher_activity_job()
     test_crawler_collection_request_message_does_not_force_tool_choice()
+    test_crawler_collection_request_preserves_mcagent_context_choice_without_forcing_delegate()
     test_crawler_collection_request_message_starts_job_after_crawler_selects_delegate()
     test_direct_crawler_planned_workflow_preserves_selected_action_plan_for_job()
     test_direct_crawler_mcagent_context_step_with_delegate_starts_background_job()

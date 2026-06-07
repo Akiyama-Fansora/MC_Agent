@@ -4587,3 +4587,62 @@ This helper does not decide whether the source is good enough, whether to retry,
 ### Tests
 
 `tests/langgraph_runtime_scenarios.py` verifies the helper preserves query/reason and attaches manifest stats for a failed objective result.
+
+## 2026-06-07 Stage 41: Crawler Task Execution And Loop Control Extraction
+
+Stage 41 continues shrinking `_run_crawler_job_legacy_loop()` by moving objective task execution and post-task loop control into reusable helpers.
+
+### Implemented Changes
+
+1. Added `_apply_crawler_task_accounting()`.
+   - Applies `CrawlerResultAccountingService`.
+   - Collects accepted export/ingest roots.
+   - Inserts objective follow-up tasks such as `modpack_internal` after a public archive download.
+2. Added `_execute_crawler_task_step()`.
+   - Runs task preparation and capability preflight.
+   - Refuses empty queries before tool execution.
+   - Executes either `mcagent_context` over AgentMessage or the selected crawler command.
+   - Records metadata, accounting, and objective observations.
+3. Added `_apply_crawler_loop_control_after_task()`.
+   - Centralizes replan/finish checkpoint handling.
+   - Keeps long-running low-yield jobs from drifting through scattered finish branches.
+4. `_run_crawler_job_legacy_loop()` now delegates those objective phases instead of embedding them inline.
+
+### Boundary
+
+These helpers do not replace CrawlerAgent judgment. They only expose objective facts: preflight validity, manifest-backed records, counters, follow-up tasks derived from tool contracts, and finish/replan guard outcomes. Semantic acceptance, rejection, retry choice, and final evidence wording remain CrawlerAgent-owned.
+
+### Tests
+
+`tests/langgraph_runtime_scenarios.py` now verifies:
+
+1. Archive download accounting inserts `modpack_internal` once.
+2. Archive URL fetch observations become `modpack_download` follow-up tasks.
+3. Empty queries are blocked before tool execution.
+4. Unbacked tool claims are not counted as success without manifest-backed records.
+5. Loop control reaches a bounded finish checkpoint after sufficient RAG-delivery success.
+
+## 2026-06-07 Stage 42: Collection Request Is Context, Not Forced Tool Choice
+
+Stage 42 removes a runtime shortcut that could turn a CrawlerAgent `collection_request` message into a forced background collection job.
+
+### Implemented Changes
+
+1. MCagent explicit relays now mark AgentMessage metadata as `tool=collection_request`, not `tool=delegate_crawler`.
+2. CrawlerAgent still receives `intent=collection_request`, but the runtime treats that as message context only.
+3. If CrawlerAgent chooses `delegate_crawler` itself, the runtime starts the background job and reuses that Agent decision.
+4. If CrawlerAgent chooses `mcagent_context` only, the runtime preserves that choice and does not force a job.
+5. If CrawlerAgent chooses a planned workflow that includes both `mcagent_context` and `delegate_crawler`, the runtime preserves the selected action plan inside the background job.
+
+### Boundary
+
+The From-Content-To bus delivers messages only. It does not decide tools. Safety checks still verify that a real received AgentMessage exists and that `delegate_crawler` was actually selected before starting a Crawler job, but those checks do not add the selection themselves.
+
+### Tests
+
+`tests/web_server_side_effect_guard_scenarios.py` verifies:
+
+1. Explicit MCagent relays use `tool=collection_request`.
+2. A collection request does not start a job when CrawlerAgent selects `answer`.
+3. A collection request does not start a job when CrawlerAgent selects only `mcagent_context`.
+4. A job starts only after CrawlerAgent selects `delegate_crawler`.

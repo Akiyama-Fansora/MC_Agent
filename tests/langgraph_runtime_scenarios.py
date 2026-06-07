@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -338,6 +339,302 @@ def test_crawler_task_result_metadata_is_recorded_objectively() -> None:
     assert_true("metadata_inline_failure_stats", stats == {"records": 0, "skipped": 0, "errors": 0}, str(result))
 
 
+def test_crawler_task_accounting_inserts_archive_internal_followup() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        export_dir = str(Path(tmp) / "downloaded_archive")
+        result = {
+            "returncode": 0,
+            "manifest_stats": {"records": 1, "downloads": 1},
+            "export_dir": export_dir,
+        }
+        plan: dict[str, Any] = {"delivery_target": "MCagent/RAG"}
+        tasks = [{"source": "modpack_download", "query": "public archive"}]
+        update = web_server._apply_crawler_task_accounting(
+            result=result,
+            task_source="modpack_download",
+            task_payload={"query": "public archive"},
+            question="public archive",
+            payload={},
+            plan=plan,
+            tasks=tasks,
+            index=1,
+            max_total_tasks=4,
+            result_accounting=web_server.CrawlerResultAccountingService(),
+        )
+    assert_true("accounting_success", update.get("success_delta") == 1, str(update))
+    assert_true("accounting_needs_ingest", update.get("needs_ingest") is True, str(update))
+    assert_true("accounting_export_dir", update.get("accepted_export_dirs") == [export_dir], str(update))
+    assert_true("accounting_followup_inserted", update.get("inserted_followup") is True, str(update))
+    assert_true("internal_followup_source", tasks[1].get("source") == "modpack_internal", str(tasks))
+    assert_true("objective_reflection_recorded", any(item.get("action") == "add_tasks" for item in plan.get("agent_reflections") or []), str(plan))
+
+
+def test_crawler_task_accounting_does_not_duplicate_followup() -> None:
+    result = {
+        "returncode": 0,
+        "manifest_stats": {"records": 1, "downloads": 1},
+        "export_dir": "",
+    }
+    plan: dict[str, Any] = {"delivery_target": "MCagent/RAG"}
+    tasks = [
+        {"source": "modpack_download", "query": "public archive"},
+        {"source": "modpack_internal", "query": "public archive"},
+    ]
+    update = web_server._apply_crawler_task_accounting(
+        result=result,
+        task_source="modpack_download",
+        task_payload={"query": "public archive"},
+        question="public archive",
+        payload={},
+        plan=plan,
+        tasks=tasks,
+        index=1,
+        max_total_tasks=4,
+        result_accounting=web_server.CrawlerResultAccountingService(),
+    )
+    assert_true("duplicate_followup_not_inserted", update.get("inserted_followup") is False, str(update))
+    assert_true("tasks_unchanged", len(tasks) == 2, str(tasks))
+
+
+def test_crawler_task_accounting_turns_archive_fetch_observation_into_download_followup() -> None:
+    result = {
+        "returncode": 1,
+        "manifest_stats": {
+            "records": 0,
+            "skipped": 1,
+            "archive_url_detected": True,
+            "failure_reason": "URL points to a binary modpack archive.",
+        },
+        "export_dir": "",
+    }
+    plan: dict[str, Any] = {"delivery_target": "MCagent/RAG"}
+    tasks = [{"source": "fetch_url", "query": "https://example.com/demo.mrpack"}]
+    update = web_server._apply_crawler_task_accounting(
+        result=result,
+        task_source="fetch_url",
+        task_payload={"query": "https://example.com/demo.mrpack"},
+        question="download demo",
+        payload={},
+        plan=plan,
+        tasks=tasks,
+        index=1,
+        max_total_tasks=4,
+        result_accounting=web_server.CrawlerResultAccountingService(),
+    )
+    assert_true("archive_fetch_candidate", update.get("candidate_delta") == 1, str(update))
+    assert_true("archive_fetch_not_failure", update.get("failure_delta") == 0, str(update))
+    assert_true("download_followup_inserted", update.get("inserted_followup") is True, str(update))
+    assert_true("download_followup_source", tasks[1].get("source") == "modpack_download", str(tasks))
+
+
+def test_crawler_task_step_blocks_empty_query_before_tool_execution() -> None:
+    class FakeJob:
+        id = "empty-query-step"
+        result: dict[str, Any] | None = None
+        status = "queued"
+        summary = ""
+        error = None
+        created_at = 0.0
+        started_at = None
+        ended_at = None
+        stop_requested = False
+
+    with tempfile.TemporaryDirectory() as tmp:
+        plan: dict[str, Any] = {}
+        tasks = [{"source": "web_discovery", "query": "", "reason": "missing query"}]
+        task_results: list[dict[str, Any]] = []
+        step = web_server._execute_crawler_task_step(
+            job=FakeJob(),
+            config=make_temp_config(Path(tmp)),
+            payload={},
+            task=tasks[0],
+            question="",
+            plan=plan,
+            tasks=tasks,
+            index=1,
+            task_results=task_results,
+            session_summary=None,
+            artifact_refs=web_server.ArtifactReferenceService(),
+            task_preparation=web_server.CrawlerTaskPreparationService(),
+            result_accounting=web_server.CrawlerResultAccountingService(),
+            job_progress=web_server.CrawlerJobProgressService(),
+            max_total_tasks=4,
+        )
+    assert_true("empty_query_continue", step.get("continue_loop") is True, str(step))
+    assert_true("empty_query_failure", step.get("failure_delta") == 1, str(step))
+    assert_true("empty_query_bad_streak", step.get("bad_streak_delta") == 1, str(step))
+    assert_true("empty_query_result_recorded", len(task_results) == 1, str(task_results))
+    assert_true("empty_query_no_accounting_success", not step.get("success_delta"), str(step))
+
+
+def test_crawler_task_step_executes_command_and_records_accounting() -> None:
+    class FakeJob:
+        id = "command-step"
+        result: dict[str, Any] | None = None
+        status = "queued"
+        summary = ""
+        error = None
+        created_at = 0.0
+        started_at = None
+        ended_at = None
+        stop_requested = False
+
+    original_command = web_server._run_crawler_command
+    try:
+        export_dir_holder: dict[str, str] = {}
+
+        def fake_command(_command, _source, job=None):  # noqa: ANN001, ARG001
+            export_dir = export_dir_holder["path"]
+            return {
+                "returncode": 0,
+                "output": "collected",
+                "export_dir": export_dir,
+                "topic_validation": {"matched": True},
+            }
+
+        web_server._run_crawler_command = fake_command  # type: ignore[assignment]
+        with tempfile.TemporaryDirectory() as tmp:
+            export_dir = Path(tmp) / "export"
+            export_dir.mkdir()
+            (export_dir / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "records": [{"title": "Downloaded Archive", "url": "https://example.com/unit.mrpack", "text": "download evidence"}],
+                        "downloads": [{"url": "https://example.com/unit.mrpack", "path": str(export_dir / "unit.mrpack")}],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            export_dir_holder["path"] = str(export_dir)
+            plan: dict[str, Any] = {"delivery_target": "MCagent/RAG"}
+            tasks = [{"source": "modpack_download", "query": "https://example.com/unit.mrpack", "reason": "download"}]
+            task_results: list[dict[str, Any]] = []
+            step = web_server._execute_crawler_task_step(
+                job=FakeJob(),
+                config=make_temp_config(Path(tmp)),
+                payload={},
+                task=tasks[0],
+                question="download unit archive",
+                plan=plan,
+                tasks=tasks,
+                index=1,
+                task_results=task_results,
+                session_summary=None,
+                artifact_refs=web_server.ArtifactReferenceService(),
+                task_preparation=web_server.CrawlerTaskPreparationService(),
+                result_accounting=web_server.CrawlerResultAccountingService(),
+                job_progress=web_server.CrawlerJobProgressService(),
+                max_total_tasks=4,
+            )
+    finally:
+        web_server._run_crawler_command = original_command  # type: ignore[assignment]
+    assert_true("step_not_blocked", step.get("continue_loop") is False, str(step))
+    assert_true("step_success", step.get("success_delta") == 1, str(step))
+    assert_true("step_result_recorded", len(task_results) == 1, str(task_results))
+    assert_true("step_observation_recorded", isinstance(task_results[0].get("observation"), dict), str(task_results))
+    assert_true("step_query_recorded", task_results[0].get("query") == "https://example.com/unit.mrpack", str(task_results))
+
+
+def test_crawler_task_step_ignores_unbacked_tool_record_claims() -> None:
+    class FakeJob:
+        id = "unbacked-command-step"
+        result: dict[str, Any] | None = None
+        status = "queued"
+        summary = ""
+        error = None
+        created_at = 0.0
+        started_at = None
+        ended_at = None
+        stop_requested = False
+
+    original_command = web_server._run_crawler_command
+    try:
+        web_server._run_crawler_command = lambda _command, _source, job=None: {  # type: ignore[assignment]
+            "returncode": 0,
+            "output": "collected",
+            "export_dir": "",
+            "manifest_stats": {"records": 1},
+            "topic_validation": {"matched": True},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            plan: dict[str, Any] = {"delivery_target": "MCagent/RAG"}
+            tasks = [{"source": "web_discovery", "query": "unit query", "reason": "collect"}]
+            task_results: list[dict[str, Any]] = []
+            step = web_server._execute_crawler_task_step(
+                job=FakeJob(),
+                config=make_temp_config(Path(tmp)),
+                payload={},
+                task=tasks[0],
+                question="unit query",
+                plan=plan,
+                tasks=tasks,
+                index=1,
+                task_results=task_results,
+                session_summary=None,
+                artifact_refs=web_server.ArtifactReferenceService(),
+                task_preparation=web_server.CrawlerTaskPreparationService(),
+                result_accounting=web_server.CrawlerResultAccountingService(),
+                job_progress=web_server.CrawlerJobProgressService(),
+                max_total_tasks=4,
+            )
+    finally:
+        web_server._run_crawler_command = original_command  # type: ignore[assignment]
+    assert_true("step_not_blocked", step.get("continue_loop") is False, str(step))
+    assert_true("unbacked_claim_not_success", step.get("success_delta") == 0, str(step))
+    assert_true("unbacked_claim_failure", step.get("failure_delta") == 1, str(step))
+    assert_true("step_result_recorded", len(task_results) == 1, str(task_results))
+    assert_true("step_observation_recorded", isinstance(task_results[0].get("observation"), dict), str(task_results))
+    assert_true("step_query_recorded", task_results[0].get("query") == "unit query", str(task_results))
+
+
+def test_crawler_loop_control_finishes_after_rag_success_checkpoint() -> None:
+    class FakeJob:
+        id = "loop-finish"
+        result: dict[str, Any] | None = None
+        status = "queued"
+        summary = ""
+        error = None
+        created_at = 0.0
+        started_at = None
+        ended_at = None
+        stop_requested = False
+
+    with tempfile.TemporaryDirectory() as tmp:
+        plan: dict[str, Any] = {"delivery_target": "MCagent/RAG"}
+        task_results = [
+            {
+                "source": "web_discovery",
+                "returncode": 0,
+                "manifest_stats": {"records": 1, "usable_records": 1, "empty_records": 0},
+                "topic_validation": {"matched": True},
+            }
+            for _index in range(4)
+        ]
+        loop_update = web_server._apply_crawler_loop_control_after_task(
+            job=FakeJob(),
+            config=make_temp_config(Path(tmp)),
+            payload={},
+            source="planner",
+            question="unit question",
+            plan=plan,
+            tasks=[{"source": "web_discovery", "query": "unit question"}],
+            task_results=task_results,
+            index=1,
+            success_count=1,
+            candidate_count=0,
+            bad_streak=0,
+            replan_count=0,
+            max_replans=2,
+            max_total_tasks=4,
+            loop_control=web_server.CrawlerLoopControlService(),
+            job_progress=web_server.CrawlerJobProgressService(),
+        )
+    assert_true("loop_finish_action", loop_update.get("action") == "finish", str(loop_update))
+    assert_true("loop_finish_reason", "usable evidence" in str(plan.get("agent_finish_reason") or ""), str(plan))
+    assert_true("loop_finish_reflection", any(item.get("action") == "finish" for item in plan.get("agent_reflections") or []), str(plan))
+
+
 def main() -> int:
     test_conversation_graph_routes_only_by_message_target()
     test_conversation_graph_can_dispatch_to_crawler_node()
@@ -347,6 +644,13 @@ def main() -> int:
     test_crawler_job_plan_preparation_is_objective_and_reusable()
     test_crawler_task_preparation_routes_archive_urls_objectively()
     test_crawler_task_result_metadata_is_recorded_objectively()
+    test_crawler_task_accounting_inserts_archive_internal_followup()
+    test_crawler_task_accounting_does_not_duplicate_followup()
+    test_crawler_task_accounting_turns_archive_fetch_observation_into_download_followup()
+    test_crawler_task_step_blocks_empty_query_before_tool_execution()
+    test_crawler_task_step_executes_command_and_records_accounting()
+    test_crawler_task_step_ignores_unbacked_tool_record_claims()
+    test_crawler_loop_control_finishes_after_rag_success_checkpoint()
     print("LANGGRAPH RUNTIME SCENARIOS PASSED")
     return 0
 
