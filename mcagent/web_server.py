@@ -3113,6 +3113,99 @@ def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> No
     run_crawler_job_graph(config, job, payload, legacy_loop=_run_crawler_job_legacy_loop)
 
 
+def _prepare_crawler_job_plan(
+    *,
+    job: Job,
+    payload: dict[str, Any],
+    config: AppConfig,
+    source: str,
+    question: str,
+    job_setup: CrawlerJobSetupService,
+    job_progress: CrawlerJobProgressService,
+) -> dict[str, Any]:
+    plan: dict[str, Any] = {}
+    if job_setup.is_planner_source(source):
+        session_summary = payload.get("session_summary") if isinstance(payload.get("session_summary"), dict) else None
+        max_tasks = int(payload.get("max_tasks") or 16)
+        if job.stop_requested:
+            _update_job(job, ended_at=time.time(), **job_setup.stopped_update(stage="before_plan"))
+            return {"stopped": True, "plan": plan, "tasks": [], "session_summary": session_summary}
+        if not bool(payload.get("include_completed")):
+            plan = _plan_crawler_with_job_timeout(job, question, config, max_tasks, session_summary)
+            if plan.get("stopped"):
+                _update_job(job, ended_at=time.time(), **job_setup.stopped_update(stage="planning", plan=plan))
+                return {"stopped": True, "plan": plan, "tasks": [], "session_summary": session_summary}
+            tasks = list(plan.get("tasks") or [])
+        else:
+            plan = plan_crawler_tasks(question, config.paths.source_dir, max_tasks=max_tasks, include_completed=True)
+            tasks = list(plan.get("tasks") or [])
+        if job.stop_requested:
+            _update_job(job, ended_at=time.time(), **job_setup.stopped_update(stage="after_plan", plan=plan, tasks=tasks))
+            return {"stopped": True, "plan": plan, "tasks": tasks, "session_summary": session_summary}
+        if not tasks:
+            tasks = _all_source_tasks(question, config, include_completed=True, session_summary=session_summary, max_tasks=max_tasks)
+            plan = job_setup.fallback_plan(tasks=tasks)
+        planned_update = job_progress.planned(topic=str(plan.get("topic") or question), task_count=len(tasks), plan=plan, tasks=tasks)
+        if isinstance(job.result, dict) and isinstance(planned_update.get("result"), dict):
+            for key in ("reuse_signature", "requested_by", "delivery_target", "agent_message"):
+                if key in job.result and key not in planned_update["result"]:
+                    planned_update["result"][key] = job.result[key]
+        _update_job(job, **planned_update)
+        return {"stopped": False, "plan": plan, "tasks": tasks, "session_summary": session_summary}
+    tasks = job_setup.single_source_tasks(source=source, payload=payload, question=question)
+    return {"stopped": False, "plan": plan, "tasks": tasks, "session_summary": None}
+
+
+def _prepare_crawler_task_execution(
+    *,
+    payload: dict[str, Any],
+    task: dict[str, Any],
+    question: str,
+    plan: dict[str, Any],
+    current_index: int,
+    artifact_refs: ArtifactReferenceService,
+    task_preparation: CrawlerTaskPreparationService,
+) -> dict[str, Any]:
+    task_source = _source_alias(str(task.get("source") or "mediawiki"))
+    task_payload = task_preparation.build_payload(base_payload=payload, task=task, question=question, task_source=task_source)
+    task_payload = artifact_refs.resolve_payload_refs(task_payload, list(plan.get("artifact_refs") or []))
+    if task_source == "fetch_url" and _looks_like_archive_url(str(task_payload.get("query") or "")):
+        task_source = "modpack_download"
+        task_payload["source"] = "modpack_download"
+        task_payload["reason"] = (
+            str(task_payload.get("reason") or "")
+            + " Executor routed binary .mrpack/.zip URL to modpack_download because fetch_url only extracts readable text."
+        ).strip()
+        plan.setdefault("agent_reflections", []).append(
+            {
+                "at_index": current_index,
+                "action": "route_archive_url_to_modpack_download",
+                "reason": "Objective tool boundary: fetch_url is for readable text; binary .mrpack/.zip URLs must be probed/downloaded by modpack_download.",
+                "planner": "executor objective routing",
+                "task": {"source": task_source, "query": str(task_payload.get("query") or "")},
+            }
+        )
+    preflight_task = dict(task_payload)
+    preflight_task["reason"] = str(task.get("reason") or task_payload.get("reason") or "")
+    preflight_context = "\n".join(
+        str(item or "")
+        for item in (
+            question,
+            plan.get("topic"),
+            plan.get("target_hint"),
+            plan.get("delivery_target"),
+            plan.get("package_type"),
+            plan.get("coverage_goals"),
+        )
+    )
+    return {
+        "task_source": task_source,
+        "task_payload": task_payload,
+        "preflight_task": preflight_task,
+        "preflight_context": preflight_context,
+    }
+
+
 def _run_crawler_job_legacy_loop(job: Job, payload: dict[str, Any], config: AppConfig) -> None:
     source = _source_alias(str(payload.get("source") or "planner"))
     question = str(payload.get("source_question") or payload.get("question") or payload.get("query") or "").strip()
@@ -3128,37 +3221,20 @@ def _run_crawler_job_legacy_loop(job: Job, payload: dict[str, Any], config: AppC
     job_progress = CrawlerJobProgressService()
     _update_job(job, status="running", started_at=time.time(), summary="Crawler job started.")
     try:
-        plan: dict[str, Any] = {}
-        if job_setup.is_planner_source(source):
-            session_summary = payload.get("session_summary") if isinstance(payload.get("session_summary"), dict) else None
-            max_tasks = int(payload.get("max_tasks") or 16)
-            if job.stop_requested:
-                _update_job(job, ended_at=time.time(), **job_setup.stopped_update(stage="before_plan"))
-                return
-            if not bool(payload.get("include_completed")):
-                plan = _plan_crawler_with_job_timeout(job, question, config, max_tasks, session_summary)
-                if plan.get("stopped"):
-                    _update_job(job, ended_at=time.time(), **job_setup.stopped_update(stage="planning", plan=plan))
-                    return
-                tasks = list(plan.get("tasks") or [])
-            else:
-                plan = plan_crawler_tasks(question, config.paths.source_dir, max_tasks=max_tasks, include_completed=True)
-                tasks = list(plan.get("tasks") or [])
-            if job.stop_requested:
-                _update_job(job, ended_at=time.time(), **job_setup.stopped_update(stage="after_plan", plan=plan, tasks=tasks))
-                return
-            if not tasks:
-                tasks = _all_source_tasks(question, config, include_completed=True, session_summary=session_summary, max_tasks=max_tasks)
-                plan = job_setup.fallback_plan(tasks=tasks)
-            planned_update = job_progress.planned(topic=str(plan.get("topic") or question), task_count=len(tasks), plan=plan, tasks=tasks)
-            if isinstance(job.result, dict) and isinstance(planned_update.get("result"), dict):
-                for key in ("reuse_signature", "requested_by", "delivery_target", "agent_message"):
-                    if key in job.result and key not in planned_update["result"]:
-                        planned_update["result"][key] = job.result[key]
-            _update_job(job, **planned_update)
-        else:
-            session_summary = None
-            tasks = job_setup.single_source_tasks(source=source, payload=payload, question=question)
+        prepared = _prepare_crawler_job_plan(
+            job=job,
+            payload=payload,
+            config=config,
+            source=source,
+            question=question,
+            job_setup=job_setup,
+            job_progress=job_progress,
+        )
+        if prepared.get("stopped"):
+            return
+        plan = prepared["plan"]
+        tasks = prepared["tasks"]
+        session_summary = prepared["session_summary"]
         task_results: list[dict[str, Any]] = []
         success_count = 0
         candidate_count = 0
@@ -3336,38 +3412,19 @@ def _run_crawler_job_legacy_loop(job: Job, payload: dict[str, Any], config: AppC
                 plan.setdefault("agent_reflections", []).append(runtime_step.initial_llm_plan_entry(task=tasks[index]))
             task = tasks[index]
             index += 1
-            task_source = _source_alias(str(task.get("source") or "mediawiki"))
-            task_payload = task_preparation.build_payload(base_payload=payload, task=task, question=question, task_source=task_source)
-            task_payload = artifact_refs.resolve_payload_refs(task_payload, list(plan.get("artifact_refs") or []))
-            if task_source == "fetch_url" and _looks_like_archive_url(str(task_payload.get("query") or "")):
-                task_source = "modpack_download"
-                task_payload["source"] = "modpack_download"
-                task_payload["reason"] = (
-                    str(task_payload.get("reason") or "")
-                    + " Executor routed binary .mrpack/.zip URL to modpack_download because fetch_url only extracts readable text."
-                ).strip()
-                plan.setdefault("agent_reflections", []).append(
-                    {
-                        "at_index": index,
-                        "action": "route_archive_url_to_modpack_download",
-                        "reason": "Objective tool boundary: fetch_url is for readable text; binary .mrpack/.zip URLs must be probed/downloaded by modpack_download.",
-                        "planner": "executor objective routing",
-                        "task": {"source": task_source, "query": str(task_payload.get("query") or "")},
-                    }
-                )
-            preflight_task = dict(task_payload)
-            preflight_task["reason"] = str(task.get("reason") or task_payload.get("reason") or "")
-            preflight_context = "\n".join(
-                str(item or "")
-                for item in (
-                    question,
-                    plan.get("topic"),
-                    plan.get("target_hint"),
-                    plan.get("delivery_target"),
-                    plan.get("package_type"),
-                    plan.get("coverage_goals"),
-                )
+            prepared_task = _prepare_crawler_task_execution(
+                payload=payload,
+                task=task,
+                question=question,
+                plan=plan,
+                current_index=index,
+                artifact_refs=artifact_refs,
+                task_preparation=task_preparation,
             )
+            task_source = prepared_task["task_source"]
+            task_payload = prepared_task["task_payload"]
+            preflight_task = prepared_task["preflight_task"]
+            preflight_context = prepared_task["preflight_context"]
             preflight_result = task_preparation.blocked_preflight_result(
                 task_source=task_source,
                 task=preflight_task,

@@ -4535,3 +4535,31 @@ These contracts are not semantic routers. They only expose facts and capability 
 1. MCagentGraph visits `mcagent.prepare_local_retrieval` and exposes local-only retrieval boundaries.
 2. CrawlerAgentGraph visits `crawler.prepare_mission_contract` and preserves `delivery_target=MCagent/RAG`.
 3. CrawlerJobGraph writes `job_contract` into `crawler_job_graph_runtime`.
+
+## 2026-06-07 Stage 39: Crawler Job Planning And Task Preparation Extraction
+
+Stage 39 starts reducing the size of `_run_crawler_job_legacy_loop()` itself.
+
+### Implemented Changes
+
+1. Extracted `_prepare_crawler_job_plan()`.
+   - Handles planner source vs single-source job setup.
+   - Preserves stopped-job behavior.
+   - Preserves reuse metadata in the planned job result.
+   - Returns objective `plan`, `tasks`, and `session_summary` to the execution loop.
+2. Extracted `_prepare_crawler_task_execution()`.
+   - Builds task payload.
+   - Resolves artifact references.
+   - Applies the objective binary archive boundary: `.mrpack/.zip` URLs are routed from `fetch_url` to `modpack_download`.
+   - Builds preflight task/context for the capability preflight layer.
+
+### Boundary
+
+These helpers do not judge whether evidence is useful or sufficient. They only prepare objective execution inputs and record objective tool-boundary corrections. CrawlerAgent reflection and review still own semantic decisions.
+
+### Tests
+
+`tests/langgraph_runtime_scenarios.py` now verifies:
+
+1. `_prepare_crawler_job_plan()` returns reusable plan/tasks/session facts and preserves job reuse metadata.
+2. `_prepare_crawler_task_execution()` routes archive URLs to `modpack_download` and records the objective routing reflection.

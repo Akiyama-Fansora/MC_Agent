@@ -21,6 +21,7 @@ from mcagent.graphs import dispatch_agent_message_graph  # noqa: E402
 from mcagent.graphs import runtime as graph_runtime_module  # noqa: E402
 from mcagent.graphs.crawler_job import run_crawler_job_graph  # noqa: E402
 from mcagent.session_state import DEFAULT_SESSION_STORE  # noqa: E402
+import mcagent.web_server as web_server  # noqa: E402
 
 
 def make_temp_config(root: Path) -> AppConfig:
@@ -257,12 +258,74 @@ def test_crawler_background_job_enters_langgraph_runtime() -> None:
     assert_true("job_graph_contract_owner", contract.get("decision_owner") == "CrawlerAgent LLM", str(contract))
 
 
+def test_crawler_job_plan_preparation_is_objective_and_reusable() -> None:
+    class FakeJob:
+        id = "prepare-plan"
+        result: dict[str, Any] | None = {"reuse_signature": "reuse-1", "requested_by": "unit"}
+        stop_requested = False
+        ended_at = None
+
+    original_plan = web_server._plan_crawler_with_job_timeout
+    try:
+        web_server._plan_crawler_with_job_timeout = lambda *_args, **_kwargs: {  # type: ignore[assignment]
+            "topic": "unit topic",
+            "tasks": [{"source": "web_discovery", "query": "unit query"}],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            job = FakeJob()
+            prepared = web_server._prepare_crawler_job_plan(
+                job=job,
+                payload={"source": "planner", "session_summary": {"delivery_target": "human"}},
+                config=make_temp_config(Path(tmp)),
+                source="planner",
+                question="unit question",
+                job_setup=web_server.CrawlerJobSetupService(),
+                job_progress=web_server.CrawlerJobProgressService(),
+            )
+    finally:
+        web_server._plan_crawler_with_job_timeout = original_plan  # type: ignore[assignment]
+    assert_true("prepared_not_stopped", prepared.get("stopped") is False, str(prepared))
+    assert_true("prepared_tasks", prepared.get("tasks") == [{"source": "web_discovery", "query": "unit query"}], str(prepared))
+    assert_true("prepared_session_summary", prepared.get("session_summary") == {"delivery_target": "human"}, str(prepared))
+    assert_true("job_planned_result_keeps_reuse", (job.result or {}).get("reuse_signature") == "reuse-1", str(job.result))
+
+    single = web_server._prepare_crawler_job_plan(
+        job=FakeJob(),
+        payload={"source": "fetch_url", "query": "https://example.com"},
+        config=make_temp_config(Path(tempfile.gettempdir())),
+        source="fetch_url",
+        question="fallback question",
+        job_setup=web_server.CrawlerJobSetupService(),
+        job_progress=web_server.CrawlerJobProgressService(),
+    )
+    assert_true("single_source_tasks", single.get("tasks") == [{"source": "fetch_url", "query": "https://example.com", "reason": "single source request"}], str(single))
+
+
+def test_crawler_task_preparation_routes_archive_urls_objectively() -> None:
+    plan: dict[str, Any] = {"topic": "archive test"}
+    prepared = web_server._prepare_crawler_task_execution(
+        payload={"session_id": "task-prep"},
+        task={"source": "fetch_url", "query": "https://example.com/demo.mrpack", "reason": "download archive"},
+        question="download archive",
+        plan=plan,
+        current_index=1,
+        artifact_refs=web_server.ArtifactReferenceService(),
+        task_preparation=web_server.CrawlerTaskPreparationService(),
+    )
+    assert_true("archive_routed_to_download", prepared.get("task_source") == "modpack_download", str(prepared))
+    assert_true("archive_payload_source", prepared.get("task_payload", {}).get("source") == "modpack_download", str(prepared))
+    reflections = plan.get("agent_reflections") or []
+    assert_true("archive_reflection_recorded", any(item.get("action") == "route_archive_url_to_modpack_download" for item in reflections), str(reflections))
+
+
 def main() -> int:
     test_conversation_graph_routes_only_by_message_target()
     test_conversation_graph_can_dispatch_to_crawler_node()
     test_non_streaming_graph_reuses_checkpointed_runtime_without_reusing_emit()
     test_agent_subgraphs_load_session_memory_context()
     test_crawler_background_job_enters_langgraph_runtime()
+    test_crawler_job_plan_preparation_is_objective_and_reusable()
+    test_crawler_task_preparation_routes_archive_urls_objectively()
     print("LANGGRAPH RUNTIME SCENARIOS PASSED")
     return 0
 
