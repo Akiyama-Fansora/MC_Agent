@@ -8503,6 +8503,138 @@ def _handle_status_route(
     return executor.status(run)
 
 
+def _handle_temporary_extract_route(
+    *,
+    config: AppConfig,
+    agent: str,
+    model: str,
+    temperature: float,
+    max_tokens: int | None,
+    original_question: str,
+    question: str,
+    tool_decision: dict[str, Any],
+    route_confirmation: dict[str, Any],
+    executor: AgentToolExecutor,
+    run: Any,
+    session_summary: dict[str, Any],
+    trace: list[dict[str, Any]],
+    add_trace: Any,
+) -> dict[str, Any]:
+    collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
+    extract_confirmation = _reuse_route_confirmation(
+        route_confirmation,
+        proposed_tool="temporary_extract",
+        proposed_goal=f"临时读取并总结公开网页，不保存到本地：{collection_question}",
+    )
+    add_trace("extract", "next_step_confirmed", extract_confirmation)
+    if not bool(extract_confirmation.get("proceed", True)):
+        suggested_tool = str(extract_confirmation.get("suggested_tool") or extract_confirmation.get("tool") or "").strip()
+        if suggested_tool == "delegate_crawler":
+            add_trace(
+                "extract",
+                "delegate_suggestion_not_executed",
+                {
+                    "reason": "Temporary extract confirmation suggested delegate_crawler, but runtime will not add a persistent side effect after the Agent selected temporary_extract.",
+                    "required_agent_selection": "delegate_crawler or planned_workflow with delegate_crawler",
+                },
+            )
+        return executor.direct_answer(run, session_summary=session_summary, mode="direct_after_extract_cancelled")
+
+    extractor = CrawlerTemporaryExtractService()
+
+    def summarize(question_text: str, url: str, page_text: str) -> str:
+        return _generate_temporary_extract_summary(
+            config,
+            question_text,
+            url,
+            page_text,
+            model,
+            temperature,
+            max_tokens,
+        )
+
+    def review_summarize(question_text: str, url: str, page_text: str, first_answer: str, missing_terms: list[str], excerpt: str) -> str:
+        add_trace(
+            "extract",
+            "temporary_summary_reviewing",
+            {
+                "missing_terms": missing_terms,
+                "first_answer_chars": len(first_answer),
+                "excerpt_chars": len(excerpt),
+                "saved_to_local": False,
+            },
+        )
+        return _review_temporary_extract_summary(
+            config,
+            question_text,
+            url,
+            page_text,
+            first_answer,
+            missing_terms,
+            excerpt,
+            model,
+            temperature,
+            max_tokens,
+        )
+
+    def choose_url(question_text: str, target_text: str, candidates: list[dict[str, Any]]) -> str:
+        add_trace(
+            "extract",
+            "temporary_url_discovering",
+            {
+                "candidate_count": len(candidates),
+                "candidates": [
+                    {"title": str(item.get("title") or "")[:120], "url": item.get("url")}
+                    for item in candidates[:5]
+                ],
+                "saved_to_local": False,
+            },
+        )
+        selected_url = _choose_temporary_extract_url(
+            config,
+            question=question_text,
+            collection_target=target_text,
+            candidates=candidates,
+            model=model,
+            temperature=temperature,
+        )
+        add_trace("extract", "temporary_url_selected", {"url": selected_url, "saved_to_local": False})
+        return selected_url
+
+    try:
+        result = extractor.run(
+            question=original_question,
+            collection_target=collection_question,
+            summarize=summarize,
+            review_summarize=review_summarize,
+            choose_url=choose_url,
+        )
+        add_trace(
+            "extract",
+            "temporary_url_extracted",
+            {
+                "url": result.url,
+                "status_code": result.status_code,
+                "content_type": result.content_type,
+                "text_chars": result.text_chars,
+                "saved_to_local": False,
+            },
+        )
+        return _with_trace(result.to_response(agent=agent), trace)
+    except Exception as exc:  # noqa: BLE001
+        add_trace("extract", "temporary_url_failed", {"error": f"{type(exc).__name__}: {exc}", "saved_to_local": False})
+        return _with_trace(
+            {
+                "answer": f"CrawlerAgent 临时读取网页失败，且没有保存到本地。失败原因：{type(exc).__name__}: {exc}",
+                "sources": [],
+                "context": "",
+                "agent": agent,
+                "temporary_extract": {"saved_to_local": False, "error": f"{type(exc).__name__}: {exc}"},
+            },
+            trace,
+        )
+
+
 def _reuse_route_confirmation(route_confirmation: dict[str, Any], *, proposed_tool: str, proposed_goal: str) -> dict[str, Any]:
     value = dict(route_confirmation or {})
     current_tool = str(value.get("tool") or value.get("suggested_tool") or "").strip()
@@ -9402,113 +9534,22 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
         add_trace("done", "response_ready", {"sources": len(source_dicts), "planned_workflow_executed": True})
         return _with_trace(response, trace)
     if route_intent == "temporary_extract":
-        collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
-        extract_confirmation = _reuse_route_confirmation(
-            route_confirmation,
-            proposed_tool="temporary_extract",
-            proposed_goal=f"临时读取并总结公开网页，不保存到本地：{collection_question}",
+        return _handle_temporary_extract_route(
+            config=config,
+            agent=agent,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            original_question=original_question,
+            question=question,
+            tool_decision=tool_decision,
+            route_confirmation=route_confirmation,
+            executor=executor,
+            run=run,
+            session_summary=session_summary,
+            trace=trace,
+            add_trace=add_trace,
         )
-        add_trace("extract", "next_step_confirmed", extract_confirmation)
-        if not bool(extract_confirmation.get("proceed", True)):
-            suggested_tool = str(extract_confirmation.get("suggested_tool") or extract_confirmation.get("tool") or "").strip()
-            if suggested_tool == "delegate_crawler":
-                route_intent = "delegate_crawler"
-            else:
-                return executor.direct_answer(run, session_summary=session_summary, mode="direct_after_extract_cancelled")
-        else:
-            extractor = CrawlerTemporaryExtractService()
-
-            def summarize(question_text: str, url: str, page_text: str) -> str:
-                return _generate_temporary_extract_summary(
-                    config,
-                    question_text,
-                    url,
-                    page_text,
-                    model,
-                    temperature,
-                    max_tokens,
-                )
-
-            def review_summarize(question_text: str, url: str, page_text: str, first_answer: str, missing_terms: list[str], excerpt: str) -> str:
-                add_trace(
-                    "extract",
-                    "temporary_summary_reviewing",
-                    {
-                        "missing_terms": missing_terms,
-                        "first_answer_chars": len(first_answer),
-                        "excerpt_chars": len(excerpt),
-                        "saved_to_local": False,
-                    },
-                )
-                return _review_temporary_extract_summary(
-                    config,
-                    question_text,
-                    url,
-                    page_text,
-                    first_answer,
-                    missing_terms,
-                    excerpt,
-                    model,
-                    temperature,
-                    max_tokens,
-                )
-
-            def choose_url(question_text: str, target_text: str, candidates: list[dict[str, Any]]) -> str:
-                add_trace(
-                    "extract",
-                    "temporary_url_discovering",
-                    {
-                        "candidate_count": len(candidates),
-                        "candidates": [
-                            {"title": str(item.get("title") or "")[:120], "url": item.get("url")}
-                            for item in candidates[:5]
-                        ],
-                        "saved_to_local": False,
-                    },
-                )
-                selected_url = _choose_temporary_extract_url(
-                    config,
-                    question=question_text,
-                    collection_target=target_text,
-                    candidates=candidates,
-                    model=model,
-                    temperature=temperature,
-                )
-                add_trace("extract", "temporary_url_selected", {"url": selected_url, "saved_to_local": False})
-                return selected_url
-
-            try:
-                result = extractor.run(
-                    question=original_question,
-                    collection_target=collection_question,
-                    summarize=summarize,
-                    review_summarize=review_summarize,
-                    choose_url=choose_url,
-                )
-                add_trace(
-                    "extract",
-                    "temporary_url_extracted",
-                    {
-                        "url": result.url,
-                        "status_code": result.status_code,
-                        "content_type": result.content_type,
-                        "text_chars": result.text_chars,
-                        "saved_to_local": False,
-                    },
-                )
-                return _with_trace(result.to_response(agent=agent), trace)
-            except Exception as exc:  # noqa: BLE001
-                add_trace("extract", "temporary_url_failed", {"error": f"{type(exc).__name__}: {exc}", "saved_to_local": False})
-                return _with_trace(
-                    {
-                        "answer": f"CrawlerAgent 临时读取网页失败，且没有保存到本地。失败原因：{type(exc).__name__}: {exc}",
-                        "sources": [],
-                        "context": "",
-                        "agent": agent,
-                        "temporary_extract": {"saved_to_local": False, "error": f"{type(exc).__name__}: {exc}"},
-                    },
-                    trace,
-                )
     if route_intent == "delegate_crawler":
         collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
         if collection_request_agent_message:
