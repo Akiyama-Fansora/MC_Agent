@@ -53,6 +53,7 @@ from .crawler_job_progress_service import CrawlerJobProgressService
 from .crawler_job_setup_service import CrawlerJobSetupService
 from .crawler_planner_wait_service import CrawlerPlannerWaitService
 from .evidence_service import EvidenceWorkflowService
+from .graphs import dispatch_agent_message_graph
 from .ingest import IngestStats, ingest_exports
 from .job_view_service import JobReadableViewService
 from .llm import OllamaOpenAIClient, OpenAICompatibleClient
@@ -8079,17 +8080,26 @@ def _send_agent_message(
 ) -> dict[str, Any]:
     """Deliver one From-Content-To message through the normal Agent runtime."""
 
-    message = make_agent_message(
-        from_agent,
-        content,
-        to_agent,
+    return dispatch_agent_message_graph(
+        config,
+        payload,
+        from_agent=from_agent,
+        content=content,
+        to_agent=to_agent,
+        emit=emit,
         intent=intent,
         conversation_id=conversation_id,
         reply_to=reply_to,
         requires_reply=requires_reply,
         metadata=metadata,
+        legacy_delivery=_legacy_deliver_agent_message,
     )
-    return _chat_impl(config, _agent_message_payload(payload, message), emit=emit)
+
+
+def _legacy_deliver_agent_message(config: AppConfig, payload: dict[str, Any], emit: Any | None = None) -> dict[str, Any]:
+    """Run the current Agent implementation as a LangGraph delivery node."""
+
+    return _chat_impl(config, payload, emit=emit)
 
 
 def _is_context_only_agent_message(message: AgentMessage) -> bool:

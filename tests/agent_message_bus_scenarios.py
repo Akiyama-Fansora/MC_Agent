@@ -173,10 +173,19 @@ def test_production_entries_do_not_bypass_message_bus_runtime() -> None:
         "web_server_chat_impl_refs",
         chat_impl_refs,
         [
-            "return _chat_impl(config, _agent_message_payload(payload, message), emit=emit)",
+            "return _chat_impl(config, payload, emit=emit)",
             "def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = None) -> dict[str, Any]:",
         ],
     )
+    send_start = web_source.index("def _send_agent_message")
+    send_end = web_source.index("\ndef _legacy_deliver_agent_message", send_start)
+    send_body = web_source[send_start:send_end]
+    assert_true("message_bus_enters_langgraph", "dispatch_agent_message_graph(" in send_body)
+    assert_true("message_bus_uses_legacy_node", "legacy_delivery=_legacy_deliver_agent_message" in send_body)
+    legacy_start = web_source.index("def _legacy_deliver_agent_message")
+    legacy_end = web_source.index("\ndef _is_context_only_agent_message", legacy_start)
+    legacy_body = web_source[legacy_start:legacy_end]
+    assert_true("legacy_delivery_is_internal_graph_node", "return _chat_impl(config, payload, emit=emit)" in legacy_body)
     assert_true("fastapi_no_chat_impl", "_chat_impl(" not in fastapi_source)
     assert_true("chat_wrapper_is_bus_only", "executor.submit(_send_agent_message, config, payload, **fields)" in web_source)
     assert_true(

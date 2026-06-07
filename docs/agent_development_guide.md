@@ -4318,3 +4318,60 @@ Five-direction live testing must now check not only final success, but also proc
 5. D4 must continue to at least one non-`mcagent_context` external collection task after the MCagent reply.
 6. UI testing must confirm the job card shows the Agent-to-Agent exchange and any fallback warning clearly.
 
+## 2026-06-07 Stage 32: LangGraph Runtime Skeleton For The Dual-Agent System
+
+This stage starts the large LangGraph migration requested by the user. It is intentionally not presented as the final refactor: the current legacy execution logic still lives behind graph nodes, but every production `From-Content-To` message now enters a LangGraph conversation runtime first.
+
+### Implemented Changes
+
+1. Added `langgraph>=0.2` to `requirements.txt`.
+2. Added `mcagent/graphs/`:
+   - `runtime.py`: `ConversationGraph`, the non-agent router.
+   - `mcagent.py`: `MCagentGraph` shell with a local-only capability boundary.
+   - `crawler.py`: `CrawlerAgentGraph` shell with a general-domain crawler capability boundary.
+   - `state.py` and `agent_state.py`: typed graph state records.
+3. `_send_agent_message()` remains the only production communication primitive. It now calls `dispatch_agent_message_graph()`.
+4. `ConversationGraph` routes only by `AgentMessage.to_agent`. It must not inspect keywords or decide semantic tool use.
+5. The target subgraph then runs:
+   - `MCagentGraph` for `to_agent=MCagent`;
+   - `CrawlerAgentGraph` for `to_agent=CrawlerAgent`.
+6. The old `_chat_impl()` is now only reachable through `_legacy_deliver_agent_message()`, which is the temporary graph node used during migration.
+7. Responses now include:
+   - `graph_runtime`: conversation graph node visits and events.
+   - `agent_graph_runtime`: target agent subgraph node visits, events, and declared capability boundary.
+8. Non-streaming graph runtimes reuse a compiled graph and in-memory checkpointer per config/legacy pair. Streaming calls build a fresh graph so an old SSE `emit` callback is never reused across requests.
+
+### Important Boundary
+
+This stage does not yet mean that all old procedural logic has been decomposed. It means production message delivery is now graph-shaped and auditable. The next migration steps must split the legacy nodes into real graph nodes:
+
+1. MCagent:
+   - receive;
+   - load memory;
+   - deliberate;
+   - local retrieve;
+   - evidence review;
+   - answer or build AgentMessage handoff;
+   - save memory.
+2. CrawlerAgent:
+   - receive;
+   - understand mission;
+   - build source graph;
+   - plan tool tasks;
+   - preflight objective tool call;
+   - execute objective tool;
+   - LLM review observation;
+   - reflect/retry;
+   - save artifact or ingest;
+   - final report.
+
+### Test Coverage Added
+
+`tests/langgraph_runtime_scenarios.py` verifies:
+
+1. Conversation routing follows `to_agent`, not words inside the message content.
+2. MCagent dispatch visits `mcagent_graph.legacy_delivery`, exposes `MCagentGraph`, and declares no web/download capability.
+3. Crawler dispatch visits `crawler_graph.legacy_delivery`, exposes `CrawlerAgentGraph`, and declares general crawler capability groups instead of Minecraft-only tooling.
+4. Non-streaming graph cache is reused while streaming emit callbacks are not cached.
+
+Existing message-bus tests were updated so they now require `_send_agent_message()` to enter `dispatch_agent_message_graph()` and require `_chat_impl()` to remain behind the legacy graph node.

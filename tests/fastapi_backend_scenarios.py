@@ -141,6 +141,12 @@ def test_fastapi_agent_message_endpoint_dispatches() -> None:
     assert_true("agent_message_reply", reply.get("from_agent") == "CrawlerAgent" and reply.get("to_agent") == "User")
     traces = body.get("trace") or []
     assert_true("agent_message_trace", any(step.get("stage") == "message" and step.get("status") == "received" for step in traces))
+    graph_runtime = body.get("graph_runtime") or {}
+    assert_true("agent_message_graph_runtime", graph_runtime.get("runtime") == "langgraph", str(graph_runtime))
+    assert_true("agent_message_graph_target", graph_runtime.get("active_agent") == "crawler_agent", str(graph_runtime))
+    assert_true("agent_message_graph_node", "crawler_graph.legacy_delivery" in graph_runtime.get("visited_nodes", []), str(graph_runtime))
+    agent_runtime = body.get("agent_graph_runtime") or {}
+    assert_true("agent_message_agent_graph", agent_runtime.get("agent_graph") == "CrawlerAgentGraph", str(agent_runtime))
 
 
 def main() -> int:
