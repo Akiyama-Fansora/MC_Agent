@@ -318,6 +318,26 @@ def test_crawler_task_preparation_routes_archive_urls_objectively() -> None:
     assert_true("archive_reflection_recorded", any(item.get("action") == "route_archive_url_to_modpack_download" for item in reflections), str(reflections))
 
 
+def test_crawler_task_result_metadata_is_recorded_objectively() -> None:
+    result = {"returncode": 1, "output": "network error", "export_dir": ""}
+    plan: dict[str, Any] = {}
+    records = web_server._record_crawler_task_result_metadata(
+        result=result,
+        task={"reason": "unit reason"},
+        task_source="fetch_url",
+        task_payload={"query": "https://example.com/missing"},
+        question="unit question",
+        plan=plan,
+        result_index=1,
+        artifact_refs=web_server.ArtifactReferenceService(),
+    )
+    assert_true("metadata_records_zero", records == 0, str(result))
+    assert_true("metadata_query", result.get("query") == "https://example.com/missing", str(result))
+    assert_true("metadata_reason", result.get("reason") == "unit reason", str(result))
+    stats = result.get("manifest_stats") or {}
+    assert_true("metadata_inline_failure_stats", stats == {"records": 0, "skipped": 0, "errors": 0}, str(result))
+
+
 def main() -> int:
     test_conversation_graph_routes_only_by_message_target()
     test_conversation_graph_can_dispatch_to_crawler_node()
@@ -326,6 +346,7 @@ def main() -> int:
     test_crawler_background_job_enters_langgraph_runtime()
     test_crawler_job_plan_preparation_is_objective_and_reusable()
     test_crawler_task_preparation_routes_archive_urls_objectively()
+    test_crawler_task_result_metadata_is_recorded_objectively()
     print("LANGGRAPH RUNTIME SCENARIOS PASSED")
     return 0
 

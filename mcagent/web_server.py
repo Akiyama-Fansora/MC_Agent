@@ -3206,6 +3206,54 @@ def _prepare_crawler_task_execution(
     }
 
 
+def _record_crawler_task_result_metadata(
+    *,
+    result: dict[str, Any],
+    task: dict[str, Any],
+    task_source: str,
+    task_payload: dict[str, Any],
+    question: str,
+    plan: dict[str, Any],
+    result_index: int,
+    artifact_refs: ArtifactReferenceService,
+) -> int:
+    result["query"] = str(task_payload.get("query") or "")
+    result["reason"] = str(task.get("reason") or "")
+    result["manifest_stats"] = _crawler_manifest_stats(str(result.get("export_dir") or ""))
+    if not result.get("export_dir") and int(result.get("returncode") or 0) != 0:
+        result["manifest_stats"] = _inline_failure_manifest_stats(result)
+    new_artifact_refs = artifact_refs.collect_from_result(result=result, result_index=result_index)
+    if new_artifact_refs:
+        compact_refs = artifact_refs.compact_refs(new_artifact_refs, limit=12)
+        result["artifact_refs"] = compact_refs
+        plan.setdefault("artifact_refs", [])
+        plan["artifact_refs"].extend(compact_refs)
+        plan["artifact_refs"] = plan["artifact_refs"][-60:]
+    records_loaded = int(result["manifest_stats"].get("records") or 0)
+    existing_evidence = (
+        _crawler_reusable_duplicate_evidence(
+            str(result.get("export_dir") or ""),
+            question,
+            str(task_payload.get("query") or ""),
+            plan,
+        )
+        if result["returncode"] == 0 and records_loaded == 0 and int(result["manifest_stats"].get("skipped") or 0) > 0
+        else {"matched": False, "records": []}
+    )
+    if existing_evidence.get("matched"):
+        result["existing_evidence_reused"] = existing_evidence
+    elif existing_evidence.get("reason") or existing_evidence.get("notes") or existing_evidence.get("cleanup_action"):
+        result["existing_evidence_review"] = existing_evidence
+    if result["returncode"] == 0 and records_loaded > 0 and task_source not in {"modpack_download"}:
+        result["topic_validation"] = _crawler_topic_match(
+            str(result.get("export_dir") or ""),
+            question,
+            str(task_payload.get("query") or ""),
+            plan,
+        )
+    return records_loaded
+
+
 def _run_crawler_job_legacy_loop(job: Job, payload: dict[str, Any], config: AppConfig) -> None:
     source = _source_alias(str(payload.get("source") or "planner"))
     question = str(payload.get("source_question") or payload.get("question") or payload.get("query") or "").strip()
@@ -3470,36 +3518,16 @@ def _run_crawler_job_legacy_loop(job: Job, payload: dict[str, Any], config: AppC
                 result = _run_mcagent_context_tool(config, task_payload, plan, session_summary)
             else:
                 result = _run_crawler_command(_round_command(task_source, task_payload), task_source, job=job)
-            result["query"] = str(task_payload.get("query") or "")
-            result["reason"] = str(task.get("reason") or "")
-            result["manifest_stats"] = _crawler_manifest_stats(str(result.get("export_dir") or ""))
-            if not result.get("export_dir") and int(result.get("returncode") or 0) != 0:
-                result["manifest_stats"] = _inline_failure_manifest_stats(result)
-            new_artifact_refs = artifact_refs.collect_from_result(result=result, result_index=len(task_results) + 1)
-            if new_artifact_refs:
-                compact_refs = artifact_refs.compact_refs(new_artifact_refs, limit=12)
-                result["artifact_refs"] = compact_refs
-                plan.setdefault("artifact_refs", [])
-                plan["artifact_refs"].extend(compact_refs)
-                plan["artifact_refs"] = plan["artifact_refs"][-60:]
-            records_loaded = int(result["manifest_stats"].get("records") or 0)
-            existing_evidence = _crawler_reusable_duplicate_evidence(
-                str(result.get("export_dir") or ""),
-                question,
-                str(task_payload.get("query") or ""),
-                plan,
-            ) if result["returncode"] == 0 and records_loaded == 0 and int(result["manifest_stats"].get("skipped") or 0) > 0 else {"matched": False, "records": []}
-            if existing_evidence.get("matched"):
-                result["existing_evidence_reused"] = existing_evidence
-            elif existing_evidence.get("reason") or existing_evidence.get("notes") or existing_evidence.get("cleanup_action"):
-                result["existing_evidence_review"] = existing_evidence
-            if result["returncode"] == 0 and records_loaded > 0 and task_source not in {"modpack_download"}:
-                result["topic_validation"] = _crawler_topic_match(
-                    str(result.get("export_dir") or ""),
-                    question,
-                    str(task_payload.get("query") or ""),
-                    plan,
-                )
+            records_loaded = _record_crawler_task_result_metadata(
+                result=result,
+                task=task,
+                task_source=task_source,
+                task_payload=task_payload,
+                question=question,
+                plan=plan,
+                result_index=len(task_results) + 1,
+                artifact_refs=artifact_refs,
+            )
             accounting = result_accounting.apply(
                 result=result,
                 task_source=task_source,

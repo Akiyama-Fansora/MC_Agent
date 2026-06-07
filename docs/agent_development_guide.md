@@ -4563,3 +4563,27 @@ These helpers do not judge whether evidence is useful or sufficient. They only p
 
 1. `_prepare_crawler_job_plan()` returns reusable plan/tasks/session facts and preserves job reuse metadata.
 2. `_prepare_crawler_task_execution()` routes archive URLs to `modpack_download` and records the objective routing reflection.
+
+## 2026-06-07 Stage 40: Crawler Task Result Metadata Extraction
+
+Stage 40 removes another objective block from `_run_crawler_job_legacy_loop()`.
+
+### Implemented Changes
+
+1. Added `_record_crawler_task_result_metadata()`.
+2. The helper records:
+   - query;
+   - reason;
+   - manifest stats;
+   - artifact refs;
+   - duplicate reusable evidence review;
+   - topic validation for non-archive successful records.
+3. The main crawler loop now calls this helper before result accounting and observation classification.
+
+### Boundary
+
+This helper does not decide whether the source is good enough, whether to retry, or whether to ingest. It records objective tool-result metadata so later Crawler reflection/review nodes can consume a cleaner observation surface.
+
+### Tests
+
+`tests/langgraph_runtime_scenarios.py` verifies the helper preserves query/reason and attaches manifest stats for a failed objective result.
