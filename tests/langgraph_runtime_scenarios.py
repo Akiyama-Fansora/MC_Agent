@@ -924,6 +924,69 @@ def test_crawler_action_plan_delegate_route_starts_selected_job() -> None:
     assert_true("selected_action_plan_visible", (result.get("delegation") or {}).get("selected_action_plan") == action_plan, str(result))
 
 
+def test_mcagent_inventory_planned_workflow_delegates_only_selected_step() -> None:
+    calls: list[dict[str, Any]] = []
+
+    class Plan:
+        requested_by = "user_via_mcagent"
+        delivery_target = "MCagent/RAG"
+        collection_question = "collect missing local corpus evidence"
+        handoff_brief = "MCagent selected inventory first, then delegate."
+
+    def fake_inventory(_config, _question):  # noqa: ANN001
+        return {
+            "answer": "本地资料盘点：已有基础介绍，缺少进阶玩法资料。",
+            "sources": [{"title": "local inventory", "document_id": 1}],
+            "context": "inventory context",
+            "agent": "mcagent_rag",
+        }
+
+    def fake_prepare(*_args, **kwargs):  # noqa: ANN001
+        calls.append(dict(kwargs))
+        job = web_server.Job(id="inventory-plan-job", kind="crawler", title=kwargs.get("collection_question", ""), status="queued", summary="queued")
+        return web_server.CrawlerDelegationRun(plan=Plan(), job=job, created=True, note="\n\njob started")
+
+    trace: list[dict[str, Any]] = []
+
+    def add_trace(stage, status, detail=None):  # noqa: ANN001
+        item = {"stage": stage, "status": status, "detail": detail}
+        trace.append(item)
+        return item
+
+    original_inventory = web_server._local_corpus_inventory_answer
+    original_prepare = web_server._prepare_and_start_crawler_delegation
+    try:
+        web_server._local_corpus_inventory_answer = fake_inventory  # type: ignore[assignment]
+        web_server._prepare_and_start_crawler_delegation = fake_prepare  # type: ignore[assignment]
+        action_plan = [
+            {"step": 1, "tool": "local_corpus_inventory", "goal": "inspect local coverage"},
+            {"step": 2, "tool": "delegate_crawler", "goal": "collect missing evidence"},
+        ]
+        result = web_server._handle_mcagent_inventory_planned_workflow_route(
+            config=make_temp_config(Path(tempfile.gettempdir())),
+            payload={"delivery_target": "MCagent/RAG"},
+            agent="mcagent_rag",
+            model="fake",
+            original_question="本地有哪些资料，缺的让 Crawler 补",
+            question="本地有哪些资料，缺的让 Crawler 补",
+            tool_decision={"tool": "planned_workflow", "collection_target": "collect missing local corpus evidence", "delivery_target": "MCagent/RAG"},
+            action_plan=action_plan,
+            session_summary={},
+            trace=trace,
+            add_trace=add_trace,
+        )
+    finally:
+        web_server._local_corpus_inventory_answer = original_inventory  # type: ignore[assignment]
+        web_server._prepare_and_start_crawler_delegation = original_prepare  # type: ignore[assignment]
+    statuses = [(item.get("stage"), item.get("status")) for item in result.get("trace") or []]
+    assert_true("inventory_step_visible", ("plan", "executing_agent_selected_step") in statuses, str(statuses))
+    assert_true("prepare_called_once", len(calls) == 1, str(calls))
+    assert_true("action_plan_forwarded", calls[0].get("action_plan") == action_plan, str(calls[0]))
+    assert_true("gap_summary_from_inventory", "缺少进阶玩法资料" in str(calls[0].get("gap_summary") or ""), str(calls[0]))
+    assert_true("job_returned", (result.get("job") or {}).get("id") == "inventory-plan-job", str(result))
+    assert_true("planned_workflow_trace", any((item.get("detail") or {}).get("planned_workflow_executed") for item in result.get("trace") or []), str(result.get("trace")))
+
+
 def main() -> int:
     test_conversation_graph_routes_only_by_message_target()
     test_conversation_graph_can_dispatch_to_crawler_node()
@@ -945,6 +1008,7 @@ def main() -> int:
     test_inventory_route_confirmation_cannot_upgrade_to_delegate()
     test_delegate_route_helper_respects_confirmation_cancel()
     test_crawler_action_plan_delegate_route_starts_selected_job()
+    test_mcagent_inventory_planned_workflow_delegates_only_selected_step()
     print("LANGGRAPH RUNTIME SCENARIOS PASSED")
     return 0
 

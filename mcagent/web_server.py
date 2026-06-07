@@ -8747,6 +8747,129 @@ def _handle_local_corpus_inventory_route(
     return _with_trace(inventory, trace)
 
 
+def _handle_mcagent_inventory_planned_workflow_route(
+    *,
+    config: AppConfig,
+    payload: dict[str, Any],
+    agent: str,
+    model: str,
+    original_question: str,
+    question: str,
+    tool_decision: dict[str, Any],
+    action_plan: list[dict[str, Any]],
+    session_summary: dict[str, Any],
+    trace: list[dict[str, Any]],
+    add_trace: Any,
+) -> dict[str, Any]:
+    add_trace(
+        "plan",
+        "executing_agent_selected_step",
+        {
+            "tool": "local_corpus_inventory",
+            "reason": "planned_workflow action_plan selected by the Agent; runtime is executing the selected tool rather than substituting a RAG path.",
+        },
+    )
+    inventory = _local_corpus_inventory_answer(config, question)
+    add_trace(
+        "retrieve",
+        "inventory_done",
+        {
+            "sources": len(inventory.get("sources") or []),
+            "context_chars": len(str(inventory.get("context") or "")),
+        },
+    )
+    answer = str(inventory.get("answer") or "").strip()
+    source_dicts = list(inventory.get("sources") or [])
+    context = str(inventory.get("context") or "")
+    if _action_plan_has_tool(action_plan, "crawler_audit"):
+        add_trace(
+            "plan",
+            "executing_agent_selected_step",
+            {
+                "tool": "crawler_audit",
+                "reason": "planned_workflow action_plan selected by the Agent; runtime is reading the objective recent Crawler audit before delegation.",
+            },
+        )
+        audit_answer = _recent_crawler_audit_answer(original_question)
+        if audit_answer:
+            add_trace("audit", "recent_crawler_audit", {"source": "jobs", "job_id": (audit_answer.get("job") or {}).get("id")})
+            audit_text = str(audit_answer.get("answer") or "").strip()
+            if audit_text:
+                answer = answer.rstrip() + "\n\n近期 Crawler 自审摘要：\n" + audit_text
+        else:
+            add_trace("audit", "recent_crawler_audit_missing", {"source": "jobs"})
+
+    delegated_job = None
+    created = False
+    delegated_requested_by = ""
+    delegated_delivery_target = ""
+    delegated_task = ""
+    delegated_handoff_brief = ""
+    if _action_plan_has_tool(action_plan, "delegate_crawler"):
+        collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
+        add_trace(
+            "plan",
+            "executing_agent_selected_step",
+            {
+                "tool": "delegate_crawler",
+                "reason": "planned_workflow action_plan selected by the Agent after local corpus inventory.",
+            },
+        )
+        delegation = _prepare_and_start_crawler_delegation(
+            config,
+            payload,
+            active_agent=agent,
+            model=model,
+            original_question=original_question,
+            current_question=question,
+            collection_question=collection_question,
+            session_summary=session_summary,
+            gap_summary=answer[:4000],
+            planning_instruction=(
+                "MCagent first inspected local corpus coverage because its Agent-selected planned_workflow requested local_corpus_inventory. "
+                "CrawlerAgent should read the inventory summary, decide which gaps are real, collect citeable public/local evidence, self-audit sources, and deliver usable artifacts to MCagent/RAG."
+            ),
+            delivery_target=str(tool_decision.get("delivery_target") or payload.get("delivery_target") or "MCagent/RAG").strip(),
+            add_trace=add_trace,
+            action_plan=action_plan,
+        )
+        delegated_job = delegation.job
+        created = delegation.created
+        delegated_requested_by = delegation.plan.requested_by
+        delegated_delivery_target = delegation.plan.delivery_target
+        delegated_task = delegation.plan.collection_question
+        delegated_handoff_brief = delegation.plan.handoff_brief
+        answer = answer.rstrip() + delegation.note
+
+    plan_text = _format_action_plan_for_user(action_plan)
+    if plan_text and not answer.lstrip().startswith("执行计划："):
+        answer = plan_text + "\n\n" + answer
+    _append_session(payload, original_question, answer, source_dicts)
+    response: dict[str, Any] = {
+        "answer": answer,
+        "sources": source_dicts,
+        "context": context,
+        "agent": agent,
+    }
+    if delegated_job is not None:
+        response["job"] = _job_to_dict(delegated_job)
+        response["collaboration"] = _collaboration_dialog_for(
+            delegated_task or question,
+            delegated_job,
+            created,
+            requested_by=delegated_requested_by or "user_via_mcagent",
+            delivery_target=delegated_delivery_target or "MCagent/RAG",
+        )
+        response["delegation"] = {
+            "requested_by": delegated_requested_by or "user_via_mcagent",
+            "delivery_target": delegated_delivery_target or "MCagent/RAG",
+            "task": delegated_task or str(tool_decision.get("collection_target") or original_question or question).strip(),
+            "handoff_brief": delegated_handoff_brief,
+        }
+    add_trace("done", "response_ready", {"sources": len(source_dicts), "planned_workflow_executed": True})
+    return _with_trace(response, trace)
+
+
 def _handle_delegate_crawler_route(
     *,
     config: AppConfig,
@@ -9626,111 +9749,19 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
         and planned_workflow
         and _action_plan_has_tool(action_plan, "local_corpus_inventory")
     ):
-        add_trace(
-            "plan",
-            "executing_agent_selected_step",
-            {
-                "tool": "local_corpus_inventory",
-                "reason": "planned_workflow action_plan selected by the Agent; runtime is executing the selected tool rather than substituting a RAG path.",
-            },
+        return _handle_mcagent_inventory_planned_workflow_route(
+            config=config,
+            payload=payload,
+            agent=agent,
+            model=model,
+            original_question=original_question,
+            question=question,
+            tool_decision=tool_decision,
+            action_plan=action_plan,
+            session_summary=session_summary,
+            trace=trace,
+            add_trace=add_trace,
         )
-        inventory = _local_corpus_inventory_answer(config, question)
-        add_trace(
-            "retrieve",
-            "inventory_done",
-            {
-                "sources": len(inventory.get("sources") or []),
-                "context_chars": len(str(inventory.get("context") or "")),
-            },
-        )
-        answer = str(inventory.get("answer") or "").strip()
-        source_dicts = list(inventory.get("sources") or [])
-        context = str(inventory.get("context") or "")
-        if _action_plan_has_tool(action_plan, "crawler_audit"):
-            add_trace(
-                "plan",
-                "executing_agent_selected_step",
-                {
-                    "tool": "crawler_audit",
-                    "reason": "planned_workflow action_plan selected by the Agent; runtime is reading the objective recent Crawler audit before delegation.",
-                },
-            )
-            audit_answer = _recent_crawler_audit_answer(original_question)
-            if audit_answer:
-                add_trace("audit", "recent_crawler_audit", {"source": "jobs", "job_id": (audit_answer.get("job") or {}).get("id")})
-                audit_text = str(audit_answer.get("answer") or "").strip()
-                if audit_text:
-                    answer = answer.rstrip() + "\n\n近期 Crawler 自审摘要：\n" + audit_text
-            else:
-                add_trace("audit", "recent_crawler_audit_missing", {"source": "jobs"})
-        delegated_job = None
-        created = False
-        delegated_requested_by = ""
-        delegated_delivery_target = ""
-        delegated_task = ""
-        delegated_handoff_brief = ""
-        if _action_plan_has_tool(action_plan, "delegate_crawler"):
-            collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
-            add_trace(
-                "plan",
-                "executing_agent_selected_step",
-                {
-                    "tool": "delegate_crawler",
-                    "reason": "planned_workflow action_plan selected by the Agent after local corpus inventory.",
-                },
-            )
-            delegation = _prepare_and_start_crawler_delegation(
-                config,
-                payload,
-                active_agent=agent,
-                model=model,
-                original_question=original_question,
-                current_question=question,
-                collection_question=collection_question,
-                session_summary=session_summary,
-                gap_summary=answer[:4000],
-                planning_instruction=(
-                    "MCagent first inspected local corpus coverage because its Agent-selected planned_workflow requested local_corpus_inventory. "
-                    "CrawlerAgent should read the inventory summary, decide which gaps are real, collect citeable public/local evidence, self-audit sources, and deliver usable artifacts to MCagent/RAG."
-                ),
-                delivery_target=str(tool_decision.get("delivery_target") or payload.get("delivery_target") or "MCagent/RAG").strip(),
-                add_trace=add_trace,
-                action_plan=action_plan,
-            )
-            delegated_job = delegation.job
-            created = delegation.created
-            delegated_requested_by = delegation.plan.requested_by
-            delegated_delivery_target = delegation.plan.delivery_target
-            delegated_task = delegation.plan.collection_question
-            delegated_handoff_brief = delegation.plan.handoff_brief
-            answer = answer.rstrip() + delegation.note
-        plan_text = _format_action_plan_for_user(action_plan)
-        if plan_text and not answer.lstrip().startswith("执行计划："):
-            answer = plan_text + "\n\n" + answer
-        _append_session(payload, original_question, answer, source_dicts)
-        response: dict[str, Any] = {
-            "answer": answer,
-            "sources": source_dicts,
-            "context": context,
-            "agent": agent,
-        }
-        if delegated_job is not None:
-            response["job"] = _job_to_dict(delegated_job)
-            response["collaboration"] = _collaboration_dialog_for(
-                delegated_task or question,
-                delegated_job,
-                created,
-                requested_by=delegated_requested_by or "user_via_mcagent",
-                delivery_target=delegated_delivery_target or "MCagent/RAG",
-            )
-            response["delegation"] = {
-                "requested_by": delegated_requested_by or "user_via_mcagent",
-                "delivery_target": delegated_delivery_target or "MCagent/RAG",
-                "task": delegated_task or collection_question,
-                "handoff_brief": delegated_handoff_brief,
-            }
-        add_trace("done", "response_ready", {"sources": len(source_dicts), "planned_workflow_executed": True})
-        return _with_trace(response, trace)
     if route_intent == "temporary_extract":
         return _handle_temporary_extract_route(
             config=config,
