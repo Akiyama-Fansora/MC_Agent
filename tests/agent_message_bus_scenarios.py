@@ -153,6 +153,9 @@ def test_message_bus_api_is_single_from_content_to_primitive() -> None:
     assert_true("no_legacy_crawler_request_wrapper", "def _send_crawler_collection_request" not in source)
     assert_true("collection_request_not_runtime_forced", "agent_message_contract" not in source)
     assert_true("collection_request_only_context", "collection_request_received_for_agent_decision" in source)
+    assert_true("direct_answer_review_does_not_force_delegate", "direct_answer_corrected_to_delegation" not in source)
+    assert_true("post_answer_review_does_not_force_delegate", "post_answer_route_completeness_gap_not_executed" in source)
+    assert_true("protocol_review_blocks_unselected_delegate", "protocol_violation_side_effect_not_executed" in source)
     start = source.index("def _start_crawler_job_from_crawler_tool")
     end = source.index("\ndef _fallback_delegate_handoff_brief", start)
     job_start_body = source[start:end]

@@ -3447,6 +3447,11 @@ def _finish_crawler_loop(plan: dict[str, Any], *, index: int, reason: str, plann
     return {"action": "finish", "bad_streak": None, "replan_count": None}
 
 
+def _agent_selected_delegate(action_plan: list[dict[str, Any]] | list[Any], route_intent: str, tool_decision: dict[str, Any]) -> bool:
+    selected_tool = str(tool_decision.get("tool") or route_intent or "").strip()
+    return selected_tool == "delegate_crawler" or _action_plan_has_tool(action_plan, "delegate_crawler")
+
+
 def _apply_crawler_loop_control_after_task(
     *,
     job: Job,
@@ -9087,30 +9092,17 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
         if completeness.get("missing_side_effect"):
             add_trace("plan", "route_completeness_gap", completeness)
             if str(completeness.get("tool") or "").strip() == "delegate_crawler" and str(completeness.get("action") or "").strip() == "execute_selected_tool":
-                route_intent = "delegate_crawler"
                 collection_target = str(completeness.get("collection_target") or tool_decision.get("collection_target") or original_question or question).strip()
-                tool_decision = dict(tool_decision)
-                tool_decision["tool"] = "delegate_crawler"
-                tool_decision["collection_target"] = collection_target
-                if completeness.get("delivery_target"):
-                    tool_decision["delivery_target"] = str(completeness.get("delivery_target") or "").strip()
-                if not _action_plan_has_tool(action_plan, "delegate_crawler"):
-                    action_plan = list(action_plan or [])
-                    action_plan.append({"step": len(action_plan) + 1, "tool": "delegate_crawler", "goal": collection_target})
-                planned_delegate = True
                 add_trace(
                     "decide",
-                    "direct_answer_corrected_to_delegation",
+                    "direct_answer_missing_side_effect_not_executed",
                     {
-                        "reason": completeness.get("reason") or "Agent completeness review found an unexecuted required side effect.",
+                        "reason": "Completeness review found a possible missing side effect, but runtime will not add delegate_crawler after the Agent selected direct_answer.",
                         "collection_target": collection_target,
-                        "action_plan": action_plan,
+                        "required_agent_selection": "delegate_crawler or planned_workflow with delegate_crawler",
                     },
                 )
-            else:
-                return executor.direct_answer(run, session_summary=session_summary)
-        else:
-            return executor.direct_answer(run, session_summary=session_summary)
+        return executor.direct_answer(run, session_summary=session_summary)
     if route_intent == "crawler_audit":
         audit_confirmation = _reuse_route_confirmation(
             route_confirmation,
@@ -9166,7 +9158,11 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
             )
             if completeness.get("missing_side_effect"):
                 add_trace("plan", "route_completeness_gap", completeness)
-                if str(completeness.get("tool") or "").strip() == "delegate_crawler" and str(completeness.get("action") or "").strip() == "execute_selected_tool":
+                if (
+                    str(completeness.get("tool") or "").strip() == "delegate_crawler"
+                    and str(completeness.get("action") or "").strip() == "execute_selected_tool"
+                    and _agent_selected_delegate(action_plan, route_intent, tool_decision)
+                ):
                     collection_question = str(completeness.get("collection_target") or tool_decision.get("collection_target") or original_question or question).strip()
                     delegation = _prepare_and_start_crawler_delegation(
                         config,
@@ -9211,6 +9207,15 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
                     }
                     add_trace("done", "response_ready", {"sources": len(source_dicts), "delegated": True})
                     return _with_trace(response, trace)
+                if str(completeness.get("tool") or "").strip() == "delegate_crawler":
+                    add_trace(
+                        "plan",
+                        "inventory_missing_side_effect_not_executed",
+                        {
+                            "reason": "Completeness review suggested delegate_crawler, but the original Agent-selected inventory route did not select that side-effect tool.",
+                            "required_agent_selection": "delegate_crawler or planned_workflow with delegate_crawler",
+                        },
+                    )
             _append_session(payload, original_question, str(inventory.get("answer") or ""), list(inventory.get("sources") or []))
             add_trace("done", "response_ready", {"sources": len(inventory.get("sources") or [])})
             return _with_trace(inventory, trace)
@@ -9595,23 +9600,14 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
             and str(completeness.get("action") or "").strip() == "execute_selected_tool"
         ):
             collection_target = str(completeness.get("collection_target") or tool_decision.get("collection_target") or original_question or question).strip()
-            tool_decision = dict(tool_decision)
-            tool_decision["collection_target"] = collection_target
-            if completeness.get("delivery_target"):
-                tool_decision["delivery_target"] = str(completeness.get("delivery_target") or "").strip()
-            action_plan = list(action_plan or [])
-            if not _action_plan_has_tool(action_plan, "local_rag_search"):
-                action_plan.insert(0, {"step": 1, "tool": "local_rag_search", "goal": "先检索本地证据并整理已有内容/缺口"})
-            if not _action_plan_has_tool(action_plan, "delegate_crawler"):
-                action_plan.append({"step": len(action_plan) + 1, "tool": "delegate_crawler", "goal": collection_target})
-            planned_delegate = True
             add_trace(
                 "plan",
-                "route_completeness_gap",
+                "route_completeness_gap_not_executed",
                 {
                     **completeness,
-                    "reason": completeness.get("reason") or "Agent route completeness review found a required post-RAG delegation step before final answer generation.",
-                    "action_plan": action_plan,
+                    "reason": "Completeness review found a possible post-RAG delegation need, but runtime will not add delegate_crawler after the Agent selected local RAG.",
+                    "collection_target": collection_target,
+                    "required_agent_selection": "delegate_crawler or planned_workflow with delegate_crawler",
                 },
             )
 
@@ -9934,45 +9930,16 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
                 and str(completeness.get("action") or "").strip() == "execute_selected_tool"
             ):
                 collection_question = str(completeness.get("collection_target") or tool_decision.get("collection_target") or original_question or question).strip()
-                action_plan = list(action_plan or [])
-                if not _action_plan_has_tool(action_plan, "local_rag_search"):
-                    action_plan.insert(0, {"step": 1, "tool": "local_rag_search", "goal": "先检索本地证据并整理已有内容/缺口"})
-                if not _action_plan_has_tool(action_plan, "delegate_crawler"):
-                    action_plan.append({"step": len(action_plan) + 1, "tool": "delegate_crawler", "goal": collection_question})
                 add_trace(
                     "plan",
-                    "post_answer_route_completeness_gap",
+                    "post_answer_route_completeness_gap_not_executed",
                     {
                         **completeness,
-                        "reason": completeness.get("reason") or "Agent review found that the final local answer exposed an unexecuted required delegation step.",
-                        "action_plan": action_plan,
+                        "reason": "Post-answer review found a possible missing delegation, but runtime will not execute a new side effect after the Agent-selected answer path.",
+                        "collection_target": collection_question,
+                        "required_agent_selection": "delegate_crawler or planned_workflow with delegate_crawler",
                     },
                 )
-                delegation = _prepare_and_start_crawler_delegation(
-                    config,
-                    payload,
-                    active_agent=agent,
-                    model=model,
-                    original_question=original_question,
-                    current_question=question,
-                    collection_question=collection_question,
-                    session_summary=session_summary,
-                    gap_summary=answer[:4000] if answer.strip() else "",
-                    planning_instruction=(
-                        "MCagent 已先检索本地资料并给出本地答案；回答显示资料不足或用户条件要求继续委托。"
-                        "CrawlerAgent 应阅读 handoff_brief 和 mcagent_gap_summary，自行判断真正缺口、规划来源，采集后按交付目标处理。"
-                    ),
-                    delivery_target=str(completeness.get("delivery_target") or tool_decision.get("delivery_target") or payload.get("delivery_target") or "MCagent/RAG").strip(),
-                    add_trace=add_trace,
-                    action_plan=action_plan,
-                )
-                delegated_job = delegation.job
-                created = delegation.created
-                delegated_requested_by = delegation.plan.requested_by
-                delegated_delivery_target = delegation.plan.delivery_target
-                delegated_task = delegation.plan.collection_question
-                delegated_handoff_brief = delegation.plan.handoff_brief
-                answer = answer.rstrip() + "\n\nMCagent 已根据本地证据不足的判断，通过 From-Content-To 消息把缺口交给 CrawlerAgent。" + delegation.note
     plan_text = _format_action_plan_for_user(action_plan) if planned_workflow else ""
     if plan_text and not answer.lstrip().startswith("执行计划："):
         answer = plan_text + "\n\n" + answer
@@ -9996,7 +9963,12 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
         action = str(protocol_review.get("action") or "").strip()
         side_effect_executed = False
         delegation: CrawlerDelegationRun | None = None
-        if tool == "delegate_crawler" and action == "execute_selected_tool" and delegated_job is None:
+        if (
+            tool == "delegate_crawler"
+            and action == "execute_selected_tool"
+            and delegated_job is None
+            and _agent_selected_delegate(action_plan, route_intent, tool_decision)
+        ):
             collection_question = str(
                 protocol_review.get("collection_target")
                 or tool_decision.get("collection_target")
@@ -10004,9 +9976,6 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
                 or question
             ).strip()
             if collection_question:
-                action_plan = list(action_plan or [])
-                if not _action_plan_has_tool(action_plan, "delegate_crawler"):
-                    action_plan.append({"step": len(action_plan) + 1, "tool": "delegate_crawler", "goal": collection_question})
                 delegation = _prepare_and_start_crawler_delegation(
                     config,
                     payload,
@@ -10048,6 +10017,15 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
                         "job_status": delegated_job.status,
                     },
                 )
+        elif tool == "delegate_crawler" and action == "execute_selected_tool" and delegated_job is None:
+            add_trace(
+                "answer",
+                "protocol_violation_side_effect_not_executed",
+                {
+                    "reason": "Protocol review found a possible unexecuted delegate_crawler side effect, but runtime will not start it unless the Agent selected that tool before final answer.",
+                    "required_agent_selection": "delegate_crawler or planned_workflow with delegate_crawler",
+                },
+            )
         cleaned = _strip_unexecuted_side_effect_claim_lines(_strip_pseudo_tool_call_blocks(answer))
         if cleaned != answer or action == "execute_selected_tool":
             add_trace(

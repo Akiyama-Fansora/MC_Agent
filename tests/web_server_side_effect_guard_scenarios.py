@@ -1033,7 +1033,7 @@ def test_modrinth_explicit_modpack_manifest_task_can_parse_contents() -> None:
     assert_true("has_modpack_contents", "--include-modpack-contents" in command, str(command))
 
 
-def test_direct_crawler_mcagent_gap_request_corrects_direct_answer_to_delegation() -> None:
+def test_direct_crawler_review_cannot_correct_direct_answer_to_unselected_delegation() -> None:
     tmp = tempfile.TemporaryDirectory()
     fake_client = SequencedClient(
         [
@@ -1057,7 +1057,7 @@ def test_direct_crawler_mcagent_gap_request_corrects_direct_answer_to_delegation
 
     web_server._selected_llm_client = lambda *_args, **_kwargs: (fake_client, "fake")  # type: ignore[assignment]
     web_server._start_crawler_job_from_crawler_tool = fake_delegate  # type: ignore[assignment]
-    web_server.RagRetrievalService.retrieve = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("corrected delegation should not run retrieval"))  # type: ignore[assignment]
+    web_server.RagRetrievalService.retrieve = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("direct_answer path should return without retrieval"))  # type: ignore[assignment]
     try:
         result = web_server._chat_impl(
             make_temp_config(Path(tmp.name)),
@@ -1077,12 +1077,10 @@ def test_direct_crawler_mcagent_gap_request_corrects_direct_answer_to_delegation
     statuses = [(step["stage"], step["status"]) for step in result.get("trace", [])]
     assert_true("direct_answer_selected", ("decide", "tool_selected") in statuses, str(statuses))
     assert_true("completeness_gap_found", ("plan", "route_completeness_gap") in statuses, str(statuses))
-    assert_true("corrected_to_delegation", ("decide", "direct_answer_corrected_to_delegation") in statuses, str(statuses))
-    assert_true("delegate_confirmed", ("delegate", "next_step_confirmed") in statuses, str(statuses))
-    assert_true("delegated_after_correction", bool(calls), str(result))
+    assert_true("not_executed_trace", ("decide", "direct_answer_missing_side_effect_not_executed") in statuses, str(statuses))
+    assert_true("no_unselected_delegate", not calls, str(calls))
     assert_equal("agent_identity", result.get("agent"), "crawler_agent")
-    assert_equal("delivery_target", result.get("delegation", {}).get("delivery_target"), "MCagent/RAG")
-    assert_true("started_crawler_job", "采集任务已启动" in str(result.get("answer") or ""), str(result.get("answer") or ""))
+    assert_true("no_job_returned", not result.get("job"), str(result.get("job")))
 
 
 def test_direct_crawler_delegate_choice_starts_crawler_job_without_forced_context_rewrite() -> None:
@@ -1878,7 +1876,7 @@ def test_unselected_pseudo_tool_text_is_removed_without_side_effect() -> None:
     assert_equal("pseudo_removed", cleaned, "我可以回答问题。")
 
 
-def test_local_rag_route_completeness_can_delegate_before_final_answer() -> None:
+def test_local_rag_route_review_cannot_add_unselected_delegate_side_effect() -> None:
     question = "现在乌托邦整合包你本地还缺哪些资料，列出来，然后让 Crawler 去补充。"
     selected = [
         SearchResult(
@@ -2001,16 +1999,10 @@ def test_local_rag_route_completeness_can_delegate_before_final_answer() -> None
         web_server._selected_llm_client = original_selector  # type: ignore[assignment]
         web_server._send_agent_message = original_send  # type: ignore[assignment]
 
-    assert_true("sent_real_message", bool(calls))
-    assert_equal("message_from", calls[0]["message"].from_agent, "MCagent")
-    assert_equal("message_to", calls[0]["message"].to_agent, "CrawlerAgent")
-    assert_true("job_returned", bool(result.get("job", {}).get("id")), str(result.get("job")))
-    assert_equal("delegation_delivery", result.get("delegation", {}).get("delivery_target"), "MCagent/RAG")
+    assert_true("no_unselected_delegate_message", not calls, str(calls))
+    assert_true("no_job_returned", not result.get("job"), str(result.get("job")))
     statuses = [(item.get("stage"), item.get("status")) for item in result.get("trace") or []]
-    assert_true("completeness_trace", ("plan", "route_completeness_gap") in statuses, str(statuses))
-    assert_true("bus_sending_trace", ("message", "sending") in statuses, str(statuses))
-    assert_true("bus_reply_trace", ("message", "reply_received") in statuses, str(statuses))
-    assert_true("delegation_trace", ("delegate", "planned_workflow") in statuses, str(statuses))
+    assert_true("completeness_not_executed_trace", ("plan", "route_completeness_gap_not_executed") in statuses, str(statuses))
 
 
 def test_conditional_delegate_suggestion_is_allowed_without_side_effect() -> None:
@@ -2476,7 +2468,7 @@ def test_agent_selected_local_corpus_inventory_route_executes_inventory_tool() -
     assert_true("answer", "本地资料库目前有" in result.get("answer", ""), result.get("answer", ""))
 
 
-def test_inventory_route_can_continue_to_delegate_when_agent_review_finds_missing_side_effect() -> None:
+def test_inventory_route_review_cannot_add_unselected_delegate_side_effect() -> None:
     question = "现在某个资料主题你本地还缺哪些资料，列出来，然后让 Crawler 去补充。"
 
     class FakeRun:
@@ -2572,11 +2564,11 @@ def test_inventory_route_can_continue_to_delegate_when_agent_review_finds_missin
         web_server._selected_llm_client = original_selector  # type: ignore[assignment]
         web_server._send_agent_message = original_send  # type: ignore[assignment]
 
-    assert_true("sent_real_message", bool(calls))
-    assert_equal("message_to", calls[0].to_agent, "CrawlerAgent")
-    assert_true("job_returned", bool(result.get("job", {}).get("id")), str(result.get("job")))
+    assert_true("no_unselected_delegate_message", not calls, str(calls))
+    assert_true("no_job_returned", not result.get("job"), str(result.get("job")))
     statuses = [(item.get("stage"), item.get("status")) for item in result.get("trace") or []]
     assert_true("completeness_trace", ("plan", "route_completeness_gap") in statuses, str(statuses))
+    assert_true("not_executed_trace", ("plan", "inventory_missing_side_effect_not_executed") in statuses, str(statuses))
 
 
 def test_local_corpus_inventory_is_not_keyword_forced_before_agent_choice() -> None:
@@ -4051,7 +4043,7 @@ if __name__ == "__main__":
     test_version_install_note_extracts_modpack_requirements()
     test_modpack_overview_surfaces_version_install_evidence()
     test_agent_selected_local_corpus_inventory_route_executes_inventory_tool()
-    test_inventory_route_can_continue_to_delegate_when_agent_review_finds_missing_side_effect()
+    test_inventory_route_review_cannot_add_unselected_delegate_side_effect()
     test_local_corpus_inventory_is_not_keyword_forced_before_agent_choice()
     test_status_runs_only_after_agent_selects_status_tool()
     test_agent_selected_crawler_audit_route_reads_audit_tool()
@@ -4059,7 +4051,7 @@ if __name__ == "__main__":
     test_general_answer_path_skips_local_fact_answer_for_modpack_overview()
     test_pseudo_delegate_call_in_final_answer_is_removed_without_late_side_effect()
     test_unselected_pseudo_tool_text_is_removed_without_side_effect()
-    test_local_rag_route_completeness_can_delegate_before_final_answer()
+    test_local_rag_route_review_cannot_add_unselected_delegate_side_effect()
     test_conditional_delegate_suggestion_is_allowed_without_side_effect()
     test_mcagent_context_tool_uses_message_bus_instead_of_internal_mcagent_shortcut()
     test_mcagent_to_crawler_delegation_uses_message_bus_not_job_starter()
