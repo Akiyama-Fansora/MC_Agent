@@ -806,6 +806,124 @@ def test_inventory_route_confirmation_cannot_upgrade_to_delegate() -> None:
     assert_true("no_job", not result.get("job"), str(result))
 
 
+def test_delegate_route_helper_respects_confirmation_cancel() -> None:
+    class FakeRun:
+        original_question = "collect public docs"
+        question = original_question
+        agent = "crawler_agent"
+        model = "fake"
+        temperature = 0.0
+        max_tokens = 100
+        is_streaming = False
+
+        def __init__(self) -> None:
+            self.config = None
+            self.trace = []
+
+        def add_trace(self, stage, status, detail=None):  # noqa: ANN001
+            item = {"stage": stage, "status": status, "detail": detail}
+            self.trace.append(item)
+            return item
+
+        def emit_delta(self, text: str) -> None:
+            raise AssertionError(text)
+
+        def response(self, payload: dict[str, Any]) -> dict[str, Any]:
+            payload["trace"] = self.trace
+            return payload
+
+    class FakeRouter:
+        def confirm_next_step(self, *_args, **_kwargs):  # noqa: ANN001
+            return {"proceed": False, "tool": "direct_answer", "reason": "Agent cancelled side effect."}
+
+    calls: list[str] = []
+    original_prepare = web_server._prepare_and_start_crawler_delegation
+    try:
+        web_server._prepare_and_start_crawler_delegation = lambda *_args, **_kwargs: calls.append("unexpected")  # type: ignore[assignment]
+        run = FakeRun()
+        executor = web_server.AgentToolExecutor(
+            generate_direct_answer=lambda *_args, **_kwargs: "direct after delegate cancelled",
+            generate_direct_answer_stream=lambda *_args, **_kwargs: "direct after delegate cancelled",
+            status_answer=lambda _config: {"answer": "status"},
+        )
+        result = web_server._handle_delegate_crawler_route(
+            config=make_temp_config(Path(tempfile.gettempdir())),
+            payload={},
+            agent="crawler_agent",
+            model="fake",
+            original_question=run.original_question,
+            question=run.question,
+            tool_decision={"tool": "delegate_crawler", "collection_target": "collect public docs"},
+            route_confirmation={},
+            action_plan=[],
+            collection_request_agent_message=False,
+            router=FakeRouter(),  # type: ignore[arg-type]
+            executor=executor,
+            run=run,
+            session_summary={},
+            trace=run.trace,
+            add_trace=run.add_trace,
+        )
+    finally:
+        web_server._prepare_and_start_crawler_delegation = original_prepare  # type: ignore[assignment]
+    statuses = [(item.get("stage"), item.get("status")) for item in result.get("trace") or []]
+    assert_true("delegate_confirmation_visible", ("delegate", "next_step_confirmed") in statuses, str(statuses))
+    assert_true("direct_after_cancel", result.get("answer") == "direct after delegate cancelled", str(result))
+    assert_true("no_prepare_call", calls == [], str(calls))
+    assert_true("no_job", not result.get("job"), str(result))
+
+
+def test_crawler_action_plan_delegate_route_starts_selected_job() -> None:
+    calls: list[dict[str, Any]] = []
+
+    class Plan:
+        requested_by = "user"
+        delivery_target = "MCagent/RAG"
+        collection_question = "collect Kotlin coroutine docs"
+        handoff_brief = "CrawlerAgent selected delegate_crawler in its own action_plan."
+
+    def fake_prepare(*_args, **kwargs):  # noqa: ANN001
+        calls.append(dict(kwargs))
+        job = web_server.Job(id="selected-plan-job", kind="crawler", title=kwargs.get("collection_question", ""), status="queued", summary="queued")
+        return web_server.CrawlerDelegationRun(plan=Plan(), job=job, created=True, note="\n\njob started")
+
+    trace: list[dict[str, Any]] = []
+
+    def add_trace(stage, status, detail=None):  # noqa: ANN001
+        item = {"stage": stage, "status": status, "detail": detail}
+        trace.append(item)
+        return item
+
+    original_prepare = web_server._prepare_and_start_crawler_delegation
+    try:
+        web_server._prepare_and_start_crawler_delegation = fake_prepare  # type: ignore[assignment]
+        action_plan = [
+            {"step": 1, "tool": "web_search", "goal": "discover public sources"},
+            {"step": 2, "tool": "delegate_crawler", "goal": "run background collection"},
+        ]
+        result = web_server._handle_crawler_action_plan_delegate_route(
+            config=make_temp_config(Path(tempfile.gettempdir())),
+            payload={"delivery_target": "MCagent/RAG"},
+            agent="crawler_agent",
+            model="fake",
+            original_question="collect Kotlin coroutine docs",
+            question="collect Kotlin coroutine docs",
+            tool_decision={"tool": "planned_workflow", "collection_target": "collect Kotlin coroutine docs", "delivery_target": "MCagent/RAG"},
+            action_plan=action_plan,
+            session_summary={},
+            trace=trace,
+            add_trace=add_trace,
+        )
+    finally:
+        web_server._prepare_and_start_crawler_delegation = original_prepare  # type: ignore[assignment]
+    statuses = [(item.get("stage"), item.get("status")) for item in result.get("trace") or []]
+    assert_true("selected_step_trace", ("plan", "executing_agent_selected_step") in statuses, str(statuses))
+    assert_true("prepare_called_once", len(calls) == 1, str(calls))
+    assert_true("action_plan_forwarded", calls[0].get("action_plan") == action_plan, str(calls[0]))
+    assert_true("job_returned", (result.get("job") or {}).get("id") == "selected-plan-job", str(result))
+    assert_true("selected_action_plan_visible", (result.get("delegation") or {}).get("selected_action_plan") == action_plan, str(result))
+
+
 def main() -> int:
     test_conversation_graph_routes_only_by_message_target()
     test_conversation_graph_can_dispatch_to_crawler_node()
@@ -825,6 +943,8 @@ def main() -> int:
     test_direct_answer_route_helper_does_not_execute_unselected_delegate()
     test_temporary_extract_route_does_not_upgrade_to_delegate_on_confirmation_suggestion()
     test_inventory_route_confirmation_cannot_upgrade_to_delegate()
+    test_delegate_route_helper_respects_confirmation_cancel()
+    test_crawler_action_plan_delegate_route_starts_selected_job()
     print("LANGGRAPH RUNTIME SCENARIOS PASSED")
     return 0
 

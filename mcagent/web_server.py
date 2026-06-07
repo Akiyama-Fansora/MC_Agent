@@ -8747,6 +8747,172 @@ def _handle_local_corpus_inventory_route(
     return _with_trace(inventory, trace)
 
 
+def _handle_delegate_crawler_route(
+    *,
+    config: AppConfig,
+    payload: dict[str, Any],
+    agent: str,
+    model: str,
+    original_question: str,
+    question: str,
+    tool_decision: dict[str, Any],
+    route_confirmation: dict[str, Any],
+    action_plan: list[dict[str, Any]],
+    collection_request_agent_message: bool,
+    router: LlmAgentToolRouterService,
+    executor: AgentToolExecutor,
+    run: Any,
+    session_summary: dict[str, Any],
+    trace: list[dict[str, Any]],
+    add_trace: Any,
+) -> dict[str, Any]:
+    collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
+    if collection_request_agent_message:
+        delegate_confirmation = route_confirmation
+    else:
+        delegate_confirmation = router.confirm_next_step(
+            config,
+            payload,
+            agent=agent,
+            model=model,
+            original_question=original_question,
+            session_summary=session_summary,
+            proposed_tool="delegate_crawler",
+            proposed_goal=f"把采集目标交给 CrawlerAgent：{collection_question}",
+            context={"collection_target": collection_question, "delivery_target": tool_decision.get("delivery_target") or ""},
+        )
+    add_trace("delegate", "next_step_confirmed", delegate_confirmation)
+    if not bool(delegate_confirmation.get("proceed", True)):
+        suggested_tool = str(delegate_confirmation.get("suggested_tool") or delegate_confirmation.get("tool") or "").strip()
+        if (
+            agent == "crawler_agent"
+            and suggested_tool == "mcagent_context"
+            and _action_plan_has_tool(action_plan, "mcagent_context")
+            and _action_plan_has_tool(action_plan, "delegate_crawler")
+        ):
+            add_trace(
+                "delegate",
+                "confirmation_reconciled",
+                {
+                    "reason": "The confirmation model asked to run mcagent_context first; this planned Crawler job already runs mcagent_context as its first internal task, so keep the job instead of cancelling into a chat-turn answer.",
+                    "suggested_tool": suggested_tool,
+                    "action_plan": action_plan,
+                },
+            )
+        elif suggested_tool != "delegate_crawler":
+            return executor.direct_answer(run, session_summary=session_summary, mode="direct_after_delegate_cancelled")
+
+    delegation = _prepare_and_start_crawler_delegation(
+        config,
+        payload,
+        active_agent=agent,
+        model=model,
+        original_question=original_question,
+        current_question=question,
+        collection_question=collection_question,
+        session_summary=session_summary,
+        planning_instruction=str(tool_decision.get("planning_instruction") or "").strip(),
+        delivery_target=str(tool_decision.get("delivery_target") or "").strip(),
+        add_trace=add_trace,
+        action_plan=action_plan,
+    )
+    if agent == "crawler_agent" and delegation.plan.requested_by == "user":
+        answer = "我是 CrawlerAgent。采集任务已启动。" if delegation.created else "我是 CrawlerAgent。已有采集任务在运行。"
+    else:
+        answer = "Crawler 多源采集任务已启动。" if delegation.created else "Crawler 已有任务在运行。"
+    answer += delegation.note
+    return _with_trace(
+        {
+            "answer": answer,
+            "sources": [],
+            "agent": agent,
+            "job": _job_to_dict(delegation.job),
+            "collaboration": _collaboration_dialog_for(
+                delegation.plan.collection_question,
+                delegation.job,
+                delegation.created,
+                requested_by=delegation.plan.requested_by,
+                delivery_target=delegation.plan.delivery_target,
+            ),
+            "delegation": {
+                "requested_by": delegation.plan.requested_by,
+                "delivery_target": delegation.plan.delivery_target,
+                "task": delegation.plan.collection_question,
+                "handoff_brief": delegation.plan.handoff_brief,
+            },
+        },
+        trace,
+    )
+
+
+def _handle_crawler_action_plan_delegate_route(
+    *,
+    config: AppConfig,
+    payload: dict[str, Any],
+    agent: str,
+    model: str,
+    original_question: str,
+    question: str,
+    tool_decision: dict[str, Any],
+    action_plan: list[dict[str, Any]],
+    session_summary: dict[str, Any],
+    trace: list[dict[str, Any]],
+    add_trace: Any,
+) -> dict[str, Any]:
+    collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
+    add_trace(
+        "plan",
+        "executing_agent_selected_step",
+        {
+            "tool": "delegate_crawler",
+            "reason": "CrawlerAgent selected a planned_workflow with a Crawler background collection step; runtime preserves the selected action_plan for the background Crawler job.",
+            "action_plan": action_plan,
+        },
+    )
+    delegation = _prepare_and_start_crawler_delegation(
+        config,
+        payload,
+        active_agent=agent,
+        model=model,
+        original_question=original_question,
+        current_question=question,
+        collection_question=collection_question,
+        session_summary=session_summary,
+        planning_instruction=(
+            "Execute the CrawlerAgent-selected action_plan inside the background Crawler job. "
+            "Do not collapse inter-agent steps into a chat-turn RAG shortcut; if the plan contains mcagent_context, run that Crawler tool first."
+        ),
+        delivery_target=str(tool_decision.get("delivery_target") or payload.get("delivery_target") or "").strip(),
+        add_trace=add_trace,
+        action_plan=action_plan,
+    )
+    answer = "我是 CrawlerAgent。已按本轮计划启动后台采集任务。"
+    answer += delegation.note
+    return _with_trace(
+        {
+            "answer": answer,
+            "sources": [],
+            "agent": agent,
+            "job": _job_to_dict(delegation.job),
+            "collaboration": _collaboration_dialog_for(
+                delegation.plan.collection_question,
+                delegation.job,
+                delegation.created,
+                requested_by=delegation.plan.requested_by,
+                delivery_target=delegation.plan.delivery_target,
+            ),
+            "delegation": {
+                "requested_by": delegation.plan.requested_by,
+                "delivery_target": delegation.plan.delivery_target,
+                "task": delegation.plan.collection_question,
+                "handoff_brief": delegation.plan.handoff_brief,
+                "selected_action_plan": action_plan,
+            },
+        },
+        trace,
+    )
+
+
 def _reuse_route_confirmation(route_confirmation: dict[str, Any], *, proposed_tool: str, proposed_goal: str) -> dict[str, Any]:
     value = dict(route_confirmation or {})
     current_tool = str(value.get("tool") or value.get("suggested_tool") or "").strip()
@@ -9583,135 +9749,37 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
             add_trace=add_trace,
         )
     if route_intent == "delegate_crawler":
-        collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
-        if collection_request_agent_message:
-            delegate_confirmation = route_confirmation
-        else:
-            delegate_confirmation = router.confirm_next_step(
-                config,
-                payload,
-                agent=agent,
-                model=model,
-                original_question=original_question,
-                session_summary=session_summary,
-                proposed_tool="delegate_crawler",
-                proposed_goal=f"把采集目标交给 CrawlerAgent：{collection_question}",
-                context={"collection_target": collection_question, "delivery_target": tool_decision.get("delivery_target") or ""},
-            )
-        add_trace("delegate", "next_step_confirmed", delegate_confirmation)
-        if not bool(delegate_confirmation.get("proceed", True)):
-            suggested_tool = str(delegate_confirmation.get("suggested_tool") or delegate_confirmation.get("tool") or "").strip()
-            if (
-                agent == "crawler_agent"
-                and suggested_tool == "mcagent_context"
-                and _action_plan_has_tool(action_plan, "mcagent_context")
-                and _action_plan_has_tool(action_plan, "delegate_crawler")
-            ):
-                add_trace(
-                    "delegate",
-                    "confirmation_reconciled",
-                    {
-                        "reason": "The confirmation model asked to run mcagent_context first; this planned Crawler job already runs mcagent_context as its first internal task, so keep the job instead of cancelling into a chat-turn answer.",
-                        "suggested_tool": suggested_tool,
-                        "action_plan": action_plan,
-                    },
-                )
-            elif suggested_tool != "delegate_crawler":
-                return executor.direct_answer(run, session_summary=session_summary, mode="direct_after_delegate_cancelled")
-
-        delegation = _prepare_and_start_crawler_delegation(
-            config,
-            payload,
-            active_agent=agent,
+        return _handle_delegate_crawler_route(
+            config=config,
+            payload=payload,
+            agent=agent,
             model=model,
             original_question=original_question,
-            current_question=question,
-            collection_question=collection_question,
-            session_summary=session_summary,
-            planning_instruction=str(tool_decision.get("planning_instruction") or "").strip(),
-            delivery_target=str(tool_decision.get("delivery_target") or "").strip(),
-            add_trace=add_trace,
+            question=question,
+            tool_decision=tool_decision,
+            route_confirmation=route_confirmation,
             action_plan=action_plan,
-        )
-        if agent == "crawler_agent" and delegation.plan.requested_by == "user":
-            answer = "我是 CrawlerAgent。采集任务已启动。" if delegation.created else "我是 CrawlerAgent。已有采集任务在运行。"
-        else:
-            answer = "Crawler 多源采集任务已启动。" if delegation.created else "Crawler 已有任务在运行。"
-        answer += delegation.note
-        return _with_trace(
-            {
-                "answer": answer,
-                "sources": [],
-                "agent": agent,
-                "job": _job_to_dict(delegation.job),
-                "collaboration": _collaboration_dialog_for(
-                    delegation.plan.collection_question,
-                    delegation.job,
-                    delegation.created,
-                    requested_by=delegation.plan.requested_by,
-                    delivery_target=delegation.plan.delivery_target,
-                ),
-                "delegation": {
-                    "requested_by": delegation.plan.requested_by,
-                    "delivery_target": delegation.plan.delivery_target,
-                    "task": delegation.plan.collection_question,
-                    "handoff_brief": delegation.plan.handoff_brief,
-                },
-            },
-            trace,
+            collection_request_agent_message=collection_request_agent_message,
+            router=router,
+            executor=executor,
+            run=run,
+            session_summary=session_summary,
+            trace=trace,
+            add_trace=add_trace,
         )
     if agent == "crawler_agent" and _action_plan_has_tool(action_plan, "delegate_crawler"):
-        collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
-        add_trace(
-            "plan",
-            "executing_agent_selected_step",
-            {
-                "tool": "delegate_crawler",
-                "reason": "CrawlerAgent selected a planned_workflow with a Crawler background collection step; runtime preserves the selected action_plan for the background Crawler job.",
-                "action_plan": action_plan,
-            },
-        )
-        delegation = _prepare_and_start_crawler_delegation(
-            config,
-            payload,
-            active_agent=agent,
+        return _handle_crawler_action_plan_delegate_route(
+            config=config,
+            payload=payload,
+            agent=agent,
             model=model,
             original_question=original_question,
-            current_question=question,
-            collection_question=collection_question,
-            session_summary=session_summary,
-            planning_instruction=(
-                "Execute the CrawlerAgent-selected action_plan inside the background Crawler job. "
-                "Do not collapse inter-agent steps into a chat-turn RAG shortcut; if the plan contains mcagent_context, run that Crawler tool first."
-            ),
-            delivery_target=str(tool_decision.get("delivery_target") or payload.get("delivery_target") or "").strip(),
-            add_trace=add_trace,
+            question=question,
+            tool_decision=tool_decision,
             action_plan=action_plan,
-        )
-        answer = "我是 CrawlerAgent。已按本轮计划启动后台采集任务。"
-        answer += delegation.note
-        return _with_trace(
-            {
-                "answer": answer,
-                "sources": [],
-                "agent": agent,
-                "job": _job_to_dict(delegation.job),
-                "collaboration": _collaboration_dialog_for(
-                    delegation.plan.collection_question,
-                    delegation.job,
-                    delegation.created,
-                    requested_by=delegation.plan.requested_by,
-                    delivery_target=delegation.plan.delivery_target,
-                ),
-                "delegation": {
-                    "requested_by": delegation.plan.requested_by,
-                    "delivery_target": delegation.plan.delivery_target,
-                    "task": delegation.plan.collection_question,
-                    "handoff_brief": delegation.plan.handoff_brief,
-                    "selected_action_plan": action_plan,
-                },
-            },
-            trace,
+            session_summary=session_summary,
+            trace=trace,
+            add_trace=add_trace,
         )
     if route_intent == "status":
         return _handle_status_route(route_confirmation=route_confirmation, executor=executor, run=run, add_trace=add_trace)
