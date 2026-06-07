@@ -3821,6 +3821,51 @@ def _apply_crawler_reflection_before_task(
     }
 
 
+def _apply_crawler_after_task_review(
+    *,
+    job: Job,
+    config: AppConfig,
+    question: str,
+    plan: dict[str, Any],
+    tasks: list[dict[str, Any]],
+    task_results: list[dict[str, Any]],
+    index: int,
+    task_source: str,
+    result: dict[str, Any],
+    records_loaded: int,
+    max_total_tasks: int,
+    topic_discovery_review: CrawlerTopicDiscoveryReviewService,
+    job_progress: CrawlerJobProgressService,
+) -> dict[str, Any]:
+    removed_context_tasks: list[dict[str, Any]] = []
+    discovered_tasks: list[dict[str, Any]] = []
+    if task_source == "mcagent_context" and result.get("returncode") == 0 and records_loaded > 0:
+        removed_context_tasks = _prune_pending_mcagent_context_tasks_after_success(tasks, index)
+        if removed_context_tasks:
+            plan.setdefault("agent_reflections", []).append(
+                {
+                    "at_index": index,
+                    "action": "prune_pending_mcagent_context",
+                    "reason": "MCagent has already returned usable local context for this Crawler job; skip duplicate pending mcagent_context tasks and continue with web collection.",
+                    "planner": "executor objective result",
+                    "tasks": removed_context_tasks,
+                }
+            )
+    if topic_discovery_review.should_review(task_source=task_source, result=result):
+        remaining_slots = topic_discovery_review.remaining_slots(max_total_tasks=max_total_tasks, current_task_count=len(tasks))
+        _update_job(job, **job_progress.reviewing_candidates(task_results=task_results, tasks=tasks, plan=plan))
+        discovered_tasks = _llm_tasks_from_topic_discovery(question, config, result, tasks, max_new_tasks=min(16, remaining_slots))
+        if discovered_tasks:
+            tasks.extend(discovered_tasks)
+            topic_discovery_review.record_review(plan=plan, result=result, task_results_count=len(task_results), discovered_tasks=discovered_tasks)
+        elif result.get("topic_discovery_review_error"):
+            topic_discovery_review.record_review(plan=plan, result=result, task_results_count=len(task_results), discovered_tasks=[])
+    return {
+        "removed_context_tasks": removed_context_tasks,
+        "discovered_tasks": discovered_tasks,
+    }
+
+
 def _run_crawler_job_legacy_loop(job: Job, payload: dict[str, Any], config: AppConfig) -> None:
     source = _source_alias(str(payload.get("source") or "planner"))
     question = str(payload.get("source_question") or payload.get("question") or payload.get("query") or "").strip()
@@ -3919,27 +3964,21 @@ def _run_crawler_job_legacy_loop(job: Job, payload: dict[str, Any], config: AppC
             accepted_ingest_roots.extend(list(step.get("accepted_ingest_roots") or []))
             if step.get("continue_loop"):
                 continue
-            if task_source == "mcagent_context" and result["returncode"] == 0 and records_loaded > 0:
-                removed_context_tasks = _prune_pending_mcagent_context_tasks_after_success(tasks, index)
-                if removed_context_tasks:
-                    plan.setdefault("agent_reflections", []).append(
-                        {
-                            "at_index": index,
-                            "action": "prune_pending_mcagent_context",
-                            "reason": "MCagent has already returned usable local context for this Crawler job; skip duplicate pending mcagent_context tasks and continue with web collection.",
-                            "planner": "executor objective result",
-                            "tasks": removed_context_tasks,
-                        }
-                    )
-            if topic_discovery_review.should_review(task_source=task_source, result=result):
-                remaining_slots = topic_discovery_review.remaining_slots(max_total_tasks=max_total_tasks, current_task_count=len(tasks))
-                _update_job(job, **job_progress.reviewing_candidates(task_results=task_results, tasks=tasks, plan=plan))
-                discovered_tasks = _llm_tasks_from_topic_discovery(question, config, result, tasks, max_new_tasks=min(16, remaining_slots))
-                if discovered_tasks:
-                    tasks.extend(discovered_tasks)
-                    topic_discovery_review.record_review(plan=plan, result=result, task_results_count=len(task_results), discovered_tasks=discovered_tasks)
-                elif result.get("topic_discovery_review_error"):
-                    topic_discovery_review.record_review(plan=plan, result=result, task_results_count=len(task_results), discovered_tasks=[])
+            _apply_crawler_after_task_review(
+                job=job,
+                config=config,
+                question=question,
+                plan=plan,
+                tasks=tasks,
+                task_results=task_results,
+                index=index,
+                task_source=task_source,
+                result=result,
+                records_loaded=records_loaded,
+                max_total_tasks=max_total_tasks,
+                topic_discovery_review=topic_discovery_review,
+                job_progress=job_progress,
+            )
             loop_update = _apply_crawler_loop_control_after_task(
                 job=job,
                 config=config,

@@ -683,6 +683,40 @@ def test_crawler_reflection_helper_returns_objective_contract_feedback() -> None
     assert_true("plan_records_contract", any(item.get("action") == "blocked_unexecutable_tasks" for item in plan.get("agent_reflections") or []), str(plan))
 
 
+def test_crawler_after_task_review_prunes_duplicate_mcagent_context() -> None:
+    class FakeJob:
+        id = "after-task-review-job"
+        result = {}
+        stop_requested = False
+
+    with tempfile.TemporaryDirectory() as tmp:
+        plan: dict[str, Any] = {}
+        tasks = [
+            {"source": "mcagent_context", "query": "first local context"},
+            {"source": "mcagent_context", "query": "duplicate local context"},
+            {"source": "web_discovery", "query": "external followup"},
+        ]
+        task_results = [{"source": "mcagent_context", "returncode": 0, "manifest_stats": {"records": 1}}]
+        result = web_server._apply_crawler_after_task_review(
+            job=FakeJob(),
+            config=make_temp_config(Path(tmp)),
+            question="unit topic",
+            plan=plan,
+            tasks=tasks,
+            task_results=task_results,
+            index=1,
+            task_source="mcagent_context",
+            result={"returncode": 0},
+            records_loaded=1,
+            max_total_tasks=4,
+            topic_discovery_review=web_server.CrawlerTopicDiscoveryReviewService(),
+            job_progress=web_server.CrawlerJobProgressService(),
+        )
+    assert_true("removed_duplicate_context", len(result.get("removed_context_tasks") or []) == 1, str(result))
+    assert_true("web_task_remains", any(task.get("source") == "web_discovery" for task in tasks), str(tasks))
+    assert_true("reflection_recorded", any(item.get("action") == "prune_pending_mcagent_context" for item in plan.get("agent_reflections") or []), str(plan))
+
+
 def test_direct_answer_route_helper_does_not_execute_unselected_delegate() -> None:
     class FakeRun:
         original_question = "ask crawler to collect later"
@@ -1135,6 +1169,7 @@ def main() -> int:
     test_crawler_task_step_ignores_unbacked_tool_record_claims()
     test_crawler_loop_control_finishes_after_rag_success_checkpoint()
     test_crawler_reflection_helper_returns_objective_contract_feedback()
+    test_crawler_after_task_review_prunes_duplicate_mcagent_context()
     test_direct_answer_route_helper_does_not_execute_unselected_delegate()
     test_temporary_extract_route_does_not_upgrade_to_delegate_on_confirmation_suggestion()
     test_inventory_route_confirmation_cannot_upgrade_to_delegate()
