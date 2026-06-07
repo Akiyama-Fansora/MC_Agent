@@ -9289,6 +9289,252 @@ def _select_mcagent_rag_evidence_or_respond(
     return RagEvidenceRouteResult(selected=selected, evidence_report=evidence_report)
 
 
+def _handle_rag_answer_generation_route(
+    *,
+    config: AppConfig,
+    payload: dict[str, Any],
+    agent: str,
+    model: str,
+    original_question: str,
+    question: str,
+    retrieval_note: str,
+    evidence_question: str,
+    selected: list[SearchResult],
+    tool_decision: dict[str, Any],
+    route_confirmation: dict[str, Any],
+    action_plan: list[dict[str, Any]],
+    route_intent: str,
+    planned_workflow: bool,
+    planned_delegate: bool,
+    executor: AgentToolExecutor,
+    run: Any,
+    session_summary: dict[str, Any],
+    trace: list[dict[str, Any]],
+    add_trace: Any,
+) -> dict[str, Any]:
+    source_dicts = [_result_to_dict(item) for item in selected]
+    context = format_context(selected)
+    delegated_job = None
+    created = False
+    delegated_requested_by = ""
+    delegated_delivery_target = ""
+    delegated_task = ""
+    delegated_handoff_brief = ""
+    if agent == "retriever_only" or bool(payload.get("no_llm")):
+        answer, context = executor.retriever_only_answer(context)
+    else:
+        answer = _local_modpack_archive_fact_answer(original_question, selected)
+        if not answer:
+            answer = (
+                ""
+                if (_is_modpack_overview_question(original_question) or _needs_general_grounded_answer(original_question))
+                else _local_version_install_answer(original_question, selected)
+            )
+        if answer:
+            selected = _filter_fact_answer_sources(original_question, selected, answer)
+            source_dicts = [_result_to_dict(item) for item in selected]
+            context = format_context(selected)
+            add_trace("answer", "local_fact_answer", {"reason": "deterministic_fact_evidence", "sources": len(selected)})
+        if not answer:
+            answer_question = _answer_question_for_user(original_question, question, retrieval_note)
+            answer_confirmation = {
+                "proceed": True,
+                "tool": "final_answer_llm",
+                "goal": f"基于已筛选证据组织最终回答：{answer_question}",
+                "reason": "Evidence has already been selected inside the Agent-selected RAG workflow; generate the final answer without a duplicate LLM confirmation call.",
+                "planner": "agent_route_execution",
+            }
+            add_trace("answer", "next_step_confirmed", answer_confirmation)
+            answer, context = executor.grounded_answer(
+                run,
+                answer_question=answer_question,
+                selected=selected,
+                retrieval_note=retrieval_note,
+                evidence_question=evidence_question,
+                repair_question=question,
+            )
+        if planned_delegate:
+            collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
+            planning_instruction = ""
+            if answer.strip():
+                planning_instruction = (
+                    "MCagent 已先检索本地资料并总结了现有资料与缺口；CrawlerAgent 应阅读 mcagent_gap_summary，"
+                    "自行判断真正缺口、规划来源，采集后按 MCagent/RAG 可检索格式入库。"
+                )
+            delegation = _prepare_and_start_crawler_delegation(
+                config,
+                payload,
+                active_agent=agent,
+                model=model,
+                original_question=original_question,
+                current_question=question,
+                collection_question=collection_question,
+                session_summary=session_summary,
+                gap_summary=answer[:4000] if answer.strip() else "",
+                planning_instruction=planning_instruction,
+                delivery_target=str(tool_decision.get("delivery_target") or payload.get("delivery_target") or "").strip(),
+                add_trace=add_trace,
+                action_plan=action_plan,
+            )
+            delegated_job = delegation.job
+            created = delegation.created
+            delegated_requested_by = delegation.plan.requested_by
+            delegated_delivery_target = delegation.plan.delivery_target
+            delegated_task = delegation.plan.collection_question
+            delegated_handoff_brief = delegation.plan.handoff_brief
+            if agent == "crawler_agent":
+                answer = _crawler_agent_context_delegation_answer(answer, delegation.note)
+            else:
+                answer = answer.rstrip() + delegation.note
+        elif agent == "mcagent_rag" and not bool(payload.get("no_llm")):
+            completeness = _tool_route_completeness_review(
+                config,
+                agent=agent,
+                model=model,
+                original_question=original_question,
+                selected_tool="local_rag_search+final_answer_llm",
+                tool_answer=answer,
+                tool_decision=tool_decision,
+                route_confirmation=route_confirmation,
+                action_plan=action_plan,
+            )
+            if (
+                completeness.get("missing_side_effect")
+                and str(completeness.get("tool") or "").strip() == "delegate_crawler"
+                and str(completeness.get("action") or "").strip() == "execute_selected_tool"
+            ):
+                collection_question = str(completeness.get("collection_target") or tool_decision.get("collection_target") or original_question or question).strip()
+                add_trace(
+                    "plan",
+                    "post_answer_route_completeness_gap_not_executed",
+                    {
+                        **completeness,
+                        "reason": "Post-answer review found a possible missing delegation, but runtime will not execute a new side effect after the Agent-selected answer path.",
+                        "collection_target": collection_question,
+                        "required_agent_selection": "delegate_crawler or planned_workflow with delegate_crawler",
+                    },
+                )
+
+    plan_text = _format_action_plan_for_user(action_plan) if planned_workflow else ""
+    if plan_text and not answer.lstrip().startswith("执行计划："):
+        answer = plan_text + "\n\n" + answer
+    sources = format_sources(selected)
+    if sources and not answer.rstrip().endswith(sources):
+        answer = answer.rstrip() + "\n\n来源：\n" + sources
+    protocol_review = _final_answer_protocol_review(
+        config,
+        agent=agent,
+        model=model,
+        original_question=original_question,
+        answer=answer,
+        tool_decision=tool_decision,
+        action_plan=action_plan,
+        planned_delegate=planned_delegate,
+        delegated_job_started=delegated_job is not None,
+    )
+    if protocol_review.get("violation"):
+        add_trace("answer", "protocol_violation_detected", protocol_review)
+        tool = str(protocol_review.get("tool") or "").strip()
+        action = str(protocol_review.get("action") or "").strip()
+        side_effect_executed = False
+        delegation: CrawlerDelegationRun | None = None
+        if (
+            tool == "delegate_crawler"
+            and action == "execute_selected_tool"
+            and delegated_job is None
+            and _agent_selected_delegate(action_plan, route_intent, tool_decision)
+        ):
+            collection_question = str(
+                protocol_review.get("collection_target")
+                or tool_decision.get("collection_target")
+                or original_question
+                or question
+            ).strip()
+            if collection_question:
+                delegation = _prepare_and_start_crawler_delegation(
+                    config,
+                    payload,
+                    active_agent=agent,
+                    model=model,
+                    original_question=original_question,
+                    current_question=question,
+                    collection_question=collection_question,
+                    session_summary=session_summary,
+                    gap_summary=answer[:4000] if answer.strip() else "",
+                    planning_instruction=(
+                        "The final-answer protocol review found that the answer described a required crawler side effect "
+                        "before the selected tool had actually run. Send one From-Content-To AgentMessage to CrawlerAgent; "
+                        "CrawlerAgent must decide how to inspect, collect, judge, and store evidence."
+                    ),
+                    delivery_target=str(
+                        protocol_review.get("delivery_target")
+                        or tool_decision.get("delivery_target")
+                        or payload.get("delivery_target")
+                        or "MCagent/RAG"
+                    ).strip(),
+                    add_trace=add_trace,
+                    action_plan=action_plan,
+                )
+                delegated_job = delegation.job
+                created = delegation.created
+                delegated_requested_by = delegation.plan.requested_by
+                delegated_delivery_target = delegation.plan.delivery_target
+                delegated_task = delegation.plan.collection_question
+                delegated_handoff_brief = delegation.plan.handoff_brief
+                side_effect_executed = True
+                add_trace(
+                    "answer",
+                    "protocol_violation_executed_delegation",
+                    {
+                        "tool": tool,
+                        "action": action,
+                        "job_id": delegated_job.id,
+                        "job_status": delegated_job.status,
+                    },
+                )
+        elif tool == "delegate_crawler" and action == "execute_selected_tool" and delegated_job is None:
+            add_trace(
+                "answer",
+                "protocol_violation_side_effect_not_executed",
+                {
+                    "reason": "Protocol review found a possible unexecuted delegate_crawler side effect, but runtime will not start it unless the Agent selected that tool before final answer.",
+                    "required_agent_selection": "delegate_crawler or planned_workflow with delegate_crawler",
+                },
+            )
+        cleaned = _strip_unexecuted_side_effect_claim_lines(_strip_pseudo_tool_call_blocks(answer))
+        if cleaned != answer or action == "execute_selected_tool":
+            add_trace(
+                "answer",
+                "pseudo_tool_text_removed",
+                {
+                    "reason": protocol_review.get("reason"),
+                    "tool": tool,
+                    "action": action,
+                    "side_effect_executed": side_effect_executed,
+                },
+            )
+            answer = cleaned or "模型最终回答包含未执行的工具调用文本，运行时已阻止它作为普通答案返回。本轮没有启动新的副作用工具。"
+            if side_effect_executed and delegation is not None:
+                answer = (cleaned or "The model final answer contained an unexecuted tool-call claim, so the runtime removed that text before returning the answer.").rstrip()
+                answer = answer + "\n\nMCagent sent the required task to CrawlerAgent through the From-Content-To message channel. " + delegation.note
+            elif not cleaned:
+                answer = "The model final answer contained an unexecuted tool-call claim, so the runtime removed that text before returning the answer."
+    _append_session(payload, original_question, answer, source_dicts)
+    response: dict[str, Any] = {"answer": answer, "sources": source_dicts, "context": context, "agent": agent}
+    if delegated_job is not None:
+        response["job"] = _job_to_dict(delegated_job)
+        response["collaboration"] = _collaboration_dialog(question, delegated_job, created, reason="模型回答暴露资料缺口，MCagent 追加多源补库。")
+        if delegated_requested_by or delegated_delivery_target or delegated_task or delegated_handoff_brief:
+            response["delegation"] = {
+                "requested_by": delegated_requested_by or "mcagent",
+                "delivery_target": delegated_delivery_target or "MCagent/RAG",
+                "task": delegated_task or question,
+                "handoff_brief": delegated_handoff_brief,
+            }
+    add_trace("done", "response_ready", {"sources": len(source_dicts)})
+    return _with_trace(response, trace)
+
+
 def _reuse_route_confirmation(route_confirmation: dict[str, Any], *, proposed_tool: str, proposed_goal: str) -> dict[str, Any]:
     value = dict(route_confirmation or {})
     current_tool = str(value.get("tool") or value.get("suggested_tool") or "").strip()
@@ -10181,226 +10427,28 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
         if evidence_route.response is not None:
             return evidence_route.response
 
-    source_dicts = [_result_to_dict(item) for item in selected]
-    context = format_context(selected)
-    delegated_job = None
-    created = False
-    delegated_requested_by = ""
-    delegated_delivery_target = ""
-    delegated_task = ""
-    delegated_handoff_brief = ""
-    if agent == "retriever_only" or bool(payload.get("no_llm")):
-        answer, context = executor.retriever_only_answer(context)
-    else:
-        answer = _local_modpack_archive_fact_answer(original_question, selected)
-        if not answer:
-            answer = (
-                ""
-                if (_is_modpack_overview_question(original_question) or _needs_general_grounded_answer(original_question))
-                else _local_version_install_answer(original_question, selected)
-            )
-        if answer:
-            selected = _filter_fact_answer_sources(original_question, selected, answer)
-            source_dicts = [_result_to_dict(item) for item in selected]
-            context = format_context(selected)
-            add_trace("answer", "local_fact_answer", {"reason": "deterministic_fact_evidence", "sources": len(selected)})
-        if not answer:
-            answer_question = _answer_question_for_user(original_question, question, retrieval_note)
-            answer_confirmation = {
-                "proceed": True,
-                "tool": "final_answer_llm",
-                "goal": f"基于已筛选证据组织最终回答：{answer_question}",
-                "reason": "Evidence has already been selected inside the Agent-selected RAG workflow; generate the final answer without a duplicate LLM confirmation call.",
-                "planner": "agent_route_execution",
-            }
-            add_trace("answer", "next_step_confirmed", answer_confirmation)
-            answer, context = executor.grounded_answer(
-                run,
-                answer_question=answer_question,
-                selected=selected,
-                retrieval_note=retrieval_note,
-                evidence_question=evidence_question,
-                repair_question=question,
-            )
-        if planned_delegate:
-            collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
-            planning_instruction = ""
-            if answer.strip():
-                planning_instruction = (
-                    "MCagent 已先检索本地资料并总结了现有资料与缺口；CrawlerAgent 应阅读 mcagent_gap_summary，"
-                    "自行判断真正缺口、规划来源，采集后按 MCagent/RAG 可检索格式入库。"
-                )
-            delegation = _prepare_and_start_crawler_delegation(
-                config,
-                payload,
-                active_agent=agent,
-                model=model,
-                original_question=original_question,
-                current_question=question,
-                collection_question=collection_question,
-                session_summary=session_summary,
-                gap_summary=answer[:4000] if answer.strip() else "",
-                planning_instruction=planning_instruction,
-                delivery_target=str(tool_decision.get("delivery_target") or payload.get("delivery_target") or "").strip(),
-                add_trace=add_trace,
-                action_plan=action_plan,
-            )
-            delegated_job = delegation.job
-            created = delegation.created
-            delegated_requested_by = delegation.plan.requested_by
-            delegated_delivery_target = delegation.plan.delivery_target
-            delegated_task = delegation.plan.collection_question
-            delegated_handoff_brief = delegation.plan.handoff_brief
-            if agent == "crawler_agent":
-                answer = _crawler_agent_context_delegation_answer(answer, delegation.note)
-            else:
-                answer = answer.rstrip() + delegation.note
-        elif agent == "mcagent_rag" and not bool(payload.get("no_llm")):
-            completeness = _tool_route_completeness_review(
-                config,
-                agent=agent,
-                model=model,
-                original_question=original_question,
-                selected_tool="local_rag_search+final_answer_llm",
-                tool_answer=answer,
-                tool_decision=tool_decision,
-                route_confirmation=route_confirmation,
-                action_plan=action_plan,
-            )
-            if (
-                completeness.get("missing_side_effect")
-                and str(completeness.get("tool") or "").strip() == "delegate_crawler"
-                and str(completeness.get("action") or "").strip() == "execute_selected_tool"
-            ):
-                collection_question = str(completeness.get("collection_target") or tool_decision.get("collection_target") or original_question or question).strip()
-                add_trace(
-                    "plan",
-                    "post_answer_route_completeness_gap_not_executed",
-                    {
-                        **completeness,
-                        "reason": "Post-answer review found a possible missing delegation, but runtime will not execute a new side effect after the Agent-selected answer path.",
-                        "collection_target": collection_question,
-                        "required_agent_selection": "delegate_crawler or planned_workflow with delegate_crawler",
-                    },
-                )
-    plan_text = _format_action_plan_for_user(action_plan) if planned_workflow else ""
-    if plan_text and not answer.lstrip().startswith("执行计划："):
-        answer = plan_text + "\n\n" + answer
-    sources = format_sources(selected)
-    if sources and not answer.rstrip().endswith(sources):
-        answer = answer.rstrip() + "\n\n来源：\n" + sources
-    protocol_review = _final_answer_protocol_review(
-        config,
+    return _handle_rag_answer_generation_route(
+        config=config,
+        payload=payload,
         agent=agent,
         model=model,
         original_question=original_question,
-        answer=answer,
+        question=question,
+        retrieval_note=retrieval_note,
+        evidence_question=evidence_question,
+        selected=selected,
         tool_decision=tool_decision,
+        route_confirmation=route_confirmation,
         action_plan=action_plan,
+        route_intent=route_intent,
+        planned_workflow=planned_workflow,
         planned_delegate=planned_delegate,
-        delegated_job_started=delegated_job is not None,
+        executor=executor,
+        run=run,
+        session_summary=session_summary,
+        trace=trace,
+        add_trace=add_trace,
     )
-    if protocol_review.get("violation"):
-        add_trace("answer", "protocol_violation_detected", protocol_review)
-        tool = str(protocol_review.get("tool") or "").strip()
-        action = str(protocol_review.get("action") or "").strip()
-        side_effect_executed = False
-        delegation: CrawlerDelegationRun | None = None
-        if (
-            tool == "delegate_crawler"
-            and action == "execute_selected_tool"
-            and delegated_job is None
-            and _agent_selected_delegate(action_plan, route_intent, tool_decision)
-        ):
-            collection_question = str(
-                protocol_review.get("collection_target")
-                or tool_decision.get("collection_target")
-                or original_question
-                or question
-            ).strip()
-            if collection_question:
-                delegation = _prepare_and_start_crawler_delegation(
-                    config,
-                    payload,
-                    active_agent=agent,
-                    model=model,
-                    original_question=original_question,
-                    current_question=question,
-                    collection_question=collection_question,
-                    session_summary=session_summary,
-                    gap_summary=answer[:4000] if answer.strip() else "",
-                    planning_instruction=(
-                        "The final-answer protocol review found that the answer described a required crawler side effect "
-                        "before the selected tool had actually run. Send one From-Content-To AgentMessage to CrawlerAgent; "
-                        "CrawlerAgent must decide how to inspect, collect, judge, and store evidence."
-                    ),
-                    delivery_target=str(
-                        protocol_review.get("delivery_target")
-                        or tool_decision.get("delivery_target")
-                        or payload.get("delivery_target")
-                        or "MCagent/RAG"
-                    ).strip(),
-                    add_trace=add_trace,
-                    action_plan=action_plan,
-                )
-                delegated_job = delegation.job
-                created = delegation.created
-                delegated_requested_by = delegation.plan.requested_by
-                delegated_delivery_target = delegation.plan.delivery_target
-                delegated_task = delegation.plan.collection_question
-                delegated_handoff_brief = delegation.plan.handoff_brief
-                side_effect_executed = True
-                add_trace(
-                    "answer",
-                    "protocol_violation_executed_delegation",
-                    {
-                        "tool": tool,
-                        "action": action,
-                        "job_id": delegated_job.id,
-                        "job_status": delegated_job.status,
-                    },
-                )
-        elif tool == "delegate_crawler" and action == "execute_selected_tool" and delegated_job is None:
-            add_trace(
-                "answer",
-                "protocol_violation_side_effect_not_executed",
-                {
-                    "reason": "Protocol review found a possible unexecuted delegate_crawler side effect, but runtime will not start it unless the Agent selected that tool before final answer.",
-                    "required_agent_selection": "delegate_crawler or planned_workflow with delegate_crawler",
-                },
-            )
-        cleaned = _strip_unexecuted_side_effect_claim_lines(_strip_pseudo_tool_call_blocks(answer))
-        if cleaned != answer or action == "execute_selected_tool":
-            add_trace(
-                "answer",
-                "pseudo_tool_text_removed",
-                {
-                    "reason": protocol_review.get("reason"),
-                    "tool": tool,
-                    "action": action,
-                    "side_effect_executed": side_effect_executed,
-                },
-            )
-            answer = cleaned or "模型最终回答包含未执行的工具调用文本，运行时已阻止它作为普通答案返回。本轮没有启动新的副作用工具。"
-            if side_effect_executed and delegation is not None:
-                answer = (cleaned or "The model final answer contained an unexecuted tool-call claim, so the runtime removed that text before returning the answer.").rstrip()
-                answer = answer + "\n\nMCagent sent the required task to CrawlerAgent through the From-Content-To message channel. " + delegation.note
-            elif not cleaned:
-                answer = "The model final answer contained an unexecuted tool-call claim, so the runtime removed that text before returning the answer."
-    _append_session(payload, original_question, answer, source_dicts)
-    response: dict[str, Any] = {"answer": answer, "sources": source_dicts, "context": context, "agent": agent}
-    if delegated_job is not None:
-        response["job"] = _job_to_dict(delegated_job)
-        response["collaboration"] = _collaboration_dialog(question, delegated_job, created, reason="模型回答暴露资料缺口，MCagent 追加多源补库。")
-        if delegated_requested_by or delegated_delivery_target or delegated_task or delegated_handoff_brief:
-            response["delegation"] = {
-                "requested_by": delegated_requested_by or "mcagent",
-                "delivery_target": delegated_delivery_target or "MCagent/RAG",
-                "task": delegated_task or question,
-                "handoff_brief": delegated_handoff_brief,
-            }
-    add_trace("done", "response_ready", {"sources": len(source_dicts)})
-    return _with_trace(response, trace)
 
 
 class MCagentHandler(BaseHTTPRequestHandler):
