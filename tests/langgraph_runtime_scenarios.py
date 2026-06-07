@@ -75,9 +75,16 @@ def test_conversation_graph_routes_only_by_message_target() -> None:
     assert_true("crawler_node_not_visited", "crawler_graph.legacy_delivery" not in runtime.get("visited_nodes", []), str(runtime))
     agent_runtime = result.get("agent_graph_runtime") or {}
     assert_true("mcagent_subgraph", agent_runtime.get("agent_graph") == "MCagentGraph", str(agent_runtime))
+    assert_true("mcagent_select_local_tools_node", "mcagent.select_local_tools" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     boundary = agent_runtime.get("tool_boundary") or {}
     assert_true("mcagent_local_only", "local_rag" in boundary.get("allowed_capability_groups", []), str(boundary))
     assert_true("mcagent_blocks_web", "web_search" in boundary.get("blocked_capability_groups", []), str(boundary))
+    selected_groups = agent_runtime.get("selected_tool_groups") or {}
+    local_tools = set(selected_groups.get("default_tools") or [])
+    assert_true("mcagent_default_local_group", selected_groups.get("default_groups") == ["local"], str(selected_groups))
+    assert_true("mcagent_local_tools_include_rag", "local_rag_search" in local_tools, str(selected_groups))
+    assert_true("mcagent_local_tools_include_message_handoff", "delegate_crawler" in local_tools, str(selected_groups))
+    assert_true("mcagent_local_tools_exclude_crawler_web", not {"web_discovery", "fetch_url", "playwright", "browser_collect", "modpack_download"} & local_tools, str(selected_groups))
 
 
 def test_conversation_graph_can_dispatch_to_crawler_node() -> None:

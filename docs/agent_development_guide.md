@@ -4434,3 +4434,27 @@ This node does not decide semantic relevance. It does not enable Minecraft tools
 ### Tests
 
 `tests/langgraph_runtime_scenarios.py` now requires `crawler.select_tool_groups` to appear in the CrawlerAgent subgraph trace and verifies that Minecraft tools are only candidate domain tools, not default general tools.
+
+## 2026-06-07 Stage 35: MCagentGraph Local Tool Selection Node
+
+Stage 35 mirrors the Crawler tool-boundary work on the MCagent side.
+
+### Implemented Changes
+
+1. `MCagentGraph` now runs:
+   - `mcagent.receive`;
+   - `mcagent.load_memory_boundary`;
+   - `mcagent.select_local_tools`;
+   - `mcagent.legacy_runtime`;
+   - `mcagent.finalize`.
+2. `mcagent.select_local_tools` exposes only local/RAG/status/message tools as default tools.
+3. The graph state explicitly blocks web search, browser, download, archive extraction, and public web ingest capabilities for MCagent.
+4. The boundary text in `mcagent/graphs/mcagent.py` was normalized to ASCII English so terminal mojibake cannot hide whether the file is clean UTF-8.
+
+### Tests
+
+`tests/langgraph_runtime_scenarios.py` now verifies:
+
+1. `mcagent.select_local_tools` appears in the MCagent subgraph trace.
+2. MCagent default tools include `local_rag_search` and `delegate_crawler`.
+3. MCagent default tools exclude Crawler web/browser/download tools.
