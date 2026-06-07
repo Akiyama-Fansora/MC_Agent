@@ -19,6 +19,7 @@ from mcagent.config import (  # noqa: E402
 )
 from mcagent.graphs import dispatch_agent_message_graph  # noqa: E402
 from mcagent.graphs import runtime as graph_runtime_module  # noqa: E402
+from mcagent.session_state import DEFAULT_SESSION_STORE  # noqa: E402
 
 
 def make_temp_config(root: Path) -> AppConfig:
@@ -181,10 +182,47 @@ def test_non_streaming_graph_reuses_checkpointed_runtime_without_reusing_emit() 
     assert_true("stream_graph_not_cached", len(graph_runtime_module._GRAPH_CACHE) == 1, str(graph_runtime_module._GRAPH_CACHE))
 
 
+def test_agent_subgraphs_load_session_memory_context() -> None:
+    session_id = "graph-memory-context"
+    DEFAULT_SESSION_STORE.delete(session_id)
+    DEFAULT_SESSION_STORE.append_turn(session_id, {"question": "first question", "answer": "first answer"})
+
+    def legacy(config: AppConfig, payload: dict[str, Any], emit: Any | None = None) -> dict[str, Any]:  # noqa: ARG001
+        return {"answer": "ok", "agent": payload.get("agent"), "sources": [], "context": ""}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mc_result = dispatch_agent_message_graph(
+            make_temp_config(Path(tmp)),
+            {"session_id": session_id},
+            from_agent="User",
+            content="use memory",
+            to_agent="MCagent",
+            conversation_id=session_id,
+            legacy_delivery=legacy,
+        )
+        crawler_result = dispatch_agent_message_graph(
+            make_temp_config(Path(tmp)),
+            {"session_id": session_id},
+            from_agent="User",
+            content="use memory too",
+            to_agent="CrawlerAgent",
+            conversation_id=session_id,
+            legacy_delivery=legacy,
+        )
+    mc_memory = (mc_result.get("agent_graph_runtime") or {}).get("memory_context") or {}
+    crawler_memory = (crawler_result.get("agent_graph_runtime") or {}).get("memory_context") or {}
+    assert_true("mcagent_memory_session", mc_memory.get("session_id") == session_id, str(mc_memory))
+    assert_true("mcagent_memory_turn_count", mc_memory.get("turn_count") == 1, str(mc_memory))
+    assert_true("crawler_memory_session", crawler_memory.get("session_id") == session_id, str(crawler_memory))
+    assert_true("crawler_memory_turn_count", crawler_memory.get("turn_count") == 1, str(crawler_memory))
+    DEFAULT_SESSION_STORE.delete(session_id)
+
+
 def main() -> int:
     test_conversation_graph_routes_only_by_message_target()
     test_conversation_graph_can_dispatch_to_crawler_node()
     test_non_streaming_graph_reuses_checkpointed_runtime_without_reusing_emit()
+    test_agent_subgraphs_load_session_memory_context()
     print("LANGGRAPH RUNTIME SCENARIOS PASSED")
     return 0
 

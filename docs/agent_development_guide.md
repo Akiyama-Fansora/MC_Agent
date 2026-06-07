@@ -4458,3 +4458,27 @@ Stage 35 mirrors the Crawler tool-boundary work on the MCagent side.
 1. `mcagent.select_local_tools` appears in the MCagent subgraph trace.
 2. MCagent default tools include `local_rag_search` and `delegate_crawler`.
 3. MCagent default tools exclude Crawler web/browser/download tools.
+
+## 2026-06-07 Stage 36: AgentGraph Session Memory Context
+
+Stage 36 moves session-memory visibility into both Agent subgraphs.
+
+### Implemented Changes
+
+1. `AgentGraphState` now has `memory_context`.
+2. `MCagentGraph` loads `DEFAULT_SESSION_STORE.context(thread_id, agent="mcagent_rag")` in `mcagent.load_memory_boundary`.
+3. `CrawlerAgentGraph` loads `DEFAULT_SESSION_STORE.context(thread_id, agent="crawler_agent")` in `crawler.understand_boundary`.
+4. `agent_graph_runtime.memory_context` is included in returned graph metadata, including:
+   - `session_id`;
+   - recent `history`;
+   - `summary`;
+   - `turn_count`;
+   - `last_turn`.
+
+### Boundary
+
+This is objective memory exposure, not semantic routing. The graph loads conversation facts; the Agent LLM still owns how to use them. MCagent remains local/RAG-only, and CrawlerAgent remains a general crawler with optional domain toolsets.
+
+### Tests
+
+`tests/langgraph_runtime_scenarios.py` now writes a session turn to `DEFAULT_SESSION_STORE`, dispatches both MCagent and CrawlerAgent messages, and verifies both subgraph runtimes expose the expected `session_id` and `turn_count`.

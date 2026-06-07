@@ -6,6 +6,7 @@ from langgraph.graph import END, START, StateGraph
 
 from ..agent_runtime import tools_for_agent
 from ..config import AppConfig
+from ..session_state import DEFAULT_SESSION_STORE
 from .agent_state import AgentGraphState
 from .state import GraphEvent
 
@@ -47,13 +48,20 @@ def build_mcagent_graph(config: AppConfig, legacy_delivery: LegacyDeliveryFn, em
 
     def load_memory_boundary(state: AgentGraphState) -> dict[str, Any]:
         boundary = dict(state.get("tool_boundary") or {})
+        thread_id = str(state.get("thread_id") or (state.get("payload") or {}).get("session_id") or "default")
+        memory = DEFAULT_SESSION_STORE.context(thread_id, agent="mcagent_rag").to_dict()
         return {
             "tool_boundary": boundary,
+            "memory_context": memory,
             **_append(
                 state,
                 "mcagent.load_memory_boundary",
                 "local_only_boundary_declared",
-                {"allowed_capability_groups": boundary.get("allowed_capability_groups", [])},
+                {
+                    "allowed_capability_groups": boundary.get("allowed_capability_groups", []),
+                    "session_id": memory.get("session_id"),
+                    "turn_count": memory.get("turn_count"),
+                },
             ),
         }
 
@@ -97,6 +105,7 @@ def build_mcagent_graph(config: AppConfig, legacy_delivery: LegacyDeliveryFn, em
             "agent_id": "mcagent_rag",
             "tool_boundary": state.get("tool_boundary") or {},
             "selected_tool_groups": state.get("selected_tool_groups") or {},
+            "memory_context": state.get("memory_context") or {},
             "visited_nodes": [*state.get("visited_nodes", []), "mcagent.finalize"],
             "events": [*state.get("graph_events", []), _event("mcagent.finalize", "ready")],
         }

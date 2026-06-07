@@ -6,6 +6,7 @@ from langgraph.graph import END, START, StateGraph
 
 from ..agent_runtime import domain_collection_tools_for_crawler, general_collection_tools_for_crawler
 from ..config import AppConfig
+from ..session_state import DEFAULT_SESSION_STORE
 from .agent_state import AgentGraphState
 from .state import GraphEvent
 
@@ -59,13 +60,20 @@ def build_crawler_graph(config: AppConfig, legacy_delivery: LegacyDeliveryFn, em
 
     def understand_boundary(state: AgentGraphState) -> dict[str, Any]:
         boundary = dict(state.get("tool_boundary") or {})
+        thread_id = str(state.get("thread_id") or (state.get("payload") or {}).get("session_id") or "default")
+        memory = DEFAULT_SESSION_STORE.context(thread_id, agent="crawler_agent").to_dict()
         return {
             "tool_boundary": boundary,
+            "memory_context": memory,
             **_append(
                 state,
                 "crawler.understand_boundary",
                 "general_domain_boundary_declared",
-                {"allowed_capability_groups": boundary.get("allowed_capability_groups", [])},
+                {
+                    "allowed_capability_groups": boundary.get("allowed_capability_groups", []),
+                    "session_id": memory.get("session_id"),
+                    "turn_count": memory.get("turn_count"),
+                },
             ),
         }
 
@@ -109,6 +117,7 @@ def build_crawler_graph(config: AppConfig, legacy_delivery: LegacyDeliveryFn, em
             "agent_id": "crawler_agent",
             "tool_boundary": state.get("tool_boundary") or {},
             "selected_tool_groups": state.get("selected_tool_groups") or {},
+            "memory_context": state.get("memory_context") or {},
             "visited_nodes": [*state.get("visited_nodes", []), "crawler.finalize"],
             "events": [*state.get("graph_events", []), _event("crawler.finalize", "ready")],
         }
