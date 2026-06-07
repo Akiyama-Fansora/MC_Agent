@@ -68,15 +68,15 @@ def test_conversation_graph_routes_only_by_message_target() -> None:
             content="This content names CrawlerAgent but is addressed to MCagent.",
             to_agent="MCagent",
             conversation_id="graph-route",
-            legacy_delivery=legacy,
+            agent_delivery=legacy,
         )
     assert_true("legacy_called_once", len(calls) == 1, str(calls))
     assert_true("routed_to_mcagent", calls[0].get("agent") == "mcagent_rag", str(calls[0]))
     runtime = result.get("graph_runtime") or {}
     assert_true("runtime_is_langgraph", runtime.get("runtime") == "langgraph", str(runtime))
     assert_true("active_agent_mcagent", runtime.get("active_agent") == "mcagent_rag", str(runtime))
-    assert_true("mcagent_node_visited", "mcagent_graph.legacy_delivery" in runtime.get("visited_nodes", []), str(runtime))
-    assert_true("crawler_node_not_visited", "crawler_graph.legacy_delivery" not in runtime.get("visited_nodes", []), str(runtime))
+    assert_true("mcagent_node_visited", "mcagent_graph.agent_runtime" in runtime.get("visited_nodes", []), str(runtime))
+    assert_true("crawler_node_not_visited", "crawler_graph.agent_runtime" not in runtime.get("visited_nodes", []), str(runtime))
     agent_runtime = result.get("agent_graph_runtime") or {}
     assert_true("mcagent_subgraph", agent_runtime.get("agent_graph") == "MCagentGraph", str(agent_runtime))
     assert_true("mcagent_select_local_tools_node", "mcagent.select_local_tools" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
@@ -117,14 +117,14 @@ def test_conversation_graph_can_dispatch_to_crawler_node() -> None:
             intent="collection_request",
             conversation_id="graph-crawler",
             metadata={"delivery_target": "MCagent/RAG"},
-            legacy_delivery=legacy,
+            agent_delivery=legacy,
         )
     assert_true("legacy_called_once", len(calls) == 1, str(calls))
     assert_true("routed_to_crawler", calls[0].get("agent") == "crawler_agent", str(calls[0]))
     message = calls[0].get("agent_message") or {}
     assert_true("message_preserved", message.get("from_agent") == "MCagent" and message.get("to_agent") == "CrawlerAgent", str(message))
     runtime = result.get("graph_runtime") or {}
-    assert_true("crawler_node_visited", "crawler_graph.legacy_delivery" in runtime.get("visited_nodes", []), str(runtime))
+    assert_true("crawler_node_visited", "crawler_graph.agent_runtime" in runtime.get("visited_nodes", []), str(runtime))
     agent_runtime = result.get("agent_graph_runtime") or {}
     assert_true("crawler_subgraph", agent_runtime.get("agent_graph") == "CrawlerAgentGraph", str(agent_runtime))
     assert_true("crawler_select_tool_groups_node", "crawler.select_tool_groups" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
@@ -166,7 +166,7 @@ def test_non_streaming_graph_reuses_checkpointed_runtime_without_reusing_emit() 
             content="hello",
             to_agent="MCagent",
             conversation_id="cache-a",
-            legacy_delivery=legacy,
+            agent_delivery=legacy,
         )
         dispatch_agent_message_graph(
             config,
@@ -175,7 +175,7 @@ def test_non_streaming_graph_reuses_checkpointed_runtime_without_reusing_emit() 
             content="hello again",
             to_agent="MCagent",
             conversation_id="cache-b",
-            legacy_delivery=legacy,
+            agent_delivery=legacy,
         )
         assert_true("non_streaming_cache_one_graph", len(graph_runtime_module._GRAPH_CACHE) == 1, str(graph_runtime_module._GRAPH_CACHE))
         dispatch_agent_message_graph(
@@ -185,7 +185,7 @@ def test_non_streaming_graph_reuses_checkpointed_runtime_without_reusing_emit() 
             content="stream",
             to_agent="MCagent",
             conversation_id="stream-c",
-            legacy_delivery=legacy,
+            agent_delivery=legacy,
             emit=lambda event, data: emitted.append((event, data)),
         )
     assert_true("all_calls_delivered", calls == ["cache-a", "cache-b", "stream-c"], str(calls))
@@ -209,7 +209,7 @@ def test_agent_subgraphs_load_session_memory_context() -> None:
             content="use memory",
             to_agent="MCagent",
             conversation_id=session_id,
-            legacy_delivery=legacy,
+            agent_delivery=legacy,
         )
         crawler_result = dispatch_agent_message_graph(
             make_temp_config(Path(tmp)),
@@ -218,7 +218,7 @@ def test_agent_subgraphs_load_session_memory_context() -> None:
             content="use memory too",
             to_agent="CrawlerAgent",
             conversation_id=session_id,
-            legacy_delivery=legacy,
+            agent_delivery=legacy,
         )
     mc_memory = (mc_result.get("agent_graph_runtime") or {}).get("memory_context") or {}
     crawler_memory = (crawler_result.get("agent_graph_runtime") or {}).get("memory_context") or {}

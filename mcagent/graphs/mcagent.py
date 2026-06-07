@@ -12,7 +12,7 @@ from .state import GraphEvent
 
 
 EmitFn = Callable[[str, Any], None]
-LegacyDeliveryFn = Callable[..., dict[str, Any]]
+AgentDeliveryFn = Callable[..., dict[str, Any]]
 
 
 def _event(node: str, status: str, detail: dict[str, Any] | None = None) -> GraphEvent:
@@ -26,7 +26,7 @@ def _append(state: AgentGraphState, node: str, status: str, detail: dict[str, An
     }
 
 
-def build_mcagent_graph(config: AppConfig, legacy_delivery: LegacyDeliveryFn, emit: EmitFn | None = None):
+def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit: EmitFn | None = None):
     builder = StateGraph(AgentGraphState)
 
     def receive(state: AgentGraphState) -> dict[str, Any]:
@@ -117,11 +117,11 @@ def build_mcagent_graph(config: AppConfig, legacy_delivery: LegacyDeliveryFn, em
             ),
         }
 
-    def run_legacy_local_agent(state: AgentGraphState) -> dict[str, Any]:
-        result = legacy_delivery(config, dict(state.get("payload") or {}), emit=emit)
+    def run_local_agent_runtime(state: AgentGraphState) -> dict[str, Any]:
+        result = agent_delivery(config, dict(state.get("payload") or {}), emit=emit)
         return {
             "result": result,
-            **_append(state, "mcagent.legacy_runtime", "completed", {"agent": "mcagent_rag"}),
+            **_append(state, "mcagent.agent_runtime", "completed", {"agent": "mcagent_rag"}),
         }
 
     def finalize(state: AgentGraphState) -> dict[str, Any]:
@@ -150,14 +150,14 @@ def build_mcagent_graph(config: AppConfig, legacy_delivery: LegacyDeliveryFn, em
     builder.add_node("load_memory_boundary", load_memory_boundary)
     builder.add_node("select_local_tools", select_local_tools)
     builder.add_node("prepare_local_retrieval", prepare_local_retrieval)
-    builder.add_node("legacy_runtime", run_legacy_local_agent)
+    builder.add_node("agent_runtime", run_local_agent_runtime)
     builder.add_node("finalize", finalize)
     builder.add_edge(START, "receive")
     builder.add_edge("receive", "load_memory_boundary")
     builder.add_edge("load_memory_boundary", "select_local_tools")
     builder.add_edge("select_local_tools", "prepare_local_retrieval")
-    builder.add_edge("prepare_local_retrieval", "legacy_runtime")
-    builder.add_edge("legacy_runtime", "finalize")
+    builder.add_edge("prepare_local_retrieval", "agent_runtime")
+    builder.add_edge("agent_runtime", "finalize")
     builder.add_edge("finalize", END)
     return builder.compile()
 
@@ -166,11 +166,11 @@ def run_mcagent_graph(
     config: AppConfig,
     payload: dict[str, Any],
     *,
-    legacy_delivery: LegacyDeliveryFn,
+    agent_delivery: AgentDeliveryFn,
     emit: EmitFn | None = None,
     thread_id: str = "default",
 ) -> dict[str, Any]:
-    graph = build_mcagent_graph(config, legacy_delivery, emit=emit)
+    graph = build_mcagent_graph(config, agent_delivery, emit=emit)
     final_state = graph.invoke(
         {
             "thread_id": thread_id,

@@ -181,14 +181,14 @@ def test_production_entries_do_not_bypass_message_bus_runtime() -> None:
         ],
     )
     send_start = web_source.index("def _send_agent_message")
-    send_end = web_source.index("\ndef _legacy_deliver_agent_message", send_start)
+    send_end = web_source.index("\ndef _deliver_agent_message", send_start)
     send_body = web_source[send_start:send_end]
     assert_true("message_bus_enters_langgraph", "dispatch_agent_message_graph(" in send_body)
-    assert_true("message_bus_uses_legacy_node", "legacy_delivery=_legacy_deliver_agent_message" in send_body)
-    legacy_start = web_source.index("def _legacy_deliver_agent_message")
-    legacy_end = web_source.index("\ndef _is_context_only_agent_message", legacy_start)
-    legacy_body = web_source[legacy_start:legacy_end]
-    assert_true("legacy_delivery_is_internal_graph_node", "return _chat_impl(config, payload, emit=emit)" in legacy_body)
+    assert_true("message_bus_uses_agent_delivery_node", "agent_delivery=_deliver_agent_message" in send_body)
+    delivery_start = web_source.index("def _deliver_agent_message")
+    delivery_end = web_source.index("\ndef _is_context_only_agent_message", delivery_start)
+    delivery_body = web_source[delivery_start:delivery_end]
+    assert_true("agent_delivery_is_internal_graph_node", "return _chat_impl(config, payload, emit=emit)" in delivery_body)
     crawler_job_start = web_source.index("def _run_crawler_job")
     crawler_job_end = web_source.index("\ndef _run_crawler_job_agent_loop", crawler_job_start)
     crawler_job_body = web_source[crawler_job_start:crawler_job_end]

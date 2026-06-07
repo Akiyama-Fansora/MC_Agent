@@ -8393,11 +8393,11 @@ def _send_agent_message(
         reply_to=reply_to,
         requires_reply=requires_reply,
         metadata=metadata,
-        legacy_delivery=_legacy_deliver_agent_message,
+        agent_delivery=_deliver_agent_message,
     )
 
 
-def _legacy_deliver_agent_message(config: AppConfig, payload: dict[str, Any], emit: Any | None = None) -> dict[str, Any]:
+def _deliver_agent_message(config: AppConfig, payload: dict[str, Any], emit: Any | None = None) -> dict[str, Any]:
     """Run the current Agent implementation as a LangGraph delivery node."""
 
     return _chat_impl(config, payload, emit=emit)
@@ -10017,18 +10017,48 @@ def _chat(config: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
     except concurrent.futures.TimeoutError:
         future.cancel()
         executor.shutdown(wait=False, cancel_futures=True)
-        return _chat_timeout_result(payload, fields, timeout_seconds)
+        return _chat_timeout_result(config, payload, fields, timeout_seconds)
     finally:
         if future.done():
             executor.shutdown(wait=False, cancel_futures=True)
 
 
-def _chat_timeout_result(payload: dict[str, Any], fields: dict[str, str], timeout_seconds: float) -> dict[str, Any]:
+def _chat_timeout_diagnostics(config: AppConfig, payload: dict[str, Any], fields: dict[str, str], timeout_seconds: float) -> dict[str, Any]:
     agent = str(payload.get("agent") or fields.get("to_agent") or "mcagent_rag")
+    raw_to_agent = str(fields.get("to_agent") or agent)
+    model = str(payload.get("model") or payload.get("model_profile_id") or "auto").strip() or "auto"
+    profile_model = "" if model in {"auto", "default"} else model
+    profile = resolve_profile_from_model(config, profile_model, agent=agent)
+    configured_timeout = None
+    profile_id = ""
+    profile_label = ""
+    if profile:
+        configured_timeout = profile.get("timeout_seconds")
+        profile_id = str(profile.get("id") or "")
+        profile_label = str(profile.get("name") or profile.get("model") or profile_id)
+    return {
+        "from_agent": fields.get("from_agent"),
+        "to_agent": _agent_display_name(agent),
+        "to_agent_raw": raw_to_agent,
+        "to_agent_id": agent,
+        "active_agent": agent,
+        "intent": fields.get("intent"),
+        "requested_model": model,
+        "profile_id": profile_id,
+        "profile_label": profile_label,
+        "profile_timeout_seconds": configured_timeout,
+        "chat_runtime_timeout_seconds": timeout_seconds,
+        "side_effect_status": "unknown; inspect /api/jobs for any background job created before timeout",
+    }
+
+
+def _chat_timeout_result(config: AppConfig, payload: dict[str, Any], fields: dict[str, str], timeout_seconds: float) -> dict[str, Any]:
+    diagnostics = _chat_timeout_diagnostics(config, payload, fields, timeout_seconds)
+    agent = str(diagnostics.get("active_agent") or payload.get("agent") or fields.get("to_agent") or "mcagent_rag")
     answer = (
         f"这轮 Agent 对话超过 {timeout_seconds} 秒还没有返回，运行时已停止等待前端请求继续挂起。\n\n"
         "这通常表示工具选择、下一步确认、本地检索或模型调用耗时过长。"
-        "本次响应不会声称已经完成未确认的副作用；请查看任务列表确认是否已有后台 Crawler 任务被创建。"
+        "本次响应不会声称已经完成未确认的副作用；请查看任务列表或 /api/jobs 确认是否已有后台 Crawler 任务被创建。"
     )
     return {
         "answer": answer,
@@ -10037,17 +10067,12 @@ def _chat_timeout_result(payload: dict[str, Any], fields: dict[str, str], timeou
         "agent": agent,
         "timed_out": True,
         "timeout_seconds": timeout_seconds,
+        "diagnostics": diagnostics,
         "trace": [
             {
                 "stage": "runtime",
                 "status": "chat_timeout",
-                "detail": {
-                    "from_agent": fields.get("from_agent"),
-                    "to_agent": fields.get("to_agent"),
-                    "intent": fields.get("intent"),
-                    "timeout_seconds": timeout_seconds,
-                    "side_effect_status": "unknown; inspect /api/jobs for any background job created before timeout",
-                },
+                "detail": diagnostics,
             }
         ],
     }

@@ -2879,6 +2879,13 @@ def test_chat_runtime_timeout_returns_objective_blocker() -> None:
     assert_true("returns_before_slow_send_finishes", time.time() - started < 0.2)
     assert_true("timed_out", bool(result.get("timed_out")))
     assert_true("objective_blocker", "超过" in result.get("answer", "") and "任务列表" in result.get("answer", ""))
+    diagnostics = result.get("diagnostics") or {}
+    assert_equal("timeout_active_agent", diagnostics.get("active_agent"), "mcagent_rag")
+    assert_equal("timeout_to_agent", diagnostics.get("to_agent"), "MCagent")
+    assert_equal("timeout_runtime_seconds", diagnostics.get("chat_runtime_timeout_seconds"), 0.05)
+    assert_true("timeout_profile_label_visible", bool(diagnostics.get("profile_label")), str(diagnostics))
+    trace_detail = ((result.get("trace") or [{}])[0].get("detail") or {})
+    assert_equal("trace_has_diagnostics", trace_detail.get("active_agent"), "mcagent_rag")
 
 
 def test_delegate_handoff_brief_uses_bounded_llm_timeout() -> None:

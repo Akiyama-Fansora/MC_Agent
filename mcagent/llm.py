@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
@@ -17,6 +18,20 @@ class OpenAICompatibleClient:
         self.timeout_seconds = int(config.timeout_seconds)
         self.api_key = api_key
         self.provider_label = provider_label
+
+    def diagnostic_metadata(self) -> dict[str, Any]:
+        return {
+            "provider": self.provider_label,
+            "model": self.model,
+            "base_url": self.base_url,
+            "timeout_seconds": self.timeout_seconds,
+        }
+
+    def _diagnostic_prefix(self, endpoint: str, elapsed_ms: int) -> str:
+        return (
+            f"{self.provider_label} model={self.model} endpoint={endpoint} "
+            f"timeout={self.timeout_seconds}s elapsed={elapsed_ms}ms"
+        )
 
     def chat(
         self,
@@ -47,6 +62,7 @@ class OpenAICompatibleClient:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         request = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
+        started = time.monotonic()
         try:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
                 for raw_line in response:
@@ -77,13 +93,15 @@ class OpenAICompatibleClient:
                     if isinstance(message, dict) and message.get("content"):
                         yield {"type": "content", "text": str(message["content"])}
         except urllib.error.HTTPError as exc:
+            elapsed_ms = round((time.monotonic() - started) * 1000)
             detail = exc.read().decode("utf-8", errors="replace")[:500]
             raise RuntimeError(
-                f"{self.provider_label} endpoint returned HTTP {exc.code} at {endpoint}: {detail}"
+                f"{self._diagnostic_prefix(endpoint, elapsed_ms)} returned HTTP {exc.code}: {detail}"
             ) from exc
         except urllib.error.URLError as exc:
+            elapsed_ms = round((time.monotonic() - started) * 1000)
             raise RuntimeError(
-                f"Failed to reach {self.provider_label} endpoint at {endpoint}. "
+                f"Failed to reach {self._diagnostic_prefix(endpoint, elapsed_ms)}. "
                 "Check the service, base URL, model name, and network availability."
             ) from exc
 
@@ -133,17 +151,20 @@ class OpenAICompatibleClient:
             headers=headers,
             method="POST",
         )
+        started = time.monotonic()
         try:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
                 raw = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
+            elapsed_ms = round((time.monotonic() - started) * 1000)
             detail = exc.read().decode("utf-8", errors="replace")[:500]
             raise RuntimeError(
-                f"{self.provider_label} endpoint returned HTTP {exc.code} at {endpoint}: {detail}"
+                f"{self._diagnostic_prefix(endpoint, elapsed_ms)} returned HTTP {exc.code}: {detail}"
             ) from exc
         except urllib.error.URLError as exc:
+            elapsed_ms = round((time.monotonic() - started) * 1000)
             raise RuntimeError(
-                f"Failed to reach {self.provider_label} endpoint at {endpoint}. "
+                f"Failed to reach {self._diagnostic_prefix(endpoint, elapsed_ms)}. "
                 "Check the service, base URL, model name, and network availability."
             ) from exc
 

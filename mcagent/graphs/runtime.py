@@ -14,7 +14,7 @@ from .state import ConversationGraphState, GraphEvent
 
 
 EmitFn = Callable[[str, Any], None]
-LegacyDeliveryFn = Callable[..., dict[str, Any]]
+AgentDeliveryFn = Callable[..., dict[str, Any]]
 _GRAPH_CACHE_LOCK = threading.Lock()
 _GRAPH_CACHE: dict[tuple[int, int, int], Any] = {}
 
@@ -48,7 +48,7 @@ def _payload_with_message(payload: dict[str, Any], message: AgentMessage) -> dic
     return next_payload
 
 
-def build_conversation_graph(config: AppConfig, legacy_delivery: LegacyDeliveryFn, emit: EmitFn | None = None):
+def build_conversation_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit: EmitFn | None = None):
     builder = StateGraph(ConversationGraphState)
 
     def receive(state: ConversationGraphState) -> dict[str, Any]:
@@ -90,13 +90,13 @@ def build_conversation_graph(config: AppConfig, legacy_delivery: LegacyDeliveryF
         result = run_mcagent_graph(
             config,
             payload,
-            legacy_delivery=legacy_delivery,
+            agent_delivery=agent_delivery,
             emit=emit,
             thread_id=str(state.get("thread_id") or "default"),
         )
         return {
             "result": result,
-            **_append_event(state, "mcagent_graph.legacy_delivery", "completed", {"agent": "mcagent_rag"}),
+            **_append_event(state, "mcagent_graph.agent_runtime", "completed", {"agent": "mcagent_rag"}),
         }
 
     def run_crawler(state: ConversationGraphState) -> dict[str, Any]:
@@ -105,21 +105,21 @@ def build_conversation_graph(config: AppConfig, legacy_delivery: LegacyDeliveryF
         result = run_crawler_graph(
             config,
             payload,
-            legacy_delivery=legacy_delivery,
+            agent_delivery=agent_delivery,
             emit=emit,
             thread_id=str(state.get("thread_id") or "default"),
         )
         return {
             "result": result,
-            **_append_event(state, "crawler_graph.legacy_delivery", "completed", {"agent": "crawler_agent"}),
+            **_append_event(state, "crawler_graph.agent_runtime", "completed", {"agent": "crawler_agent"}),
         }
 
     def run_unknown(state: ConversationGraphState) -> dict[str, Any]:
         payload = dict(state.get("payload") or {})
-        result = legacy_delivery(config, payload, emit=emit)
+        result = agent_delivery(config, payload, emit=emit)
         return {
             "result": result,
-            **_append_event(state, "conversation.unknown_target", "legacy_completed", {"agent": state.get("active_agent") or ""}),
+            **_append_event(state, "conversation.unknown_target", "agent_runtime_completed", {"agent": state.get("active_agent") or ""}),
         }
 
     def emit_response(state: ConversationGraphState) -> dict[str, Any]:
@@ -174,7 +174,7 @@ def dispatch_agent_message_graph(
     from_agent: str,
     content: str,
     to_agent: str,
-    legacy_delivery: LegacyDeliveryFn,
+    agent_delivery: AgentDeliveryFn,
     emit: EmitFn | None = None,
     intent: str = "",
     conversation_id: str = "",
@@ -190,14 +190,14 @@ def dispatch_agent_message_graph(
 
     thread_id = str(conversation_id or payload.get("session_id") or payload.get("conversation_id") or "default")
     if emit is None:
-        cache_key = (id(config), id(legacy_delivery), 0)
+        cache_key = (id(config), id(agent_delivery), 0)
         with _GRAPH_CACHE_LOCK:
             graph = _GRAPH_CACHE.get(cache_key)
             if graph is None:
-                graph = build_conversation_graph(config, legacy_delivery, emit=None)
+                graph = build_conversation_graph(config, agent_delivery, emit=None)
                 _GRAPH_CACHE[cache_key] = graph
     else:
-        graph = build_conversation_graph(config, legacy_delivery, emit=emit)
+        graph = build_conversation_graph(config, agent_delivery, emit=emit)
     initial_state: ConversationGraphState = {
         "thread_id": thread_id,
         "incoming": {
