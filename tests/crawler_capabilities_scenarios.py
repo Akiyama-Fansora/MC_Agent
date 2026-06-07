@@ -38,6 +38,7 @@ def test_registry_exposes_profiles_groups_and_domain_plugins() -> None:
 def test_default_sources_are_general_until_minecraft_context_exists() -> None:
     general_sources = default_sources_for_context("Collect Python requests official docs and GitHub releases.")
     assert_true("general_web", "web_discovery" in general_sources and "playwright" in general_sources)
+    assert_true("general_topic_discovery", "topic_discovery" in general_sources)
     assert_true("no_mc_default", all(not is_domain_source(source, "minecraft") for source in general_sources))
     mc_sources = default_sources_for_context("Collect Utopian Journey Minecraft modpack data.")
     assert_true("mc_domain", "mcmod" in mc_sources and "modrinth" in mc_sources)
@@ -88,6 +89,10 @@ def test_aliases_and_preflight_contracts_are_objective() -> None:
     assert_true("domain_mismatch", "domain_mismatch:minecraft" in domain_preflight["issues"])
     valid_fetch = task_preflight({"source": "fetch_url", "query": "https://docs.python-requests.org/"})
     assert_equal("valid_fetch", valid_fetch["valid"], True)
+    general_context = task_preflight({"source": "mcagent_context", "query": "Python requests local coverage gaps"}, context_text="Collect Python requests docs")
+    assert_equal("mcagent_context_general", general_context["valid"], True)
+    topic_discovery = task_preflight({"source": "topic_discovery", "query": "Python requests release docs"}, context_text="Collect Python requests docs")
+    assert_equal("topic_discovery_general", topic_discovery["valid"], True)
 
 
 if __name__ == "__main__":

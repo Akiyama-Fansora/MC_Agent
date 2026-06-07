@@ -2883,6 +2883,8 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
             source_queries = queries[:8] if _needs_guide_source_graph(context_text) else queries[:5]
         else:
             source_queries = queries[:12]
+        if source == "topic_discovery":
+            source_queries = [target]
         for offset, query in enumerate(source_queries):
             defaults = SOURCE_DEFAULTS.get(source, {})
             if prefer_external:
@@ -2899,8 +2901,6 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
                 }.get(source, _priority_value(defaults.get("priority"), 50))
             else:
                 priority_base = _priority_value(defaults.get("priority"), 50)
-            if source == "topic_discovery":
-                source_queries = [target]
             task = _normalize_task(
                 {
                     "source": source,

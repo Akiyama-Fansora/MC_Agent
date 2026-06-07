@@ -67,9 +67,9 @@ CAPABILITIES: dict[str, CrawlerCapability] = {
         name="mcagent_context",
         group="group:inter_agent",
         profile="handoff",
-        purpose="Ask MCagent to inspect local MCagent/RAG evidence and gaps, then return an inter-agent transcript artifact.",
+        purpose="Ask MCagent to inspect local MCagent/RAG evidence and gaps for any topic, then return an inter-agent transcript artifact.",
         side_effects="read_local_index_and_write_artifact",
-        domain="minecraft",
+        domain="general",
         aliases=("local_context", "rag_gap_check"),
         default_priority=150,
     ),
@@ -151,9 +151,9 @@ CAPABILITIES: dict[str, CrawlerCapability] = {
         name="topic_discovery",
         group="group:discovery",
         profile="research",
-        purpose="Mine existing local crawler documents for candidate follow-up topics; CrawlerAgent must review ACCEPT/REJECT before use.",
+        purpose="Mine existing local crawler documents for candidate follow-up topics across domains; CrawlerAgent must review ACCEPT/REJECT before use.",
         side_effects="read_filesystem_and_write_artifact",
-        domain="minecraft",
+        domain="general",
         default_priority=130,
         default_limits={"max_files": 120, "max_queries": 40},
     ),
@@ -341,7 +341,7 @@ def looks_like_minecraft_context(text: str) -> bool:
 
 def default_sources_for_context(text: str, *, prefer_general_web: bool = False, archive_negated: bool = False) -> list[str]:
     if not looks_like_minecraft_context(text):
-        return ["web_discovery", "playwright", "fetch_url", "browser_collect", "save_artifact", "read_local_file", "search_local_files"]
+        return ["web_discovery", "playwright", "fetch_url", "topic_discovery", "browser_collect", "save_artifact", "read_local_file", "search_local_files"]
     if prefer_general_web:
         sources = ["web_discovery", "playwright", "fetch_url", "followup", "mcmod", "modrinth"]
     else:

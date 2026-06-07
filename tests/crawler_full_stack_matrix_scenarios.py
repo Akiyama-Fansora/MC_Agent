@@ -36,6 +36,7 @@ def test_general_document_research_uses_web_browser_fetch_stack() -> None:
     plan_sources = sources(plan)
     assert_true("has_web_discovery", "web_discovery" in plan_sources)
     assert_true("has_browser", "playwright" in plan_sources)
+    assert_true("bounded_topic_discovery", plan_sources.count("topic_discovery") <= 1)
     assert_true("no_minecraft", all(source not in {"mcmod", "modrinth", "modpack_download", "modpack_internal"} for source in plan_sources))
     assert_true("target_query", any("Python requests" in query for query in queries(plan)))
 
