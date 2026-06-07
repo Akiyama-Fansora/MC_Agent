@@ -4,6 +4,7 @@ from typing import Any, Callable
 
 from langgraph.graph import END, START, StateGraph
 
+from ..agent_runtime import domain_collection_tools_for_crawler, general_collection_tools_for_crawler
 from ..config import AppConfig
 from .agent_state import AgentGraphState
 from .state import GraphEvent
@@ -30,6 +31,8 @@ def build_crawler_graph(config: AppConfig, legacy_delivery: LegacyDeliveryFn, em
     def receive(state: AgentGraphState) -> dict[str, Any]:
         payload = dict(state.get("payload") or {})
         payload["agent"] = "crawler_agent"
+        general_tools = [tool.name for tool in general_collection_tools_for_crawler()]
+        minecraft_tools = [tool.name for tool in domain_collection_tools_for_crawler("minecraft")]
         return {
             "agent_id": "crawler_agent",
             "payload": payload,
@@ -47,6 +50,8 @@ def build_crawler_graph(config: AppConfig, legacy_delivery: LegacyDeliveryFn, em
                     "rag_ingest",
                     "optional_domain_toolsets",
                 ],
+                "general_collection_tools": general_tools,
+                "domain_toolsets": {"minecraft": minecraft_tools},
                 "principle": "Tools expose objective observations; CrawlerAgent LLM owns source graph, tool choice, observation review, retry/accept/reject, persistence, and final report.",
             },
             **_append(state, "crawler.receive", "message_received", {"agent": "crawler_agent"}),

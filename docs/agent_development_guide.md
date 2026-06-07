@@ -4375,3 +4375,35 @@ This stage does not yet mean that all old procedural logic has been decomposed. 
 4. Non-streaming graph cache is reused while streaming emit callbacks are not cached.
 
 Existing message-bus tests were updated so they now require `_send_agent_message()` to enter `dispatch_agent_message_graph()` and require `_chat_impl()` to remain behind the legacy graph node.
+
+## 2026-06-07 Stage 33: Crawler Capability Boundary Split
+
+Stage 32 made the graph runtime visible. Stage 33 makes the CrawlerAgent tool boundary less Minecraft-biased.
+
+### Implemented Changes
+
+1. Added explicit Crawler collection tool group helpers in `mcagent/agent_runtime.py`:
+   - `general_collection_tools_for_crawler()`;
+   - `domain_collection_tools_for_crawler("minecraft")`.
+2. `collection_tools_for_crawler()` remains as a compatibility helper for the existing legacy collection loop.
+3. `CrawlerAgentGraph` now exposes:
+   - `general_collection_tools`: web discovery, exact URL fetch, browser tools, local file tools, artifact save, inter-agent context, finish.
+   - `domain_toolsets.minecraft`: MC-specific tools such as `mcmod`, `modrinth`, `modpack_download`, and `modpack_internal`.
+4. Tests now assert that general Crawler tools do not include Minecraft tools. Minecraft tools remain available only as an optional domain toolset.
+
+### Why This Matters
+
+The user requirement is that CrawlerAgent is a full-domain crawler, not an MC-only crawler. Minecraft/modpack sources are useful plugins, but they should not define the default Crawler identity or dominate the first planning context for unrelated tasks.
+
+### Next Migration Target
+
+The next step is to move Crawler planning from "one large legacy runtime node" toward these explicit nodes:
+
+1. `understand_mission`;
+2. `select_tool_groups`;
+3. `build_source_graph`;
+4. `plan_next_tasks`;
+5. `preflight_tool`;
+6. `execute_tool`;
+7. `review_observation`;
+8. `reflect_or_finish`.

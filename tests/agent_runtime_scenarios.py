@@ -12,6 +12,8 @@ from mcagent.agent_runtime import (  # noqa: E402
     build_handoff_contract,
     classify_crawler_tool_result,
     crawler_collection_catalog_prompt,
+    domain_collection_tools_for_crawler,
+    general_collection_tools_for_crawler,
     make_agent_loop_event,
     normalize_agent_tool_decision,
     tool_catalog_prompt,
@@ -197,6 +199,21 @@ def test_tool_catalog_exposes_agent_capabilities() -> None:
     assert_true("mcagent_local_kb", "local Minecraft knowledge base" in mcagent_catalog)
 
 
+def test_crawler_collection_tools_are_grouped_by_general_and_domain() -> None:
+    general_names = {tool.name for tool in general_collection_tools_for_crawler()}
+    minecraft_names = {tool.name for tool in domain_collection_tools_for_crawler("minecraft")}
+    assert_true("general_has_web_discovery", "web_discovery" in general_names)
+    assert_true("general_has_fetch_url", "fetch_url" in general_names)
+    assert_true("general_has_local_files", {"read_local_file", "search_local_files"}.issubset(general_names))
+    assert_true("general_has_browser", {"playwright", "browser_collect"}.issubset(general_names))
+    assert_true("general_has_artifact", "save_artifact" in general_names)
+    assert_true("general_excludes_mcmod", "mcmod" not in general_names)
+    assert_true("general_excludes_modrinth", "modrinth" not in general_names)
+    assert_true("general_excludes_modpack_download", "modpack_download" not in general_names)
+    assert_true("general_excludes_modpack_internal", "modpack_internal" not in general_names)
+    assert_true("minecraft_has_domain_tools", {"mcmod", "modrinth", "modpack_download", "modpack_internal"}.issubset(minecraft_names))
+
+
 def test_job_readable_summary_surfaces_observations() -> None:
     job = {
         "title": "Crawler 多源补库 -> RAG",
@@ -332,6 +349,7 @@ def main() -> int:
     test_agent_tool_decision_normalization()
     test_handoff_contract_preserves_context()
     test_tool_catalog_exposes_agent_capabilities()
+    test_crawler_collection_tools_are_grouped_by_general_and_domain()
     test_job_readable_summary_surfaces_observations()
     test_job_readable_recovers_target_from_long_question()
     test_crawler_delegation_requires_explicit_agent_route()

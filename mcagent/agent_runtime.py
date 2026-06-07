@@ -708,6 +708,39 @@ CRAWLER_COLLECTION_TOOLS = [
 ]
 
 
+CRAWLER_GENERAL_COLLECTION_TOOL_NAMES = {
+    "plan_collection",
+    "mcagent_context",
+    "browser_collect",
+    "fetch_url",
+    "save_artifact",
+    "read_local_file",
+    "search_local_files",
+    "playwright",
+    "web_discovery",
+    "finish",
+}
+
+
+CRAWLER_DOMAIN_COLLECTION_TOOL_NAMES = {
+    "minecraft": {
+        "mcmod",
+        "modrinth",
+        "modpack_download",
+        "modpack_internal",
+    }
+}
+
+
+def general_collection_tools_for_crawler() -> list[ToolSpec]:
+    return [tool for tool in CRAWLER_COLLECTION_TOOLS if tool.name in CRAWLER_GENERAL_COLLECTION_TOOL_NAMES]
+
+
+def domain_collection_tools_for_crawler(domain: str) -> list[ToolSpec]:
+    names = CRAWLER_DOMAIN_COLLECTION_TOOL_NAMES.get(str(domain or "").strip().lower(), set())
+    return [tool for tool in CRAWLER_COLLECTION_TOOLS if tool.name in names]
+
+
 def tools_for_agent(agent_id: str) -> list[ToolSpec]:
     if agent_id == "crawler_agent":
         return list(CRAWLER_ROUTE_TOOLS)
