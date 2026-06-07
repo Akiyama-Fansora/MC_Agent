@@ -90,6 +90,34 @@ def test_browser_collect_recovers_url_path_and_count_from_original_question() ->
     assert_equal("max_items", built["max_items"], 5)
 
 
+def test_generic_web_task_preserves_output_dir_from_original_question() -> None:
+    question = (
+        "Collect Python Packaging User Guide pip install and dependency specifiers, "
+        r"save Markdown and JSON to D:\magic\MC_Agent\runtime\d5_packaging_export_test."
+    )
+    built = CrawlerTaskPreparationService().build_payload(
+        base_payload={"original_user_request": question},
+        task={"query": "Python Packaging User Guide pip install"},
+        question=question,
+        task_source="web_discovery",
+    )
+    assert_equal("output_dir", built["output_dir"], r"D:\magic\MC_Agent\runtime\d5_packaging_export_test")
+
+
+def test_output_dir_stops_before_following_english_instruction() -> None:
+    question = (
+        r"Save the final user delivery to this directory: D:\magic\MC_Agent\runtime\d5_packaging_export_test. "
+        "You decide whether each source is useful; then provide inspectable results."
+    )
+    built = CrawlerTaskPreparationService().build_payload(
+        base_payload={"original_user_request": question},
+        task={"query": "Python Packaging User Guide dependency specifiers"},
+        question=question,
+        task_source="web_discovery",
+    )
+    assert_equal("output_dir", built["output_dir"], r"D:\magic\MC_Agent\runtime\d5_packaging_export_test")
+
+
 def test_empty_query_result_is_objective_failure_observation() -> None:
     result = CrawlerTaskPreparationService().empty_query_result(
         task_source="fetch_url",
@@ -133,8 +161,9 @@ if __name__ == "__main__":
     test_build_payload_falls_back_to_question_when_query_missing()
     test_build_payload_preserves_generic_artifact_fields()
     test_browser_collect_recovers_url_path_and_count_from_original_question()
+    test_generic_web_task_preserves_output_dir_from_original_question()
+    test_output_dir_stops_before_following_english_instruction()
     test_empty_query_result_is_objective_failure_observation()
     test_blocked_preflight_result_is_returned_to_crawler_for_reflection()
     test_local_search_output_dir_is_not_a_search_root()
     print("crawler_task_preparation_service_scenarios passed")
-

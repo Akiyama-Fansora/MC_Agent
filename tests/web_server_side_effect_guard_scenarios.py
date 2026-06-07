@@ -209,7 +209,6 @@ def test_direct_crawler_delegate_choice_is_corrected_to_temporary_extract() -> N
         [
             '{"tool":"delegate_crawler","reason":"mistaken persistent route","collection_target":"总结 https://example.com 页面内容","delivery_target":"human"}',
             '{"proceed":true,"tool":"delegate_crawler","reason":"confirm mistaken route"}',
-            '{"proceed":true,"tool":"temporary_extract","reason":"temporary extraction is allowed"}',
             "Example page summary.",
         ]
     )
@@ -238,6 +237,58 @@ def test_direct_crawler_delegate_choice_is_corrected_to_temporary_extract() -> N
     assert_true("boundary_trace", ("decide", "side_effect_boundary_corrected") in statuses)
     assert_true("temporary_result", result.get("temporary_extract", {}).get("saved_to_local") is False)
     assert_equal("agent_identity", result.get("agent"), "crawler_agent")
+    assert_true("no_background_job", "job" not in result)
+
+
+def test_direct_crawler_no_save_without_url_discovers_then_temporary_extracts() -> None:
+    tmp = tempfile.TemporaryDirectory()
+    fake_client = SequencedClient(
+        [
+            '{"tool":"delegate_crawler","reason":"mistaken persistent route","collection_target":"Playwright Python Trace Viewer tracing official docs","delivery_target":"human"}',
+            '{"proceed":true,"tool":"delegate_crawler","reason":"confirm mistaken route"}',
+            '{"url":"https://playwright.dev/python/docs/trace-viewer","reason":"official Playwright Python Trace Viewer docs"}',
+            "Trace Viewer summary.",
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    original_search = web_server.CrawlerTemporaryExtractService.search_candidates
+    original_fetch_text = web_server.CrawlerTemporaryExtractService.fetch_text
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake_client, "fake")  # type: ignore[assignment]
+    web_server.CrawlerTemporaryExtractService.search_candidates = (  # type: ignore[assignment]
+        lambda self, query, *, limit=8, timeout=12: [
+            {
+                "rank": 1,
+                "title": "Trace viewer | Playwright Python",
+                "url": "https://playwright.dev/python/docs/trace-viewer",
+                "snippet": "Record traces and open them with the Playwright trace viewer.",
+            }
+        ]
+    )
+    web_server.CrawlerTemporaryExtractService.fetch_text = (  # type: ignore[assignment]
+        lambda self, url, *, fetch=None: ("Trace viewer", "Trace viewer body text. " * 20, "text/html", 200)
+    )
+    try:
+        result = web_server._chat_impl(
+            make_temp_config(Path(tmp.name)),
+            {
+                "agent": "crawler_agent",
+                "question": "Read the official Playwright Python Trace Viewer tracing docs and summarize them in chat only. Do not save locally and do not ingest.",
+                "session_id": "direct-crawler-no-url-temp-test",
+                "model": "fake-model",
+            },
+        )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server.CrawlerTemporaryExtractService.search_candidates = original_search  # type: ignore[assignment]
+        web_server.CrawlerTemporaryExtractService.fetch_text = original_fetch_text  # type: ignore[assignment]
+        tmp.cleanup()
+
+    statuses = [(step["stage"], step["status"]) for step in result.get("trace", [])]
+    assert_true("boundary_trace", ("decide", "side_effect_boundary_corrected") in statuses, str(statuses))
+    assert_true("discovery_trace", ("extract", "temporary_url_discovering") in statuses, str(statuses))
+    assert_true("selected_trace", ("extract", "temporary_url_selected") in statuses, str(statuses))
+    assert_true("temporary_result", result.get("temporary_extract", {}).get("saved_to_local") is False)
+    assert_equal("temporary_url", result.get("temporary_extract", {}).get("url"), "https://playwright.dev/python/docs/trace-viewer")
     assert_true("no_background_job", "job" not in result)
 
 
@@ -299,6 +350,49 @@ def test_structured_save_request_is_not_corrected_to_temporary_extract() -> None
     assert_true("job_started", bool((result.get("job") or {}).get("id")), str(result))
 
 
+def test_user_requested_output_dir_gets_final_delivery_files() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        export_dir = root / "export"
+        export_dir.mkdir()
+        markdown = export_dir / "page.md"
+        markdown.write_text("# Installing Packages\n\nUse pip install.", encoding="utf-8")
+        (export_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "records": [
+                        {
+                            "title": "Installing Packages - Python Packaging User Guide",
+                            "url": "https://packaging.python.org/en/latest/tutorials/installing-packages/",
+                            "path": str(markdown),
+                            "format": "md",
+                            "bytes": markdown.stat().st_size,
+                        }
+                    ],
+                    "skipped": [],
+                    "errors": [],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        output_dir = root / "delivery"
+        payload = {
+            "question": f"Collect packaging docs and save Markdown and JSON to {output_dir}",
+            "output_dir": str(output_dir),
+        }
+        result = web_server._export_crawler_user_delivery(
+            payload=payload,
+            plan={"topic": "Python Packaging User Guide"},
+            task_results=[{"source": "web_discovery", "query": "pip install", "export_dir": str(export_dir)}],
+            collection_summary={"success_count": 1},
+        )
+        assert_equal("status", result.get("status"), "ok")
+        assert_true("md_exists", (output_dir / "crawler_result.md").exists())
+        assert_true("json_exists", (output_dir / "crawler_result.json").exists())
+        assert_true("md_mentions_url", "packaging.python.org" in (output_dir / "crawler_result.md").read_text(encoding="utf-8"))
+
+
 def test_mcagent_context_focus_expands_minecraft_utopia_aliases() -> None:
     focus = web_server._mcagent_context_focus("问下MCAgent乌托邦整合包还缺哪些东西，你去网上找补给他")
     assert_true("focus_keeps_user_topic", "乌托邦" in focus)
@@ -354,6 +448,69 @@ def test_successful_mcagent_context_filters_new_duplicate_context_tasks() -> Non
     ]
     filtered = web_server._drop_duplicate_mcagent_context_tasks(new_tasks, task_results)
     assert_equal("remaining_sources", [item["source"] for item in filtered], ["web_discovery"])
+
+
+def test_reflection_local_source_request_prevents_context_skip() -> None:
+    task_results = [
+        {
+            "source": "mcagent_context",
+            "returncode": 0,
+            "manifest_stats": {"records": 2},
+            "mcagent_source_paths": ["D:\\magic\\MC_Agent\\data\\crawler_exports\\manual_research\\utopia_quests.md"],
+        }
+    ]
+    reflection = {"action": "replan", "reason": "Need to read local source paths before broad web retry."}
+    assert_true(
+        "local_source_materialization_requested",
+        web_server._reflection_requests_local_source_materialization(reflection, task_results),
+    )
+
+
+def test_reflection_local_evidence_wording_requests_materialization() -> None:
+    task_results = [
+        {
+            "source": "mcagent_context",
+            "returncode": 0,
+            "manifest_stats": {"records": 2},
+            "mcagent_source_paths": ["D:\\magic\\MC_Agent\\data\\crawler_exports\\manual_research\\utopia_route.md"],
+        }
+    ]
+    reflection = {
+        "action": "replan",
+        "reason": "MCagent reply contains local files with pack internals and MC百科 page; read them first before broader web search.",
+    }
+    assert_true(
+        "local_files_materialization_requested",
+        web_server._reflection_requests_local_source_materialization(reflection, task_results),
+    )
+
+
+def test_materializes_local_source_path_tasks_after_mcagent_context_reflection() -> None:
+    task_results = [
+        {
+            "source": "mcagent_context",
+            "returncode": 0,
+            "manifest_stats": {"records": 2},
+            "mcagent_source_paths": [
+                "D:\\magic\\MC_Agent\\data\\crawler_exports\\manual_research\\utopia_route.md",
+                "D:\\magic\\MC_Agent\\data\\crawler_exports\\fetch_url\\utopia_page.md",
+            ],
+        }
+    ]
+    reflection = {
+        "action": "replan",
+        "reason": "Need to inspect local source paths for version, download/archive, mod list, and progression.",
+    }
+    tasks = web_server._materialize_local_source_path_tasks_from_mcagent_context(
+        reflection,
+        task_results,
+        existing_tasks=[],
+        max_new_tasks=2,
+    )
+    assert_equal("task_count", len(tasks), 2)
+    assert_true("uses_local_read_tool", all(task["source"] == "read_local_file" for task in tasks))
+    assert_true("preserves_objective_path", tasks[0]["path"].endswith("utopia_route.md"))
+    assert_true("query_has_dimensions", "version" in tasks[0]["query"] and "download" in tasks[0]["query"])
 
 
 def test_runtime_status_request_runs_after_agent_selects_status_tool() -> None:
@@ -1247,7 +1404,19 @@ def test_crawler_job_can_execute_mcagent_context_tool() -> None:
         assert_equal("inter_agent_transport", manifest["inter_agent"]["transport"], "_send_agent_message")
         assert_true("reply_persisted", "CrawlerAgent" in manifest["inter_agent"]["reply"])
         assert_true("mcagent_received_trace", any(item.get("stage") == "message" and item.get("status") == "received" for item in manifest.get("mcagent_trace") or []))
-        assert_true("manifest_records", len(manifest.get("records") or []) == 1)
+        records = manifest.get("records") or []
+        assert_true("manifest_records", len(records) >= 1)
+        assert_true("manifest_has_reply_record", any(str(item.get("title") or "") == "MCagent Reply To CrawlerAgent" for item in records if isinstance(item, dict)))
+        assert_true(
+            "manifest_exposes_local_source_path",
+            any(
+                isinstance(item, dict)
+                and str((item.get("metadata") or {}).get("record_role") or "") == "mcagent_local_source"
+                and str(item.get("path") or "").endswith("utopia.md")
+                for item in records
+            ),
+        )
+        assert_true("result_exposes_local_source_paths", any(str(path).endswith("utopia.md") for path in result.get("mcagent_source_paths") or []))
     finally:
         if result.get("export_dir"):
             shutil.rmtree(str(result["export_dir"]), ignore_errors=True)
@@ -1943,6 +2112,39 @@ def test_specific_utopian_journey_filter_rejects_other_pack_mentions() -> None:
     assert_equal("strict_other_pack_filter", filtered, [target])
 
 
+def test_utopia_journey_filter_keeps_real_chinese_pack_and_rejects_aoa_armor() -> None:
+    wanted = SearchResult(
+        rank=1,
+        score=9.0,
+        chunk_id=1,
+        document_id=1,
+        chunk_index=0,
+        title="[UJ]乌托邦探险之旅 (Utopian Journey) - MC百科",
+        source_path="D:/magic/MC_Agent/data/crawler_exports/fetch_url/utopian_journey.md",
+        url="https://www.mcmod.cn/modpack/1337.html",
+        text="3.6.6+1.20.1-fabric Fabric 整合包 核心玩法",
+        metadata={},
+    )
+    armor = SearchResult(
+        rank=2,
+        score=8.0,
+        chunk_id=2,
+        document_id=2,
+        chunk_index=0,
+        title="乌托邦胸甲 (Utopian Chestplate) - [AoA2]虚无世界2",
+        source_path="D:/magic/MC_Agent/data/crawler_exports/mcmod/aoa_utopian_chestplate.md",
+        url="https://www.mcmod.cn/item/123.html",
+        text="Utopian Chestplate armor item from Advent of Ascension.",
+        metadata={},
+    )
+    filtered = web_server._filter_answer_evidence_by_required_terms(
+        "Utopia Journey / 乌托邦探险之旅 modpack",
+        [wanted, armor],
+    )
+    assert_equal("filtered_count", len(filtered), 1)
+    assert_equal("kept_title", filtered[0].title, wanted.title)
+
+
 def test_version_install_extraction_ignores_mcmod_navigation_loaders() -> None:
     text = (
         "版本检索\n"
@@ -1980,6 +2182,60 @@ def test_local_version_install_answer_ignores_wrong_modpack_sources() -> None:
         [wrong],
     )
     assert_equal("no_wrong_answer", answer, "")
+
+
+def test_utopia_journey_alias_keeps_local_pack_evidence() -> None:
+    source = SearchResult(
+        rank=1,
+        score=9.0,
+        chunk_id=1,
+        document_id=1,
+        chunk_index=0,
+        title="Utopia Journey / Utopian Journey modpack",
+        source_path="D:/magic/MC_Agent/data/crawler_exports/web_discovery/utopia_journey.md",
+        url="https://example.test/utopia-journey",
+        text="Utopian Journey is a Minecraft 1.20.1 Fabric modpack with public download notes.",
+        metadata={},
+    )
+    filtered = web_server._filter_answer_evidence_by_required_terms(
+        "According to local stored sources, introduce Utopia Journey modpack.",
+        [source],
+    )
+    assert_equal("utopia_journey_alias_kept", filtered, [source])
+
+
+def test_entity_filter_recovers_matching_rough_candidate_when_selected_is_polluted() -> None:
+    polluted = SearchResult(
+        rank=1,
+        score=9.0,
+        chunk_id=1,
+        document_id=1,
+        chunk_index=0,
+        title="Color item inventories on tooltips according to the container item's color.",
+        source_path="D:/magic/MC_Agent/data/crawler_exports/modrinth_agent/mod_inventory.md",
+        url="https://example.test/noise",
+        text="A client-side tooltip mod unrelated to Utopian Journey.",
+        metadata={},
+    )
+    target = SearchResult(
+        rank=2,
+        score=4.0,
+        chunk_id=2,
+        document_id=2,
+        chunk_index=0,
+        title="[UJ]乌托邦探险之旅 (Utopian Journey) - MC百科",
+        source_path="D:/magic/MC_Agent/data/crawler_exports/fetch_url/utopian_journey.md",
+        url="https://www.mcmod.cn/modpack/1337.html",
+        text="乌托邦探险之旅 Utopian Journey Minecraft 1.20.1 Fabric 整合包，包含玩法、版本和下载说明。",
+        metadata={},
+    )
+    recovered = web_server._filter_answer_evidence_with_recovery(
+        "According to local stored sources, briefly introduce Utopia Journey modpack.",
+        [polluted],
+        [polluted, target],
+        limit=4,
+    )
+    assert_equal("recovered_matching_entity", recovered, [target])
 
 
 def test_version_install_fact_question_uses_agent_selected_local_rag_route() -> None:
@@ -3703,11 +3959,16 @@ if __name__ == "__main__":
     test_version_fact_answer_requires_subject_in_title_or_source()
     test_direct_user_handoff_brief_rejects_wrong_mcagent_identity()
     test_direct_crawler_delegate_choice_is_corrected_to_temporary_extract()
+    test_direct_crawler_no_save_without_url_discovers_then_temporary_extracts()
+    test_user_requested_output_dir_gets_final_delivery_files()
     test_mcagent_context_focus_expands_minecraft_utopia_aliases()
     test_mcagent_context_focus_keeps_gap_dimension_without_meta_instruction()
     test_mcagent_context_focus_compacts_inventory_noise_to_entity_and_dimensions()
     test_successful_mcagent_context_prunes_duplicate_pending_context_tasks()
     test_successful_mcagent_context_filters_new_duplicate_context_tasks()
+    test_reflection_local_source_request_prevents_context_skip()
+    test_reflection_local_evidence_wording_requests_materialization()
+    test_materializes_local_source_path_tasks_after_mcagent_context_reflection()
     test_mcagent_gap_delegation_overrides_human_delivery_to_rag()
     test_delegate_confirmation_can_cancel_background_job()
     test_explicit_mcagent_to_crawler_handoff_starts_job_after_agent_selects_delegate()
@@ -3729,6 +3990,7 @@ if __name__ == "__main__":
     test_mcagent_context_filters_off_topic_local_evidence()
     test_specific_utopian_journey_filter_rejects_generic_utopian_sources()
     test_specific_utopian_journey_filter_rejects_other_pack_mentions()
+    test_utopia_journey_filter_keeps_real_chinese_pack_and_rejects_aoa_armor()
     test_version_install_extraction_ignores_mcmod_navigation_loaders()
     test_local_version_install_answer_ignores_wrong_modpack_sources()
     test_no_llm_mcagent_path_still_runs_evidence_selection()

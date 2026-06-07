@@ -61,6 +61,113 @@ def test_run_uses_fetch_and_does_not_save() -> None:
     assert_equal("source_saved_flag", response["sources"][0]["metadata"]["saved_to_local"], False)
 
 
+def test_run_discovers_candidate_url_when_request_has_no_url() -> None:
+    service = CrawlerTemporaryExtractService()
+    service.search_candidates = lambda query: [  # type: ignore[method-assign]
+        {
+            "rank": 1,
+            "title": "Trace viewer | Playwright Python",
+            "url": "https://playwright.dev/python/docs/trace-viewer",
+            "snippet": "Record traces and open them with the Playwright trace viewer.",
+        }
+    ]
+
+    def fetch(url: str):
+        assert_equal("selected_url", url, "https://playwright.dev/python/docs/trace-viewer")
+        return (
+            "Trace viewer records actions, snapshots, console logs and network requests. "
+            "Use context.tracing.start and context.tracing.stop(path='trace.zip'), then run playwright show-trace trace.zip. " * 5,
+            "text/plain",
+            200,
+        )
+
+    def choose_url(question: str, target: str, candidates: list[dict]):  # noqa: ARG001
+        return str(candidates[0]["url"])
+
+    def summarize(question: str, url: str, text: str) -> str:  # noqa: ARG001
+        return "Trace viewer records actions, snapshots, console logs and network requests. Use tracing.start/stop and show-trace."
+
+    result = service.run(
+        question="Summarize Playwright Python Trace Viewer and tracing. Do not save locally.",
+        collection_target="Playwright Python Trace Viewer tracing official docs",
+        fetch=fetch,
+        choose_url=choose_url,
+        summarize=summarize,
+    )
+    assert_equal("url", result.url, "https://playwright.dev/python/docs/trace-viewer")
+    assert_true("answer", "Trace viewer" in result.answer)
+
+
+def test_official_docs_discovery_adds_verified_deep_candidate_before_homepage() -> None:
+    service = CrawlerTemporaryExtractService()
+    def fetch_text(url: str, *, fetch=None):  # noqa: ARG001
+        if url != "https://playwright.dev/docs/trace-viewer":
+            raise RuntimeError("not found")
+        return (
+            "Trace viewer",
+            "Trace viewer docs explain trace.zip, playwright show-trace, network requests, and console logs. " * 4,
+            "text/html",
+            200,
+        )
+
+    service.fetch_text = fetch_text  # type: ignore[method-assign]
+    candidates = [
+        {
+            "rank": 1,
+            "title": "Fast and reliable end-to-end testing for modern web apps | Playwright",
+            "url": "https://playwright.dev/",
+            "snippet": "Playwright homepage.",
+        }
+    ]
+    expanded = service.expand_verified_official_doc_candidates(
+        question=(
+            "Temporarily search the public web for the official Playwright Trace Viewer docs "
+            "about trace.zip, show-trace, and network/console information."
+        ),
+        collection_target="",
+        candidates=candidates,
+    )
+    assert_equal("first_url", expanded[0]["url"], "https://playwright.dev/docs/trace-viewer")
+    assert_true("verified", bool(expanded[0].get("verified")))
+    assert_equal("homepage_preserved", expanded[1]["url"], "https://playwright.dev/")
+
+
+def test_discovery_query_keeps_technical_topic_not_instruction_verb() -> None:
+    service = CrawlerTemporaryExtractService()
+    query = service.discovery_query(
+        question=(
+            "Temporarily search the public web for the official Playwright Trace Viewer docs "
+            "about trace.zip, show-trace, and viewing network/console information. Do not save."
+        ),
+        collection_target="",
+    )
+    lowered = query.lower()
+    assert_true("mentions_playwright", "playwright" in lowered, query)
+    assert_true("mentions_trace_viewer", "trace viewer" in lowered, query)
+    assert_true("mentions_show_trace", "show" in lowered and "trace" in lowered, query)
+    assert_true("not_dictionary_query", "temporarily" not in lowered, query)
+
+
+def test_run_rejects_discovered_url_not_from_candidates() -> None:
+    service = CrawlerTemporaryExtractService()
+    service.search_candidates = lambda query: [  # type: ignore[method-assign]
+        {"rank": 1, "title": "Allowed", "url": "https://example.com/allowed", "snippet": ""}
+    ]
+
+    try:
+        service.run(
+            question="Read Playwright Trace Viewer. Do not save locally.",
+            collection_target="Playwright Trace Viewer",
+            choose_url=lambda question, target, candidates: "https://example.com/not-candidate",  # noqa: ARG005
+            summarize=lambda question, url, text: "summary",  # noqa: ARG005
+            fetch=lambda url: ("long text " * 40, "text/plain", 200),
+        )
+    except ValueError as exc:
+        assert_true("candidate_error", "not present" in str(exc), str(exc))
+    else:
+        raise AssertionError("Temporary extraction accepted a URL outside objective discovery candidates")
+
+
 def test_run_reviews_incomplete_answer_with_requested_terms() -> None:
     service = CrawlerTemporaryExtractService()
     calls: list[dict[str, object]] = []
@@ -149,9 +256,12 @@ if __name__ == "__main__":
     test_extract_url_from_natural_request()
     test_html_to_text_extracts_title_and_body()
     test_run_uses_fetch_and_does_not_save()
+    test_run_discovers_candidate_url_when_request_has_no_url()
+    test_official_docs_discovery_adds_verified_deep_candidate_before_homepage()
+    test_discovery_query_keeps_technical_topic_not_instruction_verb()
+    test_run_rejects_discovered_url_not_from_candidates()
     test_run_reviews_incomplete_answer_with_requested_terms()
     test_requested_terms_ignore_instruction_words_and_url_parts()
     test_complete_temporary_answer_does_not_review_instruction_words()
     test_answer_completely_mentioning_inline_code_is_not_marked_incomplete()
     print("crawler_temporary_extract_service_scenarios passed")
-

@@ -819,6 +819,48 @@ def test_archive_guard_does_not_force_download_when_mcagent_context_has_archive_
     assert_true("used_llm_reflection", "archive_goal_guard" not in decision["planner"])
 
 
+def test_reflection_snapshot_exposes_mcagent_local_source_paths() -> None:
+    original_client = crawler_llm_planner._planner_client
+    captured: list[str] = []
+
+    class FakeClient:
+        def chat(self, messages, *args, **kwargs):  # noqa: ANN002, ANN003
+            captured.append(messages[-1]["content"])
+            return (
+                '{"action":"add_tasks","selected_index":0,'
+                '"reason":"Read the local quest extraction before another broad web search.",'
+                '"tasks":[{"source":"read_local_file","query":"inspect local quest file",'
+                '"path":"D:\\\\magic\\\\MC_Agent\\\\data\\\\crawler_exports\\\\manual_research\\\\utopia_quests.md",'
+                '"reason":"MCagent context exposed this local source path."}]}'
+            )
+
+    crawler_llm_planner._planner_client = lambda: (FakeClient(), "fake-reflect")  # type: ignore[assignment]
+    try:
+        decision = reflect_crawler_progress(
+            "Collect Utopia Journey boss summon and drop facts for MCagent/RAG.",
+            {"topic": "Utopia Journey", "target_hint": "Utopia Journey", "delivery_target": "MCagent/RAG"},
+            task_results=[
+                {
+                    "source": "mcagent_context",
+                    "query": "Utopia Journey boss gaps",
+                    "returncode": 0,
+                    "manifest_stats": {"records": 3},
+                    "mcagent_source_count": 1,
+                    "mcagent_source_paths": ["D:\\magic\\MC_Agent\\data\\crawler_exports\\manual_research\\utopia_quests.md"],
+                }
+            ],
+            pending_tasks=[{"source": "web_discovery", "query": "Utopia Journey boss drops", "reason": "public search"}],
+            session_summary={"delivery_target": "MCagent/RAG", "collection_target": "Utopia Journey boss data"},
+            max_new_tasks=2,
+        )
+    finally:
+        crawler_llm_planner._planner_client = original_client  # type: ignore[assignment]
+    assert_true("prompt_exposes_local_source_paths", "local_source_paths" in captured[0] and "utopia_quests.md" in captured[0])
+    assert_equal("action", decision["action"], "add_tasks")
+    assert_equal("source", decision["tasks"][0]["source"], "read_local_file")
+    assert_true("path_preserved", decision["tasks"][0]["path"].endswith("utopia_quests.md"))
+
+
 def test_topic_discovery_review_uses_crawler_profile_client() -> None:
     original_client_for_agent = crawler_llm_planner.client_for_agent
     calls: list[tuple[str, float, int]] = []
@@ -977,7 +1019,7 @@ def test_english_modpack_archive_fallback_extracts_pack_name_and_download_query(
         planner_error="unit timeout",
         session_summary={"delivery_target": "MCagent/RAG", "requested_by": "mcagent", "collection_target": question},
     )
-    assert_equal("topic", plan["topic"], "Utopian Journey")
+    assert_true(f"topic_keeps_pack_name: {plan['topic']}", "Utopian Journey" in plan["topic"])
     first = plan["tasks"][0]
     assert_equal("first_source", first["source"], "modpack_download")
     assert_true("download_query_has_archive_terms", "Utopian Journey" in first["query"] and ".mrpack" in first["query"])
@@ -1571,6 +1613,105 @@ def test_general_chinese_collection_extracts_entity_not_delivery_phrase() -> Non
     assert_true("no_delivery_phrase", all("MCagent/RAG" not in str(task.get("query") or "") for task in plan["tasks"]))
 
 
+def test_english_modpack_collection_target_ignores_future_queries_phrase() -> None:
+    question = (
+        "Collect complete information on the boss name, summon method, and drop list for the "
+        "Minecraft modpack 'Utopia Journey' (Utopian Journey). Save the collected evidence into "
+        "the local knowledge base, making it available to MCagent for future queries."
+    )
+    assert_equal("collection_target", _collection_target_hint(question), "Utopia Journey")
+    plan = _sanitize_plan(
+        {
+            "topic": "future queries",
+            "delivery_target": "MCagent/RAG",
+            "tasks": [{"source": "web_discovery", "query": "future queries version differences", "priority": 100}],
+        },
+        question,
+        ROOT / "data" / "crawler_exports",
+        max_tasks=4,
+        session_summary={"delivery_target": "MCagent/RAG", "collection_target": question, "task_goal": question},
+    )
+    assert_equal("target_hint", plan["target_hint"], "Utopia Journey")
+    assert_true("no_future_queries_topic", plan["topic"] != "future queries")
+    assert_true("queries_bound_to_target", all("future queries" not in str(task.get("query") or "").lower() for task in plan["tasks"]))
+
+
+def test_before_collecting_instruction_extracts_real_pack_alias_target() -> None:
+    question = (
+        "Before collecting, use From-Content-To to ask MCagent what local sources for "
+        "Utopia Journey / 乌托邦探险之旅 are still missing. Then decide whether to collect public evidence "
+        "for MCagent/RAG. Focus on version, download/archive clues, full mod list, and gameplay progression."
+    )
+    target = _collection_target_hint(question)
+    assert_true(f"target_not_instruction: {target}", target != "Before collecting" and "Utopia Journey" in target)
+    plan = _sanitize_plan(
+        {
+            "topic": "Before collecting",
+            "delivery_target": "MCagent/RAG",
+            "tasks": [{"source": "mcagent_context", "query": "Before collecting mod list", "priority": 100}],
+        },
+        question,
+        ROOT / "data" / "crawler_exports",
+        max_tasks=4,
+        session_summary={"delivery_target": "MCagent/RAG", "collection_target": question, "task_goal": question},
+    )
+    assert_true(f"plan_target_real_pack: {plan['target_hint']}", "Utopia Journey" in plan["target_hint"])
+    assert_true("task_query_not_instruction_only", all(str(task.get("query") or "") != "Before collecting" for task in plan["tasks"]))
+
+
+def test_python_packaging_topics_target_ignores_public_prefix() -> None:
+    question = (
+        "Collect public official sources for two Python Packaging User Guide topics: installing packages with pip "
+        "and dependency specifiers. Use sources such as packaging.python.org or official PyPA docs."
+    )
+    target = _collection_target_hint(question)
+    assert_true(f"target_mentions_packaging: {target}", "Python Packaging User Guide" in target)
+    plan = _sanitize_plan(
+        {
+            "topic": "public",
+            "delivery_target": "human",
+            "coverage_goals": ["Installing packages with pip official guide", "Dependency specifiers official documentation"],
+            "tasks": [{"source": "web_discovery", "query": "public", "priority": 100}],
+        },
+        question,
+        ROOT / "data" / "crawler_exports",
+        max_tasks=4,
+        session_summary={"delivery_target": "human", "collection_target": question, "task_goal": question},
+    )
+    assert_true(f"target_hint_packaging: {plan['target_hint']}", "Python Packaging User Guide" in plan["target_hint"])
+    assert_true("no_public_topic", plan["topic"] != "public")
+    assert_true("no_public_query", all(str(task.get("query") or "").lower() != "public" for task in plan["tasks"]))
+    fallback = plan_crawler_tasks_rule_fallback(
+        question,
+        ROOT / "data" / "crawler_exports",
+        max_tasks=5,
+        planner_error="empty planner output",
+        session_summary={"delivery_target": "human", "collection_target": question, "task_goal": question},
+    )
+    fallback_sources = [task["source"] for task in fallback["tasks"]]
+    fallback_queries = " ".join(str(task.get("query") or "") for task in fallback["tasks"])
+    assert_true("fallback_no_minecraft", all(source not in {"mcmod", "modrinth", "modpack_download", "modpack_internal"} for source in fallback_sources))
+    assert_true("fallback_packaging_query", "packaging.python.org" in fallback_queries or "Python Packaging User Guide" in fallback_queries)
+    assert_true(
+        "sanitize_fetches_official_packaging_urls",
+        any(
+            task["source"] == "fetch_url"
+            and str(task.get("query") or "").startswith("https://packaging.python.org/en/latest/")
+            and task.get("from_official_docs_candidate")
+            for task in plan["tasks"]
+        ),
+    )
+    assert_true(
+        "fallback_fetches_official_packaging_urls",
+        any(
+            task["source"] == "fetch_url"
+            and str(task.get("query") or "").startswith("https://packaging.python.org/en/latest/")
+            and task.get("from_official_docs_candidate")
+            for task in fallback["tasks"]
+        ),
+    )
+
+
 def test_planner_client_uses_bounded_timeout_for_agent_planning() -> None:
     calls: list[tuple[str, float, int]] = []
     original_client_for_agent = crawler_llm_planner.client_for_agent
@@ -1612,6 +1753,44 @@ def test_planner_json_chat_requests_json_object_mode() -> None:
     assert_equal("json_text", text, '{"ok": true}')
     assert_equal("response_format", calls[0]["response_format"], {"type": "json_object"})
     assert_equal("max_tokens", calls[0]["max_tokens"], 123)
+
+
+def test_quick_recovery_plan_repairs_invalid_json_with_crawler_llm() -> None:
+    original_client = crawler_llm_planner._planner_client
+    original_prior = crawler_llm_planner._crawler_model_prior
+    calls: list[str] = []
+
+    class FakeClient:
+        def chat(self, messages, temperature=None, max_tokens=None, response_format=None):  # noqa: ANN001, ANN202
+            prompt = "\n".join(str(message.get("content") or "") for message in messages)
+            calls.append(prompt)
+            if "Broken output" in prompt:
+                return (
+                    '{"topic":"Python Packaging User Guide","delivery_target":"human",'
+                    '"coverage_goals":["official pip installation docs"],'
+                    '"tasks":[{"source":"web_discovery","query":"packaging.python.org pip install",'
+                    '"reason":"official docs","priority":100}],"reason":"repaired"}'
+                )
+            return '{"topic":"Python Packaging User Guide","delivery_target":"human","tasks":['
+
+    crawler_llm_planner._planner_client = lambda: (FakeClient(), "fake-quick")  # type: ignore[assignment]
+    crawler_llm_planner._crawler_model_prior = lambda **kwargs: {"summary": "hypothesis only"}  # type: ignore[assignment]
+    try:
+        plan = crawler_llm_planner._quick_recovery_plan_with_llm(
+            "Collect current Python Packaging User Guide pip install docs without saving to RAG.",
+            ROOT / "data" / "crawler_exports",
+            max_tasks=4,
+            session_summary={"delivery_target": "human"},
+            planner_error="startup timeout",
+        )
+    finally:
+        crawler_llm_planner._planner_client = original_client  # type: ignore[assignment]
+        crawler_llm_planner._crawler_model_prior = original_prior  # type: ignore[assignment]
+    assert_true("repair_called", any("Broken output" in call for call in calls))
+    assert_true("planner_model_marks_repair", "json-repair" in str(plan.get("planner_model") or ""))
+    assert_true("recovered_from_error", "startup timeout" in str(plan.get("planner_recovered_from_error") or ""))
+    assert_equal("strategy", plan["strategy"], "quick_recovery_llm_plan_after_planner_error")
+    assert_true("keeps_executable_task", any(task["source"] == "web_discovery" for task in plan["tasks"]))
 
 
 def test_sanitize_plan_accepts_llm_priority_labels() -> None:
@@ -1916,6 +2095,7 @@ if __name__ == "__main__":
     test_reflection_replaces_literal_gap_pending_query()
     test_reflection_llm_failure_continues_existing_pending_task()
     test_archive_guard_does_not_force_download_when_mcagent_context_has_archive_evidence()
+    test_reflection_snapshot_exposes_mcagent_local_source_paths()
     test_reflection_after_mcagent_gap_reply_lets_crawler_llm_choose_public_web()
     test_reflection_explicit_archive_goal_still_uses_crawler_llm_not_guard()
     test_topic_discovery_review_uses_crawler_profile_client()
@@ -1925,9 +2105,13 @@ if __name__ == "__main__":
     test_sanitize_plan_rejects_tasks_that_follow_crawler_word_instead_of_target()
     test_sanitize_plan_drops_local_file_tasks_without_objective_path()
     test_general_chinese_collection_extracts_entity_not_delivery_phrase()
+    test_english_modpack_collection_target_ignores_future_queries_phrase()
+    test_before_collecting_instruction_extracts_real_pack_alias_target()
+    test_python_packaging_topics_target_ignores_public_prefix()
     test_planner_client_uses_bounded_timeout_for_agent_planning()
     test_job_planner_default_startup_timeout_is_bounded()
     test_planner_json_chat_requests_json_object_mode()
+    test_quick_recovery_plan_repairs_invalid_json_with_crawler_llm()
     test_sanitize_plan_accepts_llm_priority_labels()
     test_sanitize_plan_normalizes_llm_action_aliases()
     test_gap_question_text_still_keeps_mcagent_context_first()

@@ -39,6 +39,20 @@ def test_replan_without_tasks_requests_llm_materialization() -> None:
     assert "missing_executable_tasks_for_replan" in decision["contract"]["issues"]
 
 
+def test_add_tasks_with_tasks_ignores_irrelevant_selected_index() -> None:
+    decision = CrawlerReflectionDecisionService().normalize(
+        {"action": "add_tasks", "selected_index": 99, "reason": "Read the concrete MC百科 page before more broad searches."},
+        pending_count=1,
+        normalized_tasks=[{"source": "mcmod", "query": "Utopian Journey", "reason": "Inspect objective project page."}],
+        planner="test-planner",
+    )
+    assert_equal("action", decision["action"], "add_tasks")
+    assert_equal("selected_index", decision["selected_index"], 0)
+    assert_equal("valid", decision["contract"]["valid"], True)
+    assert_equal("tasks_count", len(decision["tasks"]), 1)
+    assert "selected_index_out_of_range" not in decision["contract"]["issues"]
+
+
 def test_finish_uses_reason_as_done_summary() -> None:
     decision = CrawlerReflectionDecisionService().normalize(
         {"action": "finish", "reason": "Enough citeable evidence is available for MCagent/RAG."},
@@ -66,6 +80,7 @@ def test_invalid_action_records_issue_without_inventing_tasks() -> None:
 if __name__ == "__main__":
     test_execute_pending_contract_clamps_selected_index()
     test_replan_without_tasks_requests_llm_materialization()
+    test_add_tasks_with_tasks_ignores_irrelevant_selected_index()
     test_finish_uses_reason_as_done_summary()
     test_invalid_action_records_issue_without_inventing_tasks()
     print("crawler_reflection_decision_scenarios passed")

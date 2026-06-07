@@ -268,6 +268,70 @@ def test_crawler_job_start_requires_crawler_selected_delegate_tool() -> None:
         tmp.cleanup()
 
 
+def test_crawler_running_job_reuse_requires_matching_task_goal() -> None:
+    tmp = tempfile.TemporaryDirectory()
+    original_jobs = dict(web_server.JOBS)
+    original_order = list(web_server.JOBS_ORDER)
+    original_runner = web_server._run_crawler_job
+    try:
+        config = make_temp_config(Path(tmp.name))
+
+        def fast_runner(job: web_server.Job, payload: dict[str, Any], config: AppConfig) -> None:  # noqa: ARG001
+            web_server._update_job(job, status="running", started_at=job.started_at or 1.0, summary="stub running")
+
+        def payload_for(text: str, *, session_id: str) -> dict[str, Any]:
+            message = make_agent_message(
+                "User",
+                text,
+                "CrawlerAgent",
+                intent="collection_request",
+                conversation_id=session_id,
+                metadata={"tool": "delegate_crawler"},
+            )
+            return {
+                "agent": "crawler_agent",
+                "question": text,
+                "session_id": session_id,
+                "source": "planner",
+                "delivery_target": "MCagent/RAG",
+                "agent_message": message.to_dict(),
+            }
+
+        web_server._run_crawler_job = fast_runner  # type: ignore[assignment]
+        with web_server.JOBS_LOCK:
+            web_server.JOBS.clear()
+            web_server.JOBS_ORDER.clear()
+
+        first_job, first_created = web_server._start_crawler_job_from_crawler_tool(
+            config,
+            payload_for("收集 Utopia Journey 乌托邦探险之旅 Boss 名称 召唤方式 掉落清单", session_id="reuse-goal-1"),
+            "收集 Utopia Journey 乌托邦探险之旅 Boss 名称 召唤方式 掉落清单",
+        )
+        same_job, same_created = web_server._start_crawler_job_from_crawler_tool(
+            config,
+            payload_for("补齐 Utopia Journey 乌托邦探险之旅 Boss 掉落和召唤方式资料", session_id="reuse-goal-2"),
+            "补齐 Utopia Journey 乌托邦探险之旅 Boss 掉落和召唤方式资料",
+        )
+        different_job, different_created = web_server._start_crawler_job_from_crawler_tool(
+            config,
+            payload_for("采集 FastAPI SSE EventSource 断线重连 StreamingResponse 官方资料", session_id="reuse-goal-3"),
+            "采集 FastAPI SSE EventSource 断线重连 StreamingResponse 官方资料",
+        )
+    finally:
+        web_server._run_crawler_job = original_runner  # type: ignore[assignment]
+        with web_server.JOBS_LOCK:
+            web_server.JOBS.clear()
+            web_server.JOBS.update(original_jobs)
+            web_server.JOBS_ORDER[:] = original_order
+        tmp.cleanup()
+
+    assert_true("first_created", first_created)
+    assert_true("same_reused", not same_created)
+    assert_equal("same_job_id", same_job.id, first_job.id)
+    assert_true("different_created", different_created)
+    assert_true("different_job_id", different_job.id != first_job.id)
+
+
 def test_crawler_selected_delegate_marks_existing_message_before_job_start() -> None:
     tmp = tempfile.TemporaryDirectory()
     fake = SequencedClient(
@@ -321,6 +385,7 @@ def main() -> int:
     test_crawler_job_start_requires_received_agent_message()
     test_crawler_job_start_rejects_payload_forged_collection_intent()
     test_crawler_job_start_requires_crawler_selected_delegate_tool()
+    test_crawler_running_job_reuse_requires_matching_task_goal()
     test_crawler_selected_delegate_marks_existing_message_before_job_start()
     print("agent_message_bus_scenarios passed")
     return 0

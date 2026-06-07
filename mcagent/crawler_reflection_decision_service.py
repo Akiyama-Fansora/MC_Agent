@@ -34,8 +34,10 @@ class CrawlerReflectionDecisionService:
             if action == "execute_pending":
                 issues.append("no_pending_task_to_execute")
             selected_index = 0
-        elif selected_index < 0 or selected_index >= pending_count:
+        elif action == "execute_pending" and (selected_index < 0 or selected_index >= pending_count):
             issues.append("selected_index_out_of_range")
+            selected_index = 0
+        elif action in {"add_tasks", "replan"}:
             selected_index = 0
 
         tasks = list(normalized_tasks or [])

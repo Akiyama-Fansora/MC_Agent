@@ -111,6 +111,20 @@ def test_agent_tool_decision_normalization() -> None:
     )
     assert_equal("legacy_planned_alias_rejected", legacy_planned.tool, "router_error")
 
+    compact_planned = normalize_agent_tool_decision(
+        {
+            "tool": "planned",
+            "action_plan": [
+                {"step": 1, "tool": "mcagent_context", "goal": "ask MCagent for local context"},
+                {"step": 2, "tool": "delegate_crawler", "goal": "collect missing evidence"},
+            ],
+        },
+        agent_id="crawler_agent",
+        original_question="Before collecting, ask MCagent for local context, then collect.",
+        planner="test",
+    )
+    assert_equal("compact_planned_alias", compact_planned.tool, "planned_workflow")
+
     vague_delegate = normalize_agent_tool_decision(
         {"tool": "crawler", "collection_target": "采集公开资料"},
         agent_id="mcagent_rag",

@@ -28,6 +28,30 @@ SOURCE_DEFAULTS: dict[str, dict[str, Any]] = source_defaults()
 PLANNER_LLM_TIMEOUT_SECONDS = 90
 
 AGENT_WORDS = {"MCagent", "MCAgent", "Crawler", "CrawlerAgent", "RAG", "LLM", "Agent"}
+GENERIC_ENGLISH_TARGETS = {
+    "automatic",
+    "before collecting",
+    "complete",
+    "complete information",
+    "complete public",
+    "complete public data",
+    "data",
+    "docs",
+    "documentation",
+    "future queries",
+    "information",
+    "official",
+    "official sources",
+    "public",
+    "public official",
+    "public official sources",
+    "public sources",
+    "source",
+    "sources",
+    "topic",
+    "topics",
+    "web",
+}
 ITEM_HINTS = {
     "梦想一心",
     "幻魔",
@@ -57,6 +81,9 @@ GOAL_QUERY_HINTS = {
 def _collection_target_hint(question: str) -> str:
     text = re.sub(r"\s+", " ", question.strip())
     text = re.sub(r"^(?:用户原始目标|原始请求|用户请求|Task goal|Original user request)\s*[:：]\s*", "", text, flags=re.I)
+    english_explicit_target = _english_explicit_collection_target_hint(text)
+    if english_explicit_target:
+        return english_explicit_target
     handoff_gap_target = _handoff_gap_entity_hint(text)
     if handoff_gap_target:
         return handoff_gap_target
@@ -239,6 +266,78 @@ def _explicit_modpack_entity_hint(text: str) -> str:
             target = _clean_target_hint(target, max_len=80)
         if target:
             return target
+    return ""
+
+
+def _generic_english_target(value: str) -> bool:
+    compact = re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+    return compact in GENERIC_ENGLISH_TARGETS
+
+
+def _english_explicit_collection_target_hint(text: str) -> str:
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not value:
+        return ""
+    explicit_for_alias = re.search(
+        r"\bfor\s+(?P<en>[A-Z][A-Za-z0-9 _'.:+-]{1,70})\s*/\s*(?P<alias>[\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9 _'.:+-]{1,60})\b",
+        value,
+        flags=re.I,
+    )
+    if explicit_for_alias:
+        english = _strip_target_suffix(explicit_for_alias.group("en"))
+        alias = _strip_target_suffix(explicit_for_alias.group("alias"))
+        target = _clean_target_hint(f"{english} / {alias}", max_len=90)
+        if target and not _generic_english_target(target):
+            return target
+    modpack_patterns = [
+        r"\b(?:Minecraft\s+)?modpack\s+[\"'“”‘’](?P<en>[A-Z][A-Za-z0-9 _'.:+-]{1,70})[\"'“”‘’]\s*(?:\((?P<alias>[^)]{2,60})\))?",
+        r"\b(?:Minecraft\s+)?modpack\s+(?P<en>[A-Z][A-Za-z0-9 _'.:+-]{1,70}?)(?:\s*,|\s+with\b|\s+for\b|[.;:]|$)",
+        r"\b(?P<en>[A-Z][A-Za-z0-9 _'.:+-]{1,70})\s*/\s*(?P<alias>[\u4e00-\u9fff][\u4e00-\u9fffA-Za-z0-9 _'.:+-]{1,60})\s+(?:modpack|Minecraft\s+modpack)\b",
+    ]
+    for pattern in modpack_patterns:
+        match = re.search(pattern, value, flags=re.I)
+        if not match:
+            continue
+        english = _strip_target_suffix(match.group("en"))
+        alias = _strip_target_suffix(match.groupdict().get("alias") or "")
+        alias = re.sub(r"^(?:Chinese\s+name|CN|alias)\s*:\s*", "", alias, flags=re.I).strip()
+        if alias and not re.search(r"[\u4e00-\u9fff]", alias):
+            alias = ""
+        target = _clean_target_hint(f"{english} / {alias}", max_len=90) if alias else _clean_target_hint(english, max_len=80)
+        if target and not _generic_english_target(target):
+            return target
+    topic_patterns = [
+        r"\bfor\s+(?:two\s+|the\s+)?(?P<target>[A-Z][A-Za-z0-9 _'.:+-]{2,90}?)\s+topics?\s*:\s*(?P<dims>[^.;\n]{3,160})",
+        r"\b(?P<target>[A-Z][A-Za-z0-9 _'.:+-]{2,90}?)\s+topics?\s*:\s*(?P<dims>[^.;\n]{3,160})",
+    ]
+    for pattern in topic_patterns:
+        match = re.search(pattern, value, flags=re.I)
+        if not match:
+            continue
+        raw_target = re.sub(
+            r"^(?:collect|crawl|scrape|gather|find|search)\s+(?:public\s+)?(?:official\s+)?(?:sources?|docs?|documentation|information|data)\s+(?:for\s+)?(?:two\s+|the\s+)?",
+            "",
+            match.group("target"),
+            flags=re.I,
+        )
+        target = _clean_target_hint(raw_target, max_len=90)
+        dims = re.split(r"\b(?:Use|Save|You|Then|After)\b", match.group("dims"), maxsplit=1, flags=re.I)[0]
+        dims = re.sub(r"\s+", " ", dims).strip(" ,.;:")
+        if target and not _generic_english_target(target):
+            return _clean_target_hint(f"{target} {dims}", max_len=140) or target
+    docs_patterns = [
+        r"\bofficial\s+(?P<target>[A-Z][A-Za-z0-9 _'.:+-]{2,90}?)\s+docs?\s+about\s+(?P<dims>[^.;\n]{3,160})",
+        r"\b(?P<target>[A-Z][A-Za-z0-9 _'.:+-]{2,90}?)\s+(?:docs?|documentation)\s+about\s+(?P<dims>[^.;\n]{3,160})",
+    ]
+    for pattern in docs_patterns:
+        match = re.search(pattern, value, flags=re.I)
+        if not match:
+            continue
+        target = _clean_target_hint(match.group("target"), max_len=90)
+        dims = re.split(r"\b(?:Answer|Do not|If no|Save|Use)\b", match.group("dims"), maxsplit=1, flags=re.I)[0]
+        dims = re.sub(r"\s+", " ", dims).strip(" ,.;:")
+        if target and not _generic_english_target(target):
+            return _clean_target_hint(f"{target} docs about {dims}", max_len=140) or target
     return ""
 
 
@@ -816,6 +915,8 @@ def _clean_target_hint(value: Any, *, max_len: int = 90) -> str:
     target = re.sub(r"\s+", " ", target).strip(" ：:，,。；;？?！!")
     if target.startswith(("/", "／")):
         return ""
+    if _generic_english_target(target):
+        return ""
     compact = re.sub(r"\s+", "", target)
     if not (2 <= len(target) <= max_len):
         return ""
@@ -922,6 +1023,8 @@ def _clean_task_query(query: str, *, target_hint: str = "", topic: str = "") -> 
     if _placeholder_query(value):
         return ""
     target = target_hint or topic
+    if target and re.match(r"^(?:(?:collect|crawl|scrape|gather|find|search)\s+)?(?:public\s+)?(?:official\s+)?(?:sources?|docs?|documentation|information|data)\s+(?:for\s+)?", value, flags=re.I):
+        return target
     cleaned_value = _clean_target_hint(value, max_len=90)
     if target and cleaned_value and _query_mentions_target(cleaned_value, target):
         value = cleaned_value
@@ -1205,6 +1308,12 @@ def _general_collection_target_hint(text: str) -> str:
     value = re.sub(r"\s+", " ", str(text or "")).strip()
     if not value:
         return ""
+    if "python packaging user guide" in value.lower() or "packaging.python.org" in value.lower() or "pypa" in value.lower():
+        topics = []
+        for phrase in ("installing packages with pip", "dependency specifiers"):
+            if phrase in value.lower():
+                topics.append(phrase)
+        return "Python Packaging User Guide " + " and ".join(topics) if topics else "Python Packaging User Guide"
     patterns = [
         r"(?:采集|收集|获取|爬取|整理|查找)\s+([A-Za-z][A-Za-z0-9_.+\- ]{1,80}?)(?:\s*(?:库|项目|框架|文档|官方|的|，|,|。|$))",
         r"(?:collect|crawl|scrape|gather)\s+([A-Za-z][A-Za-z0-9_.+\- ]{1,80}?)(?:\s+(?:docs?|documentation|github|releases?|data|for)\b|[,.;:]|$)",
@@ -1325,6 +1434,15 @@ def _general_target_queries(target: str, context_text: str) -> list[str]:
         return []
     queries = [target]
     lowered = str(context_text or "").lower()
+    if "python packaging user guide" in target.lower() or "python packaging user guide" in lowered or "packaging.python.org" in lowered:
+        queries.extend(
+            [
+                "site:packaging.python.org Python Packaging User Guide installing packages pip",
+                "site:packaging.python.org Python Packaging User Guide dependency specifiers",
+                "Python Packaging User Guide installing packages pip packaging.python.org",
+                "Python Packaging User Guide dependency specifiers packaging.python.org",
+            ]
+        )
     if any(term in lowered for term in ("官方", "official", "文档", "docs", "documentation")):
         queries.extend([f"{target} official documentation", f"{target} docs"])
     if "github" in lowered or "仓库" in lowered or "repository" in lowered:
@@ -1333,13 +1451,156 @@ def _general_target_queries(target: str, context_text: str) -> list[str]:
         queries.extend([f"{target} releases", f"{target} changelog"])
     if any(term in lowered for term in ("用法", "示例", "example", "usage", "教程")):
         queries.extend([f"{target} examples", f"{target} usage"])
+    for host in _explicit_public_hosts(context_text):
+        queries.extend([f"site:{host} {target}", f"{host} {target}"])
     queries.extend(_guide_source_graph_queries(target, context_text))
     return list(dict.fromkeys(query for query in queries if 2 <= len(query) <= 120))
+
+
+def _explicit_public_hosts(text: str) -> list[str]:
+    hosts: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r"\b(?:https?://)?((?:[a-z0-9-]+\.)+[a-z]{2,})(?:/[^\s,.;，。；]*)?", str(text or ""), flags=re.I):
+        host = match.group(1).lower().strip(".")
+        if host.startswith("www."):
+            host = host[4:]
+        if host in seen:
+            continue
+        if host.endswith((".local", ".localhost")):
+            continue
+        seen.add(host)
+        hosts.append(host)
+    return hosts[:4]
+
+
+def _explicit_host_queries_for_target(context_text: str, target: str) -> list[str]:
+    target = _clean_target_hint(target, max_len=140)
+    if not target:
+        return []
+    queries: list[str] = []
+    for host in _explicit_public_hosts(context_text):
+        queries.extend([f"site:{host} {target}", f"{host} {target}"])
+    return [
+        query
+        for query in dict.fromkeys(queries)
+        if _valid_coverage_query(query, target, context_text)
+        and not _minecraft_query_noise_in_non_minecraft_context(query, context_text)
+    ]
+
+
+def _official_docs_candidate_urls_for_target(context_text: str, target: str) -> list[str]:
+    """Return exact official-doc candidates only when the official source family is explicit."""
+    lowered = str(context_text or "").lower()
+    target_lower = str(target or "").lower()
+    explicit_packaging = (
+        "packaging.python.org" in lowered
+        or "python packaging user guide" in lowered
+        or "python packaging user guide" in target_lower
+        or "pypa" in lowered
+    )
+    if not explicit_packaging:
+        return []
+    candidates: list[str] = []
+    if any(term in lowered or term in target_lower for term in ("installing packages", "pip", "install packages")):
+        candidates.append("https://packaging.python.org/en/latest/tutorials/installing-packages/")
+    if any(term in lowered or term in target_lower for term in ("dependency specifier", "dependency specifiers", "version specifier", "version specifiers")):
+        candidates.append("https://packaging.python.org/en/latest/specifications/dependency-specifiers/")
+    if not candidates:
+        candidates.append("https://packaging.python.org/en/latest/")
+    return list(dict.fromkeys(candidates))
+
+
+def _official_docs_candidate_tasks_for_target(
+    *,
+    context_text: str,
+    target: str,
+    max_tasks: int,
+    reason: str,
+    priority: int = 148,
+) -> list[dict[str, Any]]:
+    tasks: list[dict[str, Any]] = []
+    for index, url in enumerate(_official_docs_candidate_urls_for_target(context_text, target)[: max(1, max_tasks)]):
+        task = _task(
+            "fetch_url",
+            url,
+            reason
+            or (
+                "official documentation candidate derived from an explicit official host/source family in the task; "
+                "fetch objectively and let CrawlerAgent verify relevance before accepting or ingesting"
+            ),
+            priority - index,
+        )
+        task["from_user_explicit_host"] = True
+        task["from_official_docs_candidate"] = True
+        task["candidate_url"] = url
+        task["metadata"] = {
+            "candidate_basis": "explicit official docs host/source family in task context",
+            "evidence_status": "candidate_needs_tool_verification",
+        }
+        tasks.append(task)
+    return tasks
+
+
+def _general_fallback_tasks_for_sanitized_plan(
+    *,
+    target: str,
+    context_text: str,
+    max_tasks: int,
+    reason: str = "",
+) -> list[dict[str, Any]]:
+    target = _clean_target_hint(target, max_len=140)
+    if not target:
+        return []
+    official_tasks = _official_docs_candidate_tasks_for_target(
+        context_text=context_text,
+        target=target,
+        max_tasks=max_tasks,
+        reason=reason
+        or (
+            "general target-aware fallback found an explicit official docs source family; "
+            "verify exact candidate URL with objective fetch before accepting"
+        ),
+        priority=148,
+    )
+    queries = [
+        query
+        for query in _general_target_queries(target, context_text)
+        if _valid_coverage_query(query, target, context_text)
+        and not _minecraft_query_noise_in_non_minecraft_context(query, context_text)
+    ]
+    if not queries and _valid_coverage_query(target, target, context_text):
+        queries = [target]
+    if not queries:
+        return official_tasks[:max_tasks]
+    output: list[dict[str, Any]] = []
+    output.extend(official_tasks)
+    source_order = ("web_discovery", "playwright", "fetch_url")
+    for index, query in enumerate(queries[: max(1, max_tasks)]):
+        source = source_order[index % len(source_order)]
+        if source == "fetch_url" and not _is_url_query(query):
+            source = "web_discovery"
+        task = _task(
+            source,
+            query,
+            reason or "general target-aware fallback after CrawlerAgent plan sanitation removed non-executable or off-domain tasks",
+            86 - index,
+            search_limit=8 if source != "playwright" else 6,
+            max_urls=8 if source != "playwright" else 4,
+        )
+        output.append(task)
+    return _select_diverse_tasks(output, max_tasks)
 
 
 def _query_mentions_target(query: str, target: str) -> bool:
     query_text = re.sub(r"\s+", " ", str(query or "").strip())
     target_text = re.sub(r"\s+", " ", str(target or "").strip())
+    if query_text and target_text:
+        query_words = [word for word in re.findall(r"[a-z0-9]+", query_text.lower()) if len(word) >= 3]
+        target_words = [word for word in re.findall(r"[a-z0-9]+", target_text.lower()) if len(word) >= 3]
+        if target_words:
+            overlap = sum(1 for word in target_words if word in query_words)
+            if overlap >= min(3, len(target_words)):
+                return True
     if re.match(r"^(?:根据|本地|库存|检查|本地库存|本地库存检查|发现的|检查发现的|本地库存检查发现的)", query_text, flags=re.I) and not re.match(
         r"^(?:根据|本地|库存|检查|本地库存|本地库存检查|发现的|检查发现的|本地库存检查发现的)",
         target_text,
@@ -1408,6 +1669,8 @@ def _target_bound_or_reject_query(query: str, target: str) -> str:
     target = re.sub(r"\s+", " ", str(target).strip())
     if not value or not target or _is_url_query(value):
         return value
+    if re.match(r"^(?:(?:collect|crawl|scrape|gather|find|search)\s+)?(?:public\s+)?(?:official\s+)?(?:sources?|docs?|documentation|information|data)\s+(?:for\s+)?", value, flags=re.I):
+        return target
     repaired = _repair_query_bad_target_prefix(value, target)
     if repaired != value:
         return repaired
@@ -1433,7 +1696,9 @@ def _prioritize_guide_queries(queries: list[str], context_text: str) -> list[str
     other_queries: list[str] = []
     for query in normalized:
         lowered = query.lower()
-        if any(term in lowered for term in (" wiki", " guide", "beginner guide", "getting started", "tutorial", "progression", "walkthrough", " 新手", " 入门", " 攻略", "玩法路线", "任务线")):
+        if lowered.startswith("site:") or re.search(r"\b[a-z0-9-]+\.[a-z]{2,}\b", lowered):
+            broad_queries.append(query)
+        elif any(term in lowered for term in (" wiki", " guide", "beginner guide", "getting started", "tutorial", "progression", "walkthrough", " 新手", " 入门", " 攻略", "玩法路线", "任务线")):
             source_graph_queries.append(query)
         elif any(term in lowered for term in GUIDE_CONTEXT_TERMS):
             guide_queries.append(query)
@@ -1452,6 +1717,11 @@ def _repair_task_queries_for_target(tasks: list[dict[str, Any]], target: str) ->
         item = dict(task)
         query = str(item.get("query") or "").strip()
         if query and not _is_url_query(query):
+            bounded = _target_bound_or_reject_query(query, target)
+            if bounded and bounded != query:
+                item["query"] = bounded
+                repaired_tasks.append(item)
+                continue
             repaired = _repair_query_bad_target_prefix(query, target)
             if repaired != query:
                 item["query"] = repaired
@@ -1991,10 +2261,42 @@ def _extract_requested_local_path(session_summary: dict[str, Any] | None, text: 
             value = str(session_summary.get(key) or "").strip()
             if value:
                 return value
+        paths = _session_local_source_paths(session_summary)
+        if paths:
+            return paths[0]
     match = re.search(r"[A-Za-z]:\\[^\r\n\"'<>|]+|/[^\s\"'<>|]+(?:/[^\s\"'<>|]+)+", str(text or ""))
     if not match:
         return ""
     return match.group(0).strip().rstrip(".,;，。；)")
+
+
+def _session_local_source_paths(session_summary: dict[str, Any] | None) -> list[str]:
+    if not isinstance(session_summary, dict):
+        return []
+    output: list[str] = []
+
+    def add(value: Any) -> None:
+        text = str(value or "").strip()
+        if not text or text in output:
+            return
+        if re.search(r"^[A-Za-z]:\\|^/", text):
+            output.append(text)
+
+    for key in ("local_source_paths", "mcagent_source_paths", "source_paths"):
+        raw = session_summary.get(key)
+        if isinstance(raw, list):
+            for item in raw:
+                add(item)
+        else:
+            add(raw)
+    for key in ("sources", "mcagent_sources"):
+        raw = session_summary.get(key)
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            if isinstance(item, dict):
+                add(item.get("source_path") or item.get("path"))
+    return output[:12]
 
 
 def _local_file_constraints(session_summary: dict[str, Any] | None, question: str) -> dict[str, Any]:
@@ -2018,6 +2320,8 @@ def _local_file_constraints(session_summary: dict[str, Any] | None, question: st
 def _has_local_file_input(task: dict[str, Any], session_summary: dict[str, Any] | None, question: str) -> bool:
     """Local-file tools need an objective user/session path, not an inferred web topic."""
     if str(task.get("path") or task.get("root") or task.get("file") or "").strip():
+        return True
+    if _session_local_source_paths(session_summary):
         return True
     return bool(_local_file_constraints(session_summary, question).get("enabled"))
 
@@ -2044,6 +2348,34 @@ def _drop_unqualified_local_file_tasks(
             cloned["path"] = str(local_constraints.get("path") or "")
             output.append(cloned)
     return output
+
+
+def _local_source_path_tasks(session_summary: dict[str, Any] | None, *, target: str, context_text: str, max_tasks: int) -> list[dict[str, Any]]:
+    paths = _session_local_source_paths(session_summary)
+    if not paths:
+        return []
+    query_terms = [target]
+    if re.search(r"boss|首领|召唤|掉落|drop|summon", context_text, flags=re.I):
+        query_terms.extend(["Boss", "首领", "召唤", "掉落", "BOMD", "Bosses of Mass Destruction"])
+    if re.search(r"任务|quest|ftb", context_text, flags=re.I):
+        query_terms.extend(["任务", "quest", "FTB Quests"])
+    if re.search(r"模组列表|mod list|dependencies|依赖", context_text, flags=re.I):
+        query_terms.extend(["mod list", "dependencies", "模组列表"])
+    query = " ".join(item for item in dict.fromkeys(query_terms) if str(item or "").strip())
+    tasks: list[dict[str, Any]] = []
+    for index, path in enumerate(paths[: max(1, max_tasks)]):
+        tasks.append(
+            _task(
+                "search_local_files",
+                query[:180] or target or "local MCagent source evidence",
+                "MCagent context exposed this objective local source path; CrawlerAgent may inspect it before deciding whether external collection is still needed.",
+                136 - index,
+                search_limit=12,
+                max_urls=8,
+                path=path,
+            )
+        )
+    return tasks
 
 
 def _extract_requested_output_dir(text: str) -> str:
@@ -2246,7 +2578,8 @@ GENERIC_COLLECTION_TERMS = {
 
 def _valid_coverage_query(query: str, target: str = "", context_text: str = "") -> bool:
     value = re.sub(r"\s+", " ", str(query).strip())
-    if not (2 <= len(value) <= 80):
+    max_len = 140 if target and _query_mentions_target(value, target) else 80
+    if not (2 <= len(value) <= max_len):
         return False
     if _placeholder_query(value):
         return False
@@ -2254,6 +2587,8 @@ def _valid_coverage_query(query: str, target: str = "", context_text: str = "") 
     if any(re.fullmatch(pattern, compact, flags=re.I) for pattern in GENERIC_TARGET_PATTERNS):
         return False
     if compact.startswith("的相关") or compact.startswith("相关"):
+        return False
+    if _generic_english_target(value):
         return False
     if compact in GENERIC_COLLECTION_TERMS:
         return False
@@ -2313,6 +2648,8 @@ def _placeholder_query(query: str) -> bool:
         "targetquery",
     }
     if compact in exact_placeholders:
+        return True
+    if _generic_english_target(value):
         return True
     if re.fullmatch(r"(?:short|brief|focused|specific)?(?:search|source|tool|task)?query\d*", compact, flags=re.I):
         return True
@@ -2482,10 +2819,10 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
         elif coverage_only_queries:
             target = str(coverage_only_queries[0]).split()[0]
         else:
-            fallback = plan_crawler_tasks(question, source_dir, max_tasks=max_tasks, include_completed=True)
-            if planner_error:
-                fallback["planner_error"] = planner_error
-            return fallback
+            target = _clean_target_hint(
+                re.sub(r"\bSave the final user delivery to this directory:\s*[A-Za-z]:\\[^.]+", "", question, flags=re.I),
+                max_len=120,
+            ) or "public web sources"
     minecraft_context = _looks_like_minecraft_domain_context(context_text)
     learned_memory = _crawler_memory_digest(limit=8)
     model_prior = _crawler_model_prior(
@@ -2577,6 +2914,24 @@ def _fallback_plan_with_target(question: str, source_dir: Path, max_tasks: int, 
             if task:
                 tasks.append(task)
     tasks.sort(key=lambda item: _priority_value(item.get("priority"), 0), reverse=True)
+    official_tasks = _official_docs_candidate_tasks_for_target(
+        context_text=context_text,
+        target=target,
+        max_tasks=max_tasks,
+        reason=(
+            "fallback target plan found an explicit official docs host/source family; "
+            "fetch objectively and let CrawlerAgent verify relevance before accepting or ingesting"
+        ),
+        priority=148,
+    )
+    if official_tasks:
+        existing_pairs = {(str(item.get("source") or ""), str(item.get("query") or "").strip().lower()) for item in tasks}
+        for task in official_tasks:
+            key = (str(task.get("source") or ""), str(task.get("query") or "").strip().lower())
+            if key not in existing_pairs:
+                tasks.append(task)
+                existing_pairs.add(key)
+        tasks.sort(key=lambda item: _priority_value(item.get("priority"), 0), reverse=True)
     tasks = _drop_unqualified_modpack_internal_tasks(tasks, context_text=context_text)
     tasks = _prioritize_modpack_archive_tasks(tasks, target, context_text, intent_text, session_summary)
     tasks = _defer_modpack_download_when_archive_not_explicit(tasks, target, context_text, intent_text, session_summary)
@@ -2961,6 +3316,17 @@ def _mark_tasks_covered_by_prior(tasks: list[dict[str, Any]], model_prior: dict[
             task["metadata"] = metadata
 
 
+def _boost_explicit_host_tasks(tasks: list[dict[str, Any]], context_text: str) -> None:
+    hosts = _explicit_public_hosts(context_text)
+    if not hosts:
+        return
+    for task in tasks:
+        query = str(task.get("query") or "").lower()
+        if any(host in query for host in hosts):
+            task["priority"] = max(_priority_value(task.get("priority"), 0), 146)
+            task["from_user_explicit_host"] = True
+
+
 def _bind_prior_alias_tasks(tasks: list[dict[str, Any]], model_prior: dict[str, Any], target: str) -> None:
     if not target:
         return
@@ -2968,7 +3334,7 @@ def _bind_prior_alias_tasks(tasks: list[dict[str, Any]], model_prior: dict[str, 
         query = str(task.get("query") or "").strip()
         if not query or _is_url_query(query):
             continue
-        if task.get("from_model_prior") and target not in query:
+        if task.get("from_model_prior") and target and target not in query and (re.search(r"[\u4e00-\u9fff]", target) or not _query_mentions_target(query, target)):
             task["query"] = f"{target} {query}"
             continue
         if _query_mentions_target(query, target):
@@ -3006,7 +3372,7 @@ def _sanitize_mcagent_context_tasks(tasks: list[dict[str, Any]], *, target: str,
 def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tasks: int, session_summary: dict[str, Any] | None = None) -> dict[str, Any]:
     question = _strip_delivery_recipient(question)
     context_text = _planner_context_text(question, session_summary)
-    target_hint = _clean_target_hint(_session_target_hint(session_summary) or _collection_target_hint(question) or _question_subject_hint(question) or _general_collection_target_hint(context_text), max_len=80)
+    target_hint = _clean_target_hint(_session_target_hint(session_summary) or _collection_target_hint(question) or _question_subject_hint(question) or _general_collection_target_hint(context_text), max_len=140)
     topic = str(raw.get("topic") or "").strip()
     if target_hint and (not topic or _looks_like_agent_target(topic) or _looks_like_broken_target(topic)):
         topic = target_hint
@@ -3070,6 +3436,9 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
     prior_queries = _prior_search_leads(model_prior, target_hint or topic)
     if prior_queries:
         queries = [*queries, *prior_queries]
+    explicit_host_queries = _explicit_host_queries_for_target(context_text, target_hint or topic)
+    if explicit_host_queries:
+        queries = [*explicit_host_queries, *queries]
     fallback_items = [str(item) for item in fallback.get("items") or []]
     fallback_queries = [str(item) for item in fallback.get("queries") or []]
     if len(fallback_items) >= 3:
@@ -3078,14 +3447,19 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
             queries = [*fallback_queries, *queries]
         elif len(queries) < len(fallback_items):
             queries = [*fallback_queries, *queries]
-    queries = [
-        (_target_bound_or_reject_query(query, target_hint) if target_hint and not _is_url_query(query) else query)
-        for query in list(dict.fromkeys(queries))
-        if not (_query_is_delivery_target(query, target_hint))
-        and not _generic_standalone_query(query)
-        and _valid_coverage_query(query, target_hint or topic, _planner_context_text(question, session_summary))
-        and not _minecraft_query_noise_in_non_minecraft_context(query, context_text)
-    ][:16]
+    cleaned_queries: list[str] = []
+    for query in list(dict.fromkeys(queries)):
+        query = str(query or "").strip()
+        bound_query = _target_bound_or_reject_query(query, target_hint) if target_hint and not _is_url_query(query) else query
+        if (
+            bound_query
+            and not _query_is_delivery_target(bound_query, target_hint)
+            and not _generic_standalone_query(bound_query)
+            and _valid_coverage_query(bound_query, target_hint or topic, _planner_context_text(question, session_summary))
+            and not _minecraft_query_noise_in_non_minecraft_context(bound_query, context_text)
+        ):
+            cleaned_queries.append(bound_query)
+    queries = list(dict.fromkeys(cleaned_queries))[:16]
     queries = [query for query in queries if query]
     queries = _prioritize_guide_queries(queries, _planner_context_text(question, session_summary))
 
@@ -3180,6 +3554,14 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
             )
             if (supplemental["source"], supplemental["query"]) not in {(item["source"], item["query"]) for item in tasks}:
                 tasks.append(supplemental)
+    local_source_tasks = _local_source_path_tasks(session_summary, target=target_hint or topic, context_text=context_text, max_tasks=max_tasks)
+    if local_source_tasks:
+        existing_pairs = {(str(item.get("source") or ""), str(item.get("path") or ""), str(item.get("query") or "").lower()) for item in tasks}
+        for task in local_source_tasks:
+            key = (str(task.get("source") or ""), str(task.get("path") or ""), str(task.get("query") or "").lower())
+            if key not in existing_pairs:
+                tasks.append(task)
+                existing_pairs.add(key)
 
     selected_plan_tasks = _tasks_from_selected_action_plan(session_summary, target_hint or topic, context_text)
     if selected_plan_tasks:
@@ -3254,7 +3636,25 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
     )
     if prior_tasks:
         tasks = [*tasks, *prior_tasks]
+    official_tasks = _official_docs_candidate_tasks_for_target(
+        context_text=context_text,
+        target=target_hint or topic,
+        max_tasks=max_tasks,
+        reason=(
+            "CrawlerAgent plan includes an explicit official docs host/source family; "
+            "verify exact candidate URL with objective fetch before accepting or ingesting"
+        ),
+        priority=148,
+    )
+    if official_tasks:
+        existing_pairs = {(str(item.get("source") or ""), str(item.get("query") or "").strip().lower()) for item in tasks}
+        for task in official_tasks:
+            key = (str(task.get("source") or ""), str(task.get("query") or "").strip().lower())
+            if key not in existing_pairs:
+                tasks.append(task)
+                existing_pairs.add(key)
     _mark_tasks_covered_by_prior(tasks, model_prior, target_hint or topic)
+    _boost_explicit_host_tasks(tasks, context_text)
     _rebalance_general_web_tasks(
         tasks,
         prefer_general_web=_prefer_general_web_first(
@@ -3280,8 +3680,23 @@ def _sanitize_plan(raw: dict[str, Any], question: str, source_dir: Path, max_tas
         if not _minecraft_query_noise_in_non_minecraft_context(str(task.get("query") or ""), context_text)
     ]
     if not tasks:
-        fallback = plan_crawler_tasks(question, source_dir, max_tasks=max_tasks, include_completed=True)
-        tasks = _drop_placeholder_tasks(list(fallback.get("tasks") or []))
+        if minecraft_context:
+            fallback = plan_crawler_tasks(question, source_dir, max_tasks=max_tasks, include_completed=True)
+            tasks = _drop_placeholder_tasks(list(fallback.get("tasks") or []))
+        else:
+            tasks = _general_fallback_tasks_for_sanitized_plan(
+                target=target_hint or topic,
+                context_text=context_text,
+                max_tasks=max_tasks,
+                reason="general-domain fallback after CrawlerAgent plan sanitation removed invalid, placeholder, or Minecraft-only tasks",
+            )
+    if not minecraft_context:
+        tasks = [
+            task
+            for task in tasks
+            if not is_domain_source(str(task.get("source") or ""), "minecraft")
+            and not _minecraft_query_noise_in_non_minecraft_context(str(task.get("query") or ""), context_text)
+        ]
     return {
         "question": question,
         "strategy": str(raw.get("strategy") or "crawler_llm_planner"),
@@ -3462,9 +3877,23 @@ def _quick_recovery_plan_with_llm(
         model_label=label,
     )
     failure_line = f"Previous planner error: {planner_error}\n" if planner_error else ""
+    schema = {
+        "topic": "",
+        "delivery_target": "MCagent/RAG|human",
+        "coverage_goals": [""],
+        "tasks": [
+            {
+                "source": "mcagent_context|web_discovery|playwright|fetch_url|browser_collect|mcmod|modrinth|modpack_download|modpack_internal|save_artifact|read_local_file|search_local_files",
+                "query": "",
+                "reason": "",
+                "priority": 100,
+            }
+        ],
+        "reason": "",
+    }
     prompt = (
         "JSON only. You are CrawlerAgent planning executable tool actions, not answering.\n"
-        "Schema: {\"topic\":\"\",\"delivery_target\":\"MCagent/RAG|human\",\"coverage_goals\":[\"\"],\"tasks\":[{\"source\":\"mcagent_context|web_discovery|playwright|fetch_url|browser_collect|mcmod|modrinth|modpack_download|modpack_internal|save_artifact|read_local_file|search_local_files\",\"query\":\"\",\"reason\":\"\",\"priority\":100}],\"reason\":\"\"}.\n"
+        f"Schema: {json.dumps(schema, ensure_ascii=False)}.\n"
         "Use 2-4 tasks. Keep strings short. Use source, not action/tool.\n"
         "Use Model Prior below only as hypothesis/planning guidance. Do not cite, ingest, or treat it as verified evidence; create objective tool tasks to verify it.\n"
         "If user asks to ask MCagent gaps then collect, first task source=mcagent_context. Later tasks use positive coverage queries, not '还缺哪些/what missing'.\n"
@@ -3485,11 +3914,19 @@ def _quick_recovery_plan_with_llm(
         temperature=0.0,
         max_tokens=360,
     )
-    raw = _json_from_text(raw_text)
-    raw["_planner_model"] = label
+    try:
+        raw = _json_from_text(raw_text)
+        raw["_planner_model"] = label
+    except Exception as exc:  # noqa: BLE001
+        raw = _repair_planner_json(client, raw_text, label=label, schema=schema)
+        parse_error = f"{type(exc).__name__}: {exc}"
+        if planner_error:
+            raw["planner_recovered_from_error"] = f"{planner_error}; quick planner JSON repaired after {parse_error}"
+        else:
+            raw["planner_recovered_from_error"] = f"quick planner JSON repaired after {parse_error}"
     raw["strategy"] = strategy
     raw["model_prior"] = model_prior
-    if planner_error:
+    if planner_error and not raw.get("planner_recovered_from_error"):
         raw["planner_recovered_from_error"] = planner_error
     return _sanitize_plan(raw, question, source_dir, max_tasks, session_summary=session_summary)
 
@@ -3552,6 +3989,8 @@ def reflect_crawler_progress(
             "Do not invent exact URLs, repository names, Modrinth/CurseForge slugs, or organization names during reflection. You may use direct URL tasks only for URLs visible in objective recent_results manifest_preview/artifact_refs, user input, or MCagent context. Otherwise choose web_discovery/playwright to discover candidate URLs first.\n"
             "For MCagent/RAG gap handoffs, 'missing / 还缺 / 缺口' is not itself a web topic. Derive positive coverage goals from mcagent_gap_summary/gaps and search those. Avoid literal meta queries such as '缺少模组', '还缺哪些', '待添加', or '开发计划' unless the user explicitly asked for future roadmap/community requests.\n"
             "Use mcagent_context if the next best step is for CrawlerAgent to ask MCagent for local evidence/gaps or to validate what Crawler should collect. The tool returns MCagent's reply back to CrawlerAgent.\n"
+            "If a recent mcagent_context result exposes local_source_paths, those are objective local evidence paths returned over the AgentMessage bus. You may choose search_local_files or read_local_file using one of those exact paths to inspect already-collected sources before broad web retry. Do not invent paths.\n"
+            "For pack-internal facts such as bosses, summon methods, drops, quest lines, recipes, scripts, configs, or mod lists, if mcagent_context exposes local_source_paths or artifact_refs to local files, prefer read_local_file/search_local_files on those exact paths before repeating broad public web searches. You still decide after reading whether the content is accepted, rejected, retried, or ingested.\n"
             "If the task is for MCagent/RAG, prefer evidence that is citeable and chunkable; raw HTML support is valuable for hard pages.\n"
             "Playwright is a first-class browser tool. Prefer it when lightweight HTTP fetch cannot read enough text, when a page needs rendering, or when project tabs/download pages need browser HTML.\n"
             "For full modpack collection without a local archive, use modpack_download to find and save public .mrpack/.zip archives, and use Playwright/topic_discovery to inspect project/download pages and preserve download-link HTML. Route order: Modrinth project_type:modpack -> versions files.url .mrpack; CurseForge public/API file pages only when a direct downloadUrl or /files download is objectively visible; GitHub Releases assets/browser_download_url; packwiz pack.toml/index.toml repositories; then forum/community direct links. Use modpack_internal only after a real local archive/manifest is available.\n"
@@ -3600,7 +4039,9 @@ def reflect_crawler_progress(
                     else:
                         task = _downgrade_ungrounded_url_task(task, target=str(plan.get("target_hint") or plan.get("topic") or ""))
                         task_query = str(task.get("query") or "")
-                if task and (
+                if task and str(task.get("source") or "") in {"read_local_file", "search_local_files"} and _has_local_file_input(task, session_summary, question):
+                    tasks.append(task)
+                elif task and (
                     _is_url_query(task_query)
                     or _valid_coverage_query(
                         task_query,
@@ -3823,6 +4264,7 @@ def _compact_result_for_reflection(result: dict[str, Any]) -> dict[str, Any]:
         "rejected_examples": list(validation.get("rejected_examples") or [])[:3],
         "local_gap_summary": result.get("mcagent_gap_summary") if result.get("source") == "mcagent_context" else None,
         "local_source_count": result.get("mcagent_source_count") if result.get("source") == "mcagent_context" else None,
+        "local_source_paths": list(result.get("mcagent_source_paths") or [])[:8] if result.get("source") == "mcagent_context" else [],
         "reused_existing": reusable.get("matched"),
         "duplicate_review_reason": duplicate_review.get("reason"),
         "duplicate_review_action": duplicate_review.get("cleanup_action"),

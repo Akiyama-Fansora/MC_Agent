@@ -123,6 +123,9 @@ class AgentToolDecision:
 TOOL_DECISION_ALIASES = {
     "local_rag_search": "answer",
     "answer_from_evidence": "answer",
+    "plan": "planned_workflow",
+    "planned": "planned_workflow",
+    "workflow": "planned_workflow",
 }
 
 

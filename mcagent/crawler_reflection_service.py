@@ -97,6 +97,8 @@ class CrawlerReflectionSnapshotService:
             "uncertain": bool(result.get("uncertain_result")),
             "records_pending_review": bool(result.get("records_pending_review")),
             "timed_out": bool(result.get("timed_out")),
+            "local_source_paths": list(result.get("mcagent_source_paths") or [])[:8] if result.get("source") == "mcagent_context" else [],
+            "local_source_count": result.get("mcagent_source_count") if result.get("source") == "mcagent_context" else None,
             "artifact_refs": list(result.get("artifact_refs") or [])[:6],
             "output_tail": self._tail_text(str(result.get("output") or ""), limit=500),
             "manifest_preview": result.get("manifest_preview") if isinstance(result.get("manifest_preview"), dict) else self._manifest_preview(manifest),

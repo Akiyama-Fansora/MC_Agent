@@ -140,6 +140,51 @@ def test_context_checkpoint_candidate_can_succeed_with_rejected_sources() -> Non
     assert_equal("verify_status", final["result"]["loop"][4]["status"], "done")
 
 
+def test_mcagent_context_sufficient_finish_is_success_without_external_records() -> None:
+    final = build(
+        success_count=0,
+        candidate_count=1,
+        failure_count=2,
+        needs_ingest=False,
+        task_results=[
+            {"source": "mcagent_context", "returncode": 0, "manifest_stats": {"records": 5}},
+            {"source": "web_discovery", "returncode": 0, "manifest_stats": {"records": 0}, "empty_result": True},
+        ],
+        plan={
+            "topic": "Utopia Journey",
+            "agent_finish_reason": "Local sources for Utopia Journey are sufficient. No further collection needed.",
+        },
+    )
+    assert_equal("status", final["status"], "succeeded")
+    assert_equal("error", final["error"], None)
+    assert_equal("verify_status", final["result"]["loop"][4]["status"], "done")
+
+
+def test_mcagent_context_coverage_goals_met_finish_is_success() -> None:
+    final = build(
+        success_count=0,
+        candidate_count=1,
+        failure_count=1,
+        needs_ingest=False,
+        task_results=[
+            {"source": "mcagent_context", "returncode": 0, "manifest_stats": {"records": 6}},
+            {"source": "modrinth", "returncode": 0, "manifest_stats": {"records": 0}, "empty_result": True},
+        ],
+        plan={
+            "topic": "Utopia Journey",
+            "agent_reflections": [
+                {
+                    "action": "finish",
+                    "reason": "Collected local evidence via MCagent context: gameplay route index, MC百科 page with version/modlist/downloads, BBSMC page, and related mod pages. All coverage goals met.",
+                }
+            ],
+        },
+    )
+    assert_equal("status", final["status"], "succeeded")
+    assert_equal("error", final["error"], None)
+    assert_equal("verify_status", final["result"]["loop"][4]["status"], "done")
+
+
 def test_reflection_timeout_with_candidate_evidence_is_partial_success() -> None:
     final = build(
         success_count=0,
@@ -251,6 +296,8 @@ if __name__ == "__main__":
     test_candidate_only_probe_can_succeed_without_ingest()
     test_gap_probe_candidate_can_succeed_with_rejected_source()
     test_context_checkpoint_candidate_can_succeed_with_rejected_sources()
+    test_mcagent_context_sufficient_finish_is_success_without_external_records()
+    test_mcagent_context_coverage_goals_met_finish_is_success()
     test_reflection_timeout_with_candidate_evidence_is_partial_success()
     test_finish_reflection_reason_is_used_when_plan_finish_reason_missing()
     test_reflection_timeout_reason_survives_low_yield_done_summary()

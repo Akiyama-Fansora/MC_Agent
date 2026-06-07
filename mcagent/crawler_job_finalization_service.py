@@ -57,12 +57,25 @@ class CrawlerJobFinalizationService:
             and "reflection timed out" in finish_evidence_text
             and "objective evidence already collected" in finish_evidence_text
         )
+        context_sufficient_finish = (
+            bool(task_results)
+            and any(str(result.get("source") or "").strip().lower() == "mcagent_context" for result in task_results if isinstance(result, dict))
+            and (
+                ("local sources" in finish_evidence_text and "sufficient" in finish_evidence_text)
+                or ("local evidence" in finish_evidence_text and "sufficient" in finish_evidence_text)
+                or ("collected local evidence via mcagent context" in finish_evidence_text and "coverage goals met" in finish_evidence_text)
+                or ("mcagent context" in finish_evidence_text and "all coverage goals met" in finish_evidence_text)
+                or "no further collection needed" in finish_evidence_text
+                or "no further collection is needed" in finish_evidence_text
+            )
+        )
         candidate_only_success = candidate_count > 0 and failure_count == 0 and bool(task_results)
         partial_candidate_success = (
             candidate_only_success
             or gap_probe_finished_with_candidate
             or context_checkpoint_finished_with_candidate
             or reflection_timeout_finished_with_evidence
+            or context_sufficient_finish
         )
         has_successful_result = bool(success_count or partial_candidate_success)
         status = "succeeded" if has_successful_result else ("stopped" if stop_requested else "failed")
