@@ -8635,6 +8635,118 @@ def _handle_temporary_extract_route(
         )
 
 
+def _handle_local_corpus_inventory_route(
+    *,
+    config: AppConfig,
+    payload: dict[str, Any],
+    agent: str,
+    model: str,
+    original_question: str,
+    question: str,
+    tool_decision: dict[str, Any],
+    route_confirmation: dict[str, Any],
+    action_plan: list[dict[str, Any]],
+    executor: AgentToolExecutor,
+    run: Any,
+    session_summary: dict[str, Any],
+    trace: list[dict[str, Any]],
+    add_trace: Any,
+) -> dict[str, Any]:
+    inventory_confirmation = _reuse_route_confirmation(
+        route_confirmation,
+        proposed_tool="local_corpus_inventory",
+        proposed_goal=str(tool_decision.get("reason") or "Inspect local corpus coverage and representative indexed documents."),
+    )
+    add_trace("retrieve", "inventory_next_step_confirmed", inventory_confirmation)
+    if not bool(inventory_confirmation.get("proceed", True)):
+        return executor.direct_answer(run, session_summary=session_summary, mode="direct_after_inventory_cancelled")
+
+    add_trace("retrieve", "inventory_scanning", {"db_path": str(config.paths.db_path)})
+    inventory = _local_corpus_inventory_answer(config, question)
+    add_trace(
+        "retrieve",
+        "inventory_done",
+        {
+            "sources": len(inventory.get("sources") or []),
+            "context_chars": len(str(inventory.get("context") or "")),
+        },
+    )
+    completeness = _tool_route_completeness_review(
+        config,
+        agent=agent,
+        model=model,
+        original_question=original_question,
+        selected_tool="local_corpus_inventory",
+        tool_answer=str(inventory.get("answer") or ""),
+        tool_decision=tool_decision,
+        route_confirmation=inventory_confirmation,
+        action_plan=action_plan,
+    )
+    if completeness.get("missing_side_effect"):
+        add_trace("plan", "route_completeness_gap", completeness)
+        if (
+            str(completeness.get("tool") or "").strip() == "delegate_crawler"
+            and str(completeness.get("action") or "").strip() == "execute_selected_tool"
+            and _agent_selected_delegate(action_plan, "local_corpus_inventory", tool_decision)
+        ):
+            collection_question = str(completeness.get("collection_target") or tool_decision.get("collection_target") or original_question or question).strip()
+            delegation = _prepare_and_start_crawler_delegation(
+                config,
+                payload,
+                active_agent=agent,
+                model=model,
+                original_question=original_question,
+                current_question=question,
+                collection_question=collection_question,
+                session_summary=session_summary,
+                gap_summary=str(inventory.get("answer") or "")[:4000],
+                planning_instruction=(
+                    "MCagent already ran the Agent-selected local inventory tool. "
+                    "CrawlerAgent should read the inventory summary, identify the remaining gaps itself, collect public usable sources, self-audit them, and deliver to the requested target."
+                ),
+                delivery_target=str(completeness.get("delivery_target") or tool_decision.get("delivery_target") or payload.get("delivery_target") or "MCagent/RAG").strip(),
+                add_trace=add_trace,
+                action_plan=action_plan,
+            )
+            answer = str(inventory.get("answer") or "").rstrip() + delegation.note
+            source_dicts = list(inventory.get("sources") or [])
+            _append_session(payload, original_question, answer, source_dicts)
+            response = {
+                "answer": answer,
+                "sources": source_dicts,
+                "context": str(inventory.get("context") or ""),
+                "agent": agent,
+                "job": _job_to_dict(delegation.job),
+                "collaboration": _collaboration_dialog_for(
+                    delegation.plan.collection_question,
+                    delegation.job,
+                    delegation.created,
+                    requested_by=delegation.plan.requested_by,
+                    delivery_target=delegation.plan.delivery_target,
+                ),
+                "delegation": {
+                    "requested_by": delegation.plan.requested_by,
+                    "delivery_target": delegation.plan.delivery_target,
+                    "task": delegation.plan.collection_question,
+                    "handoff_brief": delegation.plan.handoff_brief,
+                },
+            }
+            add_trace("done", "response_ready", {"sources": len(source_dicts), "delegated": True})
+            return _with_trace(response, trace)
+        if str(completeness.get("tool") or "").strip() == "delegate_crawler":
+            add_trace(
+                "plan",
+                "inventory_missing_side_effect_not_executed",
+                {
+                    "reason": "Completeness review suggested delegate_crawler, but the original Agent-selected inventory route did not select that side-effect tool.",
+                    "required_agent_selection": "delegate_crawler or planned_workflow with delegate_crawler",
+                },
+            )
+    _append_session(payload, original_question, str(inventory.get("answer") or ""), list(inventory.get("sources") or []))
+    add_trace("done", "response_ready", {"sources": len(inventory.get("sources") or [])})
+    return _with_trace(inventory, trace)
+
+
 def _reuse_route_confirmation(route_confirmation: dict[str, Any], *, proposed_tool: str, proposed_goal: str) -> dict[str, Any]:
     value = dict(route_confirmation or {})
     current_tool = str(value.get("tool") or value.get("suggested_tool") or "").strip()
@@ -9327,102 +9439,22 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
             add_trace=add_trace,
         )
     if route_intent == "local_corpus_inventory":
-        inventory_confirmation = _reuse_route_confirmation(
-            route_confirmation,
-            proposed_tool="local_corpus_inventory",
-            proposed_goal=str(tool_decision.get("reason") or "Inspect local corpus coverage and representative indexed documents."),
+        return _handle_local_corpus_inventory_route(
+            config=config,
+            payload=payload,
+            agent=agent,
+            model=model,
+            original_question=original_question,
+            question=question,
+            tool_decision=tool_decision,
+            route_confirmation=route_confirmation,
+            action_plan=action_plan,
+            executor=executor,
+            run=run,
+            session_summary=session_summary,
+            trace=trace,
+            add_trace=add_trace,
         )
-        add_trace("retrieve", "inventory_next_step_confirmed", inventory_confirmation)
-        if not bool(inventory_confirmation.get("proceed", True)):
-            suggested_tool = str(inventory_confirmation.get("suggested_tool") or inventory_confirmation.get("tool") or "").strip()
-            if suggested_tool in {"answer", "direct_answer"}:
-                return executor.direct_answer(run, session_summary=session_summary, mode="direct_after_inventory_cancelled")
-            route_intent = suggested_tool or "answer"
-        if route_intent == "local_corpus_inventory":
-            add_trace("retrieve", "inventory_scanning", {"db_path": str(config.paths.db_path)})
-            inventory = _local_corpus_inventory_answer(config, question)
-            add_trace(
-                "retrieve",
-                "inventory_done",
-                {
-                    "sources": len(inventory.get("sources") or []),
-                    "context_chars": len(str(inventory.get("context") or "")),
-                },
-            )
-            completeness = _tool_route_completeness_review(
-                config,
-                agent=agent,
-                model=model,
-                original_question=original_question,
-                selected_tool="local_corpus_inventory",
-                tool_answer=str(inventory.get("answer") or ""),
-                tool_decision=tool_decision,
-                route_confirmation=inventory_confirmation,
-                action_plan=action_plan,
-            )
-            if completeness.get("missing_side_effect"):
-                add_trace("plan", "route_completeness_gap", completeness)
-                if (
-                    str(completeness.get("tool") or "").strip() == "delegate_crawler"
-                    and str(completeness.get("action") or "").strip() == "execute_selected_tool"
-                    and _agent_selected_delegate(action_plan, route_intent, tool_decision)
-                ):
-                    collection_question = str(completeness.get("collection_target") or tool_decision.get("collection_target") or original_question or question).strip()
-                    delegation = _prepare_and_start_crawler_delegation(
-                        config,
-                        payload,
-                        active_agent=agent,
-                        model=model,
-                        original_question=original_question,
-                        current_question=question,
-                        collection_question=collection_question,
-                        session_summary=session_summary,
-                        gap_summary=str(inventory.get("answer") or "")[:4000],
-                        planning_instruction=(
-                            "MCagent already ran the Agent-selected local inventory tool. "
-                            "CrawlerAgent should read the inventory summary, identify the remaining gaps itself, collect public usable sources, self-audit them, and deliver to the requested target."
-                        ),
-                        delivery_target=str(completeness.get("delivery_target") or tool_decision.get("delivery_target") or payload.get("delivery_target") or "MCagent/RAG").strip(),
-                        add_trace=add_trace,
-                        action_plan=action_plan,
-                    )
-                    answer = str(inventory.get("answer") or "").rstrip() + delegation.note
-                    source_dicts = list(inventory.get("sources") or [])
-                    _append_session(payload, original_question, answer, source_dicts)
-                    response = {
-                        "answer": answer,
-                        "sources": source_dicts,
-                        "context": str(inventory.get("context") or ""),
-                        "agent": agent,
-                        "job": _job_to_dict(delegation.job),
-                        "collaboration": _collaboration_dialog_for(
-                            delegation.plan.collection_question,
-                            delegation.job,
-                            delegation.created,
-                            requested_by=delegation.plan.requested_by,
-                            delivery_target=delegation.plan.delivery_target,
-                        ),
-                        "delegation": {
-                            "requested_by": delegation.plan.requested_by,
-                            "delivery_target": delegation.plan.delivery_target,
-                            "task": delegation.plan.collection_question,
-                            "handoff_brief": delegation.plan.handoff_brief,
-                        },
-                    }
-                    add_trace("done", "response_ready", {"sources": len(source_dicts), "delegated": True})
-                    return _with_trace(response, trace)
-                if str(completeness.get("tool") or "").strip() == "delegate_crawler":
-                    add_trace(
-                        "plan",
-                        "inventory_missing_side_effect_not_executed",
-                        {
-                            "reason": "Completeness review suggested delegate_crawler, but the original Agent-selected inventory route did not select that side-effect tool.",
-                            "required_agent_selection": "delegate_crawler or planned_workflow with delegate_crawler",
-                        },
-                    )
-            _append_session(payload, original_question, str(inventory.get("answer") or ""), list(inventory.get("sources") or []))
-            add_trace("done", "response_ready", {"sources": len(inventory.get("sources") or [])})
-            return _with_trace(inventory, trace)
     if (
         agent == "mcagent_rag"
         and planned_workflow

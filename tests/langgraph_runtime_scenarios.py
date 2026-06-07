@@ -752,6 +752,60 @@ def test_temporary_extract_route_does_not_upgrade_to_delegate_on_confirmation_su
     assert_true("no_job", not result.get("job"), str(result))
 
 
+def test_inventory_route_confirmation_cannot_upgrade_to_delegate() -> None:
+    class FakeRun:
+        original_question = "list local data then collect"
+        question = original_question
+        agent = "mcagent_rag"
+        model = "fake"
+        temperature = 0.0
+        max_tokens = 100
+        is_streaming = False
+
+        def __init__(self) -> None:
+            self.config = None
+            self.trace = []
+
+        def add_trace(self, stage, status, detail=None):  # noqa: ANN001
+            item = {"stage": stage, "status": status, "detail": detail}
+            self.trace.append(item)
+            return item
+
+        def emit_delta(self, text: str) -> None:
+            raise AssertionError(text)
+
+        def response(self, payload: dict[str, Any]) -> dict[str, Any]:
+            payload["trace"] = self.trace
+            return payload
+
+    run = FakeRun()
+    executor = web_server.AgentToolExecutor(
+        generate_direct_answer=lambda *_args, **_kwargs: "direct after inventory cancelled",
+        generate_direct_answer_stream=lambda *_args, **_kwargs: "direct after inventory cancelled",
+        status_answer=lambda _config: {"answer": "status"},
+    )
+    result = web_server._handle_local_corpus_inventory_route(
+        config=make_temp_config(Path(tempfile.gettempdir())),
+        payload={},
+        agent="mcagent_rag",
+        model="fake",
+        original_question=run.original_question,
+        question=run.question,
+        tool_decision={"tool": "local_corpus_inventory"},
+        route_confirmation={"proceed": False, "tool": "local_corpus_inventory", "suggested_tool": "delegate_crawler"},
+        action_plan=[],
+        executor=executor,
+        run=run,
+        session_summary={},
+        trace=run.trace,
+        add_trace=run.add_trace,
+    )
+    statuses = [(item.get("stage"), item.get("status")) for item in result.get("trace") or []]
+    assert_true("inventory_confirmed", ("retrieve", "inventory_next_step_confirmed") in statuses, str(statuses))
+    assert_true("direct_after_cancel", result.get("answer") == "direct after inventory cancelled", str(result))
+    assert_true("no_job", not result.get("job"), str(result))
+
+
 def main() -> int:
     test_conversation_graph_routes_only_by_message_target()
     test_conversation_graph_can_dispatch_to_crawler_node()
@@ -770,6 +824,7 @@ def main() -> int:
     test_crawler_loop_control_finishes_after_rag_success_checkpoint()
     test_direct_answer_route_helper_does_not_execute_unselected_delegate()
     test_temporary_extract_route_does_not_upgrade_to_delegate_on_confirmation_suggestion()
+    test_inventory_route_confirmation_cannot_upgrade_to_delegate()
     print("LANGGRAPH RUNTIME SCENARIOS PASSED")
     return 0
 
