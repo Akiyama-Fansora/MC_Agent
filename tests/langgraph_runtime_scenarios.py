@@ -635,6 +635,54 @@ def test_crawler_loop_control_finishes_after_rag_success_checkpoint() -> None:
     assert_true("loop_finish_reflection", any(item.get("action") == "finish" for item in plan.get("agent_reflections") or []), str(plan))
 
 
+def test_crawler_reflection_helper_returns_objective_contract_feedback() -> None:
+    original_reflect = web_server._reflect_crawler_progress_with_timeout
+
+    def fake_reflect(*_args, **_kwargs):  # noqa: ANN001
+        return {
+            "action": "add_tasks",
+            "reason": "try internal parsing before archive exists",
+            "planner": "fake-crawler-llm",
+            "tasks": [{"source": "modpack_internal", "query": "parse this pack"}],
+            "contract": {"valid": True, "issues": [], "requires_llm_task_materialization": False},
+        }
+
+    class FakeJob:
+        id = "reflection-contract-job"
+        result = {}
+        stop_requested = False
+
+    with tempfile.TemporaryDirectory() as tmp:
+        plan: dict[str, Any] = {"topic": "unit topic"}
+        tasks = [{"source": "web_discovery", "query": "unit topic"}]
+        task_results: list[dict[str, Any]] = []
+        web_server._reflect_crawler_progress_with_timeout = fake_reflect  # type: ignore[assignment]
+        try:
+            result = web_server._apply_crawler_reflection_before_task(
+                job=FakeJob(),
+                config=make_temp_config(Path(tmp)),
+                question="unit topic",
+                plan=plan,
+                tasks=tasks,
+                task_results=task_results,
+                index=0,
+                session_summary={},
+                max_total_tasks=4,
+                runtime_step=web_server.CrawlerRuntimeStepService(),
+                task_materializer=web_server.CrawlerTaskMaterializationService(),
+                job_progress=web_server.CrawlerJobProgressService(),
+            )
+        finally:
+            web_server._reflect_crawler_progress_with_timeout = original_reflect  # type: ignore[assignment]
+    assert_true("contract_feedback_can_continue", result.get("continue_loop") in {True, False}, str(result))
+    assert_true("blocked_feedback_recorded", any(item.get("source") == "crawler_reflection_contract" for item in task_results), str(task_results))
+    blocked = next(item for item in task_results if item.get("source") == "crawler_reflection_contract")
+    assert_true("objective_output", "no tool judged content relevance" in str(blocked.get("output") or ""), str(blocked))
+    assert_true("contract_issue_visible", "requires_any" in str(blocked.get("capability_preflight") or ""), str(blocked))
+    assert_true("reflection_not_acceptance", not blocked.get("accepted_sources") and not blocked.get("records"), str(blocked))
+    assert_true("plan_records_contract", any(item.get("action") == "blocked_unexecutable_tasks" for item in plan.get("agent_reflections") or []), str(plan))
+
+
 def test_direct_answer_route_helper_does_not_execute_unselected_delegate() -> None:
     class FakeRun:
         original_question = "ask crawler to collect later"
@@ -1086,6 +1134,7 @@ def main() -> int:
     test_crawler_task_step_executes_command_and_records_accounting()
     test_crawler_task_step_ignores_unbacked_tool_record_claims()
     test_crawler_loop_control_finishes_after_rag_success_checkpoint()
+    test_crawler_reflection_helper_returns_objective_contract_feedback()
     test_direct_answer_route_helper_does_not_execute_unselected_delegate()
     test_temporary_extract_route_does_not_upgrade_to_delegate_on_confirmation_suggestion()
     test_inventory_route_confirmation_cannot_upgrade_to_delegate()

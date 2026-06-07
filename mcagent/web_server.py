@@ -3646,6 +3646,181 @@ def _apply_crawler_loop_control_after_task(
     return {"action": "continue", "bad_streak": bad_streak, "replan_count": replan_count, "new_tasks": []}
 
 
+def _apply_crawler_reflection_before_task(
+    *,
+    job: Job,
+    config: AppConfig,
+    question: str,
+    plan: dict[str, Any],
+    tasks: list[dict[str, Any]],
+    task_results: list[dict[str, Any]],
+    index: int,
+    session_summary: dict[str, Any] | None,
+    max_total_tasks: int,
+    runtime_step: CrawlerRuntimeStepService,
+    task_materializer: CrawlerTaskMaterializationService,
+    job_progress: CrawlerJobProgressService,
+) -> dict[str, Any]:
+    pending_tasks = list(tasks[index:])
+    reflection = _reflect_crawler_progress_with_timeout(
+        question,
+        plan,
+        task_results,
+        pending_tasks,
+        session_summary=session_summary,
+        max_new_tasks=max(1, min(4, max_total_tasks - len(tasks))),
+    )
+    plan.setdefault("agent_reflections", []).append(runtime_step.reflection_entry(index=index, reflection=reflection))
+    _update_job(job, **job_progress.reflecting(reflection=reflection, task_results=task_results, tasks=tasks, plan=plan))
+    action = str(reflection.get("action") or "execute_pending")
+    new_tasks = [task for task in list(reflection.get("tasks") or []) if isinstance(task, dict)]
+    new_tasks = _drop_duplicate_mcagent_context_tasks(new_tasks, task_results)
+    new_tasks, blocked_tasks = task_materializer.filter_executable_reflection_tasks(new_tasks)
+    if blocked_tasks:
+        contract = reflection.get("contract") if isinstance(reflection.get("contract"), dict) else {}
+        contract.setdefault("issues", [])
+        contract["valid"] = False
+        contract["requires_llm_task_materialization"] = True
+        contract["blocked_unexecutable_tasks"] = blocked_tasks
+        for blocked_task in blocked_tasks:
+            issue = str(blocked_task.get("blocked_reason") or "crawler_capability_preflight_failed")
+            if issue not in contract["issues"]:
+                contract["issues"].append(issue)
+        reflection["contract"] = contract
+        plan.setdefault("agent_reflections", []).append(
+            {
+                "at_index": index,
+                "action": "blocked_unexecutable_tasks",
+                "reason": "CrawlerAgent proposed tool tasks missing required local inputs; executor returned the objective contract issue for CrawlerAgent reflection.",
+                "planner": "executor objective contract",
+                "tasks": blocked_tasks,
+                "contract": {
+                    "valid": False,
+                    "issues": ["modpack_internal_requires_archive_path"],
+                    "requires_llm_task_materialization": True,
+                },
+            }
+        )
+        task_results.append(
+            {
+                "source": "crawler_reflection_contract",
+                "returncode": 2,
+                "command": [],
+                "output": "CrawlerAgent proposed tool tasks that failed objective capability preflight; no tool judged content relevance.",
+                "timeout_seconds": 0,
+                "timed_out": False,
+                "export_dir": "",
+                "query": "; ".join(str(task.get("query") or "") for task in blocked_tasks[:3]),
+                "reason": "Objective capability contract feedback for CrawlerAgent reflection.",
+                "manifest_stats": {"records": 0, "skipped": 0, "errors": len(blocked_tasks)},
+                "capability_preflight": {"valid": False, "blocked_tasks": blocked_tasks},
+                "empty_result": True,
+                "observation": {
+                    "tool_name": "crawler_reflection_contract",
+                    "status": "empty",
+                    "summary": "CrawlerAgent proposed non-executable tool calls; it must choose tools whose required inputs are present.",
+                    "detail": {"blocked_tasks": blocked_tasks[:3]},
+                    "retryable": True,
+                    "suggested_next": "Choose web_discovery/playwright/modrinth/mcmod/modpack_download first, or provide a real archive_path before modpack_internal.",
+                },
+            }
+        )
+    contract = reflection.get("contract") if isinstance(reflection.get("contract"), dict) else {}
+    needs_materialization = bool(contract.get("requires_llm_task_materialization"))
+    if (
+        action in {"add_tasks", "replan"}
+        and needs_materialization
+        and _has_successful_mcagent_context(task_results)
+        and pending_tasks
+        and not _reflection_requests_local_source_materialization(reflection, task_results)
+    ):
+        action = "execute_pending"
+        reflection["action"] = "execute_pending"
+        reflection["selected_index"] = 0
+        reflection["reason"] = (
+            "MCagent context is already available in the previous tool result; skip another LLM materialization pass "
+            "and continue with the pending objective collection tools."
+        )
+        new_tasks = []
+        needs_materialization = False
+        plan.setdefault("agent_reflections", []).append(
+            {
+                "at_index": index,
+                "action": "skip_unmaterialized_replan_after_mcagent_context",
+                "reason": reflection["reason"],
+                "planner": "executor objective result",
+            }
+        )
+    if action in {"add_tasks", "replan"} and needs_materialization:
+        remaining_slots = max(0, max_total_tasks - len(tasks))
+        local_source_requested = _reflection_requests_local_source_materialization(reflection, task_results)
+        materialization_budget = min(4, remaining_slots)
+        if local_source_requested and materialization_budget <= 0:
+            materialization_budget = min(4, max(1, len(tasks) - index))
+        local_materialized_tasks = (
+            _materialize_local_source_path_tasks_from_mcagent_context(
+                reflection,
+                task_results,
+                existing_tasks=tasks,
+                max_new_tasks=materialization_budget,
+            )
+            if local_source_requested
+            else []
+        )
+        if local_materialized_tasks:
+            new_tasks = local_materialized_tasks
+            if remaining_slots <= 0 and action == "add_tasks":
+                action = "replan"
+                reflection["action"] = "replan"
+            plan.setdefault("agent_reflections", []).append(
+                {
+                    "at_index": index,
+                    "action": "local_source_path_tasks_materialized",
+                    "reason": (
+                        "CrawlerAgent requested inspection of local source paths returned by mcagent_context; "
+                        "executor materialized objective read/search tasks for those exact paths without judging their relevance."
+                    ),
+                    "planner": "executor objective local path materializer",
+                    "tasks": new_tasks,
+                }
+            )
+        else:
+            new_tasks = _replan_crawler_tasks(
+                question,
+                config,
+                plan,
+                task_results,
+                tasks,
+                max_new_tasks=min(6, remaining_slots),
+            )
+        new_tasks = _drop_duplicate_mcagent_context_tasks(new_tasks, task_results)
+        if new_tasks:
+            plan.setdefault("agent_reflections", []).append(
+                {
+                    "at_index": index,
+                    "action": "replan_tasks_generated",
+                    "reason": "CrawlerAgent requested replan/add_tasks without executable tasks; the executor returned the contract issue to the Crawler planning LLM to materialize executable tool actions.",
+                    "planner": "Crawler replan LLM",
+                    "tasks": new_tasks,
+                    "contract_issue": contract.get("issues") or [],
+                }
+            )
+    step_result = runtime_step.apply_action(
+        tasks=tasks,
+        index=index,
+        reflection=reflection,
+        max_total_tasks=max_total_tasks,
+        materialized_tasks=new_tasks,
+    )
+    return {
+        "continue_loop": bool(step_result.get("continue_loop")),
+        "finished": bool(step_result.get("finished")),
+        "finish_reason": str(step_result.get("finish_reason") or ""),
+        "reflection": reflection,
+        "new_tasks": new_tasks,
+    }
+
+
 def _run_crawler_job_legacy_loop(job: Job, payload: dict[str, Any], config: AppConfig) -> None:
     source = _source_alias(str(payload.get("source") or "planner"))
     question = str(payload.get("source_question") or payload.get("question") or payload.get("query") or "").strip()
@@ -3692,161 +3867,24 @@ def _run_crawler_job_legacy_loop(job: Job, payload: dict[str, Any], config: AppC
             if job.stop_requested:
                 break
             if job_setup.is_planner_source(source) and runtime_step.should_reflect_before_task(plan=plan, task_results=task_results, index=index):
-                pending_tasks = list(tasks[index:])
-                reflection = _reflect_crawler_progress_with_timeout(
-                    question,
-                    plan,
-                    task_results,
-                    pending_tasks,
-                    session_summary=session_summary,
-                    max_new_tasks=max(1, min(4, max_total_tasks - len(tasks))),
-                )
-                plan.setdefault("agent_reflections", []).append(runtime_step.reflection_entry(index=index, reflection=reflection))
-                _update_job(job, **job_progress.reflecting(reflection=reflection, task_results=task_results, tasks=tasks, plan=plan))
-                action = str(reflection.get("action") or "execute_pending")
-                new_tasks = [task for task in list(reflection.get("tasks") or []) if isinstance(task, dict)]
-                new_tasks = _drop_duplicate_mcagent_context_tasks(new_tasks, task_results)
-                new_tasks, blocked_tasks = task_materializer.filter_executable_reflection_tasks(new_tasks)
-                if blocked_tasks:
-                    contract = reflection.get("contract") if isinstance(reflection.get("contract"), dict) else {}
-                    contract.setdefault("issues", [])
-                    contract["valid"] = False
-                    contract["requires_llm_task_materialization"] = True
-                    contract["blocked_unexecutable_tasks"] = blocked_tasks
-                    for blocked_task in blocked_tasks:
-                        issue = str(blocked_task.get("blocked_reason") or "crawler_capability_preflight_failed")
-                        if issue not in contract["issues"]:
-                            contract["issues"].append(issue)
-                    reflection["contract"] = contract
-                    plan.setdefault("agent_reflections", []).append(
-                        {
-                            "at_index": index,
-                            "action": "blocked_unexecutable_tasks",
-                            "reason": "CrawlerAgent proposed tool tasks missing required local inputs; executor returned the objective contract issue for CrawlerAgent reflection.",
-                            "planner": "executor objective contract",
-                            "tasks": blocked_tasks,
-                            "contract": {
-                                "valid": False,
-                                "issues": ["modpack_internal_requires_archive_path"],
-                                "requires_llm_task_materialization": True,
-                            },
-                        }
-                    )
-                    task_results.append(
-                        {
-                            "source": "crawler_reflection_contract",
-                            "returncode": 2,
-                            "command": [],
-                            "output": "CrawlerAgent proposed tool tasks that failed objective capability preflight; no tool judged content relevance.",
-                            "timeout_seconds": 0,
-                            "timed_out": False,
-                            "export_dir": "",
-                            "query": "; ".join(str(task.get("query") or "") for task in blocked_tasks[:3]),
-                            "reason": "Objective capability contract feedback for CrawlerAgent reflection.",
-                            "manifest_stats": {"records": 0, "skipped": 0, "errors": len(blocked_tasks)},
-                            "capability_preflight": {"valid": False, "blocked_tasks": blocked_tasks},
-                            "empty_result": True,
-                            "observation": {
-                                "tool_name": "crawler_reflection_contract",
-                                "status": "empty",
-                                "summary": "CrawlerAgent proposed non-executable tool calls; it must choose tools whose required inputs are present.",
-                                "detail": {"blocked_tasks": blocked_tasks[:3]},
-                                "retryable": True,
-                                "suggested_next": "Choose web_discovery/playwright/modrinth/mcmod/modpack_download first, or provide a real archive_path before modpack_internal.",
-                            },
-                        }
-                    )
-                contract = reflection.get("contract") if isinstance(reflection.get("contract"), dict) else {}
-                needs_materialization = bool(contract.get("requires_llm_task_materialization"))
-                if (
-                    action in {"add_tasks", "replan"}
-                    and needs_materialization
-                    and _has_successful_mcagent_context(task_results)
-                    and pending_tasks
-                    and not _reflection_requests_local_source_materialization(reflection, task_results)
-                ):
-                    action = "execute_pending"
-                    reflection["action"] = "execute_pending"
-                    reflection["selected_index"] = 0
-                    reflection["reason"] = (
-                        "MCagent context is already available in the previous tool result; skip another LLM materialization pass "
-                        "and continue with the pending objective collection tools."
-                    )
-                    new_tasks = []
-                    needs_materialization = False
-                    plan.setdefault("agent_reflections", []).append(
-                        {
-                            "at_index": index,
-                            "action": "skip_unmaterialized_replan_after_mcagent_context",
-                            "reason": reflection["reason"],
-                            "planner": "executor objective result",
-                        }
-                    )
-                if action in {"add_tasks", "replan"} and needs_materialization:
-                    remaining_slots = max(0, max_total_tasks - len(tasks))
-                    local_source_requested = _reflection_requests_local_source_materialization(reflection, task_results)
-                    materialization_budget = min(4, remaining_slots)
-                    if local_source_requested and materialization_budget <= 0:
-                        materialization_budget = min(4, max(1, len(tasks) - index))
-                    local_materialized_tasks = (
-                        _materialize_local_source_path_tasks_from_mcagent_context(
-                            reflection,
-                            task_results,
-                            existing_tasks=tasks,
-                            max_new_tasks=materialization_budget,
-                        )
-                        if local_source_requested
-                        else []
-                    )
-                    if local_materialized_tasks:
-                        new_tasks = local_materialized_tasks
-                        if remaining_slots <= 0 and action == "add_tasks":
-                            action = "replan"
-                            reflection["action"] = "replan"
-                        plan.setdefault("agent_reflections", []).append(
-                            {
-                                "at_index": index,
-                                "action": "local_source_path_tasks_materialized",
-                                "reason": (
-                                    "CrawlerAgent requested inspection of local source paths returned by mcagent_context; "
-                                    "executor materialized objective read/search tasks for those exact paths without judging their relevance."
-                                ),
-                                "planner": "executor objective local path materializer",
-                                "tasks": new_tasks,
-                            }
-                        )
-                    else:
-                        new_tasks = _replan_crawler_tasks(
-                            question,
-                            config,
-                            plan,
-                            task_results,
-                            tasks,
-                            max_new_tasks=min(6, remaining_slots),
-                        )
-                    new_tasks = _drop_duplicate_mcagent_context_tasks(new_tasks, task_results)
-                    if new_tasks:
-                        plan.setdefault("agent_reflections", []).append(
-                            {
-                                "at_index": index,
-                                "action": "replan_tasks_generated",
-                                "reason": "CrawlerAgent requested replan/add_tasks without executable tasks; the executor returned the contract issue to the Crawler planning LLM to materialize executable tool actions.",
-                                "planner": "Crawler replan LLM",
-                                "tasks": new_tasks,
-                                "contract_issue": contract.get("issues") or [],
-                            }
-                        )
-                step_result = runtime_step.apply_action(
+                reflection_update = _apply_crawler_reflection_before_task(
+                    job=job,
+                    config=config,
+                    question=question,
+                    plan=plan,
                     tasks=tasks,
+                    task_results=task_results,
                     index=index,
-                    reflection=reflection,
+                    session_summary=session_summary,
                     max_total_tasks=max_total_tasks,
-                    materialized_tasks=new_tasks,
+                    runtime_step=runtime_step,
+                    task_materializer=task_materializer,
+                    job_progress=job_progress,
                 )
-                if step_result.get("continue_loop"):
+                if reflection_update.get("continue_loop"):
                     continue
-                if step_result.get("finished"):
-                    plan["agent_finish_reason"] = str(step_result.get("finish_reason") or "")
+                if reflection_update.get("finished"):
+                    plan["agent_finish_reason"] = str(reflection_update.get("finish_reason") or "")
                     break
             elif job_setup.is_planner_source(source) and index == 0 and tasks:
                 plan.setdefault("agent_reflections", []).append(runtime_step.initial_llm_plan_entry(task=tasks[index]))
