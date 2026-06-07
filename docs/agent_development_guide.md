@@ -4407,3 +4407,30 @@ The next step is to move Crawler planning from "one large legacy runtime node" t
 6. `execute_tool`;
 7. `review_observation`;
 8. `reflect_or_finish`.
+
+## 2026-06-07 Stage 34: CrawlerGraph Tool Group Selection Node
+
+Stage 34 adds the first real CrawlerGraph planning-support node after the boundary declaration.
+
+### Implemented Changes
+
+1. `AgentGraphState` now has `selected_tool_groups`.
+2. `CrawlerAgentGraph` now runs:
+   - `crawler.receive`;
+   - `crawler.understand_boundary`;
+   - `crawler.select_tool_groups`;
+   - `crawler.legacy_runtime`;
+   - `crawler.finalize`.
+3. `crawler.select_tool_groups` exposes:
+   - default group: `general`;
+   - default tools: the general crawler tools;
+   - candidate domain toolsets: currently `minecraft`;
+   - decision owner: `CrawlerAgent LLM`.
+
+### Boundary
+
+This node does not decide semantic relevance. It does not enable Minecraft tools because a keyword matched. It only makes the available general/default tools and candidate domain toolsets explicit in graph state. CrawlerAgent's LLM must still decide whether a domain plugin is relevant before using it.
+
+### Tests
+
+`tests/langgraph_runtime_scenarios.py` now requires `crawler.select_tool_groups` to appear in the CrawlerAgent subgraph trace and verifies that Minecraft tools are only candidate domain tools, not default general tools.

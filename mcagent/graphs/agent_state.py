@@ -11,6 +11,7 @@ class AgentGraphState(TypedDict):
     payload: dict[str, Any]
     result: NotRequired[dict[str, Any]]
     tool_boundary: dict[str, Any]
+    selected_tool_groups: NotRequired[dict[str, Any]]
     graph_events: list[GraphEvent]
     visited_nodes: list[str]
     errors: list[dict[str, Any]]

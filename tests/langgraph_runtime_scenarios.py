@@ -112,6 +112,7 @@ def test_conversation_graph_can_dispatch_to_crawler_node() -> None:
     assert_true("crawler_node_visited", "crawler_graph.legacy_delivery" in runtime.get("visited_nodes", []), str(runtime))
     agent_runtime = result.get("agent_graph_runtime") or {}
     assert_true("crawler_subgraph", agent_runtime.get("agent_graph") == "CrawlerAgentGraph", str(agent_runtime))
+    assert_true("crawler_select_tool_groups_node", "crawler.select_tool_groups" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     boundary = agent_runtime.get("tool_boundary") or {}
     assert_true("crawler_general_web", "web_discovery" in boundary.get("allowed_capability_groups", []), str(boundary))
     assert_true("crawler_optional_domain_toolsets", "optional_domain_toolsets" in boundary.get("allowed_capability_groups", []), str(boundary))
@@ -120,6 +121,10 @@ def test_conversation_graph_can_dispatch_to_crawler_node() -> None:
     assert_true("crawler_general_tools_include_fetch", {"web_discovery", "fetch_url", "playwright"}.issubset(general_tools), str(boundary))
     assert_true("crawler_general_tools_exclude_minecraft", not {"mcmod", "modrinth", "modpack_download", "modpack_internal"} & general_tools, str(boundary))
     assert_true("crawler_minecraft_domain_tools", {"mcmod", "modrinth", "modpack_download", "modpack_internal"}.issubset(minecraft_tools), str(boundary))
+    selected_groups = agent_runtime.get("selected_tool_groups") or {}
+    assert_true("crawler_default_general_only", selected_groups.get("default_groups") == ["general"], str(selected_groups))
+    assert_true("crawler_domain_candidates_visible", "minecraft" in (selected_groups.get("candidate_domain_toolsets") or {}), str(selected_groups))
+    assert_true("crawler_selection_owned_by_llm", selected_groups.get("decision_owner") == "CrawlerAgent LLM", str(selected_groups))
 
 
 def test_non_streaming_graph_reuses_checkpointed_runtime_without_reusing_emit() -> None:

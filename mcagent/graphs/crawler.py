@@ -69,6 +69,32 @@ def build_crawler_graph(config: AppConfig, legacy_delivery: LegacyDeliveryFn, em
             ),
         }
 
+    def select_tool_groups(state: AgentGraphState) -> dict[str, Any]:
+        boundary = dict(state.get("tool_boundary") or {})
+        selected = {
+            "default_groups": ["general"],
+            "default_tools": list(boundary.get("general_collection_tools") or []),
+            "candidate_domain_toolsets": dict(boundary.get("domain_toolsets") or {}),
+            "decision_owner": "CrawlerAgent LLM",
+            "selection_contract": (
+                "The graph exposes general tools by default and candidate domain toolsets as options. "
+                "It does not decide semantic relevance or enable a domain plugin on the CrawlerAgent's behalf."
+            ),
+        }
+        return {
+            "selected_tool_groups": selected,
+            **_append(
+                state,
+                "crawler.select_tool_groups",
+                "default_general_candidates_exposed",
+                {
+                    "default_groups": selected["default_groups"],
+                    "candidate_domain_toolsets": list(selected["candidate_domain_toolsets"].keys()),
+                    "decision_owner": selected["decision_owner"],
+                },
+            ),
+        }
+
     def run_legacy_crawler_agent(state: AgentGraphState) -> dict[str, Any]:
         result = legacy_delivery(config, dict(state.get("payload") or {}), emit=emit)
         return {
@@ -82,6 +108,7 @@ def build_crawler_graph(config: AppConfig, legacy_delivery: LegacyDeliveryFn, em
             "agent_graph": "CrawlerAgentGraph",
             "agent_id": "crawler_agent",
             "tool_boundary": state.get("tool_boundary") or {},
+            "selected_tool_groups": state.get("selected_tool_groups") or {},
             "visited_nodes": [*state.get("visited_nodes", []), "crawler.finalize"],
             "events": [*state.get("graph_events", []), _event("crawler.finalize", "ready")],
         }
@@ -97,11 +124,13 @@ def build_crawler_graph(config: AppConfig, legacy_delivery: LegacyDeliveryFn, em
 
     builder.add_node("receive", receive)
     builder.add_node("understand_boundary", understand_boundary)
+    builder.add_node("select_tool_groups", select_tool_groups)
     builder.add_node("legacy_runtime", run_legacy_crawler_agent)
     builder.add_node("finalize", finalize)
     builder.add_edge(START, "receive")
     builder.add_edge("receive", "understand_boundary")
-    builder.add_edge("understand_boundary", "legacy_runtime")
+    builder.add_edge("understand_boundary", "select_tool_groups")
+    builder.add_edge("select_tool_groups", "legacy_runtime")
     builder.add_edge("legacy_runtime", "finalize")
     builder.add_edge("finalize", END)
     return builder.compile()
