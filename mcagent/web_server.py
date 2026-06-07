@@ -3117,7 +3117,7 @@ def _reflect_crawler_progress_with_timeout(
 
 
 def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> None:
-    run_crawler_job_graph(config, job, payload, legacy_loop=_run_crawler_job_legacy_loop)
+    run_crawler_job_graph(config, job, payload, agent_loop=_run_crawler_job_agent_loop)
 
 
 def _prepare_crawler_job_plan(
@@ -3866,7 +3866,7 @@ def _apply_crawler_after_task_review(
     }
 
 
-def _run_crawler_job_legacy_loop(job: Job, payload: dict[str, Any], config: AppConfig) -> None:
+def _run_crawler_job_agent_loop(job: Job, payload: dict[str, Any], config: AppConfig) -> None:
     source = _source_alias(str(payload.get("source") or "planner"))
     question = str(payload.get("source_question") or payload.get("question") or payload.get("query") or "").strip()
     job_setup = CrawlerJobSetupService()

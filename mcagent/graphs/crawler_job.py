@@ -31,7 +31,7 @@ def _append(state: CrawlerJobGraphState, node: str, status: str, detail: dict[st
     }
 
 
-def build_crawler_job_graph(config: AppConfig, legacy_loop: CrawlerJobLoopFn, job: Any):
+def build_crawler_job_graph(config: AppConfig, agent_loop: CrawlerJobLoopFn, job: Any):
     builder = StateGraph(CrawlerJobGraphState)
 
     def receive(state: CrawlerJobGraphState) -> dict[str, Any]:
@@ -67,7 +67,7 @@ def build_crawler_job_graph(config: AppConfig, legacy_loop: CrawlerJobLoopFn, jo
         event_update = _append(
             state,
             "crawler_job.prepare",
-            "legacy_loop_contract_exposed",
+            "agent_loop_contract_exposed",
             contract,
         )
         return {
@@ -75,9 +75,9 @@ def build_crawler_job_graph(config: AppConfig, legacy_loop: CrawlerJobLoopFn, jo
             "job_contract": contract,
         }
 
-    def run_legacy_loop(state: CrawlerJobGraphState) -> dict[str, Any]:
-        legacy_loop(job, dict(state.get("payload") or {}), config)
-        return _append(state, "crawler_job.legacy_loop", "completed", {"job_id": state.get("job_id") or ""})
+    def run_agent_loop(state: CrawlerJobGraphState) -> dict[str, Any]:
+        agent_loop(job, dict(state.get("payload") or {}), config)
+        return _append(state, "crawler_job.agent_loop", "completed", {"job_id": state.get("job_id") or ""})
 
     def finalize(state: CrawlerJobGraphState) -> dict[str, Any]:
         graph_runtime = {
@@ -97,18 +97,18 @@ def build_crawler_job_graph(config: AppConfig, legacy_loop: CrawlerJobLoopFn, jo
 
     builder.add_node("receive", receive)
     builder.add_node("prepare", prepare)
-    builder.add_node("legacy_loop", run_legacy_loop)
+    builder.add_node("agent_loop", run_agent_loop)
     builder.add_node("finalize", finalize)
     builder.add_edge(START, "receive")
     builder.add_edge("receive", "prepare")
-    builder.add_edge("prepare", "legacy_loop")
-    builder.add_edge("legacy_loop", "finalize")
+    builder.add_edge("prepare", "agent_loop")
+    builder.add_edge("agent_loop", "finalize")
     builder.add_edge("finalize", END)
     return builder.compile()
 
 
-def run_crawler_job_graph(config: AppConfig, job: Any, payload: dict[str, Any], *, legacy_loop: CrawlerJobLoopFn) -> None:
-    graph = build_crawler_job_graph(config, legacy_loop, job)
+def run_crawler_job_graph(config: AppConfig, job: Any, payload: dict[str, Any], *, agent_loop: CrawlerJobLoopFn) -> None:
+    graph = build_crawler_job_graph(config, agent_loop, job)
     graph.invoke(
         {
             "job_id": str(getattr(job, "id", "") or ""),

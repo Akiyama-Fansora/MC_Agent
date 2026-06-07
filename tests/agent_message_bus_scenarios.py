@@ -190,10 +190,10 @@ def test_production_entries_do_not_bypass_message_bus_runtime() -> None:
     legacy_body = web_source[legacy_start:legacy_end]
     assert_true("legacy_delivery_is_internal_graph_node", "return _chat_impl(config, payload, emit=emit)" in legacy_body)
     crawler_job_start = web_source.index("def _run_crawler_job")
-    crawler_job_end = web_source.index("\ndef _run_crawler_job_legacy_loop", crawler_job_start)
+    crawler_job_end = web_source.index("\ndef _run_crawler_job_agent_loop", crawler_job_start)
     crawler_job_body = web_source[crawler_job_start:crawler_job_end]
     assert_true("crawler_job_enters_langgraph", "run_crawler_job_graph(" in crawler_job_body)
-    assert_true("crawler_job_uses_legacy_loop_node", "legacy_loop=_run_crawler_job_legacy_loop" in crawler_job_body)
+    assert_true("crawler_job_uses_agent_loop_node", "agent_loop=_run_crawler_job_agent_loop" in crawler_job_body)
     assert_true("fastapi_no_chat_impl", "_chat_impl(" not in fastapi_source)
     assert_true("chat_wrapper_is_bus_only", "executor.submit(_send_agent_message, config, payload, **fields)" in web_source)
     assert_true(

@@ -236,9 +236,9 @@ def test_crawler_background_job_enters_langgraph_runtime() -> None:
 
     calls: list[dict[str, Any]] = []
 
-    def legacy_loop(job: FakeJob, payload: dict[str, Any], config: AppConfig) -> None:  # noqa: ARG001
+    def agent_loop(job: FakeJob, payload: dict[str, Any], config: AppConfig) -> None:  # noqa: ARG001
         calls.append(dict(payload))
-        job.result = {"legacy_loop": "ran"}
+        job.result = {"agent_loop": "ran"}
 
     with tempfile.TemporaryDirectory() as tmp:
         job = FakeJob()
@@ -246,13 +246,13 @@ def test_crawler_background_job_enters_langgraph_runtime() -> None:
             make_temp_config(Path(tmp)),
             job,
             {"session_id": "crawler-job-graph", "source": "planner", "delivery_target": "MCagent/RAG", "agent_message": {"ok": True}},
-            legacy_loop=legacy_loop,
+            agent_loop=agent_loop,
         )
-    assert_true("legacy_loop_called", len(calls) == 1, str(calls))
+    assert_true("agent_loop_called", len(calls) == 1, str(calls))
     runtime = (job.result or {}).get("crawler_job_graph_runtime") or {}
     assert_true("job_graph_runtime", runtime.get("graph") == "CrawlerJobGraph", str(runtime))
     assert_true("job_graph_receive", "crawler_job.receive" in runtime.get("visited_nodes", []), str(runtime))
-    assert_true("job_graph_legacy_loop", "crawler_job.legacy_loop" in runtime.get("visited_nodes", []), str(runtime))
+    assert_true("job_graph_agent_loop", "crawler_job.agent_loop" in runtime.get("visited_nodes", []), str(runtime))
     contract = runtime.get("job_contract") or {}
     assert_true("job_graph_contract_delivery", contract.get("delivery_target") == "MCagent/RAG", str(contract))
     assert_true("job_graph_contract_message", contract.get("has_agent_message") is True, str(contract))
