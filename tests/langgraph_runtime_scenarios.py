@@ -19,6 +19,7 @@ from mcagent.config import (  # noqa: E402
 )
 from mcagent.graphs import dispatch_agent_message_graph  # noqa: E402
 from mcagent.graphs import runtime as graph_runtime_module  # noqa: E402
+from mcagent.graphs.crawler_job import run_crawler_job_graph  # noqa: E402
 from mcagent.session_state import DEFAULT_SESSION_STORE  # noqa: E402
 
 
@@ -77,6 +78,7 @@ def test_conversation_graph_routes_only_by_message_target() -> None:
     agent_runtime = result.get("agent_graph_runtime") or {}
     assert_true("mcagent_subgraph", agent_runtime.get("agent_graph") == "MCagentGraph", str(agent_runtime))
     assert_true("mcagent_select_local_tools_node", "mcagent.select_local_tools" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
+    assert_true("mcagent_prepare_local_retrieval_node", "mcagent.prepare_local_retrieval" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     boundary = agent_runtime.get("tool_boundary") or {}
     assert_true("mcagent_local_only", "local_rag" in boundary.get("allowed_capability_groups", []), str(boundary))
     assert_true("mcagent_blocks_web", "web_search" in boundary.get("blocked_capability_groups", []), str(boundary))
@@ -86,6 +88,9 @@ def test_conversation_graph_routes_only_by_message_target() -> None:
     assert_true("mcagent_local_tools_include_rag", "local_rag_search" in local_tools, str(selected_groups))
     assert_true("mcagent_local_tools_include_message_handoff", "delegate_crawler" in local_tools, str(selected_groups))
     assert_true("mcagent_local_tools_exclude_crawler_web", not {"web_discovery", "fetch_url", "playwright", "browser_collect", "modpack_download"} & local_tools, str(selected_groups))
+    retrieval_contract = agent_runtime.get("retrieval_contract") or {}
+    assert_true("mcagent_retrieval_local_sources", "local_rag" in retrieval_contract.get("allowed_evidence_sources", []), str(retrieval_contract))
+    assert_true("mcagent_retrieval_blocks_public_web", "public_web" in retrieval_contract.get("blocked_evidence_sources", []), str(retrieval_contract))
 
 
 def test_conversation_graph_can_dispatch_to_crawler_node() -> None:
@@ -121,6 +126,7 @@ def test_conversation_graph_can_dispatch_to_crawler_node() -> None:
     agent_runtime = result.get("agent_graph_runtime") or {}
     assert_true("crawler_subgraph", agent_runtime.get("agent_graph") == "CrawlerAgentGraph", str(agent_runtime))
     assert_true("crawler_select_tool_groups_node", "crawler.select_tool_groups" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
+    assert_true("crawler_prepare_mission_contract_node", "crawler.prepare_mission_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     boundary = agent_runtime.get("tool_boundary") or {}
     assert_true("crawler_general_web", "web_discovery" in boundary.get("allowed_capability_groups", []), str(boundary))
     assert_true("crawler_optional_domain_toolsets", "optional_domain_toolsets" in boundary.get("allowed_capability_groups", []), str(boundary))
@@ -133,6 +139,9 @@ def test_conversation_graph_can_dispatch_to_crawler_node() -> None:
     assert_true("crawler_default_general_only", selected_groups.get("default_groups") == ["general"], str(selected_groups))
     assert_true("crawler_domain_candidates_visible", "minecraft" in (selected_groups.get("candidate_domain_toolsets") or {}), str(selected_groups))
     assert_true("crawler_selection_owned_by_llm", selected_groups.get("decision_owner") == "CrawlerAgent LLM", str(selected_groups))
+    mission_contract = agent_runtime.get("mission_contract") or {}
+    assert_true("crawler_mission_delivery", mission_contract.get("delivery_target") == "MCagent/RAG", str(mission_contract))
+    assert_true("crawler_mission_owner", mission_contract.get("decision_owner") == "CrawlerAgent LLM", str(mission_contract))
 
 
 def test_non_streaming_graph_reuses_checkpointed_runtime_without_reusing_emit() -> None:
@@ -218,11 +227,42 @@ def test_agent_subgraphs_load_session_memory_context() -> None:
     DEFAULT_SESSION_STORE.delete(session_id)
 
 
+def test_crawler_background_job_enters_langgraph_runtime() -> None:
+    class FakeJob:
+        id = "job-graph-test"
+        result: dict[str, Any] | None = None
+
+    calls: list[dict[str, Any]] = []
+
+    def legacy_loop(job: FakeJob, payload: dict[str, Any], config: AppConfig) -> None:  # noqa: ARG001
+        calls.append(dict(payload))
+        job.result = {"legacy_loop": "ran"}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        job = FakeJob()
+        run_crawler_job_graph(
+            make_temp_config(Path(tmp)),
+            job,
+            {"session_id": "crawler-job-graph", "source": "planner", "delivery_target": "MCagent/RAG", "agent_message": {"ok": True}},
+            legacy_loop=legacy_loop,
+        )
+    assert_true("legacy_loop_called", len(calls) == 1, str(calls))
+    runtime = (job.result or {}).get("crawler_job_graph_runtime") or {}
+    assert_true("job_graph_runtime", runtime.get("graph") == "CrawlerJobGraph", str(runtime))
+    assert_true("job_graph_receive", "crawler_job.receive" in runtime.get("visited_nodes", []), str(runtime))
+    assert_true("job_graph_legacy_loop", "crawler_job.legacy_loop" in runtime.get("visited_nodes", []), str(runtime))
+    contract = runtime.get("job_contract") or {}
+    assert_true("job_graph_contract_delivery", contract.get("delivery_target") == "MCagent/RAG", str(contract))
+    assert_true("job_graph_contract_message", contract.get("has_agent_message") is True, str(contract))
+    assert_true("job_graph_contract_owner", contract.get("decision_owner") == "CrawlerAgent LLM", str(contract))
+
+
 def main() -> int:
     test_conversation_graph_routes_only_by_message_target()
     test_conversation_graph_can_dispatch_to_crawler_node()
     test_non_streaming_graph_reuses_checkpointed_runtime_without_reusing_emit()
     test_agent_subgraphs_load_session_memory_context()
+    test_crawler_background_job_enters_langgraph_runtime()
     print("LANGGRAPH RUNTIME SCENARIOS PASSED")
     return 0
 

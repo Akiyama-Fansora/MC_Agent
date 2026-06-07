@@ -13,6 +13,8 @@ class AgentGraphState(TypedDict):
     tool_boundary: dict[str, Any]
     selected_tool_groups: NotRequired[dict[str, Any]]
     memory_context: NotRequired[dict[str, Any]]
+    retrieval_contract: NotRequired[dict[str, Any]]
+    mission_contract: NotRequired[dict[str, Any]]
     graph_events: list[GraphEvent]
     visited_nodes: list[str]
     errors: list[dict[str, Any]]

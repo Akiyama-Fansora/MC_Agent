@@ -103,6 +103,37 @@ def build_crawler_graph(config: AppConfig, legacy_delivery: LegacyDeliveryFn, em
             ),
         }
 
+    def prepare_mission_contract(state: AgentGraphState) -> dict[str, Any]:
+        payload = dict(state.get("payload") or {})
+        selected_groups = dict(state.get("selected_tool_groups") or {})
+        message = payload.get("agent_message") if isinstance(payload.get("agent_message"), dict) else {}
+        metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+        contract = {
+            "question": str(payload.get("question") or payload.get("query") or ""),
+            "from_agent": str(message.get("from_agent") or payload.get("message_from") or ""),
+            "delivery_target": str(metadata.get("delivery_target") or payload.get("delivery_target") or ""),
+            "default_tools": list(selected_groups.get("default_tools") or []),
+            "candidate_domain_toolsets": dict(selected_groups.get("candidate_domain_toolsets") or {}),
+            "decision_owner": "CrawlerAgent LLM",
+            "objective_contract": (
+                "The graph records the mission facts and available tool groups. "
+                "CrawlerAgent still owns source graph construction, domain choice, tool execution order, observation review, and persistence decisions."
+            ),
+        }
+        return {
+            "mission_contract": contract,
+            **_append(
+                state,
+                "crawler.prepare_mission_contract",
+                "mission_contract_exposed",
+                {
+                    "from_agent": contract["from_agent"],
+                    "delivery_target": contract["delivery_target"],
+                    "decision_owner": contract["decision_owner"],
+                },
+            ),
+        }
+
     def run_legacy_crawler_agent(state: AgentGraphState) -> dict[str, Any]:
         result = legacy_delivery(config, dict(state.get("payload") or {}), emit=emit)
         return {
@@ -118,6 +149,7 @@ def build_crawler_graph(config: AppConfig, legacy_delivery: LegacyDeliveryFn, em
             "tool_boundary": state.get("tool_boundary") or {},
             "selected_tool_groups": state.get("selected_tool_groups") or {},
             "memory_context": state.get("memory_context") or {},
+            "mission_contract": state.get("mission_contract") or {},
             "visited_nodes": [*state.get("visited_nodes", []), "crawler.finalize"],
             "events": [*state.get("graph_events", []), _event("crawler.finalize", "ready")],
         }
@@ -134,12 +166,14 @@ def build_crawler_graph(config: AppConfig, legacy_delivery: LegacyDeliveryFn, em
     builder.add_node("receive", receive)
     builder.add_node("understand_boundary", understand_boundary)
     builder.add_node("select_tool_groups", select_tool_groups)
+    builder.add_node("prepare_mission_contract", prepare_mission_contract)
     builder.add_node("legacy_runtime", run_legacy_crawler_agent)
     builder.add_node("finalize", finalize)
     builder.add_edge(START, "receive")
     builder.add_edge("receive", "understand_boundary")
     builder.add_edge("understand_boundary", "select_tool_groups")
-    builder.add_edge("select_tool_groups", "legacy_runtime")
+    builder.add_edge("select_tool_groups", "prepare_mission_contract")
+    builder.add_edge("prepare_mission_contract", "legacy_runtime")
     builder.add_edge("legacy_runtime", "finalize")
     builder.add_edge("finalize", END)
     return builder.compile()

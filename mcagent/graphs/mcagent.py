@@ -91,6 +91,32 @@ def build_mcagent_graph(config: AppConfig, legacy_delivery: LegacyDeliveryFn, em
             ),
         }
 
+    def prepare_local_retrieval(state: AgentGraphState) -> dict[str, Any]:
+        payload = dict(state.get("payload") or {})
+        contract = {
+            "question": str(payload.get("question") or payload.get("query") or ""),
+            "allowed_evidence_sources": ["local_rag", "local_corpus_inventory", "session_memory"],
+            "blocked_evidence_sources": ["public_web", "browser", "downloaded_archive_without_crawler"],
+            "decision_owner": "MCagent LLM",
+            "objective_contract": (
+                "The graph exposes the local evidence boundary. Retrieval candidates and evidence sufficiency "
+                "must still be judged by MCagent's LLM or the legacy MCagent runtime during migration."
+            ),
+        }
+        return {
+            "retrieval_contract": contract,
+            **_append(
+                state,
+                "mcagent.prepare_local_retrieval",
+                "local_evidence_contract_exposed",
+                {
+                    "allowed_evidence_sources": contract["allowed_evidence_sources"],
+                    "blocked_evidence_sources": contract["blocked_evidence_sources"],
+                    "decision_owner": contract["decision_owner"],
+                },
+            ),
+        }
+
     def run_legacy_local_agent(state: AgentGraphState) -> dict[str, Any]:
         result = legacy_delivery(config, dict(state.get("payload") or {}), emit=emit)
         return {
@@ -106,6 +132,7 @@ def build_mcagent_graph(config: AppConfig, legacy_delivery: LegacyDeliveryFn, em
             "tool_boundary": state.get("tool_boundary") or {},
             "selected_tool_groups": state.get("selected_tool_groups") or {},
             "memory_context": state.get("memory_context") or {},
+            "retrieval_contract": state.get("retrieval_contract") or {},
             "visited_nodes": [*state.get("visited_nodes", []), "mcagent.finalize"],
             "events": [*state.get("graph_events", []), _event("mcagent.finalize", "ready")],
         }
@@ -122,12 +149,14 @@ def build_mcagent_graph(config: AppConfig, legacy_delivery: LegacyDeliveryFn, em
     builder.add_node("receive", receive)
     builder.add_node("load_memory_boundary", load_memory_boundary)
     builder.add_node("select_local_tools", select_local_tools)
+    builder.add_node("prepare_local_retrieval", prepare_local_retrieval)
     builder.add_node("legacy_runtime", run_legacy_local_agent)
     builder.add_node("finalize", finalize)
     builder.add_edge(START, "receive")
     builder.add_edge("receive", "load_memory_boundary")
     builder.add_edge("load_memory_boundary", "select_local_tools")
-    builder.add_edge("select_local_tools", "legacy_runtime")
+    builder.add_edge("select_local_tools", "prepare_local_retrieval")
+    builder.add_edge("prepare_local_retrieval", "legacy_runtime")
     builder.add_edge("legacy_runtime", "finalize")
     builder.add_edge("finalize", END)
     return builder.compile()

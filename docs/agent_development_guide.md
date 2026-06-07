@@ -4482,3 +4482,56 @@ This is objective memory exposure, not semantic routing. The graph loads convers
 ### Tests
 
 `tests/langgraph_runtime_scenarios.py` now writes a session turn to `DEFAULT_SESSION_STORE`, dispatches both MCagent and CrawlerAgent messages, and verifies both subgraph runtimes expose the expected `session_id` and `turn_count`.
+
+## 2026-06-07 Stage 37: Crawler Background Job Graph
+
+Stage 37 brings the background Crawler collection job under LangGraph as well.
+
+### Implemented Changes
+
+1. Added `mcagent/graphs/crawler_job.py`.
+2. Public `_run_crawler_job()` now calls `run_crawler_job_graph()`.
+3. The previous large crawler job loop is now `_run_crawler_job_legacy_loop()` and is invoked by the graph node `crawler_job.legacy_loop`.
+4. `CrawlerJobGraph` currently runs:
+   - `crawler_job.receive`;
+   - `crawler_job.prepare`;
+   - `crawler_job.legacy_loop`;
+   - `crawler_job.finalize`.
+5. `crawler_job.finalize` writes `crawler_job_graph_runtime` into `job.result`.
+
+### Boundary
+
+This stage does not yet decompose the full crawler loop. It makes the actual background side-effect path auditable by graph runtime first, so MCagent-to-Crawler handoffs and direct Crawler collection jobs no longer bypass LangGraph.
+
+### Tests
+
+1. `tests/langgraph_runtime_scenarios.py` verifies a fake background Crawler job enters `CrawlerJobGraph` and writes graph runtime into `job.result`.
+2. `tests/agent_message_bus_scenarios.py` verifies production `_run_crawler_job()` enters `run_crawler_job_graph()` and the old loop is only used as the graph legacy node.
+
+## 2026-06-07 Stage 38: Agent Contract Nodes Before Legacy Runtime
+
+Stage 38 adds contract nodes in front of the remaining legacy runtime loops. These nodes still do not replace LLM judgment; they expose objective boundaries and mission facts in graph state so the next extraction can replace legacy blocks one by one.
+
+### Implemented Changes
+
+1. `AgentGraphState` now includes:
+   - `retrieval_contract`;
+   - `mission_contract`.
+2. `MCagentGraph` now runs `mcagent.prepare_local_retrieval` before `mcagent.legacy_runtime`.
+   - It records allowed local evidence sources: `local_rag`, `local_corpus_inventory`, `session_memory`.
+   - It records blocked evidence sources: `public_web`, `browser`, `downloaded_archive_without_crawler`.
+3. `CrawlerAgentGraph` now runs `crawler.prepare_mission_contract` before `crawler.legacy_runtime`.
+   - It records question, caller, delivery target, default tools, candidate domain toolsets, and decision owner.
+4. `CrawlerJobGraph` now records a `job_contract` with source, delivery target, requester, whether a real AgentMessage exists, expected side effects, and decision owner.
+
+### Boundary
+
+These contracts are not semantic routers. They only expose facts and capability boundaries. The receiving Agent LLM remains responsible for evidence sufficiency, domain relevance, source acceptance/rejection, retry decisions, ingest decisions, and final wording.
+
+### Tests
+
+`tests/langgraph_runtime_scenarios.py` verifies:
+
+1. MCagentGraph visits `mcagent.prepare_local_retrieval` and exposes local-only retrieval boundaries.
+2. CrawlerAgentGraph visits `crawler.prepare_mission_contract` and preserves `delivery_target=MCagent/RAG`.
+3. CrawlerJobGraph writes `job_contract` into `crawler_job_graph_runtime`.

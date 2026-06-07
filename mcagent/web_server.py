@@ -54,6 +54,7 @@ from .crawler_job_setup_service import CrawlerJobSetupService
 from .crawler_planner_wait_service import CrawlerPlannerWaitService
 from .evidence_service import EvidenceWorkflowService
 from .graphs import dispatch_agent_message_graph
+from .graphs.crawler_job import run_crawler_job_graph
 from .ingest import IngestStats, ingest_exports
 from .job_view_service import JobReadableViewService
 from .llm import OllamaOpenAIClient, OpenAICompatibleClient
@@ -3109,6 +3110,10 @@ def _reflect_crawler_progress_with_timeout(
 
 
 def _run_crawler_job(job: Job, payload: dict[str, Any], config: AppConfig) -> None:
+    run_crawler_job_graph(config, job, payload, legacy_loop=_run_crawler_job_legacy_loop)
+
+
+def _run_crawler_job_legacy_loop(job: Job, payload: dict[str, Any], config: AppConfig) -> None:
     source = _source_alias(str(payload.get("source") or "planner"))
     question = str(payload.get("source_question") or payload.get("question") or payload.get("query") or "").strip()
     job_setup = CrawlerJobSetupService()
