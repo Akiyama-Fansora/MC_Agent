@@ -987,6 +987,89 @@ def test_mcagent_inventory_planned_workflow_delegates_only_selected_step() -> No
     assert_true("planned_workflow_trace", any((item.get("detail") or {}).get("planned_workflow_executed") for item in result.get("trace") or []), str(result.get("trace")))
 
 
+def test_no_retrieval_results_without_selected_delegate_does_not_start_job() -> None:
+    calls: list[str] = []
+    trace: list[dict[str, Any]] = []
+
+    def add_trace(stage, status, detail=None):  # noqa: ANN001
+        item = {"stage": stage, "status": status, "detail": detail}
+        trace.append(item)
+        return item
+
+    original_prepare = web_server._prepare_and_start_crawler_delegation
+    try:
+        web_server._prepare_and_start_crawler_delegation = lambda *_args, **_kwargs: calls.append("unexpected")  # type: ignore[assignment]
+        result = web_server._handle_no_retrieval_results(
+            config=make_temp_config(Path(tempfile.gettempdir())),
+            payload={},
+            agent="mcagent_rag",
+            model="fake",
+            original_question="本地没有资料怎么办",
+            question="本地没有资料怎么办",
+            tool_decision={"tool": "answer"},
+            action_plan=[],
+            planned_delegate=False,
+            evidence_question="本地没有资料怎么办",
+            session_summary={},
+            trace=trace,
+            add_trace=add_trace,
+        )
+    finally:
+        web_server._prepare_and_start_crawler_delegation = original_prepare  # type: ignore[assignment]
+    statuses = [(item.get("stage"), item.get("status")) for item in result.get("trace") or []]
+    assert_true("insufficient_trace", ("done", "insufficient_evidence") in statuses, str(statuses))
+    assert_true("no_prepare_call", calls == [], str(calls))
+    assert_true("no_job", not result.get("job"), str(result))
+    assert_true("no_auto_crawler_text", "本轮不会自动通知 Crawler" in str(result.get("answer") or ""), str(result))
+
+
+def test_no_retrieval_results_with_selected_delegate_starts_job() -> None:
+    calls: list[dict[str, Any]] = []
+
+    class Plan:
+        requested_by = "mcagent"
+        delivery_target = "MCagent/RAG"
+        collection_question = "collect missing evidence"
+        handoff_brief = "planned delegate after empty retrieval"
+
+    def fake_prepare(*_args, **kwargs):  # noqa: ANN001
+        calls.append(dict(kwargs))
+        job = web_server.Job(id="empty-rag-delegate-job", kind="crawler", title=kwargs.get("collection_question", ""), status="queued", summary="queued")
+        return web_server.CrawlerDelegationRun(plan=Plan(), job=job, created=True, note="\n\njob started")
+
+    trace: list[dict[str, Any]] = []
+
+    def add_trace(stage, status, detail=None):  # noqa: ANN001
+        item = {"stage": stage, "status": status, "detail": detail}
+        trace.append(item)
+        return item
+
+    original_prepare = web_server._prepare_and_start_crawler_delegation
+    try:
+        web_server._prepare_and_start_crawler_delegation = fake_prepare  # type: ignore[assignment]
+        action_plan = [{"step": 1, "tool": "local_rag_search"}, {"step": 2, "tool": "delegate_crawler"}]
+        result = web_server._handle_no_retrieval_results(
+            config=make_temp_config(Path(tempfile.gettempdir())),
+            payload={"delivery_target": "MCagent/RAG"},
+            agent="mcagent_rag",
+            model="fake",
+            original_question="检索后缺资料就补库",
+            question="检索后缺资料就补库",
+            tool_decision={"tool": "planned_workflow", "collection_target": "collect missing evidence", "delivery_target": "MCagent/RAG"},
+            action_plan=action_plan,
+            planned_delegate=True,
+            evidence_question="检索后缺资料就补库",
+            session_summary={},
+            trace=trace,
+            add_trace=add_trace,
+        )
+    finally:
+        web_server._prepare_and_start_crawler_delegation = original_prepare  # type: ignore[assignment]
+    assert_true("prepare_called_once", len(calls) == 1, str(calls))
+    assert_true("action_plan_forwarded", calls[0].get("action_plan") == action_plan, str(calls[0]))
+    assert_true("job_returned", (result.get("job") or {}).get("id") == "empty-rag-delegate-job", str(result))
+
+
 def main() -> int:
     test_conversation_graph_routes_only_by_message_target()
     test_conversation_graph_can_dispatch_to_crawler_node()
@@ -1009,6 +1092,8 @@ def main() -> int:
     test_delegate_route_helper_respects_confirmation_cancel()
     test_crawler_action_plan_delegate_route_starts_selected_job()
     test_mcagent_inventory_planned_workflow_delegates_only_selected_step()
+    test_no_retrieval_results_without_selected_delegate_does_not_start_job()
+    test_no_retrieval_results_with_selected_delegate_starts_job()
     print("LANGGRAPH RUNTIME SCENARIOS PASSED")
     return 0
 

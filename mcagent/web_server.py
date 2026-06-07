@@ -159,6 +159,13 @@ class CrawlerDelegationRun:
     response: dict[str, Any] | None = None
 
 
+@dataclass(slots=True)
+class RagEvidenceRouteResult:
+    selected: list[SearchResult]
+    evidence_report: Any | None
+    response: dict[str, Any] | None = None
+
+
 def _json_default(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
@@ -9036,6 +9043,252 @@ def _handle_crawler_action_plan_delegate_route(
     )
 
 
+def _handle_no_retrieval_results(
+    *,
+    config: AppConfig,
+    payload: dict[str, Any],
+    agent: str,
+    model: str,
+    original_question: str,
+    question: str,
+    tool_decision: dict[str, Any],
+    action_plan: list[dict[str, Any]],
+    planned_delegate: bool,
+    evidence_question: str,
+    session_summary: dict[str, Any],
+    trace: list[dict[str, Any]],
+    add_trace: Any,
+) -> dict[str, Any]:
+    if planned_delegate:
+        collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
+        gap_summary = (
+            "MCagent/RAG local retrieval produced no usable evidence for this requested context check.\n"
+            f"Evidence question: {evidence_question}\n"
+            "CrawlerAgent should treat the local gap as broad and collect public data that can fill MCagent/RAG."
+        )
+        delegation = _prepare_and_start_crawler_delegation(
+            config,
+            payload,
+            active_agent=agent,
+            model=model,
+            original_question=original_question,
+            current_question=question,
+            collection_question=collection_question,
+            session_summary=session_summary,
+            gap_summary=gap_summary,
+            planning_instruction=(
+                "No local MCagent/RAG evidence was available after the planned context check. "
+                "CrawlerAgent should independently plan public-source collection and deliver results to MCagent/RAG."
+            ),
+            delivery_target=str(tool_decision.get("delivery_target") or payload.get("delivery_target") or "MCagent/RAG").strip(),
+            add_trace=add_trace,
+            action_plan=action_plan,
+        )
+        base_answer = "MCagent/RAG 本地没有检索到可用证据；这个空缺会作为后续采集上下文。"
+        if agent == "crawler_agent":
+            answer = _crawler_agent_context_delegation_answer(base_answer, delegation.note)
+        else:
+            answer = base_answer + delegation.note
+        return _with_trace(
+            {
+                "answer": answer,
+                "sources": [],
+                "context": "",
+                "agent": agent,
+                "job": _job_to_dict(delegation.job),
+                "collaboration": _collaboration_dialog_for(
+                    delegation.plan.collection_question,
+                    delegation.job,
+                    delegation.created,
+                    requested_by=delegation.plan.requested_by,
+                    delivery_target=delegation.plan.delivery_target,
+                ),
+                "delegation": {
+                    "requested_by": delegation.plan.requested_by,
+                    "delivery_target": delegation.plan.delivery_target,
+                    "task": delegation.plan.collection_question,
+                    "handoff_brief": delegation.plan.handoff_brief,
+                },
+            },
+            trace,
+        )
+    add_trace("done", "insufficient_evidence", {"reason": "no_retrieval_results", "delegated": False})
+    answer = (
+        "本地资料库没有检索到可用证据。本轮不会自动通知 Crawler。\n\n"
+        "如果需要补库，请明确让 MCagent 转达给 CrawlerAgent，或切换到 CrawlerAgent 直接委托采集。"
+    )
+    return _with_trace({"answer": answer, "sources": [], "context": "", "agent": agent}, trace)
+
+
+def _select_mcagent_rag_evidence_or_respond(
+    *,
+    config: AppConfig,
+    payload: dict[str, Any],
+    agent: str,
+    model: str,
+    original_question: str,
+    question: str,
+    tool_decision: dict[str, Any],
+    action_plan: list[dict[str, Any]],
+    planned_delegate: bool,
+    evidence_question: str,
+    rough_results: list[SearchResult],
+    retrieval_plan: Any | None,
+    final_k: int,
+    session_summary: dict[str, Any],
+    trace: list[dict[str, Any]],
+    add_trace: Any,
+) -> RagEvidenceRouteResult:
+    evidence_result = EvidenceWorkflowService(
+        prefer_parent_topic_results=_prefer_parent_topic_results,
+        modpack_manifest_results=_modpack_manifest_results,
+        supplement_local_modpack_manifest_results=_supplement_local_modpack_manifest_results,
+        supplement_project_keyword_results=_supplement_project_keyword_results,
+        supplement_raw_html_results=lambda cfg, query, results, limit: _supplement_raw_html_results(cfg, query, results, limit=limit),
+        ensure_modpack_mod_list_context=_ensure_modpack_mod_list_context,
+        fallback_theme_results=_fallback_theme_results,
+        dedupe_results=_dedupe_results,
+    ).select(
+        config,
+        evidence_question=evidence_question,
+        rough_results=rough_results,
+        retrieval_plan=retrieval_plan,
+        final_k=final_k,
+        add_trace=add_trace,
+    )
+    selected = evidence_result.selected
+    evidence_report = evidence_result.report
+    selected_before_entity_filter = len(selected)
+    selected = _filter_answer_evidence_with_recovery(evidence_question, selected, rough_results, final_k)
+    if selected_before_entity_filter and selected and len(selected) != selected_before_entity_filter:
+        add_trace(
+            "decide",
+            "entity_evidence_recovered",
+            {
+                "before": selected_before_entity_filter,
+                "after": len(selected),
+                "candidate_count": len(rough_results),
+            },
+        )
+    if evidence_report.selected_count != len(selected):
+        evidence_report.selected_count = len(selected)
+        if not selected:
+            evidence_report.verdict = "insufficient"
+            evidence_report.reasons = _dedupe_strings(
+                [*evidence_report.reasons, "Filtered retrieved evidence because it did not match the requested subject entity."]
+            )
+    if evidence_report.verdict != "ok":
+        local_fact_answer = _local_modpack_archive_fact_answer(original_question, selected) or _local_version_install_answer(original_question, selected)
+        if local_fact_answer:
+            source_dicts = [_result_to_dict(item) for item in selected]
+            context = format_context(selected)
+            add_trace(
+                "answer",
+                "local_fact_answer",
+                {
+                    "reason": "version_install_evidence_before_general_evidence_threshold",
+                    "sources": len(selected),
+                    "evidence_verdict": evidence_report.verdict,
+                },
+            )
+            sources = format_sources(selected)
+            if sources and not local_fact_answer.rstrip().endswith(sources):
+                local_fact_answer = local_fact_answer.rstrip() + "\n\nSources:\n" + sources
+            _append_session(payload, original_question, local_fact_answer, source_dicts)
+            return RagEvidenceRouteResult(
+                selected=selected,
+                evidence_report=evidence_report,
+                response=_with_trace(
+                    {
+                        "answer": local_fact_answer,
+                        "sources": source_dicts,
+                        "context": context,
+                        "agent": agent,
+                        "evidence": evidence_report.to_dict(),
+                    },
+                    trace,
+                ),
+            )
+    if evidence_report.verdict != "ok":
+        if planned_delegate:
+            collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
+            gap_summary = (
+                "MCagent 按计划检索本地资料，但证据筛选仍不足。\n"
+                + "\n".join(f"- {reason}" for reason in evidence_report.reasons)
+            )
+            planning_instruction = (
+                "MCagent 已先尝试本地检索，但证据不足；CrawlerAgent 应阅读 handoff_brief、mcagent_gap_summary "
+                "和会话摘要，自行判断真正缺口、规划来源，采集后按 MCagent/RAG 可检索格式入库。"
+            )
+            delegation = _prepare_and_start_crawler_delegation(
+                config,
+                payload,
+                active_agent=agent,
+                model=model,
+                original_question=original_question,
+                current_question=question,
+                collection_question=collection_question,
+                session_summary=session_summary,
+                gap_summary=gap_summary,
+                planning_instruction=planning_instruction,
+                delivery_target=str(tool_decision.get("delivery_target") or payload.get("delivery_target") or "").strip(),
+                add_trace=add_trace,
+                action_plan=action_plan,
+            )
+            answer = _insufficient_evidence_answer(question)
+            answer += "\n\nMCagent 已按计划把完整上下文交接给 CrawlerAgent。"
+            answer += delegation.note
+            return RagEvidenceRouteResult(
+                selected=selected,
+                evidence_report=evidence_report,
+                response=_with_trace(
+                    {
+                        "answer": answer,
+                        "sources": [_result_to_dict(item) for item in selected],
+                        "context": "",
+                        "agent": agent,
+                        "job": _job_to_dict(delegation.job),
+                        "evidence": evidence_report.to_dict(),
+                        "collaboration": _collaboration_dialog_for(
+                            delegation.plan.collection_question,
+                            delegation.job,
+                            delegation.created,
+                            requested_by=delegation.plan.requested_by,
+                            delivery_target=delegation.plan.delivery_target,
+                        ),
+                        "delegation": {
+                            "requested_by": delegation.plan.requested_by,
+                            "delivery_target": delegation.plan.delivery_target,
+                            "task": delegation.plan.collection_question,
+                            "handoff_brief": delegation.plan.handoff_brief,
+                        },
+                    },
+                    trace,
+                ),
+            )
+        answer = _insufficient_evidence_answer(question)
+        answer += "\n\n证据判断：\n" + "\n".join(f"- {reason}" for reason in evidence_report.reasons)
+        answer += (
+            "\n\n本轮不会自动通知 Crawler。只有当 Agent 在工具选择或 planned workflow 阶段明确选择 Crawler 委托时，"
+            "才会启动采集任务。"
+        )
+        return RagEvidenceRouteResult(
+            selected=selected,
+            evidence_report=evidence_report,
+            response=_with_trace(
+                {
+                    "answer": answer,
+                    "sources": [_result_to_dict(item) for item in selected],
+                    "context": "",
+                    "agent": agent,
+                    "evidence": evidence_report.to_dict(),
+                },
+                trace,
+            ),
+        )
+    return RagEvidenceRouteResult(selected=selected, evidence_report=evidence_report)
+
+
 def _reuse_route_confirmation(route_confirmation: dict[str, Any], *, proposed_tool: str, proposed_goal: str) -> dict[str, Any]:
     value = dict(route_confirmation or {})
     current_tool = str(value.get("tool") or value.get("suggested_tool") or "").strip()
@@ -9887,194 +10140,46 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
     rough_results = retrieval_result.rough_results
     selected = retrieval_result.selected
     if not rough_results:
-        if planned_delegate:
-            collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
-            gap_summary = (
-                "MCagent/RAG local retrieval produced no usable evidence for this requested context check.\n"
-                f"Evidence question: {evidence_question}\n"
-                "CrawlerAgent should treat the local gap as broad and collect public data that can fill MCagent/RAG."
-            )
-            delegation = _prepare_and_start_crawler_delegation(
-                config,
-                payload,
-                active_agent=agent,
-                model=model,
-                original_question=original_question,
-                current_question=question,
-                collection_question=collection_question,
-                session_summary=session_summary,
-                gap_summary=gap_summary,
-                planning_instruction=(
-                    "No local MCagent/RAG evidence was available after the planned context check. "
-                    "CrawlerAgent should independently plan public-source collection and deliver results to MCagent/RAG."
-                ),
-                delivery_target=str(tool_decision.get("delivery_target") or payload.get("delivery_target") or "MCagent/RAG").strip(),
-                add_trace=add_trace,
-                action_plan=action_plan,
-            )
-            base_answer = "MCagent/RAG 本地没有检索到可用证据；这个空缺会作为后续采集上下文。"
-            if agent == "crawler_agent":
-                answer = _crawler_agent_context_delegation_answer(base_answer, delegation.note)
-            else:
-                answer = base_answer + delegation.note
-            return _with_trace(
-                {
-                    "answer": answer,
-                    "sources": [],
-                    "context": "",
-                    "agent": agent,
-                    "job": _job_to_dict(delegation.job),
-                    "collaboration": _collaboration_dialog_for(
-                        delegation.plan.collection_question,
-                        delegation.job,
-                        delegation.created,
-                        requested_by=delegation.plan.requested_by,
-                        delivery_target=delegation.plan.delivery_target,
-                    ),
-                    "delegation": {
-                        "requested_by": delegation.plan.requested_by,
-                        "delivery_target": delegation.plan.delivery_target,
-                        "task": delegation.plan.collection_question,
-                        "handoff_brief": delegation.plan.handoff_brief,
-                    },
-                },
-                trace,
-            )
-        add_trace("done", "insufficient_evidence", {"reason": "no_retrieval_results", "delegated": False})
-        answer = (
-            "本地资料库没有检索到可用证据。本轮不会自动通知 Crawler。\n\n"
-            "如果需要补库，请明确让 MCagent 转达给 CrawlerAgent，或切换到 CrawlerAgent 直接委托采集。"
+        return _handle_no_retrieval_results(
+            config=config,
+            payload=payload,
+            agent=agent,
+            model=model,
+            original_question=original_question,
+            question=question,
+            tool_decision=tool_decision,
+            action_plan=action_plan,
+            planned_delegate=planned_delegate,
+            evidence_question=evidence_question,
+            session_summary=session_summary,
+            trace=trace,
+            add_trace=add_trace,
         )
-        return _with_trace({"answer": answer, "sources": [], "context": "", "agent": agent}, trace)
 
     evidence_report = None
     if agent == "mcagent_rag":
-        evidence_result = EvidenceWorkflowService(
-            prefer_parent_topic_results=_prefer_parent_topic_results,
-            modpack_manifest_results=_modpack_manifest_results,
-            supplement_local_modpack_manifest_results=_supplement_local_modpack_manifest_results,
-            supplement_project_keyword_results=_supplement_project_keyword_results,
-            supplement_raw_html_results=lambda cfg, query, results, limit: _supplement_raw_html_results(cfg, query, results, limit=limit),
-            ensure_modpack_mod_list_context=_ensure_modpack_mod_list_context,
-            fallback_theme_results=_fallback_theme_results,
-            dedupe_results=_dedupe_results,
-        ).select(
-            config,
+        evidence_route = _select_mcagent_rag_evidence_or_respond(
+            config=config,
+            payload=payload,
+            agent=agent,
+            model=model,
+            original_question=original_question,
+            question=question,
+            tool_decision=tool_decision,
+            action_plan=action_plan,
+            planned_delegate=planned_delegate,
             evidence_question=evidence_question,
             rough_results=rough_results,
             retrieval_plan=retrieval_plan,
             final_k=final_k,
+            session_summary=session_summary,
+            trace=trace,
             add_trace=add_trace,
         )
-        selected = evidence_result.selected
-        evidence_report = evidence_result.report
-        selected_before_entity_filter = len(selected)
-        selected = _filter_answer_evidence_with_recovery(evidence_question, selected, rough_results, final_k)
-        if selected_before_entity_filter and selected and len(selected) != selected_before_entity_filter:
-            add_trace(
-                "decide",
-                "entity_evidence_recovered",
-                {
-                    "before": selected_before_entity_filter,
-                    "after": len(selected),
-                    "candidate_count": len(rough_results),
-                },
-            )
-        if evidence_report.selected_count != len(selected):
-            evidence_report.selected_count = len(selected)
-            if not selected:
-                evidence_report.verdict = "insufficient"
-                evidence_report.reasons = _dedupe_strings(
-                    [*evidence_report.reasons, "Filtered retrieved evidence because it did not match the requested subject entity."]
-                )
-        if evidence_report.verdict != "ok":
-            local_fact_answer = _local_modpack_archive_fact_answer(original_question, selected) or _local_version_install_answer(original_question, selected)
-            if local_fact_answer:
-                source_dicts = [_result_to_dict(item) for item in selected]
-                context = format_context(selected)
-                add_trace(
-                    "answer",
-                    "local_fact_answer",
-                    {
-                        "reason": "version_install_evidence_before_general_evidence_threshold",
-                        "sources": len(selected),
-                        "evidence_verdict": evidence_report.verdict,
-                    },
-                )
-                sources = format_sources(selected)
-                if sources and not local_fact_answer.rstrip().endswith(sources):
-                    local_fact_answer = local_fact_answer.rstrip() + "\n\nSources:\n" + sources
-                _append_session(payload, original_question, local_fact_answer, source_dicts)
-                return _with_trace(
-                    {
-                        "answer": local_fact_answer,
-                        "sources": source_dicts,
-                        "context": context,
-                        "agent": agent,
-                        "evidence": evidence_report.to_dict(),
-                    },
-                    trace,
-                )
-        if evidence_report.verdict != "ok":
-            if planned_delegate:
-                collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
-                gap_summary = (
-                    "MCagent 按计划检索本地资料，但证据筛选仍不足。\n"
-                    + "\n".join(f"- {reason}" for reason in evidence_report.reasons)
-                )
-                planning_instruction = (
-                    "MCagent 已先尝试本地检索，但证据不足；CrawlerAgent 应阅读 handoff_brief、mcagent_gap_summary "
-                    "和会话摘要，自行判断真正缺口、规划来源，采集后按 MCagent/RAG 可检索格式入库。"
-                )
-                delegation = _prepare_and_start_crawler_delegation(
-                    config,
-                    payload,
-                    active_agent=agent,
-                    model=model,
-                    original_question=original_question,
-                    current_question=question,
-                    collection_question=collection_question,
-                    session_summary=session_summary,
-                    gap_summary=gap_summary,
-                    planning_instruction=planning_instruction,
-                    delivery_target=str(tool_decision.get("delivery_target") or payload.get("delivery_target") or "").strip(),
-                    add_trace=add_trace,
-                    action_plan=action_plan,
-                )
-                answer = _insufficient_evidence_answer(question)
-                answer += "\n\nMCagent 已按计划把完整上下文交接给 CrawlerAgent。"
-                answer += delegation.note
-                return _with_trace(
-                    {
-                        "answer": answer,
-                        "sources": [_result_to_dict(item) for item in selected],
-                        "context": "",
-                        "agent": agent,
-                        "job": _job_to_dict(delegation.job),
-                        "evidence": evidence_report.to_dict(),
-                        "collaboration": _collaboration_dialog_for(
-                            delegation.plan.collection_question,
-                            delegation.job,
-                            delegation.created,
-                            requested_by=delegation.plan.requested_by,
-                            delivery_target=delegation.plan.delivery_target,
-                        ),
-                        "delegation": {
-                            "requested_by": delegation.plan.requested_by,
-                            "delivery_target": delegation.plan.delivery_target,
-                            "task": delegation.plan.collection_question,
-                            "handoff_brief": delegation.plan.handoff_brief,
-                        },
-                    },
-                    trace,
-                )
-            answer = _insufficient_evidence_answer(question)
-            answer += "\n\n证据判断：\n" + "\n".join(f"- {reason}" for reason in evidence_report.reasons)
-            answer += (
-                "\n\n本轮不会自动通知 Crawler。只有当 Agent 在工具选择或 planned workflow 阶段明确选择 Crawler 委托时，"
-                "才会启动采集任务。"
-            )
-            return _with_trace({"answer": answer, "sources": [_result_to_dict(item) for item in selected], "context": "", "agent": agent, "evidence": evidence_report.to_dict()}, trace)
+        selected = evidence_route.selected
+        evidence_report = evidence_route.evidence_report
+        if evidence_route.response is not None:
+            return evidence_route.response
 
     source_dicts = [_result_to_dict(item) for item in selected]
     context = format_context(selected)
