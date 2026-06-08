@@ -12,6 +12,7 @@ class SessionContext:
     agent: str
     history: list[dict[str, Any]]
     summary: dict[str, Any]
+    events: list[dict[str, Any]]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -19,6 +20,8 @@ class SessionContext:
             "agent": self.agent,
             "history": self.history,
             "summary": self.summary,
+            "events": self.events,
+            "recent_agent_events": self.events[-20:],
             "turn_count": len(self.history),
             "last_turn": self.history[-1] if self.history else None,
         }
@@ -28,6 +31,7 @@ class InMemorySessionStore:
     def __init__(self) -> None:
         self._history: dict[str, list[dict[str, Any]]] = {}
         self._summaries: dict[str, dict[str, Any]] = {}
+        self._events: dict[str, list[dict[str, Any]]] = {}
         self._lock = threading.Lock()
 
     def append_turn(self, session_id: str, turn: dict[str, Any], *, max_turns: int = 80) -> None:
@@ -39,6 +43,15 @@ class InMemorySessionStore:
             history.append(clean_turn)
             del history[:-max_turns]
 
+    def append_event(self, session_id: str, event: dict[str, Any], *, max_events: int = 120) -> None:
+        session_id = normalize_session_id(session_id)
+        clean_event = dict(event)
+        clean_event.setdefault("time", time.time())
+        with self._lock:
+            events = self._events.setdefault(session_id, [])
+            events.append(clean_event)
+            del events[:-max_events]
+
     def history(self, session_id: str, *, limit: int | None = None) -> list[dict[str, Any]]:
         session_id = normalize_session_id(session_id)
         with self._lock:
@@ -46,6 +59,14 @@ class InMemorySessionStore:
         if limit is None:
             return history
         return history[-max(1, limit) :]
+
+    def events(self, session_id: str, *, limit: int | None = None) -> list[dict[str, Any]]:
+        session_id = normalize_session_id(session_id)
+        with self._lock:
+            events = list(self._events.get(session_id, []))
+        if limit is None:
+            return events
+        return events[-max(1, limit) :]
 
     def summary(self, session_id: str) -> dict[str, Any]:
         session_id = normalize_session_id(session_id)
@@ -65,9 +86,11 @@ class InMemorySessionStore:
         with self._lock:
             had_history = session_id in self._history
             had_summary = session_id in self._summaries
+            had_events = session_id in self._events
             self._history.pop(session_id, None)
             self._summaries.pop(session_id, None)
-        return {"session_id": session_id, "deleted": had_history or had_summary}
+            self._events.pop(session_id, None)
+        return {"session_id": session_id, "deleted": had_history or had_summary or had_events}
 
     def context(self, session_id: str, *, agent: str, summary: dict[str, Any] | None = None) -> SessionContext:
         return SessionContext(
@@ -75,6 +98,7 @@ class InMemorySessionStore:
             agent=agent or "mcagent_rag",
             history=self.history(session_id),
             summary=dict(summary or self.summary(session_id)),
+            events=self.events(session_id),
         )
 
 

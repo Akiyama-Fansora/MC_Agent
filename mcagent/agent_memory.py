@@ -12,7 +12,7 @@ from .crawler_planner import CONCEPTS
 
 MEMORY_PATH = PROJECT_ROOT / "data" / "agent_memory.jsonl"
 MEMORY_TAIL_BYTES = 2 * 1024 * 1024
-MOJIBAKE_MARKERS = ("å", "æ", "ç", "é", "è", "ä", "Ã", "Â", "\ufffd")
+MOJIBAKE_MARKERS = ("\u00e5", "\u00e6", "\u00e7", "\u00e9", "\u00e8", "\u00e4", "\u00c3", "\u00c2", "\ufffd")
 
 
 def append_memory_event(event_type: str, payload: dict[str, Any]) -> None:
@@ -30,7 +30,7 @@ def _looks_like_mojibake_text(value: str) -> bool:
     text = str(value or "")
     if "\ufffd" in text:
         return True
-    if any(fragment in text for fragment in ("å", "é", "æ ", "ç¼", "èµ", "ä¹", "Ã", "Â")):
+    if any(fragment in text for fragment in ("\u00e5\x8e", "\u00e9\x97", "\u00e6\xa0", "\u00e7\xbc", "\u00e8\xb5", "\u00e4\xb9", "\u00c3", "\u00c2")):
         return True
     if len(text) < 80:
         return False

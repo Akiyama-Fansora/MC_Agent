@@ -332,6 +332,7 @@ class LlmAgentToolRouterService(AgentToolRouterService):
                 "重要原则：不要用关键词触发。必须按语义判断。不要把游戏内“获取某物/如何获得”误判成 Crawler 采集任务。\n"
                 "MCagent 的本地 RAG 当前主要服务 Minecraft 资料库；CrawlerAgent 不限于 Minecraft，应按用户给定目标采集合法、可访问的公开资料或本地资料。\n"
                 "CrawlerAgent 工具边界：temporary_extract 是即时读取、抽取、总结且不保存；delegate_crawler 会启动后台采集循环，通常会产生本地导出或补库。若用户目标明确是只读/只总结且不保存，应选择没有持久化副作用的工具。\n"
+                "CrawlerAgent 复合沟通边界：如果用户要求先问 MCagent、查看 MCagent 本地缺口或获取 MCagent 上下文，并且同一目标还要求再补充、采集、入库或交付资料，这不是单独的 mcagent_context，也不是本地 RAG 回答；必须选择 planned_workflow，并在 action_plan 中依次包含 mcagent_context 与 delegate_crawler。只有用户只要求问 MCagent、没有后续采集副作用时，才选择 mcagent_context 单步。\n"
                 "跨 Agent 沟通原则：消息通道只负责把内容送给目标 Agent，收到消息的 Agent 再根据自己的工具目录判断下一步。若当前 Agent 需要对方能力，选择能完成这次消息投递的工具，例如向 MCagent 询问本地上下文或向 CrawlerAgent 交付采集目标。\n"
                 "委托交接原则：collection_target 不是搜索词，也不是给工具的死规则，而是给 CrawlerAgent 的自然语言任务目标。若任务目标依赖上下文，要把相关背景自然写进目标；不要拆成关键词，也不要丢掉用户原话。\n"
                 "复合任务可以选择 planned_workflow，并给出 action_plan；简单、可直接回答的内容可以选择 direct_answer。\n"

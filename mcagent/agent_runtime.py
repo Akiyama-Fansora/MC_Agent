@@ -578,7 +578,7 @@ CRAWLER_ROUTE_TOOLS = [
     ),
     ToolSpec(
         name="mcagent_context",
-        description="Inspect MCagent/RAG local evidence and likely gaps for a topic before answering or before collecting data for MCagent/RAG.",
+        description="Inspect MCagent/RAG local evidence and likely gaps for a topic before answering or before collecting data for MCagent/RAG. If the same request also asks to collect/fill/supplement afterward, choose planned_workflow with mcagent_context followed by delegate_crawler instead of stopping at this single tool.",
         input_schema={"question": "topic-focused local MCagent/RAG context or gap question"},
         result_schema={"sources": "local MCagent/RAG evidence", "gap_summary": "LLM-written local context and missing-data summary"},
         side_effects="read_local_index",
@@ -596,7 +596,7 @@ CRAWLER_ROUTE_TOOLS = [
     ),
     ToolSpec(
         name="planned_workflow",
-        description="Create a short CrawlerAgent route plan for compound requests, such as first inspecting MCagent/RAG context and then starting background collection. The LLM owns the plan and must include action_plan steps.",
+        description="Create a short CrawlerAgent route plan for compound requests, such as first inspecting MCagent/RAG context and then starting background collection. For 'ask MCagent first, then collect/fill/supplement' requests, action_plan must include mcagent_context and delegate_crawler. The LLM owns the plan and must include action_plan steps.",
         input_schema={"goal": "compound user goal", "steps": "candidate route tools such as mcagent_context and delegate_crawler"},
         result_schema={"plan": "observable action plan"},
         side_effects="depends_on_steps",

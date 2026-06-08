@@ -3087,6 +3087,37 @@ def test_structured_manifest_records_count_as_usable_objective_content() -> None
         assert_true("record_bytes", int(stats["record_bytes"]) > 0)
 
 
+def test_manifest_preview_filters_encoding_damaged_fields() -> None:
+    with tempfile.TemporaryDirectory(prefix="mcagent-manifest-preview-") as tmp:
+        export_dir = Path(tmp)
+        damaged = "".join(chr(code) for code in (0x00E9, 0x0097, 0x00AE, 0x00E4, 0x00B8, 0x008B))
+        (export_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "provider": "web_discovery",
+                    "status": "ok",
+                    "records": [],
+                    "candidates": [
+                        {
+                            "title": "乌托邦整合包资料页",
+                            "url": "https://example.test/utopia-pack",
+                            "snippet": damaged,
+                        }
+                    ],
+                    "skipped": [],
+                    "errors": [],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        stats = web_server._crawler_manifest_stats(str(export_dir))
+        preview = stats["candidate_preview"][0]
+        assert_equal("preview_title_kept", preview["title"], "乌托邦整合包资料页")
+        assert_equal("preview_url_kept", preview["url"], "https://example.test/utopia-pack")
+        assert_true("damaged_snippet_removed", "snippet" not in preview, str(preview))
+
+
 def test_structured_manifest_fields_are_visible_to_crawler_review() -> None:
     record = {
         "name": "Packard 255 G2",
@@ -4155,6 +4186,7 @@ if __name__ == "__main__":
     test_crawler_summary_uses_only_llm_matched_record_indexes()
     test_zero_byte_artifact_is_visible_but_not_accepted_for_ingest()
     test_structured_manifest_records_count_as_usable_objective_content()
+    test_manifest_preview_filters_encoding_damaged_fields()
     test_job_readable_refreshes_legacy_manifest_stats()
     test_light_job_plan_preserves_model_prior_boundary()
     test_duplicate_reuse_requires_crawler_llm_acceptance()

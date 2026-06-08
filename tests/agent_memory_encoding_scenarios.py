@@ -27,8 +27,10 @@ def test_memory_reader_hides_damaged_events_by_default() -> None:
         with tempfile.TemporaryDirectory() as tmp:
             memory_path = Path(tmp) / "agent_memory.jsonl"
             agent_memory.MEMORY_PATH = memory_path
-            agent_memory.append_memory_event("crawler_gap_delegated", {"question": "采集乌托邦资料"})
-            agent_memory.append_memory_event("crawler_gap_delegated", {"question": "é®ä¸MCAgentä¹æé¦ç¼ºåªäº"})
+            clean_question = "采集乌托邦资料"
+            damaged_question = "".join(chr(code) for code in (0x00E9, 0x0097, 0x00AE, 0x00E4, 0x00B8, 0x008B))
+            agent_memory.append_memory_event("crawler_gap_delegated", {"question": clean_question})
+            agent_memory.append_memory_event("crawler_gap_delegated", {"question": damaged_question})
             clean = agent_memory.read_memory_events(limit=10)
             raw = agent_memory.read_memory_events(limit=10, include_damaged=True)
             summary = agent_memory.memory_summary(limit=10)

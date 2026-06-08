@@ -12,7 +12,7 @@ from crawl_ledger import normalize_url
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE_DIR = PROJECT_ROOT / "data" / "crawler_exports"
-DEFAULT_REPORT_DIR = PROJECT_ROOT / "data" / "cleanup_reports"
+DEFAULT_REPORT_DIR = PROJECT_ROOT / "runtime" / "cleanup_reports"
 
 SOURCE_PRIORITY = {
     "mcmod": 100,

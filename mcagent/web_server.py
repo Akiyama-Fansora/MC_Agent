@@ -188,6 +188,11 @@ def _has_likely_encoding_damage(value: Any) -> bool:
         compact = re.sub(r"\s+", "", text)
         if re.search(r"\?{5,}", compact):
             return True
+        latin_mojibake_markers = ("\u00c3", "\u00c2", "\u00e5", "\u00e6", "\u00e7", "\u00e9", "\u00e8", "\u00e4")
+        c1_controls = sum(1 for char in text if 0x80 <= ord(char) <= 0x9F)
+        latin_hits = sum(text.count(marker) for marker in latin_mojibake_markers)
+        if c1_controls >= 1 and latin_hits >= 2:
+            return True
         mojibake_markers = tuple(
             chr(code)
             for code in (
@@ -428,6 +433,8 @@ def _light_job_task(item: dict[str, Any]) -> dict[str, Any]:
         "mcagent_source_paths",
     )
     light = {key: copy.deepcopy(item.get(key)) for key in keys if key in item}
+    if isinstance(light.get("manifest_stats"), dict):
+        light["manifest_stats"] = _sanitize_manifest_stats_for_display(light["manifest_stats"])
     for key in ("observation", "topic_validation", "existing_evidence_review"):
         value = item.get(key)
         if isinstance(value, dict):
@@ -440,6 +447,27 @@ def _light_job_task(item: dict[str, Any]) -> dict[str, Any]:
     if "mcagent_trace" in item and isinstance(item.get("mcagent_trace"), list):
         light["mcagent_trace"] = [_light_trace_step(step) for step in item["mcagent_trace"][-10:] if isinstance(step, dict)]
     return light
+
+
+def _sanitize_manifest_stats_for_display(stats: dict[str, Any]) -> dict[str, Any]:
+    sanitized = copy.deepcopy(stats)
+    for key in ("candidate_preview", "expanded_candidate_preview"):
+        items = sanitized.get(key)
+        if not isinstance(items, list):
+            continue
+        clean_items: list[dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            clean = {
+                field: value
+                for field, value in item.items()
+                if not _has_likely_encoding_damage(value)
+            }
+            if clean:
+                clean_items.append(clean)
+        sanitized[key] = clean_items
+    return sanitized
 
 
 def _light_nested_text_dict(value: dict[str, Any]) -> dict[str, Any]:
@@ -544,8 +572,6 @@ def _refresh_job_manifest_stats_for_display(job: dict[str, Any]) -> None:
         if not export_dir:
             continue
         stats = task.get("manifest_stats") if isinstance(task.get("manifest_stats"), dict) else {}
-        if stats.get("usable_records") is not None and stats.get("empty_records") is not None and stats.get("record_bytes") is not None:
-            continue
         refreshed = _crawler_manifest_stats(export_dir)
         if refreshed.get("manifest_path") or refreshed.get("records") or refreshed.get("skipped") or refreshed.get("errors"):
             task["manifest_stats"] = {**stats, **refreshed}
@@ -1825,6 +1851,23 @@ def _crawler_manifest_stats(export_dir: str) -> dict[str, Any]:
     candidate_records = data.get("candidate_records") if isinstance(data.get("candidate_records"), list) else candidates
     expanded_candidate_records = data.get("expanded_candidate_records") if isinstance(data.get("expanded_candidate_records"), list) else []
     blockers = data.get("blockers") if isinstance(data.get("blockers"), list) else []
+
+    def preview_items(items: list[Any]) -> list[dict[str, Any]]:
+        previews: list[dict[str, Any]] = []
+        for item in list(items or []):
+            if not isinstance(item, dict):
+                continue
+            preview = {
+                key: item.get(key)
+                for key in ("title", "url", "snippet", "search_relevance", "fetch_url", "fetch_title", "fetch_kind")
+                if item.get(key) not in (None, "") and not _has_likely_encoding_damage(item.get(key))
+            }
+            if preview:
+                previews.append(preview)
+            if len(previews) >= 8:
+                break
+        return previews
+
     record_bytes = 0
     usable_records = 0
     empty_records = 0
@@ -1872,24 +1915,8 @@ def _crawler_manifest_stats(export_dir: str) -> dict[str, Any]:
         "errors": len(errors),
         "downloads": len(downloads),
         "candidates": len(candidate_records) if isinstance(candidate_records, list) else len(candidates),
-        "candidate_preview": [
-            {
-                key: item.get(key)
-                for key in ("title", "url", "snippet", "search_relevance", "fetch_url", "fetch_title", "fetch_kind")
-                if isinstance(item, dict) and item.get(key) not in (None, "")
-            }
-            for item in list(candidate_records or [])[:8]
-            if isinstance(item, dict)
-        ],
-        "expanded_candidate_preview": [
-            {
-                key: item.get(key)
-                for key in ("title", "url", "snippet", "search_relevance", "fetch_url", "fetch_title", "fetch_kind")
-                if isinstance(item, dict) and item.get(key) not in (None, "")
-            }
-            for item in list(expanded_candidate_records or [])[:8]
-            if isinstance(item, dict)
-        ],
+        "candidate_preview": preview_items(candidate_records if isinstance(candidate_records, list) else []),
+        "expanded_candidate_preview": preview_items(expanded_candidate_records if isinstance(expanded_candidate_records, list) else []),
         "blockers": len(blockers),
         "status": str(data.get("status") or ""),
         "note": str(data.get("note") or ""),
@@ -8443,9 +8470,18 @@ def _available_models(config: AppConfig) -> list[dict[str, Any]]:
     return [*profile_models, *legacy_models]
 
 
-def _append_session(payload: dict[str, Any], question: str, answer: str, sources: list[dict[str, Any]]) -> None:
+def _append_session(
+    payload: dict[str, Any],
+    question: str,
+    answer: str,
+    sources: list[dict[str, Any]],
+    *,
+    extra: dict[str, Any] | None = None,
+) -> None:
     session_id = normalize_session_id(payload.get("session_id"))
     turn = {"time": time.time(), "question": question, "answer": answer, "sources": sources}
+    if extra:
+        turn.update({key: value for key, value in extra.items() if value not in (None, "", [])})
     SESSION_STORE.append_turn(session_id, turn, max_turns=80)
     _update_session_summary(session_id, turn)
 
@@ -8474,6 +8510,7 @@ def _session_summary(payload: dict[str, Any]) -> dict[str, Any]:
     summary = SESSION_STORE.summary(session_id)
     if not summary:
         summary = _summary_from_history(payload_history(payload, limit=20))
+    summary = _session_summary_with_events(session_id, summary)
     if explicit:
         merged = dict(summary)
         for key, value in explicit.items():
@@ -8483,6 +8520,55 @@ def _session_summary(payload: dict[str, Any]) -> dict[str, Any]:
                 merged[key] = value
         return merged
     return summary
+
+
+def _session_summary_with_events(session_id: str, summary: dict[str, Any]) -> dict[str, Any]:
+    value = dict(summary or {})
+    events = SESSION_STORE.events(session_id, limit=30)
+    if not events:
+        return value
+    agent_events: list[dict[str, Any]] = []
+    for event in events[-30:]:
+        if not isinstance(event, dict):
+            continue
+        kind = str(event.get("kind") or event.get("event") or "").strip()
+        if kind not in {"agent_message", "agent_reply", "crawler_delegation", "crawler_job"}:
+            continue
+        light = {
+            key: copy.deepcopy(event.get(key))
+            for key in (
+                "kind",
+                "from_agent",
+                "to_agent",
+                "content",
+                "intent",
+                "task",
+                "requested_by",
+                "delivery_target",
+                "job_id",
+                "job_status",
+                "answer",
+                "time",
+            )
+            if event.get(key) not in (None, "", [])
+        }
+        if "content" in light:
+            light["content"] = _tail_text(str(light["content"]), 900)
+        if "answer" in light:
+            light["answer"] = _tail_text(str(light["answer"]), 900)
+        agent_events.append(light)
+    if not agent_events:
+        return value
+    value["recent_agent_events"] = agent_events[-12:]
+    value["last_agent_event"] = agent_events[-1]
+    value["agent_event_count"] = len(agent_events)
+    message_topics = []
+    for event in agent_events[-12:]:
+        message_topics.extend(_fallback_focus_terms(str(event.get("content") or event.get("task") or "")))
+    if message_topics:
+        value["topics"] = merge_limited(value.get("topics") or [], message_topics, limit=24)
+        value["entities"] = merge_limited(value.get("entities") or [], message_topics, limit=48)
+    return value
 
 
 def _session_summary_with_received_message(summary: dict[str, Any], message: AgentMessage) -> dict[str, Any]:
@@ -8547,6 +8633,35 @@ def _update_session_summary(session_id: str, turn: dict[str, Any]) -> None:
         for source in turn.get("sources") or []:
             if isinstance(source, dict):
                 topics.extend(_fallback_focus_terms(str(source.get("title") or "")))
+        delegation = turn.get("delegation") if isinstance(turn.get("delegation"), dict) else {}
+        if delegation:
+            topics.extend(_fallback_focus_terms(str(delegation.get("task") or "")))
+            event = {
+                "kind": "crawler_delegation",
+                "from_agent": "MCagent",
+                "to_agent": "CrawlerAgent",
+                "task": str(delegation.get("task") or ""),
+                "requested_by": str(delegation.get("requested_by") or ""),
+                "delivery_target": str(delegation.get("delivery_target") or ""),
+                "time": turn.get("time") or time.time(),
+            }
+            recent = list(summary.get("recent_agent_events") or [])
+            recent.append({key: value for key, value in event.items() if value not in (None, "", [])})
+            summary["recent_agent_events"] = recent[-12:]
+            summary["last_agent_event"] = summary["recent_agent_events"][-1]
+        job = turn.get("job") if isinstance(turn.get("job"), dict) else {}
+        if job:
+            event = {
+                "kind": "crawler_job",
+                "job_id": str(job.get("id") or ""),
+                "job_status": str(job.get("status") or ""),
+                "task": str(job.get("title") or ""),
+                "time": turn.get("time") or time.time(),
+            }
+            recent = list(summary.get("recent_agent_events") or [])
+            recent.append({key: value for key, value in event.items() if value not in (None, "", [])})
+            summary["recent_agent_events"] = recent[-12:]
+            summary["last_agent_event"] = summary["recent_agent_events"][-1]
         summary["topics"] = merge_limited(summary.get("topics") or [], topics, limit=24)
         summary["names"] = merge_limited(summary.get("names") or [], names, limit=40)
         summary["gaps"] = merge_limited(summary.get("gaps") or [], gaps, limit=24)
@@ -8554,6 +8669,76 @@ def _update_session_summary(session_id: str, turn: dict[str, Any]) -> None:
         return summary
 
     SESSION_STORE.update_summary(session_id, updater)
+
+
+def _append_agent_session_event(session_id: str, event: dict[str, Any]) -> None:
+    clean = {key: value for key, value in dict(event or {}).items() if value not in (None, "", [])}
+    if not clean:
+        return
+    if "content" in clean:
+        clean["content"] = _tail_text(str(clean["content"]), 1500)
+    if "answer" in clean:
+        clean["answer"] = _tail_text(str(clean["answer"]), 1500)
+    SESSION_STORE.append_event(session_id, clean, max_events=120)
+
+
+def _record_agent_message_event(message: AgentMessage, *, kind: str = "agent_message") -> None:
+    session_id = normalize_session_id(message.conversation_id)
+    metadata = message.metadata if isinstance(message.metadata, dict) else {}
+    _append_agent_session_event(
+        session_id,
+        {
+            "kind": kind,
+            "message_id": message.message_id,
+            "from_agent": message.from_agent,
+            "to_agent": message.to_agent,
+            "content": message.content,
+            "intent": message.intent,
+            "task": str(metadata.get("collection_target") or metadata.get("task_goal") or ""),
+            "requested_by": str(metadata.get("requested_by") or ""),
+            "delivery_target": str(metadata.get("delivery_target") or ""),
+            "time": time.time(),
+        },
+    )
+
+
+def _record_agent_response_event(session_id: str, response: dict[str, Any]) -> None:
+    raw_message = response.get("agent_message") if isinstance(response, dict) else None
+    if isinstance(raw_message, dict):
+        try:
+            message = message_from_payload({"agent_message": raw_message, "session_id": session_id}, default_to_agent="User", default_content=str(response.get("answer") or ""))
+            _record_agent_message_event(message, kind="agent_reply")
+        except Exception:
+            pass
+    delegation = response.get("delegation") if isinstance(response.get("delegation"), dict) else {}
+    if delegation:
+        _append_agent_session_event(
+            session_id,
+            {
+                "kind": "crawler_delegation",
+                "from_agent": "MCagent" if str(delegation.get("requested_by") or "") in {"mcagent", "user_via_mcagent"} else str(response.get("agent") or ""),
+                "to_agent": "CrawlerAgent",
+                "task": str(delegation.get("task") or ""),
+                "requested_by": str(delegation.get("requested_by") or ""),
+                "delivery_target": str(delegation.get("delivery_target") or ""),
+                "answer": str(response.get("answer") or ""),
+                "time": time.time(),
+            },
+        )
+    job = response.get("job") if isinstance(response.get("job"), dict) else {}
+    if job:
+        _append_agent_session_event(
+            session_id,
+            {
+                "kind": "crawler_job",
+                "job_id": str(job.get("id") or ""),
+                "job_status": str(job.get("status") or ""),
+                "task": str((delegation or {}).get("task") or job.get("title") or ""),
+                "requested_by": str((delegation or {}).get("requested_by") or ""),
+                "delivery_target": str((delegation or {}).get("delivery_target") or ""),
+                "time": time.time(),
+            },
+        )
 
 
 def _strip_answer_metadata(answer: str) -> str:
@@ -9025,20 +9210,33 @@ def _send_agent_message(
 ) -> dict[str, Any]:
     """Deliver one From-Content-To message through the normal Agent runtime."""
 
-    return dispatch_agent_message_graph(
-        config,
-        payload,
-        from_agent=from_agent,
-        content=content,
-        to_agent=to_agent,
-        emit=emit,
+    message = make_agent_message(
+        from_agent,
+        content,
+        to_agent,
         intent=intent,
-        conversation_id=conversation_id,
+        conversation_id=conversation_id or str(payload.get("session_id") or payload.get("conversation_id") or ""),
         reply_to=reply_to,
         requires_reply=requires_reply,
         metadata=metadata,
+    )
+    _record_agent_message_event(message)
+    result = dispatch_agent_message_graph(
+        config,
+        payload,
+        from_agent=message.from_agent,
+        content=message.content,
+        to_agent=message.to_agent,
+        emit=emit,
+        intent=message.intent,
+        conversation_id=message.conversation_id,
+        reply_to=message.reply_to,
+        requires_reply=message.requires_reply,
+        metadata=message.metadata,
         agent_delivery=_deliver_agent_message,
     )
+    _record_agent_response_event(normalize_session_id(message.conversation_id or payload.get("session_id")), result)
+    return result
 
 
 def _deliver_agent_message(config: AppConfig, payload: dict[str, Any], emit: Any | None = None) -> dict[str, Any]:
@@ -9180,7 +9378,14 @@ def _handle_direct_answer_route(
                     "required_agent_selection": "delegate_crawler or planned_workflow with delegate_crawler",
                 },
             )
-    return executor.direct_answer(run, session_summary=session_summary)
+    response = executor.direct_answer(run, session_summary=session_summary)
+    _append_session(
+        {"session_id": run.payload.get("session_id") if hasattr(run, "payload") else None},
+        original_question,
+        str(response.get("answer") or ""),
+        list(response.get("sources") or []),
+    )
+    return response
 
 
 def _handle_crawler_audit_route(
@@ -9688,6 +9893,56 @@ def _handle_crawler_action_plan_delegate_route(
     add_trace: Any,
 ) -> dict[str, Any]:
     collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
+    context_answer = ""
+    context_gap_summary = ""
+    context_sources: list[dict[str, Any]] = []
+    if _action_plan_has_tool(action_plan, "mcagent_context"):
+        add_trace(
+            "plan",
+            "executing_agent_selected_step",
+            {
+                "tool": "mcagent_context",
+                "reason": "CrawlerAgent selected mcagent_context before delegate_crawler; runtime executes that selected no-persistence inter-agent step before starting the background collection job.",
+                "action_plan": action_plan,
+            },
+        )
+        context_payload = dict(payload)
+        context_payload.update(
+            {
+                "agent": "crawler_agent",
+                "query": collection_question or original_question,
+                "question": original_question,
+                "collection_target": collection_question or original_question,
+                "source_question": original_question,
+                "delivery_target": str(tool_decision.get("delivery_target") or payload.get("delivery_target") or "MCagent/RAG"),
+                "model": model,
+            }
+        )
+        context_plan = {
+            "delivery_target": str(tool_decision.get("delivery_target") or payload.get("delivery_target") or "MCagent/RAG"),
+            "collection_target": collection_question or original_question,
+        }
+        context_result = _run_mcagent_context_tool(config, context_payload, context_plan, session_summary)
+        context_answer = str(context_result.get("mcagent_answer") or "").strip()
+        context_gap_summary = str(context_result.get("mcagent_gap_summary") or context_answer or "").strip()
+        context_sources = [
+            {
+                "title": "MCagent context reply",
+                "source_path": str(context_result.get("export_dir") or ""),
+                "snippet": _tail_text(context_gap_summary, 900),
+                "source": "mcagent_context",
+            }
+        ] if context_gap_summary else []
+        add_trace(
+            "plan",
+            "mcagent_context_completed",
+            {
+                "source": "mcagent_context",
+                "local_sources": int(context_result.get("mcagent_source_count") or 0),
+                "export_dir": str(context_result.get("export_dir") or ""),
+                "transport": "_send_agent_message",
+            },
+        )
     add_trace(
         "plan",
         "executing_agent_selected_step",
@@ -9706,20 +9961,29 @@ def _handle_crawler_action_plan_delegate_route(
         current_question=question,
         collection_question=collection_question,
         session_summary=session_summary,
+        gap_summary=context_gap_summary,
         planning_instruction=(
             "Execute the CrawlerAgent-selected action_plan inside the background Crawler job. "
-            "Do not collapse inter-agent steps into a chat-turn RAG shortcut; if the plan contains mcagent_context, run that Crawler tool first."
+            "Do not collapse inter-agent steps into a chat-turn RAG shortcut; if synchronous mcagent_context has already collected local context, read that gap summary and continue collection from it."
         ),
         delivery_target=str(tool_decision.get("delivery_target") or payload.get("delivery_target") or "").strip(),
         add_trace=add_trace,
         action_plan=action_plan,
     )
-    answer = "我是 CrawlerAgent。已按本轮计划启动后台采集任务。" if delegation.job is not None else ""
+    answer_parts: list[str] = []
+    if context_gap_summary:
+        answer_parts.append(
+            "我是 CrawlerAgent。已先通过 From-Content-To 向 MCagent 询问本地资料缺口。\n\n"
+            "MCagent 返回的本地上下文/缺口：\n"
+            + _tail_text(context_answer or context_gap_summary, 1400)
+        )
+    answer_parts.append("已按本轮计划启动后台采集任务。" if delegation.job is not None else "")
+    answer = "\n\n".join(part for part in answer_parts if part).strip()
     answer += delegation.note
     return _with_trace(
         {
             "answer": answer,
-            "sources": [],
+            "sources": context_sources,
             "agent": agent,
             **_optional_delegation_payload(delegation, selected_action_plan=action_plan),
         },

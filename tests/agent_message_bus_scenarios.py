@@ -133,6 +133,44 @@ def test_send_agent_message_dispatches_to_target_agent() -> None:
     assert_true("dispatch_reply_to", bool(reply.get("reply_to")))
 
 
+def test_message_bus_events_are_shared_session_memory() -> None:
+    tmp = tempfile.TemporaryDirectory()
+    fake = SequencedClient(
+        [
+            '{"tool":"direct_answer","reason":"remember event","collection_target":"你好","delivery_target":"human"}',
+            '{"proceed":true,"tool":"direct_answer","goal":"answer","reason":"remember event"}',
+            '{"missing_side_effect":false,"action":"allow","reason":"no side effect"}',
+            "我记住了这次对话事件。",
+        ]
+    )
+    session_id = "message-bus-shared-memory"
+    original_selector = web_server._selected_llm_client
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake, "fake")  # type: ignore[assignment]
+    try:
+        web_server._delete_session(session_id)
+        web_server._send_agent_message(
+            make_temp_config(Path(tmp.name)),
+            {"session_id": session_id, "model": "fake-model"},
+            from_agent="User",
+            content="请让 CrawlerAgent 补农夫乐事资料",
+            to_agent="MCAgent",
+            conversation_id=session_id,
+        )
+        summary = web_server._session_summary({"session_id": session_id})
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._delete_session(session_id)
+        tmp.cleanup()
+
+    events = summary.get("recent_agent_events") or []
+    assert_true("session_events_present", bool(events), str(summary))
+    event_text = "\n".join(str(item.get("content") or item.get("answer") or item.get("task") or "") for item in events if isinstance(item, dict))
+    assert_true("event_mentions_farmer", "农夫乐事" in event_text, event_text)
+    first = events[0]
+    assert_equal("first_event_from", first.get("from_agent"), "User")
+    assert_equal("first_event_to", first.get("to_agent"), "MCagent")
+
+
 def test_message_bus_api_is_single_from_content_to_primitive() -> None:
     import inspect
 
@@ -444,6 +482,7 @@ def main() -> int:
     test_agent_message_tuple_and_payload_normalization()
     test_chat_records_user_to_agent_message()
     test_send_agent_message_dispatches_to_target_agent()
+    test_message_bus_events_are_shared_session_memory()
     test_message_bus_api_is_single_from_content_to_primitive()
     test_production_entries_do_not_bypass_message_bus_runtime()
     test_crawler_job_start_requires_received_agent_message()
