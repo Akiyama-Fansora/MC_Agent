@@ -125,11 +125,11 @@ PROVIDERS: dict[str, ProviderSpec] = {
     ),
     "playwright": ProviderSpec(
         id="playwright",
-        label="Playwright Browser Search/Extract",
+        label="Playwright MCP-style Browser Snapshot/Extract",
         capabilities=ProviderCapability(search=True, extract=True, browser=True),
         default_limit=6,
         timeout_seconds=900,
-        notes="本地浏览器采集，适合搜索 API 额度不足、JS/表格/图片/下载页、需要 raw HTML 的页面。",
+        notes="本地浏览器采集，按 playwright-mcp 思路保存 accessibility-style 页面快照、可交互目标、正文、raw HTML、截图、console/network 日志。适合 JS/表格/图片/下载页和需要浏览器证据的页面；CrawlerAgent 根据这些客观证据决定下一步。",
     ),
     "browser_collect": ProviderSpec(
         id="browser_collect",

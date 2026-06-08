@@ -3496,8 +3496,10 @@ def test_public_discovery_tools_have_bounded_task_budget() -> None:
     assert_equal("web_variants", web_command[web_command.index("--max-variants") + 1], "3")
     assert_equal("web_request_timeout", web_command[web_command.index("--request-timeout") + 1], "8")
     assert_equal("web_budget", web_command[web_command.index("--budget-seconds") + 1], "60")
+    assert_true("playwright_mcp_style_backend", "playwright_mcp_seed.py" in " ".join(playwright_command), detail=str(playwright_command))
     assert_equal("playwright_results", playwright_command[playwright_command.index("--max-results") + 1], "3")
     assert_equal("playwright_pages", playwright_command[playwright_command.index("--max-pages") + 1], "2")
+    assert_equal("playwright_snapshot_depth", playwright_command[playwright_command.index("--snapshot-depth") + 1], "3")
 
 
 def test_crawler_reflection_timeout_continues_with_pending_task() -> None:

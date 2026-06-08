@@ -1459,13 +1459,15 @@ def _round_command(source: str, payload: dict[str, Any]) -> list[str]:
     if source == "playwright":
         return [
             sys.executable,
-            str(PROJECT_ROOT / "scripts" / "fetch_playwright_seed.py"),
+            str(PROJECT_ROOT / "scripts" / "playwright_mcp_seed.py"),
             "--query",
             query,
             "--max-results",
             str(min(max(1, int(payload.get("search_limit") or 3)), 3)),
             "--max-pages",
             str(min(max(1, int(payload.get("max_urls") or 2)), 2)),
+            "--snapshot-depth",
+            str(min(max(1, int(payload.get("snapshot_depth") or 3)), 5)),
         ]
     if source == "browser_collect":
         source_context = " ".join(

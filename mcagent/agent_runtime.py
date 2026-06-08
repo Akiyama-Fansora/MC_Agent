@@ -679,9 +679,9 @@ CRAWLER_COLLECTION_TOOLS = [
     ),
     ToolSpec(
         name="playwright",
-        description="Use a local browser to render/search pages, preserve text and raw HTML, and diagnose JS-heavy pages.",
-        input_schema={"query": "short search or URL task"},
-        result_schema={"records": "rendered page evidence"},
+        description="Use a local browser with Playwright MCP-style evidence: accessibility-like page snapshot, interactive targets, text, raw HTML, screenshot, console logs, and network request list.",
+        input_schema={"query": "short search or URL task", "snapshot_depth": "optional page snapshot depth"},
+        result_schema={"records": "rendered page evidence with snapshot paths, action targets, console/network artifacts"},
         side_effects="browser_network_filesystem",
         llm_final_answer_required=False,
     ),
