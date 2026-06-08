@@ -220,6 +220,74 @@ def test_utf8_mcagent_delegation_extracts_clean_named_alias_target() -> None:
     assert_true("no_broken_query", all("?" not in query and "MCagent/RAG" not in query for query in queries))
 
 
+def test_utf8_farmer_delight_handoff_keeps_target_not_scope_clause() -> None:
+    question = (
+        "请让 CrawlerAgent 获取农夫乐事 Farmer's Delight 的公开基础资料并交给 MCagent/RAG 使用。"
+        "测试标记：Farmer's Delight UI handoff E2E 20260608。"
+        "采集重点是项目介绍、版本/下载页线索、玩法入门和可靠来源，"
+        "自审时说明接受、拒绝、待复核来源。"
+    )
+    summary = {
+        "delivery_target": "MCagent/RAG",
+        "requested_by": "user_via_mcagent",
+        "collection_target": question,
+        "task_goal": question,
+    }
+    assert_equal("collection_target", _collection_target_hint(question), "农夫乐事 / Farmer's Delight")
+    assert_equal("session_target", _session_target_hint(summary), "农夫乐事 / Farmer's Delight")
+    assert_equal(
+        "meta_query_cleaning",
+        crawler_llm_planner._clean_task_query("重点是 Farmer's Delight mod", target_hint="农夫乐事 Farmer's Delight"),
+        "Farmer's Delight mod",
+    )
+    plan = plan_crawler_tasks_rule_fallback(
+        question,
+        ROOT / "data" / "crawler_exports",
+        max_tasks=10,
+        planner_error="planner exceeded 90s startup timeout",
+        session_summary=summary,
+    )
+    assert_equal("topic", plan["topic"], "农夫乐事 / Farmer's Delight")
+    queries = [str(task.get("query") or "") for task in plan["tasks"]]
+    assert_true("target_bound_queries", any("农夫乐事" in query or "Farmer's Delight" in query for query in queries))
+    assert_true("no_scope_clause_queries", all("重点是" not in query and "采集重点" not in query and "测试标记" not in query and "自审" not in query for query in queries))
+    broken_question_run = "?" * 8
+    assert_true("no_broken_farmer_fragment", all(broken_question_run not in query and not query.startswith("s Delight") for query in queries))
+
+
+def test_model_prior_source_specific_leads_become_verification_tasks() -> None:
+    question = "请让 CrawlerAgent 获取农夫乐事 Farmer's Delight 的公开基础资料并交给 MCagent/RAG 使用。"
+    raw = {
+        "topic": "农夫乐事 / Farmer's Delight",
+        "delivery_target": "MCagent/RAG",
+        "model_prior": {
+            "target": "农夫乐事 / Farmer's Delight",
+            "aliases": ["Farmer's Delight", "农夫乐事"],
+            "search_leads": ["Farmer's Delight wiki"],
+            "source_specific_leads": ["modrinth: farmers-delight", "github: FarmersDelight"],
+            "candidate_urls": ["https://modrinth.com/mod/farmers-delight"],
+            "evidence_status": "hypothesis_only",
+        },
+        "tasks": [
+            {"source": "web_discovery", "query": "农夫乐事 / Farmer's Delight", "reason": "generic search", "priority": 80}
+        ],
+    }
+    plan = _sanitize_plan(
+        raw,
+        question,
+        ROOT / "data" / "crawler_exports",
+        max_tasks=8,
+        session_summary={"delivery_target": "MCagent/RAG", "requested_by": "user_via_mcagent", "collection_target": question},
+    )
+    tasks = plan["tasks"]
+    pairs = [(task["source"], task["query"]) for task in tasks]
+    assert_true(f"has_candidate_fetch: {pairs}", ("fetch_url", "https://modrinth.com/mod/farmers-delight") in pairs)
+    assert_true(f"has_modrinth_project_lookup: {pairs}", ("modrinth", "project: farmers-delight") in pairs)
+    prior_tasks = [task for task in tasks if task.get("from_model_prior")]
+    assert_true("prior_tasks_marked", bool(prior_tasks))
+    assert_true("prior_boundary", all((task.get("metadata") or {}).get("evidence_status") == "hypothesis_only" for task in prior_tasks))
+
+
 def test_session_target_rejects_generic_relation_phrase() -> None:
     summary = {
         "collection_target": "的相关整合包",
@@ -271,6 +339,48 @@ def test_session_target_extracts_entity_from_mcagent_reported_gap() -> None:
     assert_equal("collection_target", _collection_target_hint(question), "乌托邦整合包")
 
 
+def test_session_target_extracts_entity_from_pointed_out_gap() -> None:
+    question = "根据 MCAgent 指出的乌托邦整合包缺失部分，从网上采集对应资料并交付给 MCAgent"
+    summary = {
+        "collection_target": question,
+        "delivery_target": "MCagent/RAG",
+    }
+    assert_equal("target", _session_target_hint(summary), "乌托邦整合包")
+    assert_equal("collection_target", _collection_target_hint(question), "乌托邦整合包")
+
+    generic = "根据工具指出的Python Packaging User Guide缺失部分，从网上采集对应资料"
+    assert_equal("generic_target", _collection_target_hint(generic), "Python Packaging User Guide")
+
+
+def test_sanitize_plan_replaces_descriptive_relation_topic_with_real_target() -> None:
+    question = "现在乌托邦整合包你本地还缺哪些资料，列出来，然后让 Crawler 去补充。"
+    summary = {
+        "delivery_target": "MCagent/RAG",
+        "requested_by": "user_via_mcagent",
+        "collection_target": question,
+        "task_goal": question,
+        "mcagent_gap_summary": "本地资料提到玩法标签涵盖交易、探索、种田、烹饪，也有整合包下载页；仍缺模组列表、任务线、玩法路线。",
+    }
+    plan = _sanitize_plan(
+        {
+            "topic": "涵盖整合包",
+            "target_hint": "涵盖整合包",
+            "delivery_target": "MCagent/RAG",
+            "sources": ["mcagent_context", "web_discovery"],
+            "subqueries": ["涵盖整合包 资料缺口 模组列表", "乌托邦整合包 模组列表"],
+            "coverage_goals": ["获取乌托邦整合包介绍、模组列表、玩法攻略、常见问题、安装教程、更新日志等完整资料"],
+        },
+        question,
+        ROOT / "data" / "crawler_exports",
+        max_tasks=6,
+        session_summary=summary,
+    )
+    assert_equal("topic", plan["topic"], "乌托邦整合包")
+    assert_equal("target_hint", plan["target_hint"], "乌托邦整合包")
+    assert_true("no_descriptive_relation_query", all("涵盖整合包" not in str(task.get("query") or "") for task in plan["tasks"]))
+    assert_true("target_bound_queries", any("乌托邦整合包" in str(task.get("query") or "") for task in plan["tasks"]))
+
+
 def test_gap_collection_fallback_prefers_generic_web_and_bound_queries() -> None:
     plan = plan_crawler_tasks_rule_fallback(
         utopia_question(),
@@ -320,6 +430,33 @@ def test_selected_crawler_action_plan_materializes_mcagent_context_first() -> No
     assert_true("has_tasks", bool(tasks))
     assert_equal("first_task", tasks[0]["source"], "mcagent_context")
     assert_true("selected_marker", bool(tasks[0].get("from_selected_action_plan")))
+
+
+def test_selected_delegate_action_plan_materializes_external_collection() -> None:
+    summary = utopia_session_summary() | {
+        "selected_action_plan": [
+            {"step": 1, "tool": "mcagent_context", "goal": "询问 MCagent/RAG 本地已有证据和缺口"},
+            {"step": 2, "tool": "delegate_crawler", "goal": "基于缺口从公开网页采集资料并交付给 MCagent/RAG"},
+        ],
+        "planning_instruction": "Execute the CrawlerAgent-selected action_plan inside the background Crawler job.",
+    }
+    raw = {
+        "topic": "乌托邦整合包",
+        "target_hint": "乌托邦整合包",
+        "delivery_target": "MCagent/RAG",
+        "sources": ["mcagent_context"],
+        "tasks": [
+            {"source": "mcagent_context", "query": "乌托邦整合包 资料缺口", "reason": "ask local gaps", "priority": 100},
+        ],
+        "reason": "CrawlerAgent chose a two-step action_plan.",
+    }
+    plan = _sanitize_plan(raw, utopia_question(), ROOT / "data" / "crawler_exports", max_tasks=4, session_summary=summary)
+    tasks = plan["tasks"]
+    sources = [task["source"] for task in tasks]
+    assert_equal("first_source", sources[0], "mcagent_context")
+    assert_true(f"external_materialized: {sources}", any(source in {"web_discovery", "playwright", "fetch_url", "mcmod"} for source in sources[1:]))
+    external = next(task for task in tasks if task["source"] != "mcagent_context")
+    assert_true("materialized_from_delegate", bool(external.get("materialized_from_delegate_crawler")))
 
 
 def test_gap_summary_handoff_does_not_reinsert_duplicate_mcagent_context() -> None:
@@ -1589,7 +1726,7 @@ def test_general_chinese_collection_extracts_entity_not_delivery_phrase() -> Non
         "\u7684\u516c\u5f00\u57fa\u7840\u8d44\u6599\u5e76\u4ea4\u7ed9 MCagent/RAG \u4f7f\u7528\u3002"
         "\u91c7\u96c6\u91cd\u70b9\u662f\u9879\u76ee\u4ecb\u7ecd\u3001\u7248\u672c/\u4e0b\u8f7d\u9875\u7ebf\u7d22\u3001\u73a9\u6cd5\u5165\u95e8\u548c\u53ef\u9760\u6765\u6e90\u3002"
     )
-    assert_equal("collection_target", _collection_target_hint(question), "\u519c\u592b\u4e50\u4e8b Farmer's Delight")
+    assert_equal("collection_target", _collection_target_hint(question), "\u519c\u592b\u4e50\u4e8b / Farmer's Delight")
     plan = _sanitize_plan(
         {
             "topic": "\u519c\u592b\u4e50\u4e8b Farmer's Delight \u7684\u516c\u5f00\u57fa\u7840\u8d44\u6599\u5e76\u4ea4\u7ed9 MCagent/RAG \u4f7f\u7528",
@@ -1608,8 +1745,8 @@ def test_general_chinese_collection_extracts_entity_not_delivery_phrase() -> Non
         max_tasks=4,
         session_summary={"delivery_target": "MCagent/RAG", "requested_by": "user_via_mcagent", "collection_target": question},
     )
-    assert_equal("target_hint", plan["target_hint"], "\u519c\u592b\u4e50\u4e8b Farmer's Delight")
-    assert_equal("topic", plan["topic"], "\u519c\u592b\u4e50\u4e8b Farmer's Delight")
+    assert_equal("target_hint", plan["target_hint"], "\u519c\u592b\u4e50\u4e8b / Farmer's Delight")
+    assert_equal("topic", plan["topic"], "\u519c\u592b\u4e50\u4e8b / Farmer's Delight")
     assert_true("no_delivery_phrase", all("MCagent/RAG" not in str(task.get("query") or "") for task in plan["tasks"]))
 
 
@@ -2076,11 +2213,16 @@ if __name__ == "__main__":
     test_rule_fallback_extracts_modern_utf8_chinese_modpack_handoff()
     test_mcagent_delegation_extracts_modpack_entity_from_full_instruction()
     test_utf8_mcagent_delegation_extracts_clean_named_alias_target()
+    test_utf8_farmer_delight_handoff_keeps_target_not_scope_clause()
+    test_model_prior_source_specific_leads_become_verification_tasks()
     test_session_target_rejects_generic_relation_phrase()
     test_session_target_strips_mcagent_reply_handoff_noise()
     test_session_target_extracts_entity_from_mcagent_reported_gap()
+    test_session_target_extracts_entity_from_pointed_out_gap()
+    test_sanitize_plan_replaces_descriptive_relation_topic_with_real_target()
     test_gap_collection_fallback_prefers_generic_web_and_bound_queries()
     test_selected_crawler_action_plan_materializes_mcagent_context_first()
+    test_selected_delegate_action_plan_materializes_external_collection()
     test_gap_summary_handoff_does_not_reinsert_duplicate_mcagent_context()
     test_local_inventory_text_does_not_replace_crawler_mcagent_context_step()
     test_inventory_discovered_gap_phrase_does_not_become_target_prefix()

@@ -179,6 +179,7 @@ def main() -> int:
 
         final_job = wait_for_job(base, job_id, timeout_seconds=args.timeout)
         require("crawler_job_finished", final_job.get("status") in {"succeeded", "failed", "stopped"}, str(final_job.get("status")))
+        require("crawler_job_succeeded", final_job.get("status") == "succeeded", json.dumps(final_job, ensure_ascii=False, default=str)[:3000])
         require("crawler_job_not_stopped", final_job.get("status") != "stopped", json.dumps(final_job, ensure_ascii=False, default=str)[:2000])
 
         audit = audit_from_job(final_job)
@@ -201,6 +202,11 @@ def main() -> int:
         lines.append(answer_text)
         require("mcagent_answer_mentions_topic", bool(re.search(r"农夫|Farmer|Delight", answer_text, re.I)), answer_text[:500])
         require("mcagent_answer_not_network_error", "network error" not in answer_text.lower(), answer_text[:500])
+        require(
+            "mcagent_answer_uses_collected_material",
+            not bool(re.search(r"未找到|没有找到|无法找到|未收录|未补到|没有包含具体", answer_text)),
+            answer_text[:800],
+        )
 
         page.reload(wait_until="domcontentloaded", timeout=15000)
         page.wait_for_timeout(2500)

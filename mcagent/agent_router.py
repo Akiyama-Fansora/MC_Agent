@@ -26,7 +26,7 @@ DecisionFn = Callable[..., dict[str, Any]]
 ConfirmFn = Callable[..., dict[str, Any]]
 ActionPlanHasToolFn = Callable[[list[Any], str], bool]
 ClientSelectorFn = Callable[..., tuple[Any, str]]
-ROUTER_LLM_TIMEOUT_SECONDS = 35
+ROUTER_LLM_TIMEOUT_SECONDS = 60
 
 
 @dataclass(frozen=True, slots=True)

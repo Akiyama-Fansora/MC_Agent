@@ -34,7 +34,8 @@ def assert_true(name: str, condition: bool, detail: str = "") -> None:
 
 def test_tool_observation_matrix() -> None:
     cases = [
-        ("ok", {"source": "mcmod", "returncode": 0, "manifest_stats": {"records": 2}, "topic_validation": {"matched": True}}),
+        ("records_pending_review", {"source": "mcmod", "returncode": 0, "manifest_stats": {"records": 2}, "topic_validation": {"matched": True}}),
+        ("ok", {"source": "mcmod", "returncode": 0, "manifest_stats": {"records": 2}, "topic_validation": {"matched": True, "crawler_review_action": "accept"}}),
         ("empty", {"source": "mcmod", "returncode": 0, "empty_result": True, "manifest_stats": {"records": 0}}),
         ("off_topic", {"source": "web_discovery", "returncode": 0, "off_topic_result": True, "manifest_stats": {"records": 1}}),
         ("uncertain", {"source": "fetch_url", "returncode": 0, "uncertain_result": True, "manifest_stats": {"records": 1}}),

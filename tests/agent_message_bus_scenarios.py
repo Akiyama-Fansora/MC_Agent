@@ -285,6 +285,53 @@ def test_crawler_job_start_requires_crawler_selected_delegate_tool() -> None:
         tmp.cleanup()
 
 
+def test_non_crawler_handoff_message_is_collection_request_not_tool_selection() -> None:
+    tmp = tempfile.TemporaryDirectory()
+    fake = SequencedClient(
+        [
+            '{"tool":"delegate_crawler","reason":"MCagent selected a Crawler handoff","collection_target":"采集公开资料","delivery_target":"MCagent/RAG"}',
+            '{"proceed":true,"tool":"delegate_crawler","reason":"confirmed"}',
+            '{"handoff_brief":"MCagent relays a collection request to CrawlerAgent.","reason":"handoff"}',
+            '{"tool":"answer","reason":"CrawlerAgent declines collection for this fake test"}',
+            '{"proceed":true,"tool":"answer","reason":"confirmed"}',
+            '{"missing_side_effect":false,"action":"allow","reason":"fake decline"}',
+            "CrawlerAgent fake reply.",
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    captured: list[dict[str, Any]] = []
+
+    def fake_send(config: AppConfig, payload: dict[str, Any], *, from_agent: str, content: str, to_agent: str, metadata: dict[str, Any] | None = None, **kwargs: Any):  # noqa: ARG001
+        captured.append({"from_agent": from_agent, "content": content, "to_agent": to_agent, "metadata": dict(metadata or {})})
+        return {
+            "answer": "CrawlerAgent fake reply.",
+            "agent": "crawler_agent",
+            "agent_message": make_agent_message("CrawlerAgent", "CrawlerAgent fake reply.", from_agent, requires_reply=False).to_dict(),
+        }
+
+    original_send = web_server._send_agent_message
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake, "fake")  # type: ignore[assignment]
+    web_server._send_agent_message = fake_send  # type: ignore[assignment]
+    try:
+        web_server._chat_impl(
+            make_temp_config(Path(tmp.name)),
+            {
+                "agent": "mcagent_rag",
+                "question": "请让 CrawlerAgent 采集公开资料并交给 MCagent/RAG",
+                "session_id": "handoff-metadata-boundary",
+                "model": "fake-model",
+            },
+        )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._send_agent_message = original_send  # type: ignore[assignment]
+        tmp.cleanup()
+
+    assert_true("message_sent", bool(captured))
+    assert_equal("handoff_to", captured[0]["to_agent"], "CrawlerAgent")
+    assert_equal("metadata_tool_is_request", captured[0]["metadata"].get("tool"), "collection_request")
+
+
 def test_crawler_running_job_reuse_requires_matching_task_goal() -> None:
     tmp = tempfile.TemporaryDirectory()
     original_jobs = dict(web_server.JOBS)
@@ -402,6 +449,7 @@ def main() -> int:
     test_crawler_job_start_requires_received_agent_message()
     test_crawler_job_start_rejects_payload_forged_collection_intent()
     test_crawler_job_start_requires_crawler_selected_delegate_tool()
+    test_non_crawler_handoff_message_is_collection_request_not_tool_selection()
     test_crawler_running_job_reuse_requires_matching_task_goal()
     test_crawler_selected_delegate_marks_existing_message_before_job_start()
     print("agent_message_bus_scenarios passed")

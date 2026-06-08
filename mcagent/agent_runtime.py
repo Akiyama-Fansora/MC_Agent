@@ -413,8 +413,19 @@ def classify_crawler_tool_result(result: dict[str, Any]) -> ToolObservation:
             return observation("parse_error", "Tool fetched data but failed while parsing it.", retryable=True, suggested_next="Save raw HTML/text and use a more tolerant parser or browser extraction.")
         return observation("execution_error", "Tool command failed.", retryable=True, suggested_next="Inspect output_tail, then retry with adjusted parameters or a different tool.")
 
-    if records > 0 and bool(result.get("topic_validation", {}).get("matched")):
-        return observation("ok", "CrawlerAgent reviewed and accepted records as useful evidence.")
+    validation = result.get("topic_validation") if isinstance(result.get("topic_validation"), dict) else {}
+    explicit_review_action = str(
+        result.get("crawler_review_action") or validation.get("crawler_review_action") or validation.get("review_action") or validation.get("decision") or ""
+    ).strip().lower()
+    if records > 0 and explicit_review_action in {"accept", "accepted", "keep", "use", "ingest", "accepted_for_task"}:
+        return observation("ok", "CrawlerAgent explicitly reviewed and accepted records as useful evidence.")
+    if records > 0 and bool(validation.get("matched")):
+        return observation(
+            "records_pending_review",
+            "Tool produced topically matched records, but CrawlerAgent still needs to judge accept/reject/retry before use.",
+            retryable=True,
+            suggested_next="Ask CrawlerAgent to inspect matched records and explicitly decide accept, reject, retry, ignore, delete, or ingest.",
+        )
     if records > 0:
         return observation(
             "records_pending_review",

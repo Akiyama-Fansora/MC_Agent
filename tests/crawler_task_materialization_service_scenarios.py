@@ -146,14 +146,34 @@ def test_topic_review_materialization_filters_discovery_and_duplicates() -> None
     assert "Crawler LLM reviewed" in tasks[0]["reason"]
 
 
-def test_fallback_topic_tasks_switches_sources_after_first_ten() -> None:
+def test_fallback_topic_tasks_use_general_sources_for_non_minecraft_context() -> None:
     service = CrawlerTaskMaterializationService()
     seeds = [f"query {index}" for index in range(12)]
-    tasks = service.fallback_topic_tasks(seed_queries=seeds, existing_tasks=[{"source": "mcmod", "query": "query 0"}], identity_fn=identity, max_new_tasks=12)
+    tasks = service.fallback_topic_tasks(
+        seed_queries=seeds,
+        existing_tasks=[{"source": "web_discovery", "query": "query 0"}],
+        identity_fn=identity,
+        max_new_tasks=12,
+        context_text="collect public information about Python packaging",
+    )
     assert_equal("deduped_count", len(tasks), 11)
-    assert_equal("first_after_duplicate", tasks[0]["source"], "mcmod")
-    assert_equal("web_discovery_after_ten", tasks[-1]["source"], "web_discovery")
+    assert_equal("first_after_duplicate", tasks[0]["source"], "playwright")
+    assert_equal("general_cycle", tasks[1]["source"], "fetch_url")
     assert_equal("max_urls", tasks[-1]["max_urls"], 6)
+
+
+def test_fallback_topic_tasks_use_minecraft_sources_for_minecraft_context() -> None:
+    service = CrawlerTaskMaterializationService()
+    seeds = [f"query {index}" for index in range(6)]
+    tasks = service.fallback_topic_tasks(
+        seed_queries=seeds,
+        existing_tasks=[],
+        identity_fn=identity,
+        max_new_tasks=6,
+        context_text="Minecraft modpack Utopia Journey public data",
+    )
+    assert_equal("first_source", tasks[0]["source"], "web_discovery")
+    assert_equal("has_mcmod", any(task["source"] == "mcmod" for task in tasks), True)
 
 
 if __name__ == "__main__":
@@ -164,5 +184,6 @@ if __name__ == "__main__":
     test_displayable_planned_tasks_split_blocks_modpack_internal_without_archive_input()
     test_record_replan_appends_observable_history()
     test_topic_review_materialization_filters_discovery_and_duplicates()
-    test_fallback_topic_tasks_switches_sources_after_first_ten()
+    test_fallback_topic_tasks_use_general_sources_for_non_minecraft_context()
+    test_fallback_topic_tasks_use_minecraft_sources_for_minecraft_context()
     print("crawler_task_materialization_service_scenarios passed")

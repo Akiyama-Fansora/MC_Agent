@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from .crawler_capabilities import task_preflight
+from .crawler_capabilities import default_sources_for_context, task_preflight
 
 
 TaskIdentity = Callable[[dict[str, Any]], tuple[str, str]]
@@ -197,14 +197,20 @@ class CrawlerTaskMaterializationService:
         existing_tasks: list[dict[str, Any]],
         identity_fn: TaskIdentity,
         max_new_tasks: int,
+        context_text: str = "",
     ) -> list[dict[str, Any]]:
         seen = set(self.task_identities(existing_tasks, identity_fn=identity_fn))
         new_tasks: list[dict[str, Any]] = []
+        source_cycle = [
+            source
+            for source in default_sources_for_context(context_text or " ".join(str(item) for item in seed_queries[:5]))
+            if source not in {"topic_discovery", "save_artifact", "read_local_file", "search_local_files"}
+        ] or ["web_discovery", "playwright", "fetch_url"]
         for index, query_value in enumerate(seed_queries):
             query = str(query_value).strip()
             if not query:
                 continue
-            source = "mcmod" if index < 10 else "web_discovery"
+            source = source_cycle[index % len(source_cycle)]
             task: dict[str, Any] = {
                 "source": source,
                 "query": query,

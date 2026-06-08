@@ -45,8 +45,8 @@ def test_success_with_ingest_builds_running_ingest_loop() -> None:
                 "query": "农夫乐事",
                 "returncode": 0,
                 "manifest_stats": {"records": 2},
-                "topic_validation": {"matched": True, "reason": "direct"},
-                "ingest_deferred": "CrawlerAgent accepted these records; ingest this accepted export after the collection loop finishes.",
+                "topic_validation": {"matched": True, "reason": "direct", "crawler_review_action": "accept"},
+                "ingest_deferred": "CrawlerAgent explicitly accepted these records; ingest this accepted export after the collection loop finishes.",
             },
             {
                 "source": "web_discovery",
@@ -81,6 +81,36 @@ def test_failed_without_success_reports_all_sources_failed() -> None:
     assert_equal("status", final["status"], "failed")
     assert_equal("error", final["error"], "all crawler sources failed")
     assert_equal("verify_status", final["result"]["loop"][4]["status"], "failed")
+
+
+def test_crawler_accepted_sources_make_job_success_even_when_tool_success_count_zero() -> None:
+    final = build(
+        success_count=0,
+        candidate_count=1,
+        failure_count=5,
+        needs_ingest=False,
+        task_results=[
+            {
+                "source": "read_local_file",
+                "query": "mod list dependencies gameplay progression quest route",
+                "returncode": 0,
+                "manifest_stats": {"records": 1, "usable_records": 1, "record_bytes": 28578},
+                "topic_validation": {"matched": True, "reason": "direct", "crawler_review_action": "accept"},
+            },
+            {
+                "source": "web_discovery",
+                "query": "乌托邦整合包 模组列表",
+                "returncode": 0,
+                "manifest_stats": {"records": 0},
+                "empty_result": True,
+            },
+        ],
+        plan={"topic": "乌托邦整合包", "target_hint": "乌托邦整合包"},
+    )
+    assert_equal("status", final["status"], "succeeded")
+    assert_equal("error", final["error"], None)
+    assert_equal("audit_accepted", final["result"]["self_audit"]["counts"]["accepted"], 1)
+    assert_equal("verify_status", final["result"]["loop"][4]["status"], "done")
 
 
 def test_candidate_only_probe_can_succeed_without_ingest() -> None:
@@ -293,6 +323,7 @@ def test_finalization_moves_unqualified_modpack_internal_out_of_planned_tasks() 
 if __name__ == "__main__":
     test_success_with_ingest_builds_running_ingest_loop()
     test_failed_without_success_reports_all_sources_failed()
+    test_crawler_accepted_sources_make_job_success_even_when_tool_success_count_zero()
     test_candidate_only_probe_can_succeed_without_ingest()
     test_gap_probe_candidate_can_succeed_with_rejected_source()
     test_context_checkpoint_candidate_can_succeed_with_rejected_sources()

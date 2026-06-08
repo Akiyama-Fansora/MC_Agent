@@ -102,13 +102,23 @@ class CrawlerResultAccountingService:
             result["ingest_skipped"] = "Crawler reused relevant duplicate-skipped evidence that already exists in the local knowledge base."
             return accounting
 
-        if returncode == 0 and records_loaded > 0 and bool(result.get("topic_validation", {}).get("matched")) and usable_records > 0:
+        validation = result.get("topic_validation") if isinstance(result.get("topic_validation"), dict) else {}
+        explicit_review_action = str(
+            result.get("crawler_review_action")
+            or validation.get("crawler_review_action")
+            or validation.get("review_action")
+            or validation.get("decision")
+            or ""
+        ).strip().lower()
+        accepted_by_crawler = explicit_review_action in {"accept", "accepted", "keep", "use", "ingest", "accepted_for_task"}
+
+        if returncode == 0 and records_loaded > 0 and bool(validation.get("matched")) and usable_records > 0 and accepted_by_crawler:
             accounting["success_delta"] = 1
             if "rag" in delivery_target.lower() or "mcagent" in delivery_target.lower():
                 accounting["needs_ingest"] = True
-                result["ingest_deferred"] = "CrawlerAgent accepted these records; ingest this accepted export after the collection loop finishes."
+                result["ingest_deferred"] = "CrawlerAgent explicitly accepted these records; ingest this accepted export after the collection loop finishes."
             else:
-                result["ingest_skipped"] = "CrawlerAgent accepted these records for the human-facing task; RAG ingest was not requested."
+                result["ingest_skipped"] = "CrawlerAgent explicitly accepted these records for the human-facing task; RAG ingest was not requested."
             return accounting
 
         if returncode == 0:
@@ -121,8 +131,7 @@ class CrawlerResultAccountingService:
                     result["failure_reason"] = "records exist in manifest, but objective file/character counts show no saved content."
                     accounting["failure_delta"] = 1
                     return accounting
-                topic_reason = str(result.get("topic_validation", {}).get("reason") or "")
-                validation = result.get("topic_validation") if isinstance(result.get("topic_validation"), dict) else {}
+                topic_reason = str(validation.get("reason") or "")
                 cleanup_action = str(validation.get("cleanup_action") or "").strip()
                 if cleanup_action:
                     result["crawler_review_action"] = cleanup_action
@@ -130,6 +139,10 @@ class CrawlerResultAccountingService:
                     result["crawler_review_next_action"] = str(validation.get("next_action") or "")
                 if not validation:
                     result["records_pending_review"] = True
+                elif validation.get("matched"):
+                    result["records_pending_review"] = True
+                    result["crawler_review_action"] = result.get("crawler_review_action") or "review_matched_records"
+                    result["crawler_review_next_action"] = result.get("crawler_review_next_action") or "CrawlerAgent should inspect matched records and explicitly accept, reject, retry, ignore, delete, or ingest."
                 elif topic_reason in {"llm_judge_error_uncertain", "uncertain"}:
                     result["uncertain_result"] = True
                 else:

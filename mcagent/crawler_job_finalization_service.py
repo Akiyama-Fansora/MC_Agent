@@ -70,12 +70,16 @@ class CrawlerJobFinalizationService:
             )
         )
         candidate_only_success = candidate_count > 0 and failure_count == 0 and bool(task_results)
+        preliminary_audit = CrawlerSelfAuditService().build(task_results, {})
+        preliminary_counts = preliminary_audit.get("counts") if isinstance(preliminary_audit.get("counts"), dict) else {}
+        crawler_accepted_count = int(preliminary_counts.get("accepted") or 0)
         partial_candidate_success = (
             candidate_only_success
             or gap_probe_finished_with_candidate
             or context_checkpoint_finished_with_candidate
             or reflection_timeout_finished_with_evidence
             or context_sufficient_finish
+            or crawler_accepted_count > 0
         )
         has_successful_result = bool(success_count or partial_candidate_success)
         status = "succeeded" if has_successful_result else ("stopped" if stop_requested else "failed")

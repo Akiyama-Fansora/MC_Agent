@@ -23,8 +23,16 @@ def test_bad_result_increments_streak() -> None:
     assert_equal("observation_status", result["observation"]["status"], "empty")
 
 
-def test_good_result_resets_streak() -> None:
+def test_matched_result_still_waits_for_review() -> None:
     result = {"returncode": 0, "manifest_stats": {"records": 2}, "topic_validation": {"matched": True}}
+    signal = CrawlerLoopControlService().update_bad_streak(result=result, current_bad_streak=2)
+    assert_equal("bad", signal["bad"], True)
+    assert_equal("bad_streak", signal["bad_streak"], 3)
+    assert_equal("observation_status", result["observation"]["status"], "records_pending_review")
+
+
+def test_explicitly_accepted_result_resets_streak() -> None:
+    result = {"returncode": 0, "manifest_stats": {"records": 2}, "topic_validation": {"matched": True, "crawler_review_action": "accept"}}
     signal = CrawlerLoopControlService().update_bad_streak(result=result, current_bad_streak=2)
     assert_equal("bad", signal["bad"], False)
     assert_equal("bad_streak", signal["bad_streak"], 0)
@@ -383,7 +391,8 @@ def test_should_finish_after_rag_success_checkpoint() -> None:
 
 if __name__ == "__main__":
     test_bad_result_increments_streak()
-    test_good_result_resets_streak()
+    test_matched_result_still_waits_for_review()
+    test_explicitly_accepted_result_resets_streak()
     test_records_pending_review_keeps_pressure()
     test_should_replan_requires_planner_source_and_no_success()
     test_should_replan_after_single_failed_plan_is_exhausted()

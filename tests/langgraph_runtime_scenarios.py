@@ -396,6 +396,43 @@ def test_crawler_task_accounting_does_not_duplicate_followup() -> None:
     assert_true("tasks_unchanged", len(tasks) == 2, str(tasks))
 
 
+def test_mcagent_context_followup_extends_budget_for_external_collection() -> None:
+    result = {
+        "returncode": 0,
+        "manifest_stats": {"records": 1},
+        "export_dir": "",
+    }
+    plan: dict[str, Any] = {"delivery_target": "MCagent/RAG"}
+    tasks = [
+        {"source": "mcagent_context", "query": "乌托邦缺口"},
+        {"source": "web_discovery", "query": "existing broad search"},
+    ]
+    update = web_server._apply_crawler_task_accounting(
+        result=result,
+        task_source="mcagent_context",
+        task_payload={"query": "乌托邦缺口"},
+        question="乌托邦缺口",
+        payload={},
+        plan=plan,
+        tasks=tasks,
+        index=1,
+        max_total_tasks=2,
+        result_accounting=web_server.CrawlerResultAccountingService(),
+    )
+    assert_true("context_followup_inserted", update.get("inserted_followup") is True, str(update))
+    assert_true("followup_source", tasks[1].get("source") == "web_discovery", str(tasks))
+    assert_true("budget_extended", plan.get("max_total_tasks_extended_for_context_followup") == 3, str(plan))
+    reflections = plan.get("agent_reflections") or []
+    assert_true("reflection_reason_specific", "MCagent/RAG gap analysis is available" in str(reflections[-1].get("reason") or ""), str(reflections))
+
+
+def test_crawler_loop_executes_materialized_tasks_before_reflecting_again() -> None:
+    source = Path(web_server.__file__).read_text(encoding="utf-8")
+    assert_true("skip_reflection_marker", "skip_reflection_once_at_index" in source)
+    assert_true("inserted_task_sets_skip", 'if reflection_update.get("inserted_tasks")' in source)
+    assert_true("execute_materialized_trace", "execute_materialized_task" in source)
+
+
 def test_crawler_task_accounting_turns_archive_fetch_observation_into_download_followup() -> None:
     result = {
         "returncode": 1,
@@ -633,6 +670,57 @@ def test_crawler_loop_control_finishes_after_rag_success_checkpoint() -> None:
     assert_true("loop_finish_action", loop_update.get("action") == "finish", str(loop_update))
     assert_true("loop_finish_reason", "usable evidence" in str(plan.get("agent_finish_reason") or ""), str(plan))
     assert_true("loop_finish_reflection", any(item.get("action") == "finish" for item in plan.get("agent_reflections") or []), str(plan))
+
+
+def test_crawler_loop_does_not_finish_when_guide_coverage_unmet() -> None:
+    class FakeJob:
+        id = "loop-guide-unmet"
+        result: dict[str, Any] | None = None
+        status = "queued"
+        summary = ""
+        error = None
+        created_at = 0.0
+        started_at = None
+        ended_at = None
+        stop_requested = False
+
+    with tempfile.TemporaryDirectory() as tmp:
+        plan: dict[str, Any] = {
+            "delivery_target": "MCagent/RAG",
+            "coverage_goals": ["项目介绍", "版本/下载页线索", "玩法入门和可靠来源"],
+        }
+        task_results = [
+            {
+                "source": "fetch_url",
+                "query": "https://modrinth.com/mod/farmers-delight",
+                "returncode": 0,
+                "manifest_stats": {"records": 1, "usable_records": 1, "empty_records": 0},
+                "observation": {"status": "ok"},
+                "topic_validation": {"matched": True, "reason": "direct", "notes": "Project page with description and downloads."},
+            }
+            for _index in range(4)
+        ]
+        loop_update = web_server._apply_crawler_loop_control_after_task(
+            job=FakeJob(),
+            config=make_temp_config(Path(tmp)),
+            payload={},
+            source="planner",
+            question="Farmer's Delight guide coverage",
+            plan=plan,
+            tasks=[{"source": "web_discovery", "query": "Farmer's Delight guide"}],
+            task_results=task_results,
+            index=1,
+            success_count=1,
+            candidate_count=0,
+            bad_streak=0,
+            replan_count=0,
+            max_replans=2,
+            max_total_tasks=8,
+            loop_control=web_server.CrawlerLoopControlService(),
+            job_progress=web_server.CrawlerJobProgressService(),
+        )
+    assert_true("loop_continues_for_unmet_guide", loop_update.get("action") != "finish", str(loop_update))
+    assert_true("no_finish_reflection", not any(item.get("action") == "finish" for item in plan.get("agent_reflections") or []), str(plan))
 
 
 def test_crawler_reflection_helper_returns_objective_contract_feedback() -> None:
@@ -1163,11 +1251,14 @@ def main() -> int:
     test_crawler_task_result_metadata_is_recorded_objectively()
     test_crawler_task_accounting_inserts_archive_internal_followup()
     test_crawler_task_accounting_does_not_duplicate_followup()
+    test_mcagent_context_followup_extends_budget_for_external_collection()
+    test_crawler_loop_executes_materialized_tasks_before_reflecting_again()
     test_crawler_task_accounting_turns_archive_fetch_observation_into_download_followup()
     test_crawler_task_step_blocks_empty_query_before_tool_execution()
     test_crawler_task_step_executes_command_and_records_accounting()
     test_crawler_task_step_ignores_unbacked_tool_record_claims()
     test_crawler_loop_control_finishes_after_rag_success_checkpoint()
+    test_crawler_loop_does_not_finish_when_guide_coverage_unmet()
     test_crawler_reflection_helper_returns_objective_contract_feedback()
     test_crawler_after_task_review_prunes_duplicate_mcagent_context()
     test_direct_answer_route_helper_does_not_execute_unselected_delegate()

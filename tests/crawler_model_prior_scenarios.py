@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+import json
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -106,6 +107,32 @@ def test_sanitize_plan_preserves_llm_prior_and_readable_exposes_it_separately() 
     assert_true("self_audit_separate", "accepted_sources" in readable["self_audit"] and readable["self_audit"]["counts"]["accepted"] == 0)
 
 
+def test_llm_prior_merges_rule_source_specific_leads() -> None:
+    class FakeClient:
+        def chat(self, *_args, **_kwargs):  # noqa: ANN001
+            return json.dumps(
+                {
+                    "target": "Farmer's Delight",
+                    "aliases": ["Farmer's Delight"],
+                    "likely_source_graph": ["official/project page", "documentation/wiki"],
+                    "search_leads": ["Farmer's Delight wiki"],
+                    "verification_questions": ["Which page verifies gameplay?"],
+                }
+            )
+
+    prior = CrawlerModelPriorService(client=FakeClient(), model_label="fake").build(
+        question="Collect Farmer's Delight beginner guide, cooking mechanics, versions, and download pages for MCagent/RAG.",
+        target_hint="Farmer's Delight",
+        context_text="Minecraft mod guide beginner tutorial cooking recipe Modrinth CurseForge",
+        session_summary={"delivery_target": "MCagent/RAG"},
+        learned_memory={},
+    )
+    joined = "\n".join(prior["source_specific_leads"] + prior["candidate_urls"]).lower()
+    assert_true("fallback_source_specific_merged", "modrinth: farmers-delight" in joined, joined)
+    assert_true("guide_candidate_url", "minecraft-guides.com/wiki/farmers-delight" in joined, joined)
+    assert_equal("prior_boundary", prior["evidence_status"], "hypothesis_only")
+
+
 def test_sanitize_plan_drops_placeholder_queries_and_uses_prior_leads() -> None:
     raw_prior = {
         "target": "Farmer's Delight",
@@ -142,5 +169,6 @@ if __name__ == "__main__":
     test_prior_leads_spread_aliases_before_source_variants()
     test_fallback_plan_uses_prior_leads_without_accepting_prior_as_evidence()
     test_sanitize_plan_preserves_llm_prior_and_readable_exposes_it_separately()
+    test_llm_prior_merges_rule_source_specific_leads()
     test_sanitize_plan_drops_placeholder_queries_and_uses_prior_leads()
     print("crawler_model_prior_scenarios passed")

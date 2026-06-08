@@ -172,6 +172,14 @@ class EvidenceSelector:
             score += self._contains_any(path, ("crawler_exports/mediawiki/",)) * 0.25
             score += self._question_term_overlap(question, title + "\n" + text) * 0.20
 
+        if self._is_guide_or_mechanics_question(question, intent):
+            guide_signal = self._guide_mechanics_signal_score(title, path, text)
+            score += guide_signal
+            if guide_signal <= 0.0:
+                score -= 0.22
+            if self._low_value_for_guide_answer(title, text):
+                score -= 0.18
+
         return max(0.0, min(1.0, score))
 
     def _strong_source(self, topic: str, item: SearchResult) -> bool:
@@ -266,6 +274,158 @@ class EvidenceSelector:
 
     def _contains_any(self, text: str, needles: tuple[str, ...]) -> int:
         return 1 if any(needle in text for needle in needles) else 0
+
+    def _is_guide_or_mechanics_question(self, question: str, intent: QueryIntent | None = None) -> bool:
+        if intent and intent.question_type in {"guide", "mechanic", "recipe"}:
+            return True
+        text = question.lower()
+        return any(
+            token in text
+            for token in (
+                "怎么玩",
+                "玩法",
+                "攻略",
+                "教程",
+                "流程",
+                "路线",
+                "新手",
+                "萌新",
+                "入门",
+                "开局",
+                "前期",
+                "机制",
+                "配方",
+                "烹饪",
+                "beginner",
+                "getting started",
+                "guide",
+                "tutorial",
+                "progression",
+                "mechanic",
+                "recipe",
+                "cooking",
+            )
+        )
+
+    def _guide_mechanics_signal_score(self, title: str, path: str, text: str) -> float:
+        haystack = f"{title}\n{path}\n{text[:3200]}".lower()
+        guide_terms = (
+            "新手",
+            "萌新",
+            "入门",
+            "开局",
+            "前期",
+            "中期",
+            "后期",
+            "教程",
+            "攻略",
+            "流程",
+            "路线",
+            "进度",
+            "任务",
+            "beginner",
+            "getting started",
+            "guide",
+            "tutorial",
+            "progression",
+            "quest",
+        )
+        mechanics_terms = (
+            "机制",
+            "配方",
+            "合成",
+            "制作",
+            "烹饪",
+            "食物",
+            "食材",
+            "厨锅",
+            "煎锅",
+            "砧板",
+            "刀",
+            "种子",
+            "作物",
+            "农场",
+            "热源",
+            "recipe",
+            "cooking",
+            "craft",
+            "knife",
+            "cutting board",
+            "crop",
+            "farm",
+            "stove",
+            "pan",
+            "pot",
+        )
+        procedure_terms = (
+            "首先",
+            "先",
+            "然后",
+            "接着",
+            "需要",
+            "可以",
+            "打开",
+            "按住",
+            "获得",
+            "收集",
+            "建造",
+            "探索",
+            "start",
+            "use",
+            "craft",
+            "collect",
+            "open",
+        )
+        guide_hits = sum(1 for term in guide_terms if term in haystack)
+        mechanics_hits = sum(1 for term in mechanics_terms if term in haystack)
+        procedure_hits = sum(1 for term in procedure_terms if term in haystack)
+        if guide_hits + mechanics_hits + procedure_hits <= 0:
+            return 0.0
+        score = min(0.22, guide_hits * 0.055)
+        score += min(0.24, mechanics_hits * 0.045)
+        score += min(0.12, procedure_hits * 0.025)
+        if guide_hits and mechanics_hits:
+            score += 0.08
+        return min(score, 0.46)
+
+    def _low_value_for_guide_answer(self, title: str, text: str) -> bool:
+        haystack = f"{title}\n{text[:1800]}".lower()
+        low_value_terms = (
+            "依赖",
+            "附属",
+            "关系类型",
+            "运行环境",
+            "编辑资料",
+            "浏览次数",
+            "下载次数",
+            "评分",
+            "投票",
+            "dependency",
+            "dependent",
+            "relation",
+            "rating",
+            "downloads",
+        )
+        useful_terms = (
+            "新手",
+            "入门",
+            "教程",
+            "攻略",
+            "进度",
+            "流程",
+            "机制",
+            "配方",
+            "烹饪",
+            "砧板",
+            "厨锅",
+            "beginner",
+            "guide",
+            "tutorial",
+            "progression",
+            "recipe",
+            "cooking",
+        )
+        return any(term in haystack for term in low_value_terms) and not any(term in haystack for term in useful_terms)
 
     def _question_terms(self, question: str, intent: QueryIntent | None = None) -> list[str]:
         raw_terms = re.findall(r"[a-zA-Z0-9_+-]{2,}|[\u4e00-\u9fff]{2,}", question)

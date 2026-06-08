@@ -24,12 +24,26 @@ def apply(result: dict, source: str = "mcmod", delivery: str = "MCagent/RAG") ->
     )
 
 
-def test_matched_records_are_success_and_need_ingest() -> None:
+def test_matched_records_wait_for_crawler_review() -> None:
     result = {"returncode": 0, "manifest_stats": {"records": 3}, "topic_validation": {"matched": True}}
+    accounting = apply(result)
+    assert_equal("success", accounting["success_delta"], 0)
+    assert_equal("failure", accounting["failure_delta"], 1)
+    assert_equal("needs_ingest", accounting["needs_ingest"], False)
+    assert_equal("pending_review", result["records_pending_review"], True)
+    assert_equal("review_action", result["crawler_review_action"], "review_matched_records")
+
+
+def test_crawler_accepted_records_are_success_and_need_ingest() -> None:
+    result = {
+        "returncode": 0,
+        "manifest_stats": {"records": 3},
+        "topic_validation": {"matched": True, "crawler_review_action": "accept"},
+    }
     accounting = apply(result)
     assert_equal("success", accounting["success_delta"], 1)
     assert_equal("needs_ingest", accounting["needs_ingest"], True)
-    assert_equal("ingest_deferred", result["ingest_deferred"], "CrawlerAgent accepted these records; ingest this accepted export after the collection loop finishes.")
+    assert_equal("ingest_deferred", result["ingest_deferred"], "CrawlerAgent explicitly accepted these records; ingest this accepted export after the collection loop finishes.")
 
 
 def test_empty_matched_artifact_is_not_ingestible_success() -> None:
@@ -61,11 +75,11 @@ def test_browser_collect_manifest_ok_is_structured_success() -> None:
 
 
 def test_browser_collect_accepted_for_human_skips_ingest() -> None:
-    result = {"returncode": 0, "manifest_stats": {"records": 50}, "topic_validation": {"matched": True}}
+    result = {"returncode": 0, "manifest_stats": {"records": 50}, "topic_validation": {"matched": True, "crawler_review_action": "accept"}}
     accounting = apply(result, source="browser_collect", delivery="human")
     assert_equal("success", accounting["success_delta"], 1)
     assert_equal("needs_ingest", accounting["needs_ingest"], False)
-    assert_equal("ingest_skipped", result["ingest_skipped"], "CrawlerAgent accepted these records for the human-facing task; RAG ingest was not requested.")
+    assert_equal("ingest_skipped", result["ingest_skipped"], "CrawlerAgent explicitly accepted these records for the human-facing task; RAG ingest was not requested.")
 
 
 def test_modpack_download_creates_internal_followup() -> None:
@@ -150,7 +164,8 @@ def test_fetch_url_archive_redirect_adds_modpack_download_followup() -> None:
 
 
 if __name__ == "__main__":
-    test_matched_records_are_success_and_need_ingest()
+    test_matched_records_wait_for_crawler_review()
+    test_crawler_accepted_records_are_success_and_need_ingest()
     test_empty_matched_artifact_is_not_ingestible_success()
     test_browser_collect_waits_for_crawler_review()
     test_browser_collect_manifest_ok_is_structured_success()

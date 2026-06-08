@@ -104,6 +104,12 @@ class OpenAICompatibleClient:
                 f"Failed to reach {self._diagnostic_prefix(endpoint, elapsed_ms)}. "
                 "Check the service, base URL, model name, and network availability."
             ) from exc
+        except TimeoutError as exc:
+            elapsed_ms = round((time.monotonic() - started) * 1000)
+            raise RuntimeError(
+                f"{self._diagnostic_prefix(endpoint, elapsed_ms)} timed out while reading the response. "
+                "The service accepted the request but did not finish before the client timeout."
+            ) from exc
 
     def _chat_once_or_retry(
         self,
@@ -166,6 +172,12 @@ class OpenAICompatibleClient:
             raise RuntimeError(
                 f"Failed to reach {self._diagnostic_prefix(endpoint, elapsed_ms)}. "
                 "Check the service, base URL, model name, and network availability."
+            ) from exc
+        except TimeoutError as exc:
+            elapsed_ms = round((time.monotonic() - started) * 1000)
+            raise RuntimeError(
+                f"{self._diagnostic_prefix(endpoint, elapsed_ms)} timed out while reading the response. "
+                "The service accepted the request but did not finish before the client timeout."
             ) from exc
 
         data = json.loads(raw)

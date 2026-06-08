@@ -153,7 +153,7 @@ class Job:
 @dataclass(slots=True)
 class CrawlerDelegationRun:
     plan: Any
-    job: Job
+    job: Job | None
     created: bool
     note: str
     response: dict[str, Any] | None = None
@@ -2998,6 +2998,7 @@ def _fallback_tasks_from_topic_discovery(result: dict[str, Any], existing_tasks:
         existing_tasks=existing_tasks,
         identity_fn=_crawler_task_identity,
         max_new_tasks=max_new_tasks,
+        context_text=str(result.get("query") or result.get("question") or ""),
     )
 
 
@@ -3070,6 +3071,24 @@ def _reflect_crawler_progress_with_timeout(
         future.cancel()
         executor.shutdown(wait=False, cancel_futures=True)
         bad_recent = sum(1 for item in task_results[-3:] if classify_crawler_tool_result(item).bad)
+        if pending_tasks:
+            issues = ["reflection_timeout_continued_with_pending_task"]
+            if bad_recent >= 2:
+                issues.append("reflection_timeout_low_yield_but_pending_task_available")
+            return {
+                "action": "execute_pending",
+                "selected_index": 0,
+                "reason": f"CrawlerAgent reflection timed out after {timeout_limit}s; continue with the next already planned objective task instead of letting reflection latency end the job.",
+                "tasks": [],
+                "done_summary": "",
+                "planner": "runtime_reflection_timeout",
+                "contract": {
+                    "valid": True,
+                    "issues": issues,
+                    "requires_llm_task_materialization": False,
+                    "pending_count": len(pending_tasks),
+                },
+            }
         if bad_recent >= 2:
             return {
                 "action": "finish",
@@ -3084,21 +3103,6 @@ def _reflect_crawler_progress_with_timeout(
                 "contract": {
                     "valid": True,
                     "issues": ["reflection_timeout_finished_after_low_yield"],
-                    "requires_llm_task_materialization": False,
-                    "pending_count": len(pending_tasks),
-                },
-            }
-        if pending_tasks:
-            return {
-                "action": "execute_pending",
-                "selected_index": 0,
-                "reason": f"CrawlerAgent reflection timed out after {timeout_limit}s; continue with the next already planned task instead of failing the job.",
-                "tasks": [],
-                "done_summary": "",
-                "planner": "runtime_reflection_timeout",
-                "contract": {
-                    "valid": True,
-                    "issues": ["reflection_timeout_continued_with_pending_task"],
                     "requires_llm_task_materialization": False,
                     "pending_count": len(pending_tasks),
                 },
@@ -3287,14 +3291,19 @@ def _apply_crawler_task_accounting(
         accepted_ingest_roots.extend(_crawler_accepted_ingest_roots(result))
     followup_task = accounting.get("followup_task") if isinstance(accounting.get("followup_task"), dict) else None
     inserted_followup = False
-    if followup_task and _crawler_task_identity(followup_task) not in {_crawler_task_identity(existing) for existing in tasks} and len(tasks) < max_total_tasks:
+    followup_is_required_external_probe = task_source == "mcagent_context" and str(followup_task.get("source") or "") != "mcagent_context" if followup_task else False
+    has_capacity = len(tasks) < max_total_tasks or followup_is_required_external_probe
+    if followup_task and _crawler_task_identity(followup_task) not in {_crawler_task_identity(existing) for existing in tasks} and has_capacity:
         tasks.insert(index, followup_task)
         inserted_followup = True
+        if followup_is_required_external_probe and len(tasks) > max_total_tasks:
+            plan["max_total_tasks_extended_for_context_followup"] = len(tasks)
+        reason = str(followup_task.get("reason") or "Objective tool result produced a required executable follow-up.")
         plan.setdefault("agent_reflections", []).append(
             {
                 "at_index": index,
                 "action": "add_tasks",
-                "reason": "公开整合包包体已下载，下一步应解析内部文件，而不是继续只搜网页。",
+                "reason": reason,
                 "planner": "executor objective result",
                 "tasks": [followup_task],
             }
@@ -3454,6 +3463,50 @@ def _finish_crawler_loop(plan: dict[str, Any], *, index: int, reason: str, plann
     return {"action": "finish", "bad_streak": None, "replan_count": None}
 
 
+def _coverage_goals_need_guide_or_mechanics(plan: dict[str, Any]) -> bool:
+    text = json.dumps(
+        {
+            "coverage_goals": plan.get("coverage_goals"),
+            "topic": plan.get("topic"),
+            "target_hint": plan.get("target_hint"),
+            "question": plan.get("question"),
+            "reason": plan.get("reason"),
+            "model_prior": plan.get("model_prior"),
+        },
+        ensure_ascii=False,
+        default=str,
+    ).lower()
+    return bool(re.search(r"玩法|入门|新手|教程|攻略|机制|配方|烹饪|食物|guide|wiki|tutorial|beginner|getting started|mechanic|recipe|cooking|food", text, flags=re.I))
+
+
+def _accepted_results_cover_guide_or_mechanics(task_results: list[dict[str, Any]]) -> bool:
+    for result in task_results:
+        if not isinstance(result, dict):
+            continue
+        observation = result.get("observation") if isinstance(result.get("observation"), dict) else {}
+        validation = result.get("topic_validation") if isinstance(result.get("topic_validation"), dict) else {}
+        reused = result.get("existing_evidence_reused") if isinstance(result.get("existing_evidence_reused"), dict) else {}
+        accepted = observation.get("status") == "ok" or bool(validation.get("matched")) or bool(reused.get("matched"))
+        if not accepted:
+            continue
+        haystack = "\n".join(
+            [
+                str(result.get("query") or ""),
+                str(result.get("output") or ""),
+                json.dumps(result.get("artifact_refs") or [], ensure_ascii=False, default=str),
+                json.dumps(validation, ensure_ascii=False, default=str),
+                json.dumps(reused, ensure_ascii=False, default=str),
+            ]
+        ).lower()
+        if re.search(r"玩法|入门|新手|教程|攻略|机制|配方|烹饪|食物|guide|wiki|tutorial|beginner|getting started|mechanic|recipe|cooking|food", haystack, flags=re.I):
+            return True
+    return False
+
+
+def _should_continue_for_unmet_guide_coverage(plan: dict[str, Any], task_results: list[dict[str, Any]]) -> bool:
+    return _coverage_goals_need_guide_or_mechanics(plan) and not _accepted_results_cover_guide_or_mechanics(task_results)
+
+
 def _agent_selected_delegate(action_plan: list[dict[str, Any]] | list[Any], route_intent: str, tool_decision: dict[str, Any]) -> bool:
     selected_tool = str(tool_decision.get("tool") or route_intent or "").strip()
     return selected_tool == "delegate_crawler" or _action_plan_has_tool(action_plan, "delegate_crawler")
@@ -3560,13 +3613,14 @@ def _apply_crawler_loop_control_after_task(
             reason="MCagent/RAG returned usable local context with no explicit gap list, and Crawler collected at least one external probe/candidate; finish this inter-agent gap check instead of expanding into a full crawl.",
             planner="executor inter-agent gap guard",
         )
+    guide_coverage_unmet = _should_continue_for_unmet_guide_coverage(plan, task_results)
     if loop_control.should_finish_after_gap_summary_handoff_success(
         source=source,
         plan=plan,
         task_results=task_results,
         success_count=success_count,
         executed_count=len(task_results),
-    ):
+    ) and not guide_coverage_unmet:
         return _finish_crawler_loop(
             plan,
             index=index,
@@ -3578,7 +3632,7 @@ def _apply_crawler_loop_control_after_task(
         plan=plan,
         success_count=success_count,
         executed_count=len(task_results),
-    ):
+    ) and not guide_coverage_unmet:
         return _finish_crawler_loop(
             plan,
             index=index,
@@ -3599,7 +3653,7 @@ def _apply_crawler_loop_control_after_task(
         success_count=success_count,
         bad_streak=bad_streak,
         executed_count=len(task_results),
-    ):
+    ) and not guide_coverage_unmet:
         return _finish_crawler_loop(
             plan,
             index=index,
@@ -3818,6 +3872,7 @@ def _apply_crawler_reflection_before_task(
         "finish_reason": str(step_result.get("finish_reason") or ""),
         "reflection": reflection,
         "new_tasks": new_tasks,
+        "inserted_tasks": list(step_result.get("inserted_tasks") or []),
     }
 
 
@@ -3908,10 +3963,28 @@ def _run_crawler_job_agent_loop(job: Job, payload: dict[str, Any], config: AppCo
         limits = job_setup.limits(payload=payload, tasks=tasks)
         max_replans = limits["max_replans"]
         max_total_tasks = limits["max_total_tasks"]
+        skip_reflection_once_at_index: int | None = None
         while index < len(tasks):
             if job.stop_requested:
                 break
-            if job_setup.is_planner_source(source) and runtime_step.should_reflect_before_task(plan=plan, task_results=task_results, index=index):
+            skip_reflection_now = skip_reflection_once_at_index == index
+            if skip_reflection_now:
+                skip_reflection_once_at_index = None
+                plan.setdefault("agent_reflections", []).append(
+                    {
+                        "at_index": index,
+                        "action": "execute_materialized_task",
+                        "selected_index": 0,
+                        "reason": "CrawlerAgent reflection just materialized an executable task at this index; execute it before asking for another reflection.",
+                        "planner": "executor loop control",
+                        "tasks": [tasks[index]] if index < len(tasks) else [],
+                    }
+                )
+            if (
+                not skip_reflection_now
+                and job_setup.is_planner_source(source)
+                and runtime_step.should_reflect_before_task(plan=plan, task_results=task_results, index=index)
+            ):
                 reflection_update = _apply_crawler_reflection_before_task(
                     job=job,
                     config=config,
@@ -3927,6 +4000,8 @@ def _run_crawler_job_agent_loop(job: Job, payload: dict[str, Any], config: AppCo
                     job_progress=job_progress,
                 )
                 if reflection_update.get("continue_loop"):
+                    if reflection_update.get("inserted_tasks"):
+                        skip_reflection_once_at_index = index
                     continue
                 if reflection_update.get("finished"):
                     plan["agent_finish_reason"] = str(reflection_update.get("finish_reason") or "")
@@ -5943,32 +6018,102 @@ def _is_modpack_mod_list_question(question: str) -> bool:
 def _compose_guide_fallback_answer(question: str, snippets: list[str], results: list[SearchResult]) -> str:
     source_rank = results[0].rank if results else 1
     steps: list[str] = []
+
     def add(text: str) -> None:
         if text not in steps:
             steps.append(text)
 
-    joined = "\n".join(snippets)
-    if "FTB" in joined or "任务" in joined:
-        add("先跟着整合包内的 FTB 任务线推进，它是当前资料里最明确的新手引导。")
-    if "拔刀剑" in joined or "梦想一心" in joined:
-        add("前期围绕拔刀剑路线发育；资料中特别提到可以先做需要 Boss 前置的拔刀剑，并利用后续教程推进到梦想一心。")
-    if "女仆" in joined or "杀敌数" in joined:
-        add("开局送的女仆要利用起来：把需要刷杀敌数的拔刀剑交给女仆，可以减轻前期刷怪压力。")
-    if "tacz" in joined.lower() or "枪械" in joined:
-        add("枪械/TACZ 也是核心流派之一，打 Boss 或推进战斗内容时可以作为主要输出手段之一。")
-    if "下亚" in joined or "亚波伦" in joined or "Boss" in joined:
-        add("中后期再考虑 Boss 线；本地资料提到下亚/亚波伦相关打法，但完整 Boss 顺序和掉落仍需要继续补资料。")
-    if not steps:
-        for line in snippets[:4]:
-            if _looks_like_page_title_or_external_download(line):
-                continue
-            add(line)
+    for line in _select_diverse_guide_snippets(snippets):
+        if _looks_like_page_title_or_external_download(line):
+            continue
+        if _guide_snippet_is_low_value(line):
+            continue
+        add(line)
 
-    lines = ["基于当前本地资料，落幕曲新手可以这样起步：", ""]
-    lines.extend(f"{index}. {step}" for index, step in enumerate(steps[:6], start=1))
+    topic = _guide_answer_topic_label(question, results)
+    prefix = f"基于当前本地资料，{topic}新手可以这样起步：" if topic else "基于当前本地资料，新手可以这样起步："
+    lines = [prefix, ""]
+    if steps:
+        lines.extend(f"{index}. {step}" for index, step in enumerate(steps[:6], start=1))
+    else:
+        lines.append("当前命中的本地资料没有抽取到足够清晰的玩法步骤，需要先让 Crawler 补充更直接的教程或机制资料。")
     lines.append("")
-    lines.append(f"说明：以上依据当前命中的本地资料整理 [S{source_rank}]；更完整的任务章节、装备/饰品推荐和 Boss 顺序还需要继续补库。")
+    lines.append(f"说明：以上依据当前命中的本地资料整理 [S{source_rank}]；更完整的阶段路线、物品细节和版本差异仍需要继续补库。")
     return "\n".join(lines)
+
+
+def _select_diverse_guide_snippets(snippets: list[str], limit: int = 6) -> list[str]:
+    buckets: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("progression", ("进度", "指引", "指导", "入门", "新手", "开局", "默认按 L")),
+        ("farming", ("野生作物", "开花的植物", "种子", "样本", "农场", "探索")),
+        ("cutting", ("砧板", "刀", "燧石刀", "切割", "切成", "食材")),
+        ("cooking", ("厨锅", "煎锅", "热源", "炉灶", "烹饪", "合成书")),
+        ("recipe", ("配方", "合成", "材料", "制作", "获取")),
+    )
+    selected: list[str] = []
+    used: set[str] = set()
+    seen_bucket: set[str] = set()
+    for _, markers in buckets:
+        for line in snippets:
+            if line in used:
+                continue
+            if any(marker in line for marker in markers):
+                selected.append(line)
+                used.add(line)
+                seen_bucket.add(_guide_snippet_bucket(line))
+                break
+    for line in snippets:
+        if len(selected) >= limit:
+            break
+        bucket = _guide_snippet_bucket(line)
+        if bucket in seen_bucket and bucket != "general":
+            continue
+        if line not in used:
+            selected.append(line)
+            used.add(line)
+            seen_bucket.add(bucket)
+    return selected[:limit]
+
+
+def _guide_snippet_bucket(line: str) -> str:
+    if any(marker in line for marker in ("砧板", "刀", "燧石刀", "切割", "切成", "食材")):
+        return "cutting"
+    if any(marker in line for marker in ("厨锅", "煎锅", "热源", "炉灶", "烹饪", "合成书")):
+        return "cooking"
+    if any(marker in line for marker in ("野生作物", "开花的植物", "种子", "样本", "农场")):
+        return "farming"
+    if any(marker in line for marker in ("进度", "指引", "指导", "入门", "新手", "开局", "默认按 L")):
+        return "progression"
+    if any(marker in line for marker in ("配方", "合成", "材料", "制作", "获取")):
+        return "recipe"
+    return "general"
+
+
+def _guide_answer_topic_label(question: str, results: list[SearchResult]) -> str:
+    direct = re.match(r"\s*(.+?)(?:\s+)?(?:新手|萌新|入门|应该|怎么|怎样|如何|起步|开始)", str(question or ""))
+    if direct:
+        label = re.sub(r"(?:基于|请|介绍|讲讲|说说|详细).*?$", "", direct.group(1)).strip(" ，,。？?：:")
+        if label and len(label) <= 80:
+            return label
+    intent = analyze_query(question, CONCEPTS)
+    label = str(intent.entity or "").strip()
+    if not label and results:
+        label = re.sub(r"^\[[^\]]+\]", "", str(results[0].title or "")).strip()
+        label = re.split(r"[\(\|｜]", label, maxsplit=1)[0].strip()
+    label = re.sub(r"(?:新手|萌新|入门|怎么玩|玩法|攻略|教程|流程|路线).*$", "", label).strip()
+    if label.lower() in {"minecraft", "mc", "mod", "mods", "modpack"}:
+        return ""
+    return label
+
+
+def _guide_snippet_is_low_value(line: str) -> bool:
+    clean = str(line or "").strip()
+    if not clean:
+        return True
+    if len(clean) <= 8:
+        return True
+    low_value = ("剪刀：分解皮革物品", "Image:", "图片]", "添加新资料", "编辑资料", "关系类型", "Delight)", "'s Delight", "Compats")
+    return any(token in clean for token in low_value)
 
 
 def _looks_like_page_title_or_external_download(line: str) -> bool:
@@ -6174,11 +6319,13 @@ def _boss_detail_line_is_noise(line: str) -> bool:
 
 def _generic_extractive_snippets(question: str, results: list[SearchResult], limit: int = 8, *, fast: bool = False) -> list[str]:
     focus_terms = _focus_terms_for_question(question)
+    guide_or_mechanics = _needs_general_grounded_answer(question)
     snippets: list[str] = []
     for item in results[:8]:
         text = item.text if fast else _read_result_full_text(item)
-        lines = _evidence_lines_from_text(text, focus_terms, limit=4)
-        if focus_terms:
+        per_item_limit = 10 if guide_or_mechanics else 4
+        lines = _evidence_lines_from_text(text, focus_terms, limit=per_item_limit, allow_marker_without_focus=guide_or_mechanics)
+        if focus_terms and not guide_or_mechanics:
             lines = [
                 line for line in lines
                 if any(term.lower() in line.lower() for term in focus_terms if len(term) >= 2)
@@ -6189,9 +6336,11 @@ def _generic_extractive_snippets(question: str, results: list[SearchResult], lim
             clean = _clean_evidence_line(line)
             if clean and not _noisy_evidence_line(clean) and clean not in snippets:
                 snippets.append(clean[:260])
-                if len(snippets) >= limit:
+                if len(snippets) >= limit and not guide_or_mechanics:
                     return snippets
-    return snippets
+    if guide_or_mechanics:
+        return snippets[: max(limit, 24)]
+    return snippets[:limit]
 
 
 def _noisy_evidence_line(line: str) -> bool:
@@ -6287,34 +6436,57 @@ def _deep_evidence_for_result(question: str, item: SearchResult, focus_terms: li
     return "\n".join(output)
 
 
-def _evidence_lines_from_text(text: str, focus_terms: list[str], limit: int = 18) -> list[str]:
+def _evidence_lines_from_text(text: str, focus_terms: list[str], limit: int = 18, *, allow_marker_without_focus: bool = False) -> list[str]:
     if not text:
         return []
     strong_terms = [term for term in focus_terms if len(term) >= 2]
     evidence_markers = (
         "合成", "配方", "材料", "获取", "获得", "掉落", "生成", "刷新", "位置",
         "步骤", "路线", "前置", "要求", "打法", "击败", "打败", "挑战", "击杀", "斩杀", "胜利", "机制", "奖励", "用途",
+        "玩法", "攻略", "教程", "流程", "进度", "任务", "新手", "入门", "开局", "前期", "中期", "后期",
+        "烹饪", "食物", "食材", "厨锅", "煎锅", "砧板", "刀", "种子", "作物", "农场", "热源",
+        "guide", "tutorial", "progression", "beginner", "recipe", "cooking", "knife", "cutting board", "crop", "farm",
         "Boss", "BOSS", "boss", "表", "图片", "Table", "Image",
     )
     output: list[str] = []
     active_window = 0
     for raw_line in text.splitlines():
         is_heading = raw_line.lstrip().startswith("#")
-        line = _clean_evidence_line(raw_line)
-        if not line or _noisy_evidence_line(line):
-            continue
-        has_focus = any(term.lower() in line.lower() for term in strong_terms)
-        if has_focus:
-            active_window = 8
-        has_marker = any(marker in line for marker in evidence_markers)
-        if has_focus or (active_window > 0 and (has_marker or is_heading)):
-            if line not in output:
-                output.append(line)
-                if len(output) >= limit:
-                    break
-        if active_window > 0:
-            active_window -= 1
+        for line in _split_evidence_line(raw_line):
+            line = _clean_evidence_line(line)
+            if not line or _noisy_evidence_line(line):
+                continue
+            has_focus = any(term.lower() in line.lower() for term in strong_terms)
+            if has_focus:
+                active_window = 8
+            has_marker = any(marker in line for marker in evidence_markers)
+            if has_focus or (active_window > 0 and (has_marker or is_heading)) or (allow_marker_without_focus and has_marker):
+                if line not in output:
+                    output.append(line)
+                    if len(output) >= limit:
+                        break
+            if active_window > 0:
+                active_window -= 1
+        if len(output) >= limit:
+            break
     return output
+
+
+def _split_evidence_line(raw_line: str) -> list[str]:
+    clean = str(raw_line or "").strip()
+    if len(clean) <= 320:
+        return [clean]
+    parts = re.split(r"(?<=[。！？!?；;])\s+|\s{2,}", clean)
+    merged: list[str] = []
+    for part in parts:
+        value = part.strip()
+        if not value:
+            continue
+        if len(value) <= 360:
+            merged.append(value)
+        else:
+            merged.extend(value[index : index + 360] for index in range(0, len(value), 360))
+    return merged or [clean[:360]]
 
 
 def _is_boss_focus(focus_terms: list[str]) -> bool:
@@ -6337,6 +6509,75 @@ def _dedupe_results(results: list[SearchResult], limit: int = 8) -> list[SearchR
     for index, item in enumerate(output, start=1):
         item.rank = index
     return output
+
+
+def _dedupe_results_by_chunk_quality(results: list[SearchResult], limit: int = 8) -> list[SearchResult]:
+    ranked = sorted(
+        results,
+        key=lambda item: (_guide_mechanics_dimension_priority(item), _guide_mechanics_evidence_score(item), float(item.score or 0.0)),
+        reverse=True,
+    )
+    output: list[SearchResult] = []
+    seen_chunks: set[int] = set()
+    seen_title_dimensions: set[tuple[str, str]] = set()
+    per_title: dict[str, int] = {}
+    for item in ranked:
+        if int(item.chunk_id) in seen_chunks:
+            continue
+        title_key = _canonical_title_key(item.title) or str(item.document_id)
+        dimension = _guide_mechanics_dimension(item)
+        if (title_key, dimension) in seen_title_dimensions:
+            continue
+        if per_title.get(title_key, 0) >= 5:
+            continue
+        seen_chunks.add(int(item.chunk_id))
+        seen_title_dimensions.add((title_key, dimension))
+        per_title[title_key] = per_title.get(title_key, 0) + 1
+        output.append(item)
+        if len(output) >= limit:
+            break
+    for index, item in enumerate(output, start=1):
+        item.rank = index
+    return output
+
+
+def _guide_mechanics_dimension(item: SearchResult) -> str:
+    text = f"{item.title}\n{item.text[:2600]}".lower()
+    progression_hits = sum(1 for marker in ("进度", "指导手册", "新手", "入门", "开局", "progression", "beginner", "guide") if marker in text)
+    farming_hits = sum(1 for marker in ("野生作物", "种子", "农场", "开花的植物", "作物", "crop", "seed", "farm") if marker in text)
+    cutting_hits = sum(1 for marker in ("砧板", "燧石刀", "切割", "切成", "knife", "cutting board") if marker in text)
+    cooking_hits = sum(1 for marker in ("厨锅", "煎锅", "炉灶", "热源", "烹饪", "cooking", "pot", "pan", "stove") if marker in text)
+    if progression_hits >= 2 and farming_hits >= 1:
+        return "progression"
+    if farming_hits >= 2 and cutting_hits == 0 and cooking_hits == 0:
+        return "farming"
+    if cutting_hits >= 1 and cutting_hits >= cooking_hits:
+        return "cutting"
+    if cooking_hits >= 1:
+        return "cooking"
+    checks = (
+        ("farming", ("野生作物", "种子", "农场", "开花的植物", "作物", "crop", "seed", "farm")),
+        ("cutting", ("砧板", "燧石刀", "切割", "切成", "食材", "knife", "cutting board")),
+        ("cooking", ("厨锅", "煎锅", "炉灶", "热源", "烹饪", "cooking", "pot", "pan", "stove")),
+        ("progression", ("进度", "指导手册", "新手", "入门", "开局", "progression", "beginner", "guide")),
+        ("recipe", ("配方", "合成", "制作", "材料", "recipe", "craft")),
+    )
+    for name, markers in checks:
+        if any(marker in text for marker in markers):
+            return name
+    return "general"
+
+
+def _guide_mechanics_dimension_priority(item: SearchResult) -> int:
+    order = {
+        "progression": 6,
+        "farming": 5,
+        "cutting": 4,
+        "cooking": 3,
+        "recipe": 2,
+        "general": 1,
+    }
+    return order.get(_guide_mechanics_dimension(item), 0)
 
 
 def _supplement_raw_html_results(config: AppConfig, question: str, results: list[SearchResult], limit: int = 8) -> list[SearchResult]:
@@ -6648,33 +6889,309 @@ def _supplement_project_keyword_results(config: AppConfig, question: str, result
     intent = analyze_query(question, CONCEPTS)
     if intent.domain not in {"project", "known_mod"}:
         return results
+    if _needs_general_grounded_answer(question):
+        local_results = _supplement_local_guide_mechanics_results(config, question, results, limit)
+        if len(local_results) >= min(3, limit):
+            return local_results
     retriever = Retriever(config)
     existing_docs = {int(item.document_id) for item in results}
-    existing_titles = {_canonical_title_key(item.title) for item in results}
     additions: list[SearchResult] = []
-    queries = [_same_theme_tutorial_query(question), intent.entity, *intent.keywords[1:8], *intent.search_queries[:4]]
+    queries = [
+        _same_theme_tutorial_query(question),
+        *_guide_mechanics_supplement_queries(question, intent),
+        intent.entity,
+        *intent.keywords[1:8],
+        *intent.search_queries[:4],
+    ]
     queries = _dedupe_strings([str(query) for query in queries if query])
     for keyword in queries:
         try:
-            candidates = retriever.search(str(keyword), top_k=60)
+            candidates = retriever.search(str(keyword), top_k=24)
         except Exception:
             continue
         for item in candidates:
             path = item.source_path.lower().replace("\\", "/")
-            title_key = _canonical_title_key(item.title)
-            is_tutorial = any(token in item.title for token in ("攻略", "教程", "配置", "制作"))
-            same_theme = "落幕曲" in item.title or "closing song" in item.title.lower()
-            if "crawler_exports/mediawiki/" in path or int(item.document_id) in existing_docs or title_key in existing_titles:
+            if "crawler_exports/mediawiki/" in path or int(item.document_id) in existing_docs:
                 continue
-            if len(additions) >= max(2, limit) and not is_tutorial and not same_theme:
+            if not _result_contains_project_entity(item, question, intent):
+                continue
+            if _needs_general_grounded_answer(question) and _guide_mechanics_evidence_score(item) <= 0:
+                continue
+            if len(additions) >= max(2, limit):
                 continue
             existing_docs.add(int(item.document_id))
-            existing_titles.add(title_key)
             additions.append(item)
-            if is_tutorial and same_theme:
+            if _guide_mechanics_evidence_score(item) >= 8:
                 break
             break
-    return _dedupe_results([*results, *additions], limit=limit)
+    merged = _rank_answer_evidence_for_focus(question, [*results, *additions])
+    if _needs_general_grounded_answer(question):
+        return _dedupe_results_by_chunk_quality(merged, limit=limit)
+    return _dedupe_results(merged, limit=limit)
+
+
+def _supplement_local_guide_mechanics_results(config: AppConfig, question: str, results: list[SearchResult], limit: int) -> list[SearchResult]:
+    aliases = _guide_mechanics_entity_aliases(question)
+    markers = _guide_mechanics_literal_markers(question)
+    if not aliases or not markers or not config.paths.db_path.exists():
+        return results
+    existing_chunks = {int(item.chunk_id) for item in results}
+    alias_clauses: list[str] = []
+    marker_clauses: list[str] = []
+    params: list[str] = []
+    for alias in aliases[:8]:
+        alias_like = f"%{alias}%"
+        alias_clauses.append("(documents.title LIKE ? OR documents.source_path LIKE ? OR documents.url LIKE ?)")
+        params.extend([alias_like, alias_like, alias_like])
+    for marker in markers[:18]:
+        marker_clauses.append("chunks.text LIKE ?")
+        params.append(f"%{marker}%")
+    rows: list[Any] = []
+    conn = connect(config.paths.db_path)
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT
+                chunks.id AS chunk_id,
+                chunks.document_id AS document_id,
+                chunks.chunk_index AS chunk_index,
+                chunks.text AS text,
+                chunks.metadata_json AS chunk_metadata,
+                documents.title AS title,
+                documents.source_path AS source_path,
+                documents.url AS url,
+                documents.metadata_json AS document_metadata
+            FROM chunks
+            JOIN documents ON documents.id = chunks.document_id
+            WHERE ({" OR ".join(alias_clauses)})
+              AND ({" OR ".join(marker_clauses)})
+            ORDER BY chunks.id DESC
+            LIMIT 160
+            """,
+            params,
+        ).fetchall()
+    finally:
+        conn.close()
+    candidates: list[SearchResult] = []
+    seen_chunks = set(existing_chunks)
+    for row in rows:
+        chunk_id = int(row["chunk_id"])
+        if chunk_id in seen_chunks:
+            continue
+        metadata: dict[str, Any] = {}
+        for raw in (row["document_metadata"], row["chunk_metadata"]):
+            if raw:
+                try:
+                    parsed = json.loads(raw)
+                except json.JSONDecodeError:
+                    parsed = {}
+                if isinstance(parsed, dict):
+                    metadata.update(parsed)
+        item = SearchResult(
+            rank=0,
+            score=1.0 + _guide_mechanics_literal_row_score(str(row["text"])),
+            chunk_id=chunk_id,
+            document_id=int(row["document_id"]),
+            chunk_index=int(row["chunk_index"]),
+            title=str(row["title"]),
+            source_path=str(row["source_path"]),
+            url=str(row["url"]) if row["url"] else None,
+            text=str(row["text"]),
+            metadata=metadata,
+        )
+        if not _result_contains_project_entity(item, question, analyze_query(question, CONCEPTS)):
+            continue
+        if _guide_mechanics_evidence_score(item) <= 0:
+            continue
+        seen_chunks.add(chunk_id)
+        candidates.append(item)
+    candidates.extend(_neighboring_guide_mechanics_chunks(config, candidates, seen_chunks, limit=limit))
+    merged = _rank_answer_evidence_for_focus(question, [*results, *candidates])
+    return _dedupe_results_by_chunk_quality(merged, limit=limit)
+
+
+def _neighboring_guide_mechanics_chunks(
+    config: AppConfig,
+    seeds: list[SearchResult],
+    seen_chunks: set[int],
+    *,
+    limit: int,
+) -> list[SearchResult]:
+    """Add nearby chunks from the same source page so tools expose coherent local evidence."""
+    if not seeds or not config.paths.db_path.exists():
+        return []
+    doc_windows: dict[int, tuple[int, int]] = {}
+    for item in sorted(seeds, key=lambda candidate: _guide_mechanics_evidence_score(candidate), reverse=True):
+        doc_id = int(item.document_id)
+        chunk_index = int(item.chunk_index)
+        low, high = doc_windows.get(doc_id, (chunk_index, chunk_index))
+        doc_windows[doc_id] = (min(low, chunk_index - 1), max(high, chunk_index + 2))
+    rows: list[Any] = []
+    conn = connect(config.paths.db_path)
+    try:
+        for doc_id, (low, high) in list(doc_windows.items())[:8]:
+            rows.extend(
+                conn.execute(
+                    """
+                    SELECT
+                        chunks.id AS chunk_id,
+                        chunks.document_id AS document_id,
+                        chunks.chunk_index AS chunk_index,
+                        chunks.text AS text,
+                        chunks.metadata_json AS chunk_metadata,
+                        documents.title AS title,
+                        documents.source_path AS source_path,
+                        documents.url AS url,
+                        documents.metadata_json AS document_metadata
+                    FROM chunks
+                    JOIN documents ON documents.id = chunks.document_id
+                    WHERE chunks.document_id = ?
+                      AND chunks.chunk_index BETWEEN ? AND ?
+                    ORDER BY chunks.chunk_index ASC
+                    """,
+                    (doc_id, low, high),
+                ).fetchall()
+            )
+    finally:
+        conn.close()
+    additions: list[SearchResult] = []
+    for row in rows:
+        chunk_id = int(row["chunk_id"])
+        if chunk_id in seen_chunks:
+            continue
+        text = str(row["text"])
+        if _looks_like_site_tail_chunk(text):
+            continue
+        score = _guide_mechanics_literal_row_score(text)
+        if score <= 0:
+            continue
+        metadata: dict[str, Any] = {}
+        for raw in (row["document_metadata"], row["chunk_metadata"]):
+            if raw:
+                try:
+                    parsed = json.loads(raw)
+                except json.JSONDecodeError:
+                    parsed = {}
+                if isinstance(parsed, dict):
+                    metadata.update(parsed)
+        item = SearchResult(
+            rank=0,
+            score=0.95 + score,
+            chunk_id=chunk_id,
+            document_id=int(row["document_id"]),
+            chunk_index=int(row["chunk_index"]),
+            title=str(row["title"]),
+            source_path=str(row["source_path"]),
+            url=str(row["url"]) if row["url"] else None,
+            text=text,
+            metadata=metadata,
+        )
+        if _guide_mechanics_evidence_score(item) <= 0:
+            continue
+        additions.append(item)
+        seen_chunks.add(chunk_id)
+        if len(additions) >= max(2, limit):
+            break
+    return additions
+
+
+def _looks_like_site_tail_chunk(text: str) -> bool:
+    clean = str(text or "")
+    if not clean:
+        return True
+    tail_markers = (
+        "Copyright MC百科",
+        "关注百科",
+        "意见反馈",
+        "鄂ICP备",
+        "公网安备",
+        "短评加载中",
+        "浏览器: 计算中",
+    )
+    useful_markers = (
+        "进度",
+        "野生作物",
+        "砧板",
+        "刀",
+        "燧石刀",
+        "厨房套件",
+        "厨锅",
+        "煎锅",
+        "热源",
+        "配方",
+        "合成",
+        "玩法",
+        "教程",
+        "步骤",
+        "获取",
+    )
+    tail_hits = sum(1 for marker in tail_markers if marker in clean)
+    useful_hits = sum(1 for marker in useful_markers if marker in clean)
+    return tail_hits >= 2 and useful_hits <= 2
+
+
+def _guide_mechanics_entity_aliases(question: str) -> list[str]:
+    intent = analyze_query(question, CONCEPTS)
+    aliases = [*(_primary_fact_subject_terms(question) or []), str(intent.entity or "")]
+    return [
+        alias
+        for alias in _dedupe_strings([str(item).strip() for item in aliases if str(item).strip()])
+        if len(alias) >= 3 and alias.lower() not in {"minecraft", "modpack", "mods", "mod"}
+    ]
+
+
+def _guide_mechanics_literal_markers(question: str) -> list[str]:
+    markers = [
+        "进度", "进度界面", "新手", "入门", "开局", "前期", "玩法", "教程", "攻略", "流程", "路线",
+        "机制", "配方", "合成", "制作", "获取", "获得", "材料",
+        "beginner", "getting started", "guide", "tutorial", "progression", "mechanic", "recipe",
+    ]
+    if any(token in question for token in ("食物", "烹饪", "厨锅", "砧板", "刀", "农夫乐事")) or "delight" in question.lower():
+        markers.extend(["烹饪", "食物", "食材", "厨锅", "煎锅", "砧板", "燧石刀", "刀", "野生作物", "作物", "种子", "农场", "热源"])
+    return _dedupe_strings(markers)
+
+
+def _guide_mechanics_literal_row_score(text: str) -> float:
+    return min(_guide_mechanics_evidence_score(SearchResult(0, 0.0, 0, 0, 0, "", "", None, text)), 20.0) / 20.0
+
+
+def _guide_mechanics_supplement_queries(question: str, intent: Any) -> list[str]:
+    if not _needs_general_grounded_answer(question):
+        return []
+    entity = str(getattr(intent, "entity", "") or "").strip()
+    seeds = [entity, *[str(item) for item in getattr(intent, "search_queries", [])[:3] if item]]
+    if not entity:
+        terms = _primary_fact_subject_terms(question) or _focus_terms_for_question(question)
+        entity = terms[0] if terms else ""
+    if not entity:
+        return []
+    dimensions = [
+        "新手 入门 开局 进度 玩法",
+        "攻略 教程 流程 路线 机制",
+        "配方 合成 制作 获取",
+        "beginner guide tutorial progression mechanics",
+    ]
+    if any(token in question for token in ("食物", "烹饪", "厨锅", "砧板", "刀")) or "delight" in question.lower():
+        dimensions.extend(["烹饪 食材 厨锅 煎锅 砧板 刀 作物", "cooking recipe cutting board knife crop"])
+    return _dedupe_strings([f"{seed} {dimension}".strip() for seed in [entity, *seeds[:1]] for dimension in dimensions])[:4]
+
+
+def _result_contains_project_entity(item: SearchResult, question: str, intent: Any) -> bool:
+    entity_terms = _primary_fact_subject_terms(question)
+    entity = str(getattr(intent, "entity", "") or "").strip()
+    if entity:
+        entity_terms.append(entity)
+    if not entity_terms:
+        entity_terms = _focus_terms_for_question(question)[:4]
+    haystack = f"{item.title}\n{item.source_path}\n{item.url or ''}\n{item.text[:1800]}".lower()
+    useful_terms = [
+        term.lower()
+        for term in entity_terms
+        if len(str(term).strip()) >= 2 and str(term).lower() not in {"minecraft", "mc", "mod", "mods", "modpack", "模组", "整合包"}
+    ]
+    if not useful_terms:
+        return True
+    return any(term in haystack for term in useful_terms)
 
 
 def _prefer_parent_topic_results(question: str, selected: list[SearchResult], rough_results: list[SearchResult], limit: int) -> list[SearchResult]:
@@ -7082,7 +7599,7 @@ def _prepare_and_start_crawler_delegation(
             intent="collection_request",
             conversation_id=str(payload.get("session_id") or ""),
             metadata={
-                "tool": "delegate_crawler",
+                "tool": "collection_request",
                 "requested_by": delegation_plan.requested_by,
                 "delivery_target": delegation_plan.delivery_target,
                 "handoff_brief": delegation_plan.handoff_brief,
@@ -7103,7 +7620,19 @@ def _prepare_and_start_crawler_delegation(
         )
         job = _job_from_agent_response(response)
         if job is None:
-            raise RuntimeError("CrawlerAgent did not return a crawler job after receiving the delegation AgentMessage.")
+            add_trace(
+                "message",
+                "reply_without_crawler_job",
+                {
+                    "request": message.to_dict(),
+                    "reply": response.get("agent_message"),
+                    "selected_tool": _selected_tool_from_response(response),
+                    "reason": "CrawlerAgent received the From-Content-To collection request but did not return a crawler job. Runtime reports this objective result instead of fabricating a job or crashing the stream.",
+                    "elapsed_ms": round((time.time() - message_started) * 1000),
+                },
+            )
+            note = _crawler_delegation_no_job_note(delegation_plan.collection_question, response)
+            return CrawlerDelegationRun(plan=delegation_plan, job=None, created=False, note=note, response=response)
         created = "已有" not in str(response.get("answer") or "") and str(job.status or "") in {"queued", "running", "succeeded"}
         add_trace(
             "message",
@@ -7125,6 +7654,61 @@ def _prepare_and_start_crawler_delegation(
     )
     add_trace("delegate", "planned_workflow", {"job_id": job.id, "status": job.status, "task": delegation_plan.collection_question})
     return CrawlerDelegationRun(plan=delegation_plan, job=job, created=created, note=note, response=response)
+
+
+def _selected_tool_from_response(response: dict[str, Any] | None) -> str:
+    if not isinstance(response, dict):
+        return ""
+    for step in response.get("trace") or []:
+        if not isinstance(step, dict):
+            continue
+        if step.get("stage") != "decide" or step.get("status") != "tool_selected":
+            continue
+        detail = step.get("detail") if isinstance(step.get("detail"), dict) else {}
+        if detail.get("tool"):
+            return str(detail.get("tool") or "")
+        decision = detail.get("decision") if isinstance(detail.get("decision"), dict) else {}
+        if decision.get("tool"):
+            return str(decision.get("tool") or "")
+    return ""
+
+
+def _crawler_delegation_no_job_note(question: str, response: dict[str, Any] | None) -> str:
+    selected_tool = _selected_tool_from_response(response)
+    answer = str((response or {}).get("answer") or "").strip()
+    parts = [
+        "\n\n采集任务：MCagent 已通过 From-Content-To 消息把请求交给 CrawlerAgent，但 CrawlerAgent 本轮没有返回后台采集任务。",
+        f"- 转达目标：{question}",
+    ]
+    if selected_tool:
+        parts.append(f"- CrawlerAgent 本轮选择的工具：{selected_tool}")
+    if answer:
+        parts.append("- CrawlerAgent 回复：" + answer[:700])
+    parts.append("- 运行时没有伪造任务；请查看本轮 Agent trace 判断为什么未进入 delegate_crawler。")
+    return "\n".join(parts)
+
+
+def _optional_delegation_payload(delegation: CrawlerDelegationRun, *, task: str = "", selected_action_plan: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "delegation": {
+            "requested_by": delegation.plan.requested_by,
+            "delivery_target": delegation.plan.delivery_target,
+            "task": task or delegation.plan.collection_question,
+            "handoff_brief": delegation.plan.handoff_brief,
+        },
+    }
+    if selected_action_plan is not None:
+        payload["delegation"]["selected_action_plan"] = selected_action_plan
+    if delegation.job is not None:
+        payload["job"] = _job_to_dict(delegation.job)
+        payload["collaboration"] = _collaboration_dialog_for(
+            task or delegation.plan.collection_question,
+            delegation.job,
+            delegation.created,
+            requested_by=delegation.plan.requested_by,
+            delivery_target=delegation.plan.delivery_target,
+        )
+    return payload
 
 
 def _delegation_handoff(payload: dict[str, Any], original_question: str, cleaned_question: str) -> dict[str, str]:
@@ -7339,6 +7923,13 @@ def _needs_general_grounded_answer(question: str) -> bool:
         token in text
         for token in (
             "怎么玩",
+            "怎么开始",
+            "怎样开始",
+            "如何开始",
+            "应该怎样开始",
+            "应该怎么开始",
+            "起步",
+            "开始玩",
             "玩法",
             "路线",
             "流程",
@@ -7496,6 +8087,7 @@ def _filter_answer_evidence_by_required_terms(focus: str, selected: list[SearchR
             for item in selected
             if _search_result_matches_strict_entity(item, strict_terms)
         ]
+        filtered = _rank_answer_evidence_for_focus(focus, filtered)
         for index, item in enumerate(filtered, start=1):
             item.rank = index
         return filtered
@@ -7507,9 +8099,61 @@ def _filter_answer_evidence_by_required_terms(focus: str, selected: list[SearchR
         haystack = f"{item.title}\n{item.source_path}\n{item.url or ''}\n{item.text[:3000]}".lower()
         if any(term.lower() in haystack for term in terms):
             filtered.append(item)
+    filtered = _rank_answer_evidence_for_focus(focus, filtered)
     for index, item in enumerate(filtered, start=1):
         item.rank = index
     return filtered
+
+
+def _rank_answer_evidence_for_focus(focus: str, selected: list[SearchResult]) -> list[SearchResult]:
+    if not selected or not _needs_general_grounded_answer(focus):
+        return selected
+    return sorted(
+        selected,
+        key=lambda item: (
+            _guide_mechanics_evidence_score(item),
+            float(item.score or 0.0),
+            -int(item.rank or 0),
+        ),
+        reverse=True,
+    )
+
+
+def _guide_mechanics_evidence_score(item: SearchResult) -> float:
+    haystack = f"{item.title}\n{item.source_path}\n{item.url or ''}\n{item.text[:3600]}".lower()
+    guide_terms = (
+        "新手", "萌新", "入门", "开局", "前期", "中期", "后期", "教程", "攻略", "流程", "路线", "进度", "任务",
+        "beginner", "getting started", "guide", "tutorial", "progression", "quest",
+    )
+    mechanics_terms = (
+        "机制", "配方", "合成", "制作", "烹饪", "食物", "食材", "厨锅", "煎锅", "砧板", "刀", "种子", "作物", "农场", "热源",
+        "recipe", "cooking", "craft", "knife", "cutting board", "crop", "farm", "stove", "pan", "pot",
+    )
+    procedure_terms = (
+        "首先", "先", "然后", "接着", "需要", "可以", "打开", "按住", "获得", "收集", "建造", "探索",
+        "start", "use", "craft", "collect", "open",
+    )
+    low_value_terms = (
+        "依赖", "附属", "关系类型", "运行环境", "编辑资料", "浏览次数", "下载次数", "评分", "投票",
+        "乐事 (", "delight)", "delight +", "compats", "compat",
+        "dependency", "dependent", "relation", "rating", "downloads",
+    )
+    title_list_terms = ("依赖", "附属", "关系类型", "delight)", "compats", "compat")
+    guide_hits = sum(1 for term in guide_terms if term in haystack)
+    mechanics_hits = sum(1 for term in mechanics_terms if term in haystack)
+    procedure_hits = sum(1 for term in procedure_terms if term in haystack)
+    low_hits = sum(1 for term in low_value_terms if term in haystack)
+    if low_hits and guide_hits + mechanics_hits + procedure_hits <= low_hits + 2:
+        return -float(low_hits)
+    score = guide_hits * 3.0 + mechanics_hits * 2.4 + procedure_hits * 1.2
+    if guide_hits and mechanics_hits:
+        score += 5.0
+    if score <= 0:
+        score -= 4.0
+    score -= min(low_hits * 2.5, 10.0)
+    if any(term in haystack for term in title_list_terms) and not any(term in haystack for term in ("进度", "开局", "砧板", "厨锅", "烹饪", "配方", "progression", "tutorial")):
+        score -= 8.0
+    return score
 
 
 def _filter_answer_evidence_with_recovery(
@@ -8800,20 +9444,7 @@ def _handle_local_corpus_inventory_route(
                 "sources": source_dicts,
                 "context": str(inventory.get("context") or ""),
                 "agent": agent,
-                "job": _job_to_dict(delegation.job),
-                "collaboration": _collaboration_dialog_for(
-                    delegation.plan.collection_question,
-                    delegation.job,
-                    delegation.created,
-                    requested_by=delegation.plan.requested_by,
-                    delivery_target=delegation.plan.delivery_target,
-                ),
-                "delegation": {
-                    "requested_by": delegation.plan.requested_by,
-                    "delivery_target": delegation.plan.delivery_target,
-                    "task": delegation.plan.collection_question,
-                    "handoff_brief": delegation.plan.handoff_brief,
-                },
+                **_optional_delegation_payload(delegation),
             }
             add_trace("done", "response_ready", {"sources": len(source_dicts), "delegated": True})
             return _with_trace(response, trace)
@@ -8935,6 +9566,13 @@ def _handle_mcagent_inventory_planned_workflow_route(
         "context": context,
         "agent": agent,
     }
+    if delegated_task:
+        response["delegation"] = {
+            "requested_by": delegated_requested_by or "user_via_mcagent",
+            "delivery_target": delegated_delivery_target or "MCagent/RAG",
+            "task": delegated_task or str(tool_decision.get("collection_target") or original_question or question).strip(),
+            "handoff_brief": delegated_handoff_brief,
+        }
     if delegated_job is not None:
         response["job"] = _job_to_dict(delegated_job)
         response["collaboration"] = _collaboration_dialog_for(
@@ -8944,12 +9582,6 @@ def _handle_mcagent_inventory_planned_workflow_route(
             requested_by=delegated_requested_by or "user_via_mcagent",
             delivery_target=delegated_delivery_target or "MCagent/RAG",
         )
-        response["delegation"] = {
-            "requested_by": delegated_requested_by or "user_via_mcagent",
-            "delivery_target": delegated_delivery_target or "MCagent/RAG",
-            "task": delegated_task or str(tool_decision.get("collection_target") or original_question or question).strip(),
-            "handoff_brief": delegated_handoff_brief,
-        }
     add_trace("done", "response_ready", {"sources": len(source_dicts), "planned_workflow_executed": True})
     return _with_trace(response, trace)
 
@@ -9023,7 +9655,9 @@ def _handle_delegate_crawler_route(
         add_trace=add_trace,
         action_plan=action_plan,
     )
-    if agent == "crawler_agent" and delegation.plan.requested_by == "user":
+    if delegation.job is None:
+        answer = ""
+    elif agent == "crawler_agent" and delegation.plan.requested_by == "user":
         answer = "我是 CrawlerAgent。采集任务已启动。" if delegation.created else "我是 CrawlerAgent。已有采集任务在运行。"
     else:
         answer = "Crawler 多源采集任务已启动。" if delegation.created else "Crawler 已有任务在运行。"
@@ -9033,20 +9667,7 @@ def _handle_delegate_crawler_route(
             "answer": answer,
             "sources": [],
             "agent": agent,
-            "job": _job_to_dict(delegation.job),
-            "collaboration": _collaboration_dialog_for(
-                delegation.plan.collection_question,
-                delegation.job,
-                delegation.created,
-                requested_by=delegation.plan.requested_by,
-                delivery_target=delegation.plan.delivery_target,
-            ),
-            "delegation": {
-                "requested_by": delegation.plan.requested_by,
-                "delivery_target": delegation.plan.delivery_target,
-                "task": delegation.plan.collection_question,
-                "handoff_brief": delegation.plan.handoff_brief,
-            },
+            **_optional_delegation_payload(delegation),
         },
         trace,
     )
@@ -9093,28 +9714,14 @@ def _handle_crawler_action_plan_delegate_route(
         add_trace=add_trace,
         action_plan=action_plan,
     )
-    answer = "我是 CrawlerAgent。已按本轮计划启动后台采集任务。"
+    answer = "我是 CrawlerAgent。已按本轮计划启动后台采集任务。" if delegation.job is not None else ""
     answer += delegation.note
     return _with_trace(
         {
             "answer": answer,
             "sources": [],
             "agent": agent,
-            "job": _job_to_dict(delegation.job),
-            "collaboration": _collaboration_dialog_for(
-                delegation.plan.collection_question,
-                delegation.job,
-                delegation.created,
-                requested_by=delegation.plan.requested_by,
-                delivery_target=delegation.plan.delivery_target,
-            ),
-            "delegation": {
-                "requested_by": delegation.plan.requested_by,
-                "delivery_target": delegation.plan.delivery_target,
-                "task": delegation.plan.collection_question,
-                "handoff_brief": delegation.plan.handoff_brief,
-                "selected_action_plan": action_plan,
-            },
+            **_optional_delegation_payload(delegation, selected_action_plan=action_plan),
         },
         trace,
     )
@@ -9172,20 +9779,7 @@ def _handle_no_retrieval_results(
                 "sources": [],
                 "context": "",
                 "agent": agent,
-                "job": _job_to_dict(delegation.job),
-                "collaboration": _collaboration_dialog_for(
-                    delegation.plan.collection_question,
-                    delegation.job,
-                    delegation.created,
-                    requested_by=delegation.plan.requested_by,
-                    delivery_target=delegation.plan.delivery_target,
-                ),
-                "delegation": {
-                    "requested_by": delegation.plan.requested_by,
-                    "delivery_target": delegation.plan.delivery_target,
-                    "task": delegation.plan.collection_question,
-                    "handoff_brief": delegation.plan.handoff_brief,
-                },
+                **_optional_delegation_payload(delegation),
             },
             trace,
         )
@@ -9235,6 +9829,15 @@ def _select_mcagent_rag_evidence_or_respond(
     )
     selected = evidence_result.selected
     evidence_report = evidence_result.report
+    if _needs_general_grounded_answer(evidence_question):
+        before_supplement = len(selected)
+        selected = _supplement_project_keyword_results(config, evidence_question, selected, final_k)
+        if len(selected) != before_supplement:
+            add_trace(
+                "decide",
+                "guide_mechanics_evidence_supplemented",
+                {"before": before_supplement, "after": len(selected)},
+            )
     selected_before_entity_filter = len(selected)
     selected = _filter_answer_evidence_with_recovery(evidence_question, selected, rough_results, final_k)
     if selected_before_entity_filter and selected and len(selected) != selected_before_entity_filter:
@@ -9324,21 +9927,8 @@ def _select_mcagent_rag_evidence_or_respond(
                         "sources": [_result_to_dict(item) for item in selected],
                         "context": "",
                         "agent": agent,
-                        "job": _job_to_dict(delegation.job),
                         "evidence": evidence_report.to_dict(),
-                        "collaboration": _collaboration_dialog_for(
-                            delegation.plan.collection_question,
-                            delegation.job,
-                            delegation.created,
-                            requested_by=delegation.plan.requested_by,
-                            delivery_target=delegation.plan.delivery_target,
-                        ),
-                        "delegation": {
-                            "requested_by": delegation.plan.requested_by,
-                            "delivery_target": delegation.plan.delivery_target,
-                            "task": delegation.plan.collection_question,
-                            "handoff_brief": delegation.plan.handoff_brief,
-                        },
+                        **_optional_delegation_payload(delegation),
                     },
                     trace,
                 ),
@@ -10004,12 +10594,7 @@ def _crawler_job_identity_haystack(job: dict[str, Any]) -> str:
 
 def _chat(config: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
     fields = _user_message_fields(payload)
-    timeout_value = str(payload.get("chat_timeout") or payload.get("chat_timeout_seconds") or "").strip()
-    try:
-        timeout_seconds = float(timeout_value or DEFAULT_CHAT_RUNTIME_TIMEOUT_SECONDS)
-    except ValueError:
-        timeout_seconds = DEFAULT_CHAT_RUNTIME_TIMEOUT_SECONDS
-    timeout_seconds = min(max(0.01, timeout_seconds), 240)
+    timeout_seconds = _chat_runtime_timeout_seconds(config, payload, fields)
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     future = executor.submit(_send_agent_message, config, payload, **fields)
     try:
@@ -10021,6 +10606,41 @@ def _chat(config: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
     finally:
         if future.done():
             executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _chat_runtime_timeout_seconds(config: AppConfig, payload: dict[str, Any], fields: dict[str, str]) -> float:
+    timeout_value = str(payload.get("chat_timeout") or payload.get("chat_timeout_seconds") or "").strip()
+    if timeout_value:
+        try:
+            return min(max(0.01, float(timeout_value)), 900.0)
+        except ValueError:
+            pass
+    agent = str(payload.get("agent") or fields.get("to_agent") or "mcagent_rag")
+    model = str(payload.get("model") or payload.get("model_profile_id") or "auto").strip() or "auto"
+    profile_model = "" if model in {"auto", "default"} else model
+    profile = resolve_profile_from_model(config, profile_model, agent=agent)
+    try:
+        profile_timeout = float((profile or {}).get("timeout_seconds") or DEFAULT_CHAT_RUNTIME_TIMEOUT_SECONDS)
+    except (TypeError, ValueError):
+        profile_timeout = float(DEFAULT_CHAT_RUNTIME_TIMEOUT_SECONDS)
+    overhead = 90.0 if agent == "crawler_agent" else 60.0
+    if _payload_requests_crawler_collection(payload, fields):
+        overhead = max(overhead, 120.0)
+    return min(max(float(DEFAULT_CHAT_RUNTIME_TIMEOUT_SECONDS), profile_timeout + overhead), 900.0)
+
+
+def _payload_requests_crawler_collection(payload: dict[str, Any], fields: dict[str, str]) -> bool:
+    text = "\n".join(
+        str(item or "")
+        for item in (
+            payload.get("question"),
+            payload.get("content"),
+            fields.get("content"),
+            fields.get("to_agent"),
+            payload.get("agent"),
+        )
+    )
+    return bool(re.search(r"CrawlerAgent|crawler_agent|Crawler|采集|爬取|抓取|获取|补库|入库|collect|crawl|scrape", text, flags=re.I))
 
 
 def _chat_timeout_diagnostics(config: AppConfig, payload: dict[str, Any], fields: dict[str, str], timeout_seconds: float) -> dict[str, Any]:

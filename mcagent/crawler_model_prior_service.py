@@ -90,12 +90,16 @@ class CrawlerModelPriorService:
             if not alias:
                 continue
             leads.extend(query for query in _lead_queries_for_alias(alias, text) if query != alias)
+        source_specific = _source_specific_leads_for_aliases(lead_aliases, text)
+        candidate_urls = _candidate_urls_for_source_leads(source_specific)
         return self._normalize(
             {
                 "target": target,
                 "aliases": aliases,
                 "likely_source_graph": source_graph,
                 "search_leads": leads,
+                "source_specific_leads": source_specific,
+                "candidate_urls": candidate_urls,
                 "verification_questions": _verification_questions_for_text(target, text),
                 "risk_notes": [
                     "Model prior is unverified and may be wrong; use it only to choose tools and queries.",
@@ -121,8 +125,9 @@ class CrawlerModelPriorService:
             "You are CrawlerAgent before tool execution. Use your model knowledge only as unverified planning prior.\n"
             "The prior may suggest aliases, source ecosystems, likely docs/wiki/project pages, and verification questions.\n"
             "It must not become evidence, citations, accepted sources, or RAG ingest content until objective tools verify it.\n"
-            "Return JSON with keys: target, aliases, likely_source_graph, search_leads, verification_questions, risk_notes.\n"
+            "Return JSON with keys: target, aliases, likely_source_graph, search_leads, source_specific_leads, candidate_urls, verification_questions, risk_notes.\n"
             "Keep every list short and actionable. Search leads must be short query strings, not long sentences.\n"
+            "source_specific_leads may include unverified source-targeted hints such as 'modrinth: project-slug' or 'github: owner/repo'. candidate_urls may include likely public project URLs, but they are still hypotheses until fetched.\n"
             f"Question: {question}\n"
             f"Target hint: {target_hint}\n"
             f"Context: {context_text[:1600]}\n"
@@ -134,16 +139,20 @@ class CrawlerModelPriorService:
     def _normalize(self, raw: dict[str, Any], *, fallback: dict[str, Any]) -> dict[str, Any]:
         raw = raw if isinstance(raw, dict) else {}
         target = _clean_text(raw.get("target") or fallback.get("target") or "", limit=120)
-        aliases = _clean_list(raw.get("aliases") or fallback.get("aliases"), limit=8, item_limit=80)
-        source_graph = _clean_list(raw.get("likely_source_graph") or fallback.get("likely_source_graph"), limit=10, item_limit=120)
-        search_leads = _clean_list(raw.get("search_leads") or fallback.get("search_leads"), limit=14, item_limit=100)
-        verification = _clean_list(raw.get("verification_questions") or fallback.get("verification_questions"), limit=10, item_limit=140)
-        risks = _clean_list(raw.get("risk_notes") or fallback.get("risk_notes"), limit=8, item_limit=160)
+        aliases = _clean_list(_merged_list(raw.get("aliases"), fallback.get("aliases")), limit=8, item_limit=80)
+        source_graph = _clean_list(_merged_list(raw.get("likely_source_graph"), fallback.get("likely_source_graph")), limit=10, item_limit=120)
+        search_leads = _clean_list(_merged_list(raw.get("search_leads"), fallback.get("search_leads")), limit=14, item_limit=100)
+        source_specific = _clean_list(_merged_list(raw.get("source_specific_leads"), fallback.get("source_specific_leads")), limit=10, item_limit=160)
+        candidate_urls = _clean_list(_merged_list(raw.get("candidate_urls"), fallback.get("candidate_urls")), limit=10, item_limit=240)
+        verification = _clean_list(_merged_list(raw.get("verification_questions"), fallback.get("verification_questions")), limit=10, item_limit=140)
+        risks = _clean_list(_merged_list(raw.get("risk_notes"), fallback.get("risk_notes")), limit=8, item_limit=160)
         return {
             "target": target,
             "aliases": aliases,
             "likely_source_graph": source_graph,
             "search_leads": search_leads,
+            "source_specific_leads": source_specific,
+            "candidate_urls": candidate_urls,
             "verification_questions": verification,
             "risk_notes": risks,
             "evidence_status": "hypothesis_only",
@@ -164,6 +173,16 @@ def _first_json_object(text: str) -> str:
 
 def _clean_text(value: Any, *, limit: int) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()[:limit]
+
+
+def _merged_list(primary: Any, fallback: Any) -> list[Any]:
+    output: list[Any] = []
+    for value in (primary, fallback):
+        if isinstance(value, list):
+            output.extend(value)
+        elif isinstance(value, str) and value.strip():
+            output.append(value)
+    return output
 
 
 def _clean_list(value: Any, *, limit: int, item_limit: int) -> list[str]:
@@ -278,6 +297,57 @@ def _lead_queries_for_alias(alias: str, text: str) -> list[str]:
     if any(term in lowered for term in ("download", "archive", ".mrpack", ".zip", "下载", "包体")):
         leads.extend([f"{alias} download", f"{alias} .mrpack .zip"])
     return leads
+
+
+def _slug_candidates(alias: str) -> list[str]:
+    text = re.sub(r"\s*/\s*", " ", str(alias or ""))
+    parts = re.findall(r"[A-Za-z][A-Za-z0-9'’_.-]*(?:\s+[A-Za-z][A-Za-z0-9'’_.-]*)*", text)
+    candidates: list[str] = []
+    for part in parts:
+        if re.search(r"\b(?:MCagent|MCAgent|CrawlerAgent|Crawler|RAG|manifest|config|download|version)\b", part, flags=re.I):
+            continue
+        cleaned = part.replace("’", "'")
+        cleaned = re.sub(r"'s\b", "s", cleaned, flags=re.I)
+        slug = re.sub(r"[^a-z0-9]+", "-", cleaned.lower()).strip("-")
+        if 3 <= len(slug) <= 80 and slug not in {"minecraft", "modpack", "mod", "guide", "wiki"}:
+            candidates.append(slug)
+    return _clean_list(candidates, limit=4, item_limit=80)
+
+
+def _source_specific_leads_for_aliases(aliases: list[str], text: str) -> list[str]:
+    if not re.search(r"minecraft|mc|整合包|模组|modpack|mod|curseforge|modrinth|mc百科", text, flags=re.I):
+        return []
+    leads: list[str] = []
+    for alias in aliases[:4]:
+        for slug in _slug_candidates(alias):
+            leads.extend(
+                [
+                    f"modrinth: {slug}",
+                    f"curseforge: {slug}",
+                    f"github: {slug}",
+                ]
+            )
+    return _clean_list(leads, limit=10, item_limit=160)
+
+
+def _candidate_urls_for_source_leads(source_specific_leads: list[str]) -> list[str]:
+    urls: list[str] = []
+    for lead in source_specific_leads:
+        if ":" not in lead:
+            continue
+        source, value = [part.strip() for part in lead.split(":", 1)]
+        source = source.lower()
+        slug = re.sub(r"[^a-z0-9_-]+", "-", value.lower()).strip("-")
+        if not slug:
+            continue
+        if source == "modrinth":
+            urls.append(f"https://modrinth.com/mod/{slug}")
+            urls.append(f"https://www.minecraft-guides.com/wiki/{slug}/")
+        elif source == "curseforge":
+            urls.append(f"https://www.curseforge.com/minecraft/mc-mods/{slug}")
+        elif source == "github":
+            urls.append(f"https://github.com/search?q={slug}+minecraft+mod")
+    return _clean_list(urls, limit=10, item_limit=240)
 
 
 def _verification_questions_for_text(target: str, text: str) -> list[str]:

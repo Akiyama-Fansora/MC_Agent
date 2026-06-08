@@ -3515,7 +3515,7 @@ def test_crawler_reflection_timeout_finishes_after_repeated_low_yield() -> None:
                 {"source": "web_discovery", "empty_result": True},
                 {"source": "playwright", "empty_result": True},
             ],
-            [{"source": "followup", "query": "target"}],
+            [],
             session_summary={},
             max_new_tasks=2,
             timeout_seconds=1,
@@ -3527,6 +3527,35 @@ def test_crawler_reflection_timeout_finishes_after_repeated_low_yield() -> None:
     assert_equal("timeout_action", decision.get("action"), "finish")
     assert_equal("timeout_planner", decision.get("planner"), "runtime_reflection_timeout")
     assert_true("timeout_issue", "reflection_timeout_finished_after_low_yield" in decision.get("contract", {}).get("issues", []))
+
+
+def test_crawler_reflection_timeout_continues_low_yield_when_pending_exists() -> None:
+    original_reflect = web_server.reflect_crawler_progress
+
+    def slow_reflect(*_args, **_kwargs):
+        time.sleep(2)
+        return {"action": "finish"}
+
+    web_server.reflect_crawler_progress = slow_reflect  # type: ignore[assignment]
+    try:
+        decision = web_server._reflect_crawler_progress_with_timeout(
+            "collect target",
+            {"topic": "target"},
+            [
+                {"source": "web_discovery", "empty_result": True},
+                {"source": "playwright", "empty_result": True},
+            ],
+            [{"source": "web_discovery", "query": "target guide"}],
+            session_summary={},
+            max_new_tasks=2,
+            timeout_seconds=1,
+        )
+    finally:
+        web_server.reflect_crawler_progress = original_reflect  # type: ignore[assignment]
+    assert_equal("timeout_action", decision.get("action"), "execute_pending")
+    issues = decision.get("contract", {}).get("issues", [])
+    assert_true("continued_issue", "reflection_timeout_continued_with_pending_task" in issues, issues)
+    assert_true("low_yield_issue_visible", "reflection_timeout_low_yield_but_pending_task_available" in issues, issues)
 
 
 def test_modpack_download_defaults_to_probe_only_command() -> None:
@@ -4004,6 +4033,63 @@ def test_local_modpack_archive_fact_answer_uses_download_evidence() -> None:
     assert_true("archive_probe", "Content-Range" in answer and "504b030414000000" in answer)
 
 
+def test_guide_question_prefers_mechanics_chunk_over_listing_chunk() -> None:
+    farmers_delight = "\u519c\u592b\u4e50\u4e8b"
+    question = farmers_delight + " Farmer's Delight \u65b0\u624b\u5e94\u8be5\u600e\u6837\u5f00\u59cb\uff1f\u8bf7\u7ed9\u51fa\u6765\u6e90\u7ebf\u7d22\u3002"
+    listing_chunk = SearchResult(
+        rank=1,
+        score=0.95,
+        chunk_id=1,
+        document_id=1,
+        chunk_index=0,
+        title=f"[FD]{farmers_delight} (Farmer's Delight)",
+        source_path=r"D:\case\crawler_exports\mcmod\accepted_by_crawler\mcmod_class_FD-Farmer-s-Delight---MC-Minecraft-MOD.md",
+        url="https://www.mcmod.cn/class/2820.html",
+        text=(
+            "\u8fd0\u884c\u73af\u5883\uff1a\u5ba2\u6237\u7aef\u9700\u88c5\uff0c\u670d\u52a1\u7aef\u9700\u88c5\u3002"
+            "\u4f9d\u8d56\u519c\u592b\u4e50\u4e8b\u7684 Mod \u5217\u8868\uff1aAppleSkin\u3001Corn Delight\u3001Nether's Delight\u3002"
+            "\u5173\u7cfb\u7c7b\u578b\uff1a\u524d\u7f6e\u3001\u9644\u5c5e\u3001\u8054\u52a8\u3002\u8bc4\u5206\u3001\u4e0b\u8f7d\u6b21\u6570\u3001\u7f16\u8f91\u8d44\u6599\u3002"
+        ),
+    )
+    mechanics_chunk = SearchResult(
+        rank=2,
+        score=0.72,
+        chunk_id=2,
+        document_id=1,
+        chunk_index=3,
+        title=f"[FD]{farmers_delight} (Farmer's Delight)",
+        source_path=listing_chunk.source_path,
+        url=listing_chunk.url,
+        text=(
+            "\u672c\u6a21\u7ec4\u6ca1\u6709\u6e38\u620f\u5185\u7684\u6307\u5bfc\u624b\u518c\uff0c\u53ef\u4ee5\u8ddf\u968f\u8fdb\u5ea6\u63d0\u793a\uff0c\u9ed8\u8ba4\u6309 L \u6253\u5f00\u8fdb\u5ea6\u754c\u9762\u3002"
+            "\u63a2\u7d22\u4e16\u754c\u65f6\u4f1a\u627e\u5230\u91ce\u751f\u4f5c\u7269\uff0c\u5148\u91c7\u96c6\u6837\u672c\u6216\u79cd\u5b50\uff0c\u5efa\u9020\u4e00\u4e2a\u5c0f\u519c\u573a\u3002"
+            "\u524d\u671f\u53ef\u4ee5\u5148\u505a\u71e7\u77f3\u5200\uff0c\u7528\u5200\u548c\u7827\u677f\u5904\u7406\u98df\u6750\u3002"
+            "\u53a8\u9505\u548c\u714e\u9505\u9700\u8981\u70ed\u6e90\uff0c\u53a8\u9505 GUI \u548c\u5408\u6210\u4e66\u80fd\u5e2e\u4f60\u67e5\u70f9\u996a\u914d\u65b9\u3002"
+        ),
+    )
+    unrelated = SearchResult(
+        rank=3,
+        score=0.65,
+        chunk_id=3,
+        document_id=2,
+        chunk_index=0,
+        title="AppleSkin",
+        source_path=r"D:\case\crawler_exports\mcmod\mod_appleskin.md",
+        url="https://www.mcmod.cn/class/744.html",
+        text="AppleSkin \u4f1a\u5728 HUD \u663e\u793a\u9965\u997f\u503c\u548c\u98df\u7269\u6548\u679c\u3002",
+    )
+    selected = web_server._filter_answer_evidence_with_recovery(
+        question,
+        [listing_chunk, mechanics_chunk, unrelated],
+        [listing_chunk, mechanics_chunk, unrelated],
+        3,
+    )
+    assert_true("keeps_mechanics_chunk", selected and selected[0].chunk_id == mechanics_chunk.chunk_id, [item.chunk_id for item in selected])
+    answer = web_server._local_extractive_answer(question, selected, fast=True)
+    assert_true("answer_mentions_progress_or_tools", any(term in answer for term in ("\u8fdb\u5ea6", "\u7827\u677f", "\u5200", "\u53a8\u9505", "\u91ce\u751f\u4f5c\u7269")), answer)
+    assert_true("answer_avoids_listing_only", "\u4f9d\u8d56\u519c\u592b\u4e50\u4e8b\u7684 Mod \u5217\u8868" not in answer, answer)
+
+
 if __name__ == "__main__":
     test_direct_crawler_no_save_url_uses_temporary_extract_boundary()
     test_grounded_answer_does_not_fallback_to_ollama_after_profile_error()
@@ -4086,6 +4172,7 @@ if __name__ == "__main__":
     test_mcmod_search_has_bounded_task_budget()
     test_public_discovery_tools_have_bounded_task_budget()
     test_crawler_reflection_timeout_continues_with_pending_task()
+    test_crawler_reflection_timeout_continues_low_yield_when_pending_exists()
     test_modpack_download_defaults_to_probe_only_command()
     test_modpack_download_allows_explicit_full_download_command()
     test_modpack_archive_lookup_skips_corrupt_zip()
@@ -4104,4 +4191,5 @@ if __name__ == "__main__":
     test_jobs_payload_is_lightweight_and_does_not_refresh_manifest_files()
     test_modpack_download_evidence_is_manifest_fact_recall()
     test_local_modpack_archive_fact_answer_uses_download_evidence()
+    test_guide_question_prefers_mechanics_chunk_over_listing_chunk()
     print("web_server_side_effect_guard_scenarios passed")

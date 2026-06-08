@@ -291,6 +291,33 @@ def verdict_from_checks(checks: dict[str, bool]) -> str:
     return "passed" if checks and all(bool(value) for value in checks.values()) else "failed"
 
 
+def job_focus_text(job: dict | None) -> str:
+    if not isinstance(job, dict):
+        return ""
+    result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    plan = result.get("plan") if isinstance(result.get("plan"), dict) else {}
+    tasks = result.get("planned_tasks") if isinstance(result.get("planned_tasks"), list) else []
+    done = result.get("tasks") if isinstance(result.get("tasks"), list) else []
+    parts: list[str] = []
+    for key in ("topic", "target_hint"):
+        parts.append(str(plan.get(key) or ""))
+    for item in [*tasks, *done]:
+        if isinstance(item, dict):
+            parts.append(str(item.get("query") or ""))
+            parts.append(str(item.get("reason") or ""))
+    return "\n".join(part for part in parts if part)
+
+
+def job_mentions_target(job: dict | None, *terms: str) -> bool:
+    text = job_focus_text(job)
+    return any(term and term in text for term in terms)
+
+
+def job_has_descriptive_relation_target(job: dict | None) -> bool:
+    text = job_focus_text(job)
+    return any(value in text for value in ("涵盖整合包", "覆盖整合包", "包括整合包", "包含整合包"))
+
+
 def pending_verdict(base_checks: dict[str, bool]) -> str:
     return "pending" if base_checks and all(bool(value) for value in base_checks.values()) else "failed"
 
@@ -514,6 +541,8 @@ def run_direction_2(session: str, stop_jobs: bool, wait_seconds: int) -> None:
             semantic_checks["crawler_actions_visible"] = bool(task_results)
             semantic_checks["delegated_work_executed_in_job"] = bool(task_results) if "delegate_crawler" in planned_tools else True
             semantic_checks["crawler_self_audit_visible"] = bool(((completed.get("readable") or {}).get("self_audit") if isinstance(completed.get("readable"), dict) else None))
+            semantic_checks["job_target_grounded"] = job_mentions_target(completed, "乌托邦", "Utopian")
+            semantic_checks["no_descriptive_relation_target"] = not job_has_descriptive_relation_target(completed)
             replace_direction_record(
                 "D2",
                 verdict=verdict_from_checks(semantic_checks),
@@ -525,6 +554,8 @@ def run_direction_2(session: str, stop_jobs: bool, wait_seconds: int) -> None:
             )
             require("d2_job_completed", semantic_checks["job_completed"], json.dumps(completed, ensure_ascii=False, default=str)[:1200])
             require("d2_crawler_actions_visible", semantic_checks["crawler_actions_visible"], json.dumps(result, ensure_ascii=False, default=str)[:1200])
+            require("d2_job_target_grounded", semantic_checks["job_target_grounded"], json.dumps(compact_job_action_chain(completed), ensure_ascii=False, default=str)[:1600])
+            require("d2_no_descriptive_relation_target", semantic_checks["no_descriptive_relation_target"], json.dumps(compact_job_action_chain(completed), ensure_ascii=False, default=str)[:1600])
             require(
                 "d2_delegated_work_executed_in_job",
                 semantic_checks["delegated_work_executed_in_job"],
@@ -617,6 +648,8 @@ def run_direction_4(session: str, wait_seconds: int) -> None:
         )
         raise
     semantic_checks["job_completed"] = completed.get("status") in {"completed", "succeeded"}
+    semantic_checks["job_target_grounded"] = job_mentions_target(completed, "乌托邦", "Utopian")
+    semantic_checks["no_descriptive_relation_target"] = not job_has_descriptive_relation_target(completed)
     if not semantic_checks["job_completed"]:
         replace_direction_record(
             "D4",
@@ -628,6 +661,8 @@ def run_direction_4(session: str, wait_seconds: int) -> None:
             inter_agent_exchanges=inter_agent_exchanges_from_job(completed),
         )
     require("d4_job_completed", completed.get("status") in {"completed", "succeeded"}, json.dumps(completed, ensure_ascii=False, default=str)[:1200])
+    require("d4_job_target_grounded", semantic_checks["job_target_grounded"], json.dumps(compact_job_action_chain(completed), ensure_ascii=False, default=str)[:1600])
+    require("d4_no_descriptive_relation_target", semantic_checks["no_descriptive_relation_target"], json.dumps(compact_job_action_chain(completed), ensure_ascii=False, default=str)[:1600])
     result = completed.get("result") if isinstance(completed.get("result"), dict) else {}
     plan = result.get("plan") if isinstance(result.get("plan"), dict) else {}
     require(
@@ -744,9 +779,19 @@ def run_direction_5(session: str, wait_seconds: int, output_dir: Path) -> None:
     semantic_checks["files_exist"] = all(path.exists() for path in expected)
     require("d5_files_exist", semantic_checks["files_exist"], "\n".join(str(path) for path in expected if not path.exists()))
     manifest = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
-    semantic_checks["manifest_ok"] = manifest.get("status") == "ok" and int(manifest.get("record_count") or 0) >= 1
+    manifest_records = manifest.get("records") if isinstance(manifest.get("records"), list) else []
+    manifest_record_count = int(manifest.get("record_count") or len(manifest_records) or 0)
+    semantic_checks["manifest_ok"] = manifest.get("status") == "ok" and manifest_record_count >= 1
     require("d5_manifest_ok", semantic_checks["manifest_ok"], json.dumps(manifest, ensure_ascii=False)[:800])
-    semantic_checks["has_expected_fields"] = bool(manifest.get("fields")) or all(key in json.dumps(manifest, ensure_ascii=False).lower() for key in ("name", "price"))
+    items = json.loads((output_dir / "items.json").read_text(encoding="utf-8"))
+    item_rows = items if isinstance(items, list) else []
+    semantic_checks["item_rows"] = len(item_rows) >= 5
+    require("d5_item_rows", semantic_checks["item_rows"], json.dumps(item_rows, ensure_ascii=False)[:800])
+    semantic_checks["has_expected_fields"] = all(
+        isinstance(row, dict) and all(str(row.get(key) or "").strip() for key in ("name", "price", "url"))
+        for row in item_rows[:5]
+    )
+    require("d5_has_expected_fields", semantic_checks["has_expected_fields"], json.dumps(item_rows[:5], ensure_ascii=False)[:800])
     replace_direction_record(
         "D5",
         verdict=verdict_from_checks(semantic_checks),

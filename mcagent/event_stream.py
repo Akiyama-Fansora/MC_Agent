@@ -30,7 +30,18 @@ class ThreadedEventStream:
             self._target(self.emit)
         except Exception as exc:  # noqa: BLE001 - stream errors must reach the UI.
             traceback.print_exc()
-            self.emit("error", {"error": f"{type(exc).__name__}: {exc}"})
+            error = {"error": f"{type(exc).__name__}: {exc}"}
+            self.emit("error", error)
+            self.emit(
+                "response",
+                {
+                    "answer": f"Agent 运行时异常：{error['error']}",
+                    "sources": [],
+                    "context": "",
+                    "agent": "runtime",
+                    "runtime_error": error,
+                },
+            )
         finally:
             self._events.put(None)
 
