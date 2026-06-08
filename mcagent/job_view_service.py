@@ -365,11 +365,11 @@ class JobReadableViewService:
         if status in {"queued", "running"}:
             return "Crawler 正在采集。默认只显示关键进展，完整过程已折叠到详情。"
         if useful_outputs:
-            return f"本轮拿到/复用了 {len(useful_outputs)} 类可用资料；另有 {empty} 个空结果、{off_topic} 个跑偏结果已折叠。"
+            return f"本轮拿到/复用了 {len(useful_outputs)} 类可用资料；另有 {empty} 个空结果、{off_topic} 个跑偏结果已折叠。自审详情会列出接受、拒绝、待复核和入库状态。"
         if success_count:
             return f"本轮记录到 {success_count} 个可用候选，但没有形成新的外部资料摘要。"
         if blocked_outputs:
-            return "本轮没有稳定补到新资料，主要受空结果、跑偏或访问限制影响。"
+            return "本轮没有稳定补到新资料，主要受空结果、跑偏或访问限制影响。自审详情会列出受限来源、拒绝原因和下一步动作。"
         return "本轮采集已结束。"
 
     def _timeline(

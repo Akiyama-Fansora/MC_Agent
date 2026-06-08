@@ -41,7 +41,14 @@ def test_running_job_view_explains_current_action_and_counts() -> None:
                 {"source": "playwright", "query": "乌托邦探险之旅 玩法", "reason": "教程页"},
             ],
             "tasks": [
-                {"source": "mcmod", "query": "乌托邦探险之旅", "returncode": 0, "ingest_deferred": True, "manifest_stats": {"records": 2}, "topic_validation": {"matched": True}},
+                {
+                    "source": "mcmod",
+                    "query": "乌托邦探险之旅",
+                    "returncode": 0,
+                    "ingest_deferred": True,
+                    "manifest_stats": {"records": 2},
+                    "topic_validation": {"matched": True, "crawler_review_action": "accept"},
+                },
                 {"source": "playwright", "query": "乌托邦探险之旅 玩法", "returncode": 1, "output": "HTTP 429 quota exceeded"},
             ],
             "replan_count": 1,
@@ -69,6 +76,9 @@ def test_running_job_view_explains_current_action_and_counts() -> None:
     assert_equal("self_audit_accepted", view["self_audit"]["counts"]["accepted"], 1)
     assert_equal("self_audit_rejected", view["self_audit"]["counts"]["rejected"], 1)
     assert_true("self_audit_summary", "接受 1 个来源" in view["self_audit_summary"])
+    assert_true("accepted_source_decision", view["self_audit"]["accepted_sources"][0]["review_note"].startswith("Accepted by CrawlerAgent"))
+    assert_true("rejected_source_decision", view["self_audit"]["rejected_sources"][0]["review_note"].startswith("Rejected by CrawlerAgent"))
+    assert_true("source_decisions_visible", any(item["decision"] == "accepted" for item in view["self_audit"]["source_decisions"]))
 
 
 def test_waiting_job_view_is_plain_language() -> None:
