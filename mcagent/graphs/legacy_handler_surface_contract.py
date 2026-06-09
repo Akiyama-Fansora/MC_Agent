@@ -134,6 +134,7 @@ def build_legacy_handler_surface_contract(
     candidates = _surface_candidates_for_agent(agent_id)
     statuses_by_stage = _observed_statuses(route_execution_contract)
     observed_surfaces = _observed_surfaces(candidates, statuses_by_stage)
+    graph_status_executed = bool(route_execution_contract.get("route_execution_executed_by_graph")) and "status" in observed_surfaces
     side_effect_surfaces = [str(item["surface"]) for item in candidates if item.get("side_effect_surface")]
     return {
         "contract_id": f"{thread_id}:{agent_id}:legacy_handler_surface",
@@ -154,12 +155,13 @@ def build_legacy_handler_surface_contract(
         "observed_surface_signal_count": len(observed_surfaces),
         "decision_owner": decision_owner,
         "handler_selection_executed_by_graph": False,
-        "handler_executed_by_contract": False,
+        "handler_executed_by_contract": graph_status_executed,
         "side_effect_executed_by_contract": False,
-        "legacy_handlers_still_run_in_adapter": True,
-        "legacy_trace_observation_only": True,
+        "legacy_handlers_still_run_in_adapter": not graph_status_executed,
+        "legacy_trace_observation_only": not graph_status_executed,
         "objective_contract": (
-            "The graph records legacy handler surface facts only. It does not select a handler, "
-            "run a handler, start jobs, persist evidence, judge evidence, alter routing, or write the final response."
+            "The graph records handler surface facts. It does not select handlers, start jobs, persist evidence, "
+            "judge evidence, or alter routing. A migrated status route may be observed as graph-executed only after "
+            "the Agent router selected status."
         ),
     }

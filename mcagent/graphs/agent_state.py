@@ -21,6 +21,7 @@ class AgentGraphState(TypedDict):
     contextual_question_contract: NotRequired[dict[str, Any]]
     route_input_contract: NotRequired[dict[str, Any]]
     runtime_request: NotRequired[dict[str, Any]]
+    route_decision: NotRequired[dict[str, Any]]
     runtime_adapter: NotRequired[dict[str, Any]]
     route_decision_output_contract: NotRequired[dict[str, Any]]
     route_execution_contract: NotRequired[dict[str, Any]]

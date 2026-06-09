@@ -30,6 +30,15 @@ def _runtime_request_summary(runtime_request: dict[str, Any] | None) -> dict[str
     }
 
 
+def payload_with_graph_route_decision(payload: dict[str, Any], route_decision: dict[str, Any] | None) -> dict[str, Any]:
+    """Attach an Agent-owned graph route decision for legacy execution reuse."""
+
+    next_payload = dict(payload)
+    if isinstance(route_decision, dict) and route_decision.get("routed"):
+        next_payload["_graph_route_decision"] = dict(route_decision)
+    return next_payload
+
+
 def legacy_runtime_adapter_metadata(
     *,
     agent_id: str,
@@ -64,16 +73,25 @@ def deliver_via_legacy_runtime(
     graph_name: str,
     node_name: str,
     runtime_request: dict[str, Any] | None = None,
+    route_decision: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Forward graph payloads through the current web_server runtime during migration."""
 
     request_payload = runtime_request.get("payload") if isinstance(runtime_request, dict) and isinstance(runtime_request.get("payload"), dict) else payload
+    request_payload = payload_with_graph_route_decision(request_payload, route_decision)
     metadata = legacy_runtime_adapter_metadata(
         agent_id=agent_id,
         graph_name=graph_name,
         node_name=node_name,
         runtime_request=runtime_request,
     )
+    if isinstance(route_decision, dict) and route_decision.get("routed"):
+        metadata = {
+            **metadata,
+            "route_decision_id": route_decision.get("route_decision_id") or "",
+            "route_intent": route_decision.get("route_intent") or "",
+            "reuses_graph_agent_route_decision": True,
+        }
     result = dict(agent_delivery(config, dict(request_payload), emit=emit))
     result_metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
     result["metadata"] = {**result_metadata, "legacy_runtime_adapter": metadata}

@@ -34,7 +34,7 @@ from .artifact_reference_service import ArtifactReferenceService
 from .artifact_save_service import ArtifactSaveError, ArtifactSaveService
 from .agent_execution import build_agent_execution_context
 from .agent_executor import AgentToolExecutor
-from .agent_router import LlmAgentToolRouterService, json_object_from_llm_text
+from .agent_router import AgentRouteDecision, LlmAgentToolRouterService, json_object_from_llm_text
 from .chat import SYSTEM_PROMPT, format_context, format_sources
 from .cleaners import _HTMLTextExtractor, normalize_text
 from .config import AppConfig, OllamaConfig, PROJECT_ROOT, load_config
@@ -95,6 +95,7 @@ DEFAULT_CHAT_RUNTIME_TIMEOUT_SECONDS = 75
 HANDOFF_BRIEF_LLM_TIMEOUT_SECONDS = 20
 RUNTIME_REVIEW_LLM_TIMEOUT_SECONDS = 20
 MAX_JOBS = 40
+GRAPH_ROUTE_DECISION_TOKEN = uuid.uuid4().hex
 GROW_PROGRESS_PATH = PROJECT_ROOT / "runtime" / "grow_knowledge_base_progress.json"
 JOBS_HISTORY_PATH = PROJECT_ROOT / "runtime" / "jobs_history.json"
 GROW_LOG_CANDIDATES = (
@@ -9179,6 +9180,207 @@ def _trace_agent_message(add_trace: Any, message: AgentMessage, status: str = "r
     add_trace("message", status, message.to_dict())
 
 
+def _trusted_graph_route_decision(payload: dict[str, Any], *, agent: str) -> dict[str, Any]:
+    decision = payload.get("_graph_route_decision")
+    if not isinstance(decision, dict):
+        return {}
+    if decision.get("trusted_runtime_token") != GRAPH_ROUTE_DECISION_TOKEN:
+        return {}
+    if str(decision.get("agent") or decision.get("agent_id") or "") != agent:
+        return {}
+    if not bool(decision.get("routed")):
+        return {}
+    return decision
+
+
+def _route_from_graph_decision(decision: dict[str, Any], *, add_trace: Any, original_question: str) -> AgentRouteDecision:
+    tool_decision = dict(decision.get("tool_decision") if isinstance(decision.get("tool_decision"), dict) else {})
+    route_confirmation = dict(decision.get("route_confirmation") if isinstance(decision.get("route_confirmation"), dict) else {})
+    action_plan = [dict(item) for item in decision.get("action_plan") or [] if isinstance(item, dict)]
+    rag_focus = str(decision.get("rag_focus") or "")
+    route_intent = str(decision.get("route_intent") or tool_decision.get("tool") or "answer")
+    selected_tool = str(decision.get("selected_tool") or tool_decision.get("tool") or route_intent)
+    add_trace(
+        "decide",
+        "tool_selected",
+        {
+            "tool": selected_tool,
+            "original_question": original_question,
+            "decision": tool_decision,
+            "route_decision_id": decision.get("route_decision_id") or "",
+            "reused_graph_route_decision": True,
+            "elapsed_ms": decision.get("elapsed_ms") if "elapsed_ms" in decision else 0,
+        },
+    )
+    if action_plan:
+        add_trace("plan", "created", {"steps": action_plan, "reused_graph_route_decision": True})
+    if rag_focus:
+        add_trace("plan", "rag_focus", {"question": rag_focus, "reused_graph_route_decision": True})
+    confirmation_trace = dict(route_confirmation)
+    confirmation_trace["reused_graph_route_decision"] = True
+    confirmation_trace["route_decision_id"] = decision.get("route_decision_id") or ""
+    add_trace("decide", "next_step_confirmed", confirmation_trace)
+    return AgentRouteDecision(
+        route_intent=route_intent,
+        tool_decision=tool_decision,
+        route_confirmation=route_confirmation,
+        action_plan=action_plan,
+        rag_focus=rag_focus,
+        planned_workflow=bool(decision.get("planned_workflow")),
+        planned_delegate=bool(decision.get("planned_delegate")),
+    )
+
+
+def _route_agent_decision_for_graph(
+    config: AppConfig,
+    payload: dict[str, Any],
+    *,
+    agent_id: str,
+    graph_name: str,
+    node_name: str,
+    runtime_request: dict[str, Any],
+) -> dict[str, Any]:
+    payload = dict(payload)
+    payload["agent"] = agent_id
+    run = build_agent_execution_context(config, payload, token_resolver=_answer_max_tokens, emit=None)
+    original_question = run.original_question
+    question = run.question
+    agent = run.agent
+    thread_id = str(payload.get("session_id") or runtime_request.get("session_id") or "default")
+    route_decision_id = f"{thread_id}:{agent}:route_decision"
+    base = {
+        "route_decision_id": route_decision_id,
+        "node": node_name,
+        "graph": graph_name,
+        "agent_id": agent,
+        "agent": agent,
+        "session_id": thread_id,
+        "decision_owner": "CrawlerAgent LLM" if agent == "crawler_agent" else "MCagent LLM",
+        "trusted_runtime_token": GRAPH_ROUTE_DECISION_TOKEN,
+        "side_effect_executed": False,
+        "objective_contract": (
+            "This route decision is produced by the existing Agent router/LLM. The graph does not use keyword "
+            "routing, AgentMessage metadata, or tool contracts to choose a route."
+        ),
+    }
+    if not question:
+        return {**base, "routed": False, "route_intent": "", "legacy_fallback_required": True, "reason": "empty_question"}
+    incoming_message = _incoming_agent_message(payload, agent=agent, question=question)
+    _trace_agent_message(run.add_trace, incoming_message)
+    context_only_agent_message = agent == "mcagent_rag" and incoming_message.from_agent == "CrawlerAgent" and _is_context_only_agent_message(incoming_message)
+    collection_request_agent_message = agent == "crawler_agent" and _is_collection_request_agent_message(incoming_message)
+    if _question_looks_transport_garbled(question):
+        return {**base, "routed": False, "route_intent": "", "legacy_fallback_required": True, "reason": "invalid_encoding_precheck"}
+    session_summary = _session_summary(payload)
+    session_summary = _session_summary_with_received_message(session_summary, incoming_message)
+    if (
+        agent == "mcagent_rag"
+        and incoming_message.from_agent_id == "user"
+        and _user_explicitly_asked_mcagent_to_tell_crawler(original_question)
+        and not _forbids_crawler_handoff(original_question)
+    ):
+        return {**base, "routed": False, "route_intent": "", "legacy_fallback_required": True, "reason": "legacy_pre_route_message_relay"}
+    retrieval_note = ""
+    if agent == "mcagent_rag":
+        contextual_question, retrieval_note, rewritten = _contextualize_question(payload, question)
+        if rewritten:
+            question = contextual_question
+            run.question = question
+            run.add_trace("observe", "contextualized", {"original": original_question, "rewritten": question})
+    if context_only_agent_message:
+        return {**base, "routed": False, "route_intent": "", "legacy_fallback_required": True, "reason": "legacy_context_only_message_reply"}
+    if collection_request_agent_message:
+        run.add_trace(
+            "message",
+            "collection_request_received_for_agent_decision",
+            {
+                "reason": "CrawlerAgent received a collection_request AgentMessage. The message is context only; CrawlerAgent must still choose the next tool from its own catalog.",
+                "from_agent": incoming_message.from_agent,
+                "to_agent": incoming_message.to_agent,
+                "intent": incoming_message.intent,
+                "metadata": incoming_message.metadata,
+            },
+        )
+    started = time.time()
+    router = LlmAgentToolRouterService(
+        select_client=_selected_llm_client,
+        action_plan_has_tool=_action_plan_has_tool,
+    )
+    route = router.route(run, session_summary=session_summary)
+    tool_decision = dict(route.tool_decision)
+    return {
+        **base,
+        "routed": True,
+        "legacy_fallback_required": route.route_intent != "status",
+        "route_intent": route.route_intent,
+        "selected_tool": str(tool_decision.get("tool") or route.route_intent),
+        "tool_decision": tool_decision,
+        "route_confirmation": dict(route.route_confirmation),
+        "action_plan": [dict(item) for item in route.action_plan if isinstance(item, dict)],
+        "rag_focus": route.rag_focus,
+        "planned_workflow": route.planned_workflow,
+        "planned_delegate": route.planned_delegate,
+        "original_question": original_question,
+        "question": question,
+        "model": run.model,
+        "temperature": run.temperature,
+        "max_tokens": run.max_tokens,
+        "session_summary": session_summary,
+        "retrieval_note": retrieval_note,
+        "flags": {
+            "context_only_agent_message": context_only_agent_message,
+            "collection_request_agent_message": collection_request_agent_message,
+        },
+        "incoming_message": incoming_message.to_dict(),
+        "trace": [dict(step) for step in run.trace.steps],
+        "elapsed_ms": round((time.time() - started) * 1000),
+    }
+
+
+def _execute_graph_status_route(
+    config: AppConfig,
+    payload: dict[str, Any],
+    *,
+    emit: Any | None = None,
+    agent_id: str,
+    graph_name: str,  # noqa: ARG001 - recorded by graph adapter metadata.
+    node_name: str,  # noqa: ARG001 - recorded by graph adapter metadata.
+    runtime_request: dict[str, Any],  # noqa: ARG001 - recorded by graph adapter metadata.
+    route_decision: dict[str, Any],
+) -> dict[str, Any]:
+    if str(route_decision.get("route_intent") or "") != "status":
+        raise RuntimeError("Graph status execution requires an Agent-selected status route.")
+    trace = [dict(step) for step in route_decision.get("trace") or [] if isinstance(step, dict)]
+    status_confirmation = _reuse_route_confirmation(
+        dict(route_decision.get("route_confirmation") if isinstance(route_decision.get("route_confirmation"), dict) else {}),
+        proposed_tool="status",
+        proposed_goal="Read crawler/import/background job status.",
+    )
+    step = _trace_step("status", "next_step_confirmed", status_confirmation)
+    trace.append(step)
+    if emit is not None:
+        emit("trace", step)
+    response = _crawler_monitor_answer(config)
+    response.setdefault("agent", agent_id)
+    if "agent_message" not in response and str(response.get("answer") or "").strip():
+        response["agent_message"] = agent_reply_message_from_payload(
+            {**payload, "agent": agent_id},
+            from_agent_id=str(response.get("agent") or agent_id),
+            content=str(response.get("answer") or ""),
+        ).to_dict()
+    response["metadata"] = {
+        **(response.get("metadata") if isinstance(response.get("metadata"), dict) else {}),
+        "graph_route_decision": {
+            "routed": True,
+            "route_decision_id": route_decision.get("route_decision_id") or "",
+            "route_intent": route_decision.get("route_intent") or "",
+            "decision_owner": route_decision.get("decision_owner") or "",
+        },
+    }
+    response["trace"] = trace
+    return response
+
+
 def _agent_message_response_trace(request: AgentMessage, reply: AgentMessage) -> dict[str, Any]:
     return {
         "request": request.to_dict(),
@@ -9236,6 +9438,8 @@ def _send_agent_message(
         requires_reply=message.requires_reply,
         metadata=message.metadata,
         agent_delivery=_deliver_agent_message,
+        route_decider=_route_agent_decision_for_graph,
+        status_executor=_execute_graph_status_route,
     )
     _record_agent_response_event(normalize_session_id(message.conversation_id or payload.get("session_id")), result)
     return result
@@ -11112,7 +11316,19 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
         select_client=_selected_llm_client,
         action_plan_has_tool=_action_plan_has_tool,
     )
-    route = router.route(run, session_summary=session_summary)
+    graph_route_decision = _trusted_graph_route_decision(payload, agent=agent)
+    if graph_route_decision:
+        question = str(graph_route_decision.get("question") or question)
+        run.question = question
+        retrieval_note = str(graph_route_decision.get("retrieval_note") or retrieval_note)
+        if isinstance(graph_route_decision.get("session_summary"), dict):
+            session_summary = dict(graph_route_decision.get("session_summary") or {})
+        flags = graph_route_decision.get("flags") if isinstance(graph_route_decision.get("flags"), dict) else {}
+        context_only_agent_message = bool(flags.get("context_only_agent_message"))
+        collection_request_agent_message = bool(flags.get("collection_request_agent_message"))
+        route = _route_from_graph_decision(graph_route_decision, add_trace=add_trace, original_question=original_question)
+    else:
+        route = router.route(run, session_summary=session_summary)
     tool_decision = route.tool_decision
     route_confirmation = route.route_confirmation if hasattr(route, "route_confirmation") else {}
     route_intent = route.route_intent

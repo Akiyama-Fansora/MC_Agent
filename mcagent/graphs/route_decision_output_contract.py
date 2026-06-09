@@ -46,9 +46,16 @@ def build_route_decision_output_contract(
     source_planning_contract: dict[str, Any] | None = None,
     side_effect_authorization_contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Record route-output facts already emitted by the legacy runtime trace."""
+    """Record route-output facts emitted by the Agent runtime trace."""
 
     trace = _trace_steps(result)
+    metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+    graph_route_decision = metadata.get("graph_route_decision") if isinstance(metadata.get("graph_route_decision"), dict) else {}
+    graph_routed = bool(
+        graph_route_decision.get("routed")
+        or runtime_adapter.get("reuses_graph_agent_route_decision")
+        or runtime_adapter.get("route_decision_executed_by_graph")
+    )
     tool_selected_steps = _steps_with(trace, stage="decide", status="tool_selected")
     confirmation_steps = _steps_with(trace, stage="decide", status="next_step_confirmed")
     plan_created_steps = _steps_with(trace, stage="plan", status="created")
@@ -88,7 +95,7 @@ def build_route_decision_output_contract(
             "trace_count": len(trace),
             "has_tool_selected_trace": bool(tool_selected_steps),
             "tool_selected_trace_count": len(tool_selected_steps),
-            "observed_selected_tool": str(selected_detail.get("tool") or selected_decision.get("tool") or ""),
+            "observed_selected_tool": str(selected_detail.get("tool") or selected_decision.get("tool") or graph_route_decision.get("route_intent") or ""),
             "observed_tool_decision_keys": sorted(str(key) for key in selected_decision.keys()),
             "has_next_step_confirmation_trace": bool(confirmation_steps),
             "next_step_confirmation_trace_count": len(confirmation_steps),
@@ -105,13 +112,14 @@ def build_route_decision_output_contract(
             "result_job_id_keys": job_id_keys,
         },
         "decision_owner": decision_owner,
-        "route_decision_executed_by_graph": False,
-        "route_confirmation_executed_by_graph": False,
+        "route_decision_executed_by_graph": graph_routed,
+        "route_confirmation_executed_by_graph": graph_routed,
         "route_execution_changed_by_contract": False,
-        "legacy_route_still_runs_in_adapter": True,
-        "legacy_trace_observation_only": True,
+        "legacy_route_still_runs_in_adapter": runtime_adapter.get("adapter") == "legacy_web_server_runtime" and not graph_routed,
+        "legacy_trace_observation_only": not graph_routed,
         "objective_contract": (
-            "The graph records legacy route-output trace facts only. It does not choose tools, "
-            "confirm next steps, alter routing, start jobs, judge evidence, or write the final response."
+            "The graph records Agent route-output trace facts. When graph routing is present, the decision still "
+            "comes from the Agent router/LLM; this contract does not choose tools, alter routing, start jobs, judge "
+            "evidence, or write the final response."
         ),
     }

@@ -37,9 +37,11 @@ def build_route_execution_contract(
     source_planning_contract: dict[str, Any] | None = None,
     side_effect_authorization_contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Record route execution facts already produced by the legacy runtime."""
+    """Record route execution facts already produced by the Agent runtime."""
 
     trace = _trace_steps(result)
+    graph_executor = result.get("graph_route_executor") if isinstance(result.get("graph_route_executor"), dict) else {}
+    graph_status_executed = graph_executor.get("adapter") == "graph_status_route_executor"
     execution_stages = sorted({str(step.get("stage") or "") for step in trace if step.get("stage") in EXECUTION_TRACE_STAGES})
     sources = result.get("sources") if isinstance(result.get("sources"), list) else []
     answer = str(result.get("answer") or "")
@@ -109,13 +111,14 @@ def build_route_execution_contract(
             "error_present": bool(result.get("error")),
         },
         "decision_owner": decision_owner,
-        "route_execution_executed_by_graph": False,
+        "route_execution_executed_by_graph": graph_status_executed,
         "side_effect_executed_by_contract": False,
         "response_changed_by_contract": False,
-        "legacy_execution_still_runs_in_adapter": True,
-        "legacy_trace_observation_only": True,
+        "legacy_execution_still_runs_in_adapter": runtime_adapter.get("adapter") == "legacy_web_server_runtime",
+        "legacy_trace_observation_only": not graph_status_executed,
         "objective_contract": (
-            "The graph records legacy route execution facts only. It does not run handlers, "
-            "start jobs, persist evidence, judge evidence, alter routing, or write the final response."
+            "The graph records Agent route execution facts. For migrated status routes, the graph may execute the "
+            "already-selected side-effect-free status handler; this contract does not start jobs, persist evidence, "
+            "judge evidence, alter routing, or write the final response."
         ),
     }

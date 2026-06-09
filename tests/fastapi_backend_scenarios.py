@@ -203,7 +203,8 @@ def test_fastapi_agent_message_endpoint_dispatches() -> None:
     assert_true("agent_message_route_decision_output_tool_trace", route_decision_facts.get("has_tool_selected_trace") is True, str(route_decision_output))
     assert_true("agent_message_route_decision_output_confirmation_trace", route_decision_facts.get("has_next_step_confirmation_trace") is True, str(route_decision_output))
     assert_true("agent_message_route_decision_output_confirmation_tool", route_decision_facts.get("observed_confirmation_tool") == "direct_answer", str(route_decision_output))
-    assert_true("agent_message_route_decision_output_graph_did_not_decide", route_decision_output.get("route_decision_executed_by_graph") is False, str(route_decision_output))
+    assert_true("agent_message_route_decision_output_graph_routed", route_decision_output.get("route_decision_executed_by_graph") is True, str(route_decision_output))
+    assert_true("agent_message_route_decision_output_legacy_route_skipped", route_decision_output.get("legacy_route_still_runs_in_adapter") is False, str(route_decision_output))
     assert_true("agent_message_route_decision_output_no_tool", not {"tool", "route_intent", "action_plan", "proceed", "allow", "deny"} & set(route_decision_output), str(route_decision_output))
     assert_true("agent_message_route_execution_node", "crawler.prepare_route_execution_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     route_execution = agent_runtime.get("route_execution_contract") or {}
@@ -255,10 +256,54 @@ def test_fastapi_agent_message_endpoint_dispatches() -> None:
     assert_true("agent_message_route_result_no_tool", "tool" not in route_result and "route_intent" not in route_result and "action_plan" not in route_result, str(route_result))
 
 
+def test_agent_selected_status_bypasses_legacy_delivery() -> None:
+    fake = SequencedClient(
+        [
+            '{"tool":"status","reason":"inspect runtime state","collection_target":"","delivery_target":"human"}',
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    original_delivery = web_server._deliver_agent_message
+
+    def forbidden_delivery(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AssertionError("legacy delivery should not run for graph-executed status")
+
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake, "fake")  # type: ignore[assignment]
+    web_server._deliver_agent_message = forbidden_delivery  # type: ignore[assignment]
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = web_server._send_agent_message(
+                make_temp_config(Path(tmp)),
+                {"session_id": "fastapi-status-graph"},
+                from_agent="User",
+                content="status please",
+                to_agent="MCagent",
+                intent="user_chat",
+                conversation_id="fastapi-status-graph",
+            )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._deliver_agent_message = original_delivery  # type: ignore[assignment]
+
+    traces = [(step.get("stage"), step.get("status")) for step in result.get("trace") or []]
+    assert_true("status_trace", ("status", "next_step_confirmed") in traces, str(traces))
+    agent_runtime = result.get("agent_graph_runtime") or {}
+    visited = agent_runtime.get("visited_nodes") or []
+    assert_true("graph_status_node", "mcagent.graph_status_route" in visited, str(visited))
+    assert_true("legacy_not_visited", "mcagent.legacy_adapter" not in visited, str(visited))
+    adapter = agent_runtime.get("runtime_adapter") or {}
+    assert_true("graph_status_adapter", adapter.get("adapter") == "graph_status_route_executor", str(adapter))
+    route_execution = agent_runtime.get("route_execution_contract") or {}
+    assert_true("graph_status_execution_fact", route_execution.get("route_execution_executed_by_graph") is True, str(route_execution))
+    graph_runtime = result.get("graph_runtime") or {}
+    assert_true("conversation_status_node", "mcagent_graph.graph_status_route" in graph_runtime.get("visited_nodes", []), str(graph_runtime))
+
+
 def main() -> int:
     test_fastapi_core_routes()
     test_fastapi_sse_chat_shape()
     test_fastapi_agent_message_endpoint_dispatches()
+    test_agent_selected_status_bypasses_legacy_delivery()
     print("FASTAPI BACKEND SCENARIOS PASSED")
     return 0
 

@@ -5033,3 +5033,36 @@ Next migration loop:
 1. Add a no-op legacy handler handoff adapter that makes the handler boundary explicit without moving handler execution.
 2. Migrate one side-effect-free handler first, likely status or crawler audit, because they have the smallest blast radius.
 3. Keep side-effect handlers behind Agent-owned route decisions until the non-side-effect handler migration is proven.
+
+## 2026-06-09 Stage 72: Graph-Executed Status Route
+
+Stage 72 migrates the first real side-effect-free route handler out of the legacy `_chat_impl()` execution path.
+
+Before this stage, both Agent subgraphs exposed route input/output/execution/handler-surface facts, but every route still delegated actual execution through `legacy_adapter -> web_server._chat_impl()`. That was an explicit migration boundary, not a third Agent, but it still meant the graph could not execute even the smallest safe handler itself.
+
+Implemented changes:
+
+1. Added `mcagent/graphs/graph_route_execution.py` with graph status executor metadata.
+2. `MCagentGraph` and `CrawlerAgentGraph` now run `route_agent_decision` after `prepare_runtime_request`.
+3. The graph route decision is produced only by the injected existing Agent router/LLM path. The graph does not infer `status` from keywords, message text, or AgentMessage metadata.
+4. If the Agent-selected route intent is `status`, the graph runs `mcagent.graph_status_route` or `crawler.graph_status_route` through the injected status executor and bypasses the legacy delivery function.
+5. If the selected route is anything else, the graph sends the same Agent-owned route decision to `legacy_adapter`, so `_chat_impl()` reuses the decision instead of asking a second LLM to choose again.
+6. Route decision, execution, handler-surface, route-result, architecture audit, and FastAPI scenarios now distinguish graph-routed decisions, graph-executed status, and non-migrated legacy handler execution.
+7. Added a regression scenario proving an Agent-selected status route returns without calling the legacy delivery function.
+
+Boundary:
+
+The graph status route executes only after the Agent router has selected `status`. It does not choose tools, start jobs, persist evidence, judge evidence, alter AgentMessage routing, or write a final answer from scratch. The status executor reuses the existing objective status payload. Non-status handlers still run through the explicit legacy adapter during migration.
+
+Current score:
+
+1. Two-Agent shape: 9.2/10.
+2. Legacy runtime migration: 8.7/10. Status no longer requires `_chat_impl()` in production graph delivery, but direct answer, audit, temporary extract, local inventory, delegate, crawler action-plan delegation, no-retrieval, and RAG answer generation remain legacy handlers.
+3. Tool-objectivity principle: 9.6/10.
+4. Regression coverage: 9.7/10.
+
+Next migration loop:
+
+1. Migrate another side-effect-free handler, likely `crawler_audit`, using the same Agent-selected-route gate.
+2. Keep side-effect handlers such as `delegate_crawler` behind legacy execution until CrawlerAgent route decision, side-effect authorization facts, and job-start ownership are all represented by explicit graph nodes.
+3. Continue avoiding phrase-specific routing rules and keep AgentMessage as the transport only.

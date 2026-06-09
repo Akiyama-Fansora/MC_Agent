@@ -23,7 +23,7 @@ def build_route_result_contract(
     route_execution_contract: dict[str, Any] | None = None,
     legacy_handler_surface_contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Describe the legacy result shape without judging or changing it."""
+    """Describe the Agent runtime result shape without judging or changing it."""
 
     metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
     sources = result.get("sources") if isinstance(result.get("sources"), list) else []
@@ -79,7 +79,7 @@ def build_route_result_contract(
         },
         "decision_owner": decision_owner,
         "objective_contract": (
-            "The graph records legacy result shape only. It does not select tools, judge evidence, "
-            "start jobs, rewrite messages, or change the response returned by the legacy adapter."
+            "The graph records Agent runtime result shape only. It does not select tools, judge evidence, "
+            "start jobs, rewrite messages, or change the response returned by the route executor."
         ),
     }
