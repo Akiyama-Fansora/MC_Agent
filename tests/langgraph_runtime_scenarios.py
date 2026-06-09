@@ -82,6 +82,7 @@ def test_conversation_graph_routes_only_by_message_target() -> None:
     assert_true("mcagent_select_local_tools_node", "mcagent.select_local_tools" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("mcagent_prepare_local_retrieval_node", "mcagent.prepare_local_retrieval" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("mcagent_prepare_message_preflight_node", "mcagent.prepare_message_preflight_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
+    assert_true("mcagent_prepare_contextual_question_node", "mcagent.prepare_contextual_question_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("mcagent_prepare_route_input_node", "mcagent.prepare_route_input_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("mcagent_prepare_runtime_request_node", "mcagent.prepare_runtime_request" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("mcagent_legacy_adapter_node", "mcagent.legacy_adapter" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
@@ -90,23 +91,41 @@ def test_conversation_graph_routes_only_by_message_target() -> None:
     assert_true("mcagent_message_preflight_context_false", (message_preflight.get("flags") or {}).get("context_only_agent_message") is False, str(message_preflight))
     assert_true("mcagent_message_preflight_collection_false", (message_preflight.get("flags") or {}).get("collection_request_agent_message") is False, str(message_preflight))
     assert_true("mcagent_message_preflight_no_tool", "tool" not in message_preflight and "route_intent" not in message_preflight, str(message_preflight))
+    contextual_question = agent_runtime.get("contextual_question_contract") or {}
+    assert_true("mcagent_contextual_question_kind", contextual_question.get("contract_kind") == "mcagent_contextual_question_contract", str(contextual_question))
+    assert_true("mcagent_contextual_question_agent", contextual_question.get("agent_id") == "mcagent_rag", str(contextual_question))
+    assert_true(
+        "mcagent_contextual_question_original",
+        contextual_question.get("original_question") == "This content names CrawlerAgent but is addressed to MCagent.",
+        str(contextual_question),
+    )
+    assert_true(
+        "mcagent_contextual_question_hint_unchanged",
+        contextual_question.get("contextual_question_hint") == contextual_question.get("original_question"),
+        str(contextual_question),
+    )
+    assert_true("mcagent_contextual_question_no_rewrite", contextual_question.get("rewrite_executed") is False, str(contextual_question))
+    assert_true("mcagent_contextual_question_no_tool_decision", "tool" not in contextual_question and "route_intent" not in contextual_question, str(contextual_question))
     route_input = agent_runtime.get("route_input_contract") or {}
     assert_true("mcagent_route_input_kind", route_input.get("contract_kind") == "mcagent_route_input_contract", str(route_input))
     assert_true("mcagent_route_input_owner", route_input.get("decision_owner") == "MCagent LLM", str(route_input))
     assert_true("mcagent_route_input_has_rag_tool", "local_rag_search" in route_input.get("candidate_route_tools", []), str(route_input))
     assert_true("mcagent_route_input_no_tool_decision", "tool" not in route_input and "route_intent" not in route_input, str(route_input))
     assert_true("mcagent_route_input_links_message_preflight", route_input.get("message_preflight_contract_id") == message_preflight.get("contract_id"), str(route_input))
+    assert_true("mcagent_route_input_links_contextual_question", route_input.get("contextual_question_contract_id") == contextual_question.get("contract_id"), str(route_input))
     runtime_request = agent_runtime.get("runtime_request") or {}
     assert_true("mcagent_runtime_request_kind", runtime_request.get("contract_kind") == "mcagent_local_runtime_request", str(runtime_request))
     assert_true("mcagent_runtime_request_owner", runtime_request.get("decision_owner") == "MCagent LLM", str(runtime_request))
     assert_true("mcagent_runtime_request_payload_agent", (runtime_request.get("payload") or {}).get("agent") == "mcagent_rag", str(runtime_request))
     assert_true("mcagent_runtime_request_links_message_preflight", runtime_request.get("message_preflight_contract_id") == message_preflight.get("contract_id"), str(runtime_request))
+    assert_true("mcagent_runtime_request_links_contextual_question", runtime_request.get("contextual_question_contract_id") == contextual_question.get("contract_id"), str(runtime_request))
     assert_true("mcagent_runtime_request_links_route_input", runtime_request.get("route_input_contract_id") == route_input.get("contract_id"), str(runtime_request))
     adapter = agent_runtime.get("runtime_adapter") or {}
     assert_true("mcagent_runtime_adapter_visible", adapter.get("adapter") == "legacy_web_server_runtime", str(adapter))
     assert_true("mcagent_runtime_adapter_owner", adapter.get("decision_owner") == "MCagent LLM", str(adapter))
     assert_true("mcagent_adapter_consumed_runtime_request", adapter.get("runtime_request_id") == runtime_request.get("request_id"), str(adapter))
     assert_true("mcagent_adapter_links_message_preflight", adapter.get("message_preflight_contract_id") == message_preflight.get("contract_id"), str(adapter))
+    assert_true("mcagent_adapter_links_contextual_question", adapter.get("contextual_question_contract_id") == contextual_question.get("contract_id"), str(adapter))
     assert_true("mcagent_adapter_links_route_input", adapter.get("route_input_contract_id") == route_input.get("contract_id"), str(adapter))
     assert_true("mcagent_adapter_contract_kind", adapter.get("contract_kind") == "mcagent_local_runtime_request", str(adapter))
     boundary = agent_runtime.get("tool_boundary") or {}
@@ -278,9 +297,12 @@ def test_agent_subgraphs_load_session_memory_context() -> None:
             agent_delivery=legacy,
         )
     mc_memory = (mc_result.get("agent_graph_runtime") or {}).get("memory_context") or {}
+    mc_contextual_question = (mc_result.get("agent_graph_runtime") or {}).get("contextual_question_contract") or {}
     crawler_memory = (crawler_result.get("agent_graph_runtime") or {}).get("memory_context") or {}
     assert_true("mcagent_memory_session", mc_memory.get("session_id") == session_id, str(mc_memory))
     assert_true("mcagent_memory_turn_count", mc_memory.get("turn_count") == 1, str(mc_memory))
+    assert_true("mcagent_contextual_question_history_count", mc_contextual_question.get("history_turn_count") == 1, str(mc_contextual_question))
+    assert_true("mcagent_contextual_question_recent_history", "first question" in mc_contextual_question.get("recent_questions", []), str(mc_contextual_question))
     assert_true("crawler_memory_session", crawler_memory.get("session_id") == session_id, str(crawler_memory))
     assert_true("crawler_memory_turn_count", crawler_memory.get("turn_count") == 1, str(crawler_memory))
     DEFAULT_SESSION_STORE.delete(session_id)

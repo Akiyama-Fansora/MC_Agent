@@ -173,12 +173,65 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             ),
         }
 
+    def prepare_contextual_question_contract(state: AgentGraphState) -> dict[str, Any]:
+        payload = dict(state.get("payload") or {})
+        thread_id = str(state.get("thread_id") or payload.get("session_id") or "default")
+        question = str(payload.get("question") or payload.get("query") or "")
+        memory = state.get("memory_context") if isinstance(state.get("memory_context"), dict) else {}
+        history = memory.get("history") if isinstance(memory.get("history"), list) else []
+        summary = memory.get("summary") if isinstance(memory.get("summary"), dict) else {}
+        recent_questions = [str(item.get("question") or "") for item in history[-5:] if isinstance(item, dict) and item.get("question")]
+        context_terms = [
+            *[str(item) for item in (summary.get("topics") or [])[:12]],
+            *[str(item) for item in (summary.get("names") or [])[:12]],
+            *[str(item) for item in (summary.get("entities") or [])[:12]],
+        ]
+        contract = {
+            "contract_id": f"{thread_id}:mcagent_rag:contextual_question",
+            "node": "mcagent.prepare_contextual_question_contract",
+            "graph": "MCagentGraph",
+            "agent_id": "mcagent_rag",
+            "session_id": str(payload.get("session_id") or thread_id),
+            "contract_kind": "mcagent_contextual_question_contract",
+            "original_question": question,
+            "contextual_question_hint": question,
+            "history_turn_count": len(history),
+            "recent_questions": recent_questions,
+            "summary_topics": [str(item) for item in (summary.get("topics") or [])[:12]],
+            "summary_names": [str(item) for item in (summary.get("names") or [])[:12]],
+            "summary_entities": [str(item) for item in (summary.get("entities") or [])[:12]],
+            "candidate_context_terms": [item for item in context_terms if item][:24],
+            "context_inputs_available": bool(history or summary),
+            "rewrite_executed": False,
+            "legacy_contextualize_still_runs_in_adapter": True,
+            "decision_owner": "MCagent LLM",
+            "objective_contract": (
+                "The graph records contextual-question inputs only. It does not rewrite the question, "
+                "select a route, judge evidence, or change the payload handed to the legacy adapter."
+            ),
+        }
+        return {
+            "contextual_question_contract": contract,
+            **_append(
+                state,
+                "mcagent.prepare_contextual_question_contract",
+                "contextual_question_inputs_prepared",
+                {
+                    "contract_id": contract["contract_id"],
+                    "history_turn_count": contract["history_turn_count"],
+                    "context_inputs_available": contract["context_inputs_available"],
+                    "rewrite_executed": contract["rewrite_executed"],
+                },
+            ),
+        }
+
     def prepare_route_input_contract(state: AgentGraphState) -> dict[str, Any]:
         payload = dict(state.get("payload") or {})
         thread_id = str(state.get("thread_id") or payload.get("session_id") or "default")
         message = payload.get("agent_message") if isinstance(payload.get("agent_message"), dict) else {}
         selected_groups = dict(state.get("selected_tool_groups") or {})
         message_preflight = state.get("message_preflight_contract") if isinstance(state.get("message_preflight_contract"), dict) else {}
+        contextual_question = state.get("contextual_question_contract") if isinstance(state.get("contextual_question_contract"), dict) else {}
         route_input_contract = {
             "contract_id": f"{thread_id}:mcagent_rag:route_input",
             "node": "mcagent.prepare_route_input_contract",
@@ -187,7 +240,7 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             "session_id": str(payload.get("session_id") or thread_id),
             "contract_kind": "mcagent_route_input_contract",
             "original_question": str(payload.get("question") or payload.get("query") or ""),
-            "contextual_question_hint": str(payload.get("question") or payload.get("query") or ""),
+            "contextual_question_hint": str(contextual_question.get("contextual_question_hint") or payload.get("question") or payload.get("query") or ""),
             "message": {
                 "from_agent": str(message.get("from_agent") or payload.get("message_from") or "User"),
                 "to_agent": str(message.get("to_agent") or "MCagent"),
@@ -198,6 +251,8 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             "blocked_capability_groups": list((state.get("tool_boundary") or {}).get("blocked_capability_groups") or []),
             "message_preflight_contract": message_preflight,
             "message_preflight_contract_id": message_preflight.get("contract_id") or "",
+            "contextual_question_contract": contextual_question,
+            "contextual_question_contract_id": contextual_question.get("contract_id") or "",
             "session_memory": state.get("memory_context") or {},
             "retrieval_contract": state.get("retrieval_contract") or {},
             "decision_owner": "MCagent LLM",
@@ -227,6 +282,7 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
         message = payload.get("agent_message") if isinstance(payload.get("agent_message"), dict) else {}
         route_input_contract = state.get("route_input_contract") if isinstance(state.get("route_input_contract"), dict) else {}
         message_preflight = state.get("message_preflight_contract") if isinstance(state.get("message_preflight_contract"), dict) else {}
+        contextual_question = state.get("contextual_question_contract") if isinstance(state.get("contextual_question_contract"), dict) else {}
         runtime_request = {
             "request_id": f"{thread_id}:mcagent_rag:runtime_request",
             "node": "mcagent.prepare_runtime_request",
@@ -247,6 +303,8 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             "retrieval_contract": state.get("retrieval_contract") or {},
             "message_preflight_contract": message_preflight,
             "message_preflight_contract_id": message_preflight.get("contract_id") or "",
+            "contextual_question_contract": contextual_question,
+            "contextual_question_contract_id": contextual_question.get("contract_id") or "",
             "route_input_contract": route_input_contract,
             "route_input_contract_id": route_input_contract.get("contract_id") or "",
             "decision_owner": "MCagent LLM",
@@ -302,6 +360,7 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             "memory_context": state.get("memory_context") or {},
             "retrieval_contract": state.get("retrieval_contract") or {},
             "message_preflight_contract": state.get("message_preflight_contract") or {},
+            "contextual_question_contract": state.get("contextual_question_contract") or {},
             "route_input_contract": state.get("route_input_contract") or {},
             "runtime_request": state.get("runtime_request") or {},
             "runtime_adapter": state.get("runtime_adapter") or result.get("legacy_runtime_adapter") or {},
@@ -323,6 +382,7 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
     builder.add_node("select_local_tools", select_local_tools)
     builder.add_node("prepare_local_retrieval", prepare_local_retrieval)
     builder.add_node("prepare_message_preflight_contract", prepare_message_preflight_contract)
+    builder.add_node("prepare_contextual_question_contract", prepare_contextual_question_contract)
     builder.add_node("prepare_route_input_contract", prepare_route_input_contract)
     builder.add_node("prepare_runtime_request", prepare_runtime_request)
     builder.add_node("legacy_adapter", run_legacy_adapter)
@@ -332,7 +392,8 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
     builder.add_edge("load_memory_boundary", "select_local_tools")
     builder.add_edge("select_local_tools", "prepare_local_retrieval")
     builder.add_edge("prepare_local_retrieval", "prepare_message_preflight_contract")
-    builder.add_edge("prepare_message_preflight_contract", "prepare_route_input_contract")
+    builder.add_edge("prepare_message_preflight_contract", "prepare_contextual_question_contract")
+    builder.add_edge("prepare_contextual_question_contract", "prepare_route_input_contract")
     builder.add_edge("prepare_route_input_contract", "prepare_runtime_request")
     builder.add_edge("prepare_runtime_request", "legacy_adapter")
     builder.add_edge("legacy_adapter", "finalize")

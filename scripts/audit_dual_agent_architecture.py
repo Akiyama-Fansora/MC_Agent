@@ -112,6 +112,14 @@ def audit(root: Path = ROOT) -> dict[str, Any]:
             "evidence": f"{files['mcagent_graph'].relative_to(root)}; {files['crawler_graph'].relative_to(root)}; {files['legacy_adapter'].relative_to(root)}",
         },
         {
+            "id": "explicit_contextual_question_contracts",
+            "status": "pass"
+            if contains(files["mcagent_graph"], "prepare_contextual_question_contract", "mcagent_contextual_question_contract", "rewrite_executed")
+            and contains(files["legacy_adapter"], "contextual_question_contract_id")
+            else "fail",
+            "evidence": f"{files['mcagent_graph'].relative_to(root)}; {files['legacy_adapter'].relative_to(root)}",
+        },
+        {
             "id": "legacy_runtime_coupling_visible",
             "status": "warn"
             if contains(files["legacy_adapter"], "legacy_web_server_runtime")

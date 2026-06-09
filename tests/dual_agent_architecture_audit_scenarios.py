@@ -28,6 +28,7 @@ def test_architecture_audit_reports_two_agent_shape_and_migration_warning() -> N
     assert_true("explicit_runtime_request_contracts", checks["explicit_runtime_request_contracts"]["status"] == "pass", str(checks["explicit_runtime_request_contracts"]))
     assert_true("explicit_route_input_contracts", checks["explicit_route_input_contracts"]["status"] == "pass", str(checks["explicit_route_input_contracts"]))
     assert_true("explicit_message_preflight_contracts", checks["explicit_message_preflight_contracts"]["status"] == "pass", str(checks["explicit_message_preflight_contracts"]))
+    assert_true("explicit_contextual_question_contracts", checks["explicit_contextual_question_contracts"]["status"] == "pass", str(checks["explicit_contextual_question_contracts"]))
     assert_true("legacy_warning_visible", checks["legacy_runtime_coupling_visible"]["status"] == "warn", str(checks["legacy_runtime_coupling_visible"]))
 
 

@@ -4807,3 +4807,35 @@ Next migration loop:
 2. Add graph contracts for route result shape before moving actual route execution.
 3. Move CrawlerAgent source-planning input preparation into graph state.
 4. Continue replacing legacy branches only after their objective contracts are tested.
+
+## 2026-06-09 Stage 65: MCagent Contextual Question Input Contracts
+
+Stage 65 moves one more pre-routing input boundary out of the implicit legacy runtime: the inputs used by MCagent contextual-question handling.
+
+Before this stage, legacy `_contextualize_question()` still owned both the objective inputs and the rewrite decision inside `web_server.py`. This stage does not execute that rewrite in the graph. Instead, `MCagentGraph` now records the objective facts that a later Agent-owned decision would need.
+
+Implemented changes:
+
+1. `MCagentGraph` now runs `mcagent.prepare_contextual_question_contract` after message preflight and before route input preparation.
+2. The contract records the original question, unchanged contextual-question hint, recent session questions, summary topics/names/entities, candidate context terms, and whether context inputs exist.
+3. The contract sets `rewrite_executed=False` and records that legacy contextualization still runs behind the adapter during migration.
+4. Route input contracts and runtime requests now carry `contextual_question_contract` and `contextual_question_contract_id`.
+5. `legacy_adapter` metadata now records `contextual_question_contract_id`.
+6. The architecture audit now checks `explicit_contextual_question_contracts`.
+
+Boundary:
+
+The contextual-question contract does not rewrite the user question, select a tool, create a `route_intent`, judge evidence, change the payload handed to legacy runtime, or write final text. It only exposes objective inputs. The actual rewrite path remains in legacy `_contextualize_question()` until a later migration stage gives that decision to MCagent explicitly.
+
+Current score:
+
+1. Two-Agent shape: 9/10.
+2. Legacy runtime migration: 7.3/10. The legacy adapter still owns route execution, but another pre-routing input surface is now explicit and testable.
+3. Tool-objectivity principle: 9/10.
+4. Regression coverage: 9/10.
+
+Next migration loop:
+
+1. Add graph contracts for route result shape before moving actual route execution.
+2. Move CrawlerAgent source-planning input preparation into graph state while preserving CrawlerAgent LLM ownership of source choice.
+3. Continue extracting legacy `_chat_impl()` branches only after their objective contracts are visible and tested.
