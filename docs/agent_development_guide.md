@@ -5000,3 +5000,36 @@ Next migration loop:
 1. Split a no-op route execution handoff adapter around legacy handlers so each handler surface can be migrated one at a time.
 2. Move side-effect handler startup only after route output, route execution facts, and side-effect authorization facts all preserve Agent-owned selection.
 3. Keep AgentMessage as the bus only; do not let graph contracts choose tools or execute side effects.
+
+## 2026-06-09 Stage 71: Legacy Handler Surface Facts
+
+Stage 71 exposes the legacy route-handler surface as a migration catalog.
+
+Before this stage, the graph could observe route execution trace facts, but it still did not have a stable inventory of which legacy handler surfaces remain inside `_chat_impl()` and related functions. That made the remaining migration work visible only by reading `web_server.py`.
+
+Implemented changes:
+
+1. Added `mcagent/graphs/legacy_handler_surface_contract.py` as a shared objective helper.
+2. `MCagentGraph` now runs `mcagent.prepare_legacy_handler_surface_contract` after route execution facts and before route result shape recording.
+3. `CrawlerAgentGraph` now runs `crawler.prepare_legacy_handler_surface_contract` after route execution facts and before route result shape recording.
+4. The contract records candidate legacy handler surfaces: router error, direct answer, crawler audit, status, temporary extract, local corpus inventory, planned inventory workflow, delegate crawler, crawler action-plan delegation, no retrieval results, and RAG answer generation.
+5. The contract records trace-stage/status signals that may be observed for those surfaces, but it does not choose a surface or infer a selected handler.
+6. Route result contracts now link back to `legacy_handler_surface_contract_id`.
+7. The architecture audit now checks `explicit_legacy_handler_surface_contracts`.
+
+Boundary:
+
+The legacy handler surface contract does not select a handler, execute a handler, start jobs, persist evidence, judge evidence, alter routing, approve side effects, or write the final response. It is only a migration catalog plus observed trace/result signals already returned by the legacy adapter.
+
+Current score:
+
+1. Two-Agent shape: 9/10.
+2. Legacy runtime migration: 8.4/10. The remaining handler surfaces are now cataloged, but their execution still lives in `_chat_impl()` and legacy `_handle_*` functions.
+3. Tool-objectivity principle: 9.5/10.
+4. Regression coverage: 9.6/10.
+
+Next migration loop:
+
+1. Add a no-op legacy handler handoff adapter that makes the handler boundary explicit without moving handler execution.
+2. Migrate one side-effect-free handler first, likely status or crawler audit, because they have the smallest blast radius.
+3. Keep side-effect handlers behind Agent-owned route decisions until the non-side-effect handler migration is proven.

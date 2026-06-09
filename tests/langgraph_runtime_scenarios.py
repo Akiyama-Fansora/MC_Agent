@@ -88,6 +88,7 @@ def test_conversation_graph_routes_only_by_message_target() -> None:
     assert_true("mcagent_legacy_adapter_node", "mcagent.legacy_adapter" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("mcagent_prepare_route_decision_output_node", "mcagent.prepare_route_decision_output_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("mcagent_prepare_route_execution_node", "mcagent.prepare_route_execution_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
+    assert_true("mcagent_prepare_legacy_handler_surface_node", "mcagent.prepare_legacy_handler_surface_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("mcagent_prepare_route_result_node", "mcagent.prepare_route_result_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     message_preflight = agent_runtime.get("message_preflight_contract") or {}
     assert_true("mcagent_message_preflight_exists", message_preflight.get("agent_id") == "mcagent_rag", str(message_preflight))
@@ -159,6 +160,20 @@ def test_conversation_graph_routes_only_by_message_target() -> None:
     assert_true("mcagent_route_execution_no_side_effect", route_execution.get("side_effect_executed_by_contract") is False, str(route_execution))
     assert_true("mcagent_route_execution_observation_only", route_execution.get("legacy_trace_observation_only") is True, str(route_execution))
     assert_true("mcagent_route_execution_no_decision_fields", not {"tool", "route_intent", "action_plan", "handler", "proceed", "allow", "deny"} & set(route_execution), str(route_execution))
+    legacy_surface = agent_runtime.get("legacy_handler_surface_contract") or {}
+    surface_names = {item.get("surface") for item in legacy_surface.get("candidate_handler_surfaces", []) if isinstance(item, dict)}
+    assert_true("mcagent_legacy_surface_kind", legacy_surface.get("contract_kind") == "mcagent_legacy_handler_surface_facts_contract", str(legacy_surface))
+    assert_true("mcagent_legacy_surface_owner", legacy_surface.get("decision_owner") == "MCagent LLM", str(legacy_surface))
+    assert_true("mcagent_legacy_surface_links_runtime", legacy_surface.get("runtime_request_id") == runtime_request.get("request_id"), str(legacy_surface))
+    assert_true("mcagent_legacy_surface_links_route_decision", legacy_surface.get("route_decision_output_contract_id") == route_decision_output.get("contract_id"), str(legacy_surface))
+    assert_true("mcagent_legacy_surface_links_route_execution", legacy_surface.get("route_execution_contract_id") == route_execution.get("contract_id"), str(legacy_surface))
+    assert_true("mcagent_legacy_surface_candidates", {"direct_answer", "rag_answer_generation", "delegate_crawler"}.issubset(surface_names), str(legacy_surface))
+    assert_true("mcagent_legacy_surface_excludes_crawler_plan_delegate", "crawler_action_plan_delegate" not in surface_names, str(legacy_surface))
+    assert_true("mcagent_legacy_surface_no_observed_signal", legacy_surface.get("observed_surface_signals") == [], str(legacy_surface))
+    assert_true("mcagent_legacy_surface_graph_did_not_select", legacy_surface.get("handler_selection_executed_by_graph") is False, str(legacy_surface))
+    assert_true("mcagent_legacy_surface_graph_did_not_execute", legacy_surface.get("handler_executed_by_contract") is False, str(legacy_surface))
+    assert_true("mcagent_legacy_surface_no_side_effect", legacy_surface.get("side_effect_executed_by_contract") is False, str(legacy_surface))
+    assert_true("mcagent_legacy_surface_no_decision_fields", not {"tool", "route_intent", "action_plan", "handler", "selected_handler", "proceed", "allow", "deny"} & set(legacy_surface), str(legacy_surface))
     route_result = agent_runtime.get("route_result_contract") or {}
     result_shape = route_result.get("result_shape") or {}
     assert_true("mcagent_route_result_kind", route_result.get("contract_kind") == "mcagent_route_result_contract", str(route_result))
@@ -169,6 +184,7 @@ def test_conversation_graph_routes_only_by_message_target() -> None:
     assert_true("mcagent_route_result_links_contextual_question", route_result.get("contextual_question_contract_id") == contextual_question.get("contract_id"), str(route_result))
     assert_true("mcagent_route_result_links_route_decision_output", route_result.get("route_decision_output_contract_id") == route_decision_output.get("contract_id"), str(route_result))
     assert_true("mcagent_route_result_links_route_execution", route_result.get("route_execution_contract_id") == route_execution.get("contract_id"), str(route_result))
+    assert_true("mcagent_route_result_links_legacy_surface", route_result.get("legacy_handler_surface_contract_id") == legacy_surface.get("contract_id"), str(route_result))
     assert_true("mcagent_route_result_agent_shape", result_shape.get("agent") == "mcagent_rag", str(route_result))
     assert_true("mcagent_route_result_answer_shape", result_shape.get("answer_present") is True and result_shape.get("source_count") == 0, str(route_result))
     assert_true("mcagent_route_result_no_tool_decision", "tool" not in route_result and "route_intent" not in route_result and "action_plan" not in route_result, str(route_result))
@@ -228,6 +244,7 @@ def test_conversation_graph_can_dispatch_to_crawler_node() -> None:
     assert_true("crawler_legacy_adapter_node", "crawler.legacy_adapter" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("crawler_prepare_route_decision_output_node", "crawler.prepare_route_decision_output_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("crawler_prepare_route_execution_node", "crawler.prepare_route_execution_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
+    assert_true("crawler_prepare_legacy_handler_surface_node", "crawler.prepare_legacy_handler_surface_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("crawler_prepare_route_result_node", "crawler.prepare_route_result_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     source_planning = agent_runtime.get("source_planning_contract") or {}
     assert_true("crawler_source_planning_kind", source_planning.get("contract_kind") == "crawler_source_planning_input_contract", str(source_planning))
@@ -311,6 +328,20 @@ def test_conversation_graph_can_dispatch_to_crawler_node() -> None:
     assert_true("crawler_route_execution_no_side_effect", route_execution.get("side_effect_executed_by_contract") is False, str(route_execution))
     assert_true("crawler_route_execution_observation_only", route_execution.get("legacy_trace_observation_only") is True, str(route_execution))
     assert_true("crawler_route_execution_no_decision_fields", not {"tool", "route_intent", "action_plan", "handler", "proceed", "allow", "deny"} & set(route_execution), str(route_execution))
+    legacy_surface = agent_runtime.get("legacy_handler_surface_contract") or {}
+    surface_names = {item.get("surface") for item in legacy_surface.get("candidate_handler_surfaces", []) if isinstance(item, dict)}
+    assert_true("crawler_legacy_surface_kind", legacy_surface.get("contract_kind") == "crawler_legacy_handler_surface_facts_contract", str(legacy_surface))
+    assert_true("crawler_legacy_surface_owner", legacy_surface.get("decision_owner") == "CrawlerAgent LLM", str(legacy_surface))
+    assert_true("crawler_legacy_surface_links_runtime", legacy_surface.get("runtime_request_id") == runtime_request.get("request_id"), str(legacy_surface))
+    assert_true("crawler_legacy_surface_links_route_decision", legacy_surface.get("route_decision_output_contract_id") == route_decision_output.get("contract_id"), str(legacy_surface))
+    assert_true("crawler_legacy_surface_links_route_execution", legacy_surface.get("route_execution_contract_id") == route_execution.get("contract_id"), str(legacy_surface))
+    assert_true("crawler_legacy_surface_candidates", {"direct_answer", "delegate_crawler", "crawler_action_plan_delegate"}.issubset(surface_names), str(legacy_surface))
+    assert_true("crawler_legacy_surface_excludes_mcagent_inventory_delegate", "mcagent_inventory_planned_workflow" not in surface_names, str(legacy_surface))
+    assert_true("crawler_legacy_surface_no_observed_signal", legacy_surface.get("observed_surface_signals") == [], str(legacy_surface))
+    assert_true("crawler_legacy_surface_graph_did_not_select", legacy_surface.get("handler_selection_executed_by_graph") is False, str(legacy_surface))
+    assert_true("crawler_legacy_surface_graph_did_not_execute", legacy_surface.get("handler_executed_by_contract") is False, str(legacy_surface))
+    assert_true("crawler_legacy_surface_no_side_effect", legacy_surface.get("side_effect_executed_by_contract") is False, str(legacy_surface))
+    assert_true("crawler_legacy_surface_no_decision_fields", not {"tool", "route_intent", "action_plan", "handler", "selected_handler", "proceed", "allow", "deny"} & set(legacy_surface), str(legacy_surface))
     route_result = agent_runtime.get("route_result_contract") or {}
     result_shape = route_result.get("result_shape") or {}
     assert_true("crawler_route_result_kind", route_result.get("contract_kind") == "crawler_route_result_contract", str(route_result))
@@ -322,6 +353,7 @@ def test_conversation_graph_can_dispatch_to_crawler_node() -> None:
     assert_true("crawler_route_result_links_side_effect_auth", route_result.get("side_effect_authorization_contract_id") == side_effect_auth.get("contract_id"), str(route_result))
     assert_true("crawler_route_result_links_route_decision_output", route_result.get("route_decision_output_contract_id") == route_decision_output.get("contract_id"), str(route_result))
     assert_true("crawler_route_result_links_route_execution", route_result.get("route_execution_contract_id") == route_execution.get("contract_id"), str(route_result))
+    assert_true("crawler_route_result_links_legacy_surface", route_result.get("legacy_handler_surface_contract_id") == legacy_surface.get("contract_id"), str(route_result))
     assert_true("crawler_route_result_agent_shape", result_shape.get("agent") == "crawler_agent", str(route_result))
     assert_true("crawler_route_result_answer_shape", result_shape.get("answer_present") is True and result_shape.get("source_count") == 0, str(route_result))
     assert_true("crawler_route_result_no_tool_decision", "tool" not in route_result and "route_intent" not in route_result and "action_plan" not in route_result, str(route_result))

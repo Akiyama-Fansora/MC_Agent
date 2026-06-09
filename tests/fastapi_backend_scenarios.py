@@ -224,6 +224,21 @@ def test_fastapi_agent_message_endpoint_dispatches() -> None:
     assert_true("agent_message_route_execution_graph_did_not_execute", route_execution.get("route_execution_executed_by_graph") is False, str(route_execution))
     assert_true("agent_message_route_execution_no_side_effect", route_execution.get("side_effect_executed_by_contract") is False, str(route_execution))
     assert_true("agent_message_route_execution_no_tool", not {"tool", "route_intent", "action_plan", "handler", "proceed", "allow", "deny"} & set(route_execution), str(route_execution))
+    assert_true("agent_message_legacy_surface_node", "crawler.prepare_legacy_handler_surface_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
+    legacy_surface = agent_runtime.get("legacy_handler_surface_contract") or {}
+    surface_names = {item.get("surface") for item in legacy_surface.get("candidate_handler_surfaces", []) if isinstance(item, dict)}
+    observed_surfaces = set(legacy_surface.get("observed_surface_signals") or [])
+    assert_true("agent_message_legacy_surface", legacy_surface.get("contract_kind") == "crawler_legacy_handler_surface_facts_contract", str(legacy_surface))
+    assert_true("agent_message_legacy_surface_owner", legacy_surface.get("decision_owner") == "CrawlerAgent LLM", str(legacy_surface))
+    assert_true("agent_message_legacy_surface_request", legacy_surface.get("runtime_request_id") == runtime_request.get("request_id"), str(legacy_surface))
+    assert_true("agent_message_legacy_surface_route_decision", legacy_surface.get("route_decision_output_contract_id") == route_decision_output.get("contract_id"), str(legacy_surface))
+    assert_true("agent_message_legacy_surface_route_execution", legacy_surface.get("route_execution_contract_id") == route_execution.get("contract_id"), str(legacy_surface))
+    assert_true("agent_message_legacy_surface_candidates", {"direct_answer", "rag_answer_generation", "delegate_crawler"}.issubset(surface_names), str(legacy_surface))
+    assert_true("agent_message_legacy_surface_observed_answer", {"direct_answer", "rag_answer_generation"} & observed_surfaces, str(legacy_surface))
+    assert_true("agent_message_legacy_surface_graph_did_not_select", legacy_surface.get("handler_selection_executed_by_graph") is False, str(legacy_surface))
+    assert_true("agent_message_legacy_surface_graph_did_not_execute", legacy_surface.get("handler_executed_by_contract") is False, str(legacy_surface))
+    assert_true("agent_message_legacy_surface_no_side_effect", legacy_surface.get("side_effect_executed_by_contract") is False, str(legacy_surface))
+    assert_true("agent_message_legacy_surface_no_selected_handler", not {"tool", "route_intent", "action_plan", "handler", "selected_handler", "proceed", "allow", "deny"} & set(legacy_surface), str(legacy_surface))
     assert_true("agent_message_route_result_node", "crawler.prepare_route_result_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     route_result = agent_runtime.get("route_result_contract") or {}
     result_shape = route_result.get("result_shape") or {}
@@ -235,6 +250,7 @@ def test_fastapi_agent_message_endpoint_dispatches() -> None:
     assert_true("agent_message_route_result_side_effect_auth", route_result.get("side_effect_authorization_contract_id") == side_effect_auth.get("contract_id"), str(route_result))
     assert_true("agent_message_route_result_route_decision_output", route_result.get("route_decision_output_contract_id") == route_decision_output.get("contract_id"), str(route_result))
     assert_true("agent_message_route_result_route_execution", route_result.get("route_execution_contract_id") == route_execution.get("contract_id"), str(route_result))
+    assert_true("agent_message_route_result_legacy_surface", route_result.get("legacy_handler_surface_contract_id") == legacy_surface.get("contract_id"), str(route_result))
     assert_true("agent_message_route_result_shape", result_shape.get("answer_present") is True and result_shape.get("has_agent_message") is True, str(route_result))
     assert_true("agent_message_route_result_no_tool", "tool" not in route_result and "route_intent" not in route_result and "action_plan" not in route_result, str(route_result))
 

@@ -24,6 +24,7 @@ def audit(root: Path = ROOT) -> dict[str, Any]:
         "conversation_graph": graphs / "runtime.py",
         "mcagent_graph": graphs / "mcagent.py",
         "crawler_graph": graphs / "crawler.py",
+        "legacy_handler_surface_contract": graphs / "legacy_handler_surface_contract.py",
         "legacy_adapter": graphs / "legacy_adapter.py",
         "route_decision_output_contract": graphs / "route_decision_output_contract.py",
         "route_execution_contract": graphs / "route_execution_contract.py",
@@ -179,6 +180,23 @@ def audit(root: Path = ROOT) -> dict[str, Any]:
             and contains(files["route_result_contract"], "route_execution_contract_id")
             else "fail",
             "evidence": f"{files['route_execution_contract'].relative_to(root)}; {files['mcagent_graph'].relative_to(root)}; {files['crawler_graph'].relative_to(root)}; {files['route_result_contract'].relative_to(root)}",
+        },
+        {
+            "id": "explicit_legacy_handler_surface_contracts",
+            "status": "pass"
+            if contains(
+                files["legacy_handler_surface_contract"],
+                "build_legacy_handler_surface_contract",
+                "LEGACY_HANDLER_SURFACES",
+                "handler_selection_executed_by_graph",
+                "handler_executed_by_contract",
+                "legacy_handlers_still_run_in_adapter",
+            )
+            and contains(files["mcagent_graph"], "prepare_legacy_handler_surface_contract", "mcagent_legacy_handler_surface_facts_contract")
+            and contains(files["crawler_graph"], "prepare_legacy_handler_surface_contract", "crawler_legacy_handler_surface_facts_contract")
+            and contains(files["route_result_contract"], "legacy_handler_surface_contract_id")
+            else "fail",
+            "evidence": f"{files['legacy_handler_surface_contract'].relative_to(root)}; {files['mcagent_graph'].relative_to(root)}; {files['crawler_graph'].relative_to(root)}; {files['route_result_contract'].relative_to(root)}",
         },
         {
             "id": "explicit_route_result_contracts",

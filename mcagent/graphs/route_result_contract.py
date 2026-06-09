@@ -21,6 +21,7 @@ def build_route_result_contract(
     side_effect_authorization_contract: dict[str, Any] | None = None,
     route_decision_output_contract: dict[str, Any] | None = None,
     route_execution_contract: dict[str, Any] | None = None,
+    legacy_handler_surface_contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Describe the legacy result shape without judging or changing it."""
 
@@ -39,6 +40,7 @@ def build_route_result_contract(
     side_effect_authorization_contract = side_effect_authorization_contract or {}
     route_decision_output_contract = route_decision_output_contract or {}
     route_execution_contract = route_execution_contract or {}
+    legacy_handler_surface_contract = legacy_handler_surface_contract or {}
     return {
         "contract_id": f"{thread_id}:{agent_id}:route_result",
         "node": node_name,
@@ -54,6 +56,7 @@ def build_route_result_contract(
         "side_effect_authorization_contract_id": side_effect_authorization_contract.get("contract_id") or runtime_request.get("side_effect_authorization_contract_id") or "",
         "route_decision_output_contract_id": route_decision_output_contract.get("contract_id") or "",
         "route_execution_contract_id": route_execution_contract.get("contract_id") or "",
+        "legacy_handler_surface_contract_id": legacy_handler_surface_contract.get("contract_id") or "",
         "legacy_adapter": {
             "adapter": runtime_adapter.get("adapter") or "",
             "node": runtime_adapter.get("node") or "",

@@ -24,6 +24,7 @@ class AgentGraphState(TypedDict):
     runtime_adapter: NotRequired[dict[str, Any]]
     route_decision_output_contract: NotRequired[dict[str, Any]]
     route_execution_contract: NotRequired[dict[str, Any]]
+    legacy_handler_surface_contract: NotRequired[dict[str, Any]]
     route_result_contract: NotRequired[dict[str, Any]]
     graph_events: list[GraphEvent]
     visited_nodes: list[str]
