@@ -4839,3 +4839,35 @@ Next migration loop:
 1. Add graph contracts for route result shape before moving actual route execution.
 2. Move CrawlerAgent source-planning input preparation into graph state while preserving CrawlerAgent LLM ownership of source choice.
 3. Continue extracting legacy `_chat_impl()` branches only after their objective contracts are visible and tested.
+
+## 2026-06-09 Stage 66: Route Result Shape Contracts
+
+Stage 66 moves the post-adapter result shape boundary into the two Agent graphs.
+
+Before this stage, `legacy_adapter` returned a response and `finalize` attached graph metadata, but the graph did not separately expose what kind of result the legacy runtime produced. That made the next migration step harder, because route execution and result handling were both hidden behind `_chat_impl()`.
+
+Implemented changes:
+
+1. Added `mcagent/graphs/route_result_contract.py` as a shared objective helper.
+2. `MCagentGraph` now runs `mcagent.prepare_route_result_contract` after `mcagent.legacy_adapter` and before `mcagent.finalize`.
+3. `CrawlerAgentGraph` now runs `crawler.prepare_route_result_contract` after `crawler.legacy_adapter` and before `crawler.finalize`.
+4. Route result contracts record objective shape facts: result keys, metadata keys, agent id, answer/context presence and length, source count, trace count, AgentMessage presence, job id presence, and error presence.
+5. The contracts link back to runtime request, route input, message preflight, contextual-question contract where present, and legacy adapter metadata.
+6. The architecture audit now checks `explicit_route_result_contracts`.
+
+Boundary:
+
+Route result contracts do not select tools, judge evidence, start jobs, rewrite messages, change the legacy response, or write final text. They only record the shape of what the legacy adapter already returned. The legacy `_chat_impl()` path still owns route execution during migration.
+
+Current score:
+
+1. Two-Agent shape: 9/10.
+2. Legacy runtime migration: 7.5/10. Pre-routing inputs and post-adapter result shape are now visible; the core route execution still remains inside `_chat_impl()`.
+3. Tool-objectivity principle: 9.1/10.
+4. Regression coverage: 9.1/10.
+
+Next migration loop:
+
+1. Move CrawlerAgent source-planning input preparation into graph state while preserving CrawlerAgent LLM ownership of source choice.
+2. Add graph-side route decision output contracts before moving actual route execution.
+3. Continue reducing `_chat_impl()` only after each boundary is objective and tested.

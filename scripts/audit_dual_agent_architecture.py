@@ -25,6 +25,7 @@ def audit(root: Path = ROOT) -> dict[str, Any]:
         "mcagent_graph": graphs / "mcagent.py",
         "crawler_graph": graphs / "crawler.py",
         "legacy_adapter": graphs / "legacy_adapter.py",
+        "route_result_contract": graphs / "route_result_contract.py",
         "agent_message": root / "mcagent" / "agent_message.py",
         "agent_runtime": root / "mcagent" / "agent_runtime.py",
         "crawler_capabilities": root / "mcagent" / "crawler_capabilities.py",
@@ -118,6 +119,15 @@ def audit(root: Path = ROOT) -> dict[str, Any]:
             and contains(files["legacy_adapter"], "contextual_question_contract_id")
             else "fail",
             "evidence": f"{files['mcagent_graph'].relative_to(root)}; {files['legacy_adapter'].relative_to(root)}",
+        },
+        {
+            "id": "explicit_route_result_contracts",
+            "status": "pass"
+            if contains(files["mcagent_graph"], "prepare_route_result_contract", "mcagent_route_result_contract")
+            and contains(files["crawler_graph"], "prepare_route_result_contract", "crawler_route_result_contract")
+            and contains(files["route_result_contract"], "result_shape", "It does not select tools", "change the response")
+            else "fail",
+            "evidence": f"{files['mcagent_graph'].relative_to(root)}; {files['crawler_graph'].relative_to(root)}; {files['route_result_contract'].relative_to(root)}",
         },
         {
             "id": "legacy_runtime_coupling_visible",
