@@ -6,6 +6,7 @@ from typing import Any
 GRAPH_STATUS_ROUTE_EXECUTOR = "graph_status_route_executor"
 GRAPH_CRAWLER_AUDIT_ROUTE_EXECUTOR = "graph_crawler_audit_route_executor"
 GRAPH_LOCAL_CORPUS_INVENTORY_ROUTE_EXECUTOR = "graph_local_corpus_inventory_route_executor"
+GRAPH_ROUTER_ERROR_ROUTE_EXECUTOR = "graph_router_error_route_executor"
 
 
 def _display_agent(agent_id: str) -> str:
@@ -118,6 +119,26 @@ def graph_local_corpus_inventory_route_executor_metadata(
         adapter=GRAPH_LOCAL_CORPUS_INVENTORY_ROUTE_EXECUTOR,
         migration_status="graph_local_corpus_inventory_route_migrated",
         route_label="local_corpus_inventory",
+        agent_id=agent_id,
+        graph_name=graph_name,
+        node_name=node_name,
+        runtime_request=runtime_request,
+        route_decision=route_decision,
+    )
+
+
+def graph_router_error_route_executor_metadata(
+    *,
+    agent_id: str,
+    graph_name: str,
+    node_name: str,
+    runtime_request: dict[str, Any] | None = None,
+    route_decision: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return _base_route_executor_metadata(
+        adapter=GRAPH_ROUTER_ERROR_ROUTE_EXECUTOR,
+        migration_status="graph_router_error_route_migrated",
+        route_label="router_error",
         agent_id=agent_id,
         graph_name=graph_name,
         node_name=node_name,

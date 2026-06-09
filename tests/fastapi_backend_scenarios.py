@@ -423,6 +423,55 @@ def test_agent_selected_safe_local_inventory_bypasses_legacy_delivery() -> None:
     assert_true("conversation_inventory_node", "mcagent_graph.graph_local_corpus_inventory_route" in graph_runtime.get("visited_nodes", []), str(graph_runtime))
 
 
+def test_agent_selected_router_error_bypasses_legacy_delivery() -> None:
+    fake = SequencedClient(
+        [
+            '{"tool":"not_a_real_tool","reason":"invalid route selected by router","collection_target":"","delivery_target":""}',
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    original_delivery = web_server._deliver_agent_message
+
+    def forbidden_delivery(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AssertionError("legacy delivery should not run for graph-executed router_error")
+
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake, "fake")  # type: ignore[assignment]
+    web_server._deliver_agent_message = forbidden_delivery  # type: ignore[assignment]
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = web_server._send_agent_message(
+                make_temp_config(Path(tmp)),
+                {"session_id": "fastapi-router-error-graph"},
+                from_agent="User",
+                content="trigger invalid tool selection",
+                to_agent="MCagent",
+                intent="user_chat",
+                conversation_id="fastapi-router-error-graph",
+            )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._deliver_agent_message = original_delivery  # type: ignore[assignment]
+
+    traces = [(step.get("stage"), step.get("status")) for step in result.get("trace") or []]
+    assert_true("router_error_trace", ("done", "router_error") in traces, str(traces))
+    assert_true("router_error_no_sources", result.get("sources") == [] and not result.get("context"), str(result))
+    assert_true("router_error_no_job", not result.get("job") and not result.get("delegation"), str(result))
+    agent_runtime = result.get("agent_graph_runtime") or {}
+    visited = agent_runtime.get("visited_nodes") or []
+    assert_true("graph_router_error_node", "mcagent.graph_router_error_route" in visited, str(visited))
+    assert_true("legacy_not_visited", "mcagent.legacy_adapter" not in visited, str(visited))
+    adapter = agent_runtime.get("runtime_adapter") or {}
+    assert_true("graph_router_error_adapter", adapter.get("adapter") == "graph_router_error_route_executor", str(adapter))
+    route_execution = agent_runtime.get("route_execution_contract") or {}
+    assert_true("graph_router_error_execution_fact", route_execution.get("route_execution_executed_by_graph") is True, str(route_execution))
+    assert_true("graph_router_error_trace_fact", (route_execution.get("trace_facts") or {}).get("has_router_error_trace") is True, str(route_execution))
+    legacy_surface = agent_runtime.get("legacy_handler_surface_contract") or {}
+    assert_true("graph_router_error_surface_fact", legacy_surface.get("handler_executed_by_contract") is True, str(legacy_surface))
+    assert_true("graph_router_error_surface_not_legacy", legacy_surface.get("legacy_handlers_still_run_in_adapter") is False, str(legacy_surface))
+    graph_runtime = result.get("graph_runtime") or {}
+    assert_true("conversation_router_error_node", "mcagent_graph.graph_router_error_route" in graph_runtime.get("visited_nodes", []), str(graph_runtime))
+
+
 def test_local_inventory_with_delegate_plan_stays_on_legacy_delivery() -> None:
     fake = SequencedClient(
         [
@@ -474,6 +523,7 @@ def main() -> int:
     test_agent_selected_status_bypasses_legacy_delivery()
     test_agent_selected_crawler_audit_bypasses_legacy_delivery()
     test_agent_selected_safe_local_inventory_bypasses_legacy_delivery()
+    test_agent_selected_router_error_bypasses_legacy_delivery()
     test_local_inventory_with_delegate_plan_stays_on_legacy_delivery()
     print("FASTAPI BACKEND SCENARIOS PASSED")
     return 0

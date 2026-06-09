@@ -19,8 +19,9 @@ AgentRouteDeciderFn = Callable[..., dict[str, Any]]
 StatusExecutorFn = Callable[..., dict[str, Any]]
 CrawlerAuditExecutorFn = Callable[..., dict[str, Any]]
 LocalCorpusInventoryExecutorFn = Callable[..., dict[str, Any]]
+RouterErrorExecutorFn = Callable[..., dict[str, Any]]
 _GRAPH_CACHE_LOCK = threading.Lock()
-_GRAPH_CACHE: dict[tuple[int, int, int, int, int, int, int], Any] = {}
+_GRAPH_CACHE: dict[tuple[int, int, int, int, int, int, int, int], Any] = {}
 
 
 def _agent_id_for_route(message: AgentMessage) -> str:
@@ -59,6 +60,8 @@ def _agent_runtime_node(prefix: str, adapter_name: str) -> str:
         return f"{prefix}.graph_crawler_audit_route"
     if adapter_name == "graph_local_corpus_inventory_route_executor":
         return f"{prefix}.graph_local_corpus_inventory_route"
+    if adapter_name == "graph_router_error_route_executor":
+        return f"{prefix}.graph_router_error_route"
     return f"{prefix}.legacy_adapter"
 
 
@@ -71,6 +74,7 @@ def build_conversation_graph(
     status_executor: StatusExecutorFn | None = None,
     crawler_audit_executor: CrawlerAuditExecutorFn | None = None,
     local_corpus_inventory_executor: LocalCorpusInventoryExecutorFn | None = None,
+    router_error_executor: RouterErrorExecutorFn | None = None,
 ):
     builder = StateGraph(ConversationGraphState)
 
@@ -120,6 +124,7 @@ def build_conversation_graph(
             status_executor=status_executor,
             crawler_audit_executor=crawler_audit_executor,
             local_corpus_inventory_executor=local_corpus_inventory_executor,
+            router_error_executor=router_error_executor,
         )
         agent_runtime = result.get("agent_graph_runtime") if isinstance(result.get("agent_graph_runtime"), dict) else {}
         adapter = agent_runtime.get("runtime_adapter") if isinstance(agent_runtime.get("runtime_adapter"), dict) else {}
@@ -148,6 +153,7 @@ def build_conversation_graph(
             status_executor=status_executor,
             crawler_audit_executor=crawler_audit_executor,
             local_corpus_inventory_executor=local_corpus_inventory_executor,
+            router_error_executor=router_error_executor,
         )
         agent_runtime = result.get("agent_graph_runtime") if isinstance(result.get("agent_graph_runtime"), dict) else {}
         adapter = agent_runtime.get("runtime_adapter") if isinstance(agent_runtime.get("runtime_adapter"), dict) else {}
@@ -234,6 +240,7 @@ def dispatch_agent_message_graph(
     status_executor: StatusExecutorFn | None = None,
     crawler_audit_executor: CrawlerAuditExecutorFn | None = None,
     local_corpus_inventory_executor: LocalCorpusInventoryExecutorFn | None = None,
+    router_error_executor: RouterErrorExecutorFn | None = None,
 ) -> dict[str, Any]:
     """Deliver a From-Content-To message through the LangGraph conversation runtime.
 
@@ -250,6 +257,7 @@ def dispatch_agent_message_graph(
             id(status_executor),
             id(crawler_audit_executor),
             id(local_corpus_inventory_executor),
+            id(router_error_executor),
             0,
         )
         with _GRAPH_CACHE_LOCK:
@@ -263,6 +271,7 @@ def dispatch_agent_message_graph(
                     status_executor=status_executor,
                     crawler_audit_executor=crawler_audit_executor,
                     local_corpus_inventory_executor=local_corpus_inventory_executor,
+                    router_error_executor=router_error_executor,
                 )
                 _GRAPH_CACHE[cache_key] = graph
     else:
@@ -274,6 +283,7 @@ def dispatch_agent_message_graph(
             status_executor=status_executor,
             crawler_audit_executor=crawler_audit_executor,
             local_corpus_inventory_executor=local_corpus_inventory_executor,
+            router_error_executor=router_error_executor,
         )
     initial_state: ConversationGraphState = {
         "thread_id": thread_id,

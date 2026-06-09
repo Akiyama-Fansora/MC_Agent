@@ -9317,6 +9317,8 @@ def _route_agent_decision_for_graph(
         route.route_intent == "local_corpus_inventory"
         and confirmation_allows
         and not _action_plan_has_tool(action_plan, "delegate_crawler")
+    ) or (
+        route.route_intent == "router_error"
     )
     return {
         **base,
@@ -9550,6 +9552,47 @@ def _execute_graph_local_corpus_inventory_route(
     return _with_trace(inventory, trace)
 
 
+def _execute_graph_router_error_route(
+    config: AppConfig,  # noqa: ARG001 - router_error is a terminal route fact; it does not read configuration.
+    payload: dict[str, Any],
+    *,
+    emit: Any | None = None,
+    agent_id: str,
+    graph_name: str,  # noqa: ARG001 - recorded by graph adapter metadata.
+    node_name: str,  # noqa: ARG001 - recorded by graph adapter metadata.
+    runtime_request: dict[str, Any],  # noqa: ARG001 - recorded by graph adapter metadata.
+    route_decision: dict[str, Any],
+) -> dict[str, Any]:
+    if str(route_decision.get("route_intent") or "") != "router_error":
+        raise RuntimeError("Graph router error execution requires an Agent-selected router_error route.")
+    trace = [dict(step) for step in route_decision.get("trace") or [] if isinstance(step, dict)]
+    tool_decision = route_decision.get("tool_decision") if isinstance(route_decision.get("tool_decision"), dict) else {}
+    error_text = str(tool_decision.get("error") or tool_decision.get("reason") or route_decision.get("error") or "unknown error")
+    done_step = _trace_step("done", "router_error", {"error": error_text, "delegated": False})
+    trace.append(done_step)
+    if emit is not None:
+        emit("trace", done_step)
+    response = {
+        "answer": (
+            f"Agent 工具选择模型调用失败：{error_text}\n\n"
+            "本次没有执行本地检索，也没有启动 Crawler。请检查当前模型配置或稍后重试。"
+        ),
+        "sources": [],
+        "context": "",
+        "agent": agent_id,
+        "session_id": str(payload.get("session_id") or runtime_request.get("session_id") or route_decision.get("session_id") or ""),
+        "metadata": {
+            "graph_route_decision": {
+                "routed": True,
+                "route_decision_id": route_decision.get("route_decision_id") or "",
+                "route_intent": route_decision.get("route_intent") or "",
+                "decision_owner": route_decision.get("decision_owner") or "",
+            },
+        },
+    }
+    return _with_trace(response, trace)
+
+
 def _agent_message_response_trace(request: AgentMessage, reply: AgentMessage) -> dict[str, Any]:
     return {
         "request": request.to_dict(),
@@ -9611,6 +9654,7 @@ def _send_agent_message(
         status_executor=_execute_graph_status_route,
         crawler_audit_executor=_execute_graph_crawler_audit_route,
         local_corpus_inventory_executor=_execute_graph_local_corpus_inventory_route,
+        router_error_executor=_execute_graph_router_error_route,
     )
     _record_agent_response_event(normalize_session_id(message.conversation_id or payload.get("session_id")), result)
     return result

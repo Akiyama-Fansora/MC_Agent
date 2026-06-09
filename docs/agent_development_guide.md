@@ -5131,3 +5131,44 @@ Next migration loop:
 1. Migrate the next side-effect-free branch only where it cannot trigger background collection, likely no-retrieval result handling without selected delegate.
 2. Keep temporary extraction and delegation in legacy until their network/filesystem side-effect boundaries are represented explicitly.
 3. Continue requiring Agent-owned route decisions and confirmations before any graph-executed handler can run.
+
+## 2026-06-09 Stage 75: Graph-Executed Router Error Route
+
+Stage 75 migrates the terminal `router_error` route out of the legacy `_chat_impl()` execution path.
+
+Before this stage, an Agent router failure or invalid tool selection still had to enter the legacy delivery function even though the correct behavior is only to report that no tool executed. This is not a third Agent and not a graph-made decision: the existing Agent router/LLM path still owns the route decision, and the graph executes only the already-selected terminal error route.
+
+Implemented changes:
+
+1. Added graph executor metadata for `graph_router_error_route_executor`.
+2. `MCagentGraph` and `CrawlerAgentGraph` now include `graph_router_error_route` nodes.
+3. The router-error graph route runs only when the injected existing Agent router produced a routed decision with `route_intent == "router_error"`.
+4. The route intentionally does not require `proceed: true`, because router errors are terminal non-execution facts, not tool permissions.
+5. `_execute_graph_router_error_route()` reuses the Agent route trace, appends `done/router_error`, and returns the same answer/sources/context/agent shape without calling retrieval, final-answer LLMs, Crawler jobs, or legacy delivery.
+6. Route execution and legacy handler-surface contracts now recognize graph-executed `router_error`.
+7. FastAPI and LangGraph runtime scenarios prove the route bypasses legacy delivery for MCagent and CrawlerAgent while preserving the From-Content-To message bus.
+
+Boundary:
+
+The graph router-error route does not select a tool, repair an invalid route, infer intent from keywords, start jobs, retrieve evidence, judge evidence, persist data, or alter AgentMessage routing. If the injected route decider itself fails before producing an Agent-owned routed decision, the graph still falls back to the legacy adapter instead of fabricating a route.
+
+Remaining legacy surfaces:
+
+1. `direct_answer` remains legacy because it calls the Agent's final-answer LLM. Migrating it must be framed as an Agent-owned final-answer node, not an objective tool.
+2. `temporary_extract` remains legacy because it performs network fetch/extraction and LLM summarization.
+3. `delegate_crawler`, `crawler_action_plan_delegate`, and side-effect inventory workflows remain legacy because they can create background jobs or otherwise execute side effects.
+4. `no_retrieval_results` remains legacy because it happens after retrieval and evidence selection, not as an independent router intent.
+5. `rag_answer_generation` remains legacy because it performs evidence-grounded final-answer generation.
+
+Current score:
+
+1. Two-Agent shape: 9.5/10.
+2. Legacy runtime migration: 9.1/10. `status`, `crawler_audit`, safe `local_corpus_inventory`, and `router_error` no longer require `_chat_impl()` in production graph delivery; LLM answer generation, network extraction, RAG post-processing, and job-starting side effects remain legacy by design.
+3. Tool-objectivity principle: 9.8/10.
+4. Regression coverage: 9.9/10.
+
+Next migration loop:
+
+1. Do not migrate another route until its LLM or side-effect boundary is represented explicitly as an Agent-owned node.
+2. If continuing migration, split final-answer generation from objective contracts first, then consider `direct_answer` or `rag_answer_generation` as Agent answer nodes.
+3. Keep `temporary_extract` and delegation behind explicit side-effect authorization and job-start ownership nodes before moving them out of legacy.
