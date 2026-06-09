@@ -55,6 +55,7 @@ REQUIRED_FILES = [
     "mcagent/evidence_service.py",
     "mcagent/event_stream.py",
     "mcagent/fastapi_app.py",
+    "mcagent/graphs/legacy_adapter.py",
     "mcagent/job_view_service.py",
     "mcagent/llm_profiles.py",
     "mcagent/rag_service.py",

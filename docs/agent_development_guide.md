@@ -4674,3 +4674,38 @@ python -m py_compile scripts\audit_dual_agent_architecture.py tests\dual_agent_a
 ~~~
 
 All commands passed before this documentation entry was written.
+
+## 2026-06-09 Stage 61: Explicit Legacy Runtime Adapter
+
+Stage 61 makes the remaining legacy execution boundary visible inside the two Agent graphs.
+
+The previous graph shape was already two-agent routed, but both subgraphs still had a generic `agent_runtime` node that directly called the injected delivery function. In production that delivery function reaches `web_server._chat_impl()`. This was not a third Agent and not a message-bus override, but the migration boundary was too implicit.
+
+Implemented changes:
+
+1. Added `mcagent/graphs/legacy_adapter.py`.
+2. `MCagentGraph` now runs `mcagent.legacy_adapter` instead of `mcagent.agent_runtime`.
+3. `CrawlerAgentGraph` now runs `crawler.legacy_adapter` instead of `crawler.agent_runtime`.
+4. `ConversationGraph` now records `mcagent_graph.legacy_adapter` and `crawler_graph.legacy_adapter`.
+5. The adapter annotates results with `legacy_runtime_adapter` and `agent_graph_runtime.runtime_adapter`.
+6. The architecture audit now has an explicit `explicit_legacy_runtime_adapter` pass check plus the existing migration warning.
+
+Boundary:
+
+The adapter only forwards the graph payload to the injected legacy delivery function and records migration metadata. It does not choose tools, judge evidence, force Crawler jobs, rewrite AgentMessage routing, or replace MCagent/CrawlerAgent LLM decisions.
+
+Current score:
+
+1. Two-Agent shape: 9/10. Routing, subgraph boundaries, memory context, and tool-boundary metadata are explicit.
+2. Legacy runtime migration: 5/10. The remaining `_chat_impl()` dependency is now named and audited, but still needs extraction into graph-owned nodes.
+3. Tool-objectivity principle: 8/10. Tool boundaries and adapter metadata state that tools/adapters expose facts only; more runtime blocks should continue moving into objective services.
+4. Regression coverage: 8/10. LangGraph, FastAPI, message bus, audit, smoke, encoding, and scenario tests cover the boundary. More browser-level Playwright integration tests can be added when a stable local fixture is available.
+
+Remaining migration plan:
+
+1. Extract MCagent understanding/tool-routing from `_chat_impl()` into explicit graph nodes.
+2. Extract MCagent retrieval execution and evidence review into explicit graph nodes.
+3. Extract CrawlerAgent mission understanding, source graph planning, tool execution, observation review, reflection, persistence, and final reporting into explicit graph nodes.
+4. Keep every extracted block objective unless the receiving Agent LLM is explicitly making the decision.
+
+Verified commands for this stage are listed in the turn summary.

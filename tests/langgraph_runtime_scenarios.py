@@ -75,12 +75,16 @@ def test_conversation_graph_routes_only_by_message_target() -> None:
     runtime = result.get("graph_runtime") or {}
     assert_true("runtime_is_langgraph", runtime.get("runtime") == "langgraph", str(runtime))
     assert_true("active_agent_mcagent", runtime.get("active_agent") == "mcagent_rag", str(runtime))
-    assert_true("mcagent_node_visited", "mcagent_graph.agent_runtime" in runtime.get("visited_nodes", []), str(runtime))
-    assert_true("crawler_node_not_visited", "crawler_graph.agent_runtime" not in runtime.get("visited_nodes", []), str(runtime))
+    assert_true("mcagent_node_visited", "mcagent_graph.legacy_adapter" in runtime.get("visited_nodes", []), str(runtime))
+    assert_true("crawler_node_not_visited", "crawler_graph.legacy_adapter" not in runtime.get("visited_nodes", []), str(runtime))
     agent_runtime = result.get("agent_graph_runtime") or {}
     assert_true("mcagent_subgraph", agent_runtime.get("agent_graph") == "MCagentGraph", str(agent_runtime))
     assert_true("mcagent_select_local_tools_node", "mcagent.select_local_tools" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("mcagent_prepare_local_retrieval_node", "mcagent.prepare_local_retrieval" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
+    assert_true("mcagent_legacy_adapter_node", "mcagent.legacy_adapter" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
+    adapter = agent_runtime.get("runtime_adapter") or {}
+    assert_true("mcagent_runtime_adapter_visible", adapter.get("adapter") == "legacy_web_server_runtime", str(adapter))
+    assert_true("mcagent_runtime_adapter_owner", adapter.get("decision_owner") == "MCagent LLM", str(adapter))
     boundary = agent_runtime.get("tool_boundary") or {}
     assert_true("mcagent_local_only", "local_rag" in boundary.get("allowed_capability_groups", []), str(boundary))
     assert_true("mcagent_blocks_web", "web_search" in boundary.get("blocked_capability_groups", []), str(boundary))
@@ -124,11 +128,15 @@ def test_conversation_graph_can_dispatch_to_crawler_node() -> None:
     message = calls[0].get("agent_message") or {}
     assert_true("message_preserved", message.get("from_agent") == "MCagent" and message.get("to_agent") == "CrawlerAgent", str(message))
     runtime = result.get("graph_runtime") or {}
-    assert_true("crawler_node_visited", "crawler_graph.agent_runtime" in runtime.get("visited_nodes", []), str(runtime))
+    assert_true("crawler_node_visited", "crawler_graph.legacy_adapter" in runtime.get("visited_nodes", []), str(runtime))
     agent_runtime = result.get("agent_graph_runtime") or {}
     assert_true("crawler_subgraph", agent_runtime.get("agent_graph") == "CrawlerAgentGraph", str(agent_runtime))
     assert_true("crawler_select_tool_groups_node", "crawler.select_tool_groups" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("crawler_prepare_mission_contract_node", "crawler.prepare_mission_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
+    assert_true("crawler_legacy_adapter_node", "crawler.legacy_adapter" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
+    adapter = agent_runtime.get("runtime_adapter") or {}
+    assert_true("crawler_runtime_adapter_visible", adapter.get("adapter") == "legacy_web_server_runtime", str(adapter))
+    assert_true("crawler_runtime_adapter_owner", adapter.get("decision_owner") == "CrawlerAgent LLM", str(adapter))
     boundary = agent_runtime.get("tool_boundary") or {}
     assert_true("crawler_general_web", "web_discovery" in boundary.get("allowed_capability_groups", []), str(boundary))
     assert_true("crawler_optional_domain_toolsets", "optional_domain_toolsets" in boundary.get("allowed_capability_groups", []), str(boundary))

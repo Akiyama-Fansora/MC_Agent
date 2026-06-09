@@ -8,6 +8,7 @@ from ..agent_runtime import domain_collection_tools_for_crawler, general_collect
 from ..config import AppConfig
 from ..session_state import DEFAULT_SESSION_STORE
 from .agent_state import AgentGraphState
+from .legacy_adapter import deliver_via_legacy_runtime
 from .state import GraphEvent
 
 
@@ -134,11 +135,25 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             ),
         }
 
-    def run_crawler_agent_runtime(state: AgentGraphState) -> dict[str, Any]:
-        result = agent_delivery(config, dict(state.get("payload") or {}), emit=emit)
+    def run_legacy_adapter(state: AgentGraphState) -> dict[str, Any]:
+        result = deliver_via_legacy_runtime(
+            config,
+            dict(state.get("payload") or {}),
+            agent_delivery=agent_delivery,
+            emit=emit,
+            agent_id="crawler_agent",
+            graph_name="CrawlerAgentGraph",
+            node_name="crawler.legacy_adapter",
+        )
         return {
             "result": result,
-            **_append(state, "crawler.agent_runtime", "completed", {"agent": "crawler_agent"}),
+            "runtime_adapter": result.get("legacy_runtime_adapter") or {},
+            **_append(
+                state,
+                "crawler.legacy_adapter",
+                "delegated_to_legacy_runtime_adapter",
+                {"agent": "crawler_agent", "adapter": "legacy_web_server_runtime"},
+            ),
         }
 
     def finalize(state: AgentGraphState) -> dict[str, Any]:
@@ -150,6 +165,7 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             "selected_tool_groups": state.get("selected_tool_groups") or {},
             "memory_context": state.get("memory_context") or {},
             "mission_contract": state.get("mission_contract") or {},
+            "runtime_adapter": state.get("runtime_adapter") or result.get("legacy_runtime_adapter") or {},
             "visited_nodes": [*state.get("visited_nodes", []), "crawler.finalize"],
             "events": [*state.get("graph_events", []), _event("crawler.finalize", "ready")],
         }
@@ -167,14 +183,14 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
     builder.add_node("understand_boundary", understand_boundary)
     builder.add_node("select_tool_groups", select_tool_groups)
     builder.add_node("prepare_mission_contract", prepare_mission_contract)
-    builder.add_node("agent_runtime", run_crawler_agent_runtime)
+    builder.add_node("legacy_adapter", run_legacy_adapter)
     builder.add_node("finalize", finalize)
     builder.add_edge(START, "receive")
     builder.add_edge("receive", "understand_boundary")
     builder.add_edge("understand_boundary", "select_tool_groups")
     builder.add_edge("select_tool_groups", "prepare_mission_contract")
-    builder.add_edge("prepare_mission_contract", "agent_runtime")
-    builder.add_edge("agent_runtime", "finalize")
+    builder.add_edge("prepare_mission_contract", "legacy_adapter")
+    builder.add_edge("legacy_adapter", "finalize")
     builder.add_edge("finalize", END)
     return builder.compile()
 

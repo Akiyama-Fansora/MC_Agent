@@ -8,6 +8,7 @@ from ..agent_runtime import tools_for_agent
 from ..config import AppConfig
 from ..session_state import DEFAULT_SESSION_STORE
 from .agent_state import AgentGraphState
+from .legacy_adapter import deliver_via_legacy_runtime
 from .state import GraphEvent
 
 
@@ -117,11 +118,25 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             ),
         }
 
-    def run_local_agent_runtime(state: AgentGraphState) -> dict[str, Any]:
-        result = agent_delivery(config, dict(state.get("payload") or {}), emit=emit)
+    def run_legacy_adapter(state: AgentGraphState) -> dict[str, Any]:
+        result = deliver_via_legacy_runtime(
+            config,
+            dict(state.get("payload") or {}),
+            agent_delivery=agent_delivery,
+            emit=emit,
+            agent_id="mcagent_rag",
+            graph_name="MCagentGraph",
+            node_name="mcagent.legacy_adapter",
+        )
         return {
             "result": result,
-            **_append(state, "mcagent.agent_runtime", "completed", {"agent": "mcagent_rag"}),
+            "runtime_adapter": result.get("legacy_runtime_adapter") or {},
+            **_append(
+                state,
+                "mcagent.legacy_adapter",
+                "delegated_to_legacy_runtime_adapter",
+                {"agent": "mcagent_rag", "adapter": "legacy_web_server_runtime"},
+            ),
         }
 
     def finalize(state: AgentGraphState) -> dict[str, Any]:
@@ -133,6 +148,7 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             "selected_tool_groups": state.get("selected_tool_groups") or {},
             "memory_context": state.get("memory_context") or {},
             "retrieval_contract": state.get("retrieval_contract") or {},
+            "runtime_adapter": state.get("runtime_adapter") or result.get("legacy_runtime_adapter") or {},
             "visited_nodes": [*state.get("visited_nodes", []), "mcagent.finalize"],
             "events": [*state.get("graph_events", []), _event("mcagent.finalize", "ready")],
         }
@@ -150,14 +166,14 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
     builder.add_node("load_memory_boundary", load_memory_boundary)
     builder.add_node("select_local_tools", select_local_tools)
     builder.add_node("prepare_local_retrieval", prepare_local_retrieval)
-    builder.add_node("agent_runtime", run_local_agent_runtime)
+    builder.add_node("legacy_adapter", run_legacy_adapter)
     builder.add_node("finalize", finalize)
     builder.add_edge(START, "receive")
     builder.add_edge("receive", "load_memory_boundary")
     builder.add_edge("load_memory_boundary", "select_local_tools")
     builder.add_edge("select_local_tools", "prepare_local_retrieval")
-    builder.add_edge("prepare_local_retrieval", "agent_runtime")
-    builder.add_edge("agent_runtime", "finalize")
+    builder.add_edge("prepare_local_retrieval", "legacy_adapter")
+    builder.add_edge("legacy_adapter", "finalize")
     builder.add_edge("finalize", END)
     return builder.compile()
 

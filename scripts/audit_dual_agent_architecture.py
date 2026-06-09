@@ -24,6 +24,7 @@ def audit(root: Path = ROOT) -> dict[str, Any]:
         "conversation_graph": graphs / "runtime.py",
         "mcagent_graph": graphs / "mcagent.py",
         "crawler_graph": graphs / "crawler.py",
+        "legacy_adapter": graphs / "legacy_adapter.py",
         "agent_message": root / "mcagent" / "agent_message.py",
         "agent_runtime": root / "mcagent" / "agent_runtime.py",
         "crawler_capabilities": root / "mcagent" / "crawler_capabilities.py",
@@ -74,13 +75,22 @@ def audit(root: Path = ROOT) -> dict[str, Any]:
             "evidence": f"{files['agent_runtime'].relative_to(root)}; {files['crawler_capabilities'].relative_to(root)}",
         },
         {
+            "id": "explicit_legacy_runtime_adapter",
+            "status": "pass"
+            if contains(files["legacy_adapter"], "deliver_via_legacy_runtime", "legacy_web_server_runtime", "does not choose tools")
+            and contains(files["mcagent_graph"], "legacy_adapter", "deliver_via_legacy_runtime")
+            and contains(files["crawler_graph"], "legacy_adapter", "deliver_via_legacy_runtime")
+            and contains(files["conversation_graph"], "mcagent_graph.legacy_adapter", "crawler_graph.legacy_adapter")
+            else "fail",
+            "evidence": f"{files['legacy_adapter'].relative_to(root)}; {files['conversation_graph'].relative_to(root)}",
+        },
+        {
             "id": "legacy_runtime_coupling_visible",
             "status": "warn"
-            if contains(files["mcagent_graph"], "legacy MCagent runtime")
-            or contains(files["crawler_graph"], "legacy CrawlerAgent runtime")
-            or contains(files["web_server"], "def _chat_impl")
+            if contains(files["legacy_adapter"], "legacy_web_server_runtime")
+            and contains(files["web_server"], "def _chat_impl")
             else "pass",
-            "evidence": "Graph subnodes still delegate core execution to the legacy web_server runtime during migration.",
+            "evidence": "Graph subnodes now delegate through an explicit legacy adapter; core execution still reaches web_server._chat_impl during migration.",
         },
     ]
     counts = {status: sum(1 for item in checks if item["status"] == status) for status in ("pass", "warn", "fail")}

@@ -96,7 +96,12 @@ def build_conversation_graph(config: AppConfig, agent_delivery: AgentDeliveryFn,
         )
         return {
             "result": result,
-            **_append_event(state, "mcagent_graph.agent_runtime", "completed", {"agent": "mcagent_rag"}),
+            **_append_event(
+                state,
+                "mcagent_graph.legacy_adapter",
+                "delegated_to_legacy_runtime_adapter",
+                {"agent": "mcagent_rag", "adapter": "legacy_web_server_runtime"},
+            ),
         }
 
     def run_crawler(state: ConversationGraphState) -> dict[str, Any]:
@@ -111,7 +116,12 @@ def build_conversation_graph(config: AppConfig, agent_delivery: AgentDeliveryFn,
         )
         return {
             "result": result,
-            **_append_event(state, "crawler_graph.agent_runtime", "completed", {"agent": "crawler_agent"}),
+            **_append_event(
+                state,
+                "crawler_graph.legacy_adapter",
+                "delegated_to_legacy_runtime_adapter",
+                {"agent": "crawler_agent", "adapter": "legacy_web_server_runtime"},
+            ),
         }
 
     def run_unknown(state: ConversationGraphState) -> dict[str, Any]:
