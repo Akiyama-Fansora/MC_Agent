@@ -4646,3 +4646,31 @@ The From-Content-To bus delivers messages only. It does not decide tools. Safety
 2. A collection request does not start a job when CrawlerAgent selects `answer`.
 3. A collection request does not start a job when CrawlerAgent selects only `mcagent_context`.
 4. A job starts only after CrawlerAgent selects `delegate_crawler`.
+
+## 2026-06-09 Stage 60: Objective Dual-Agent Architecture Audit
+
+This stage re-read the repository from a fresh-project perspective: README, LangGraph graph files, AgentMessage, runtime tool catalogs, Crawler capability registry, and regression tests.
+
+Conclusion: the current project is structurally two-agent shaped. `ConversationGraph` routes by `AgentMessage.to_agent` into `MCagentGraph` or `CrawlerAgentGraph`. `MCagentGraph` declares a local/RAG/message boundary and blocks public web, browser, download, and public web ingest capabilities. `CrawlerAgentGraph` declares general crawler tools plus optional Minecraft domain tools.
+
+Remaining risk: both subgraphs still delegate core execution to the legacy runtime in `web_server.py`. This is not a third Agent, and it is not a message-bus override. It is an unfinished migration boundary. Future work should continue extracting legacy runtime blocks into explicit graph nodes for understanding, tool choice, execution, observation review, reflection, persistence, and final reporting.
+
+Implemented changes:
+
+1. Added `scripts/audit_dual_agent_architecture.py`.
+2. Added `tests/dual_agent_architecture_audit_scenarios.py`.
+3. Updated README local quality checks to include `python scripts\audit_dual_agent_architecture.py`.
+
+The audit script reports objective structure only. It does not decide whether a live LLM turn should call a tool and does not judge evidence sufficiency.
+
+Verified commands:
+
+~~~powershell
+python -B scripts\audit_dual_agent_architecture.py --json
+python -B tests\dual_agent_architecture_audit_scenarios.py
+python -B tests\langgraph_runtime_scenarios.py
+python -B tests\agent_message_bus_scenarios.py
+python -m py_compile scripts\audit_dual_agent_architecture.py tests\dual_agent_architecture_audit_scenarios.py mcagent\graphs\runtime.py mcagent\graphs\mcagent.py mcagent\graphs\crawler.py mcagent\agent_message.py
+~~~
+
+All commands passed before this documentation entry was written.

@@ -62,7 +62,8 @@ def main() -> int:
     pending_review = classify_crawler_tool_result({"source": "playwright", "returncode": 0, "manifest_stats": {"records": 1}})
     assert pending_review.status == "records_pending_review"
     assert pending_review.bad is True
-    assert classify_crawler_tool_result({"source": "mcmod", "returncode": 0, "topic_validation": {"matched": True}, "manifest_stats": {"records": 2}}).status == "ok"
+    assert classify_crawler_tool_result({"source": "mcmod", "returncode": 0, "topic_validation": {"matched": True}, "manifest_stats": {"records": 2}}).status == "records_pending_review"
+    assert classify_crawler_tool_result({"source": "mcmod", "returncode": 0, "topic_validation": {"matched": True, "crawler_review_action": "accept"}, "manifest_stats": {"records": 2}}).status == "ok"
     contract = build_handoff_contract(
         requested_by="user_via_mcagent",
         from_agent="MCagent",
