@@ -299,11 +299,73 @@ def test_agent_selected_status_bypasses_legacy_delivery() -> None:
     assert_true("conversation_status_node", "mcagent_graph.graph_status_route" in graph_runtime.get("visited_nodes", []), str(graph_runtime))
 
 
+def test_agent_selected_crawler_audit_bypasses_legacy_delivery() -> None:
+    fake = SequencedClient(
+        [
+            '{"tool":"crawler_audit","reason":"read recent Crawler audit","collection_target":"","delivery_target":"human"}',
+            '{"proceed":true,"tool":"crawler_audit","reason":"confirmed audit read"}',
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    original_delivery = web_server._deliver_agent_message
+    original_audit = web_server._recent_crawler_audit_answer
+
+    def forbidden_delivery(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AssertionError("legacy delivery should not run for graph-executed crawler_audit")
+
+    def fake_recent_audit(_question: str) -> dict[str, object]:
+        return {
+            "answer": "Crawler audit: rejected 1 source.",
+            "sources": [],
+            "context": "",
+            "agent": "mcagent_rag",
+            "job": {"id": "job-audit"},
+        }
+
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake, "fake")  # type: ignore[assignment]
+    web_server._deliver_agent_message = forbidden_delivery  # type: ignore[assignment]
+    web_server._recent_crawler_audit_answer = fake_recent_audit  # type: ignore[assignment]
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = web_server._send_agent_message(
+                make_temp_config(Path(tmp)),
+                {"session_id": "fastapi-crawler-audit-graph"},
+                from_agent="User",
+                content="read the recent crawler audit",
+                to_agent="MCagent",
+                intent="user_chat",
+                conversation_id="fastapi-crawler-audit-graph",
+            )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._deliver_agent_message = original_delivery  # type: ignore[assignment]
+        web_server._recent_crawler_audit_answer = original_audit  # type: ignore[assignment]
+
+    traces = [(step.get("stage"), step.get("status")) for step in result.get("trace") or []]
+    assert_true("audit_trace", ("audit", "next_step_confirmed") in traces, str(traces))
+    assert_true("audit_answer_trace", ("answer", "recent_crawler_audit") in traces, str(traces))
+    assert_true("audit_answer", "Crawler audit: rejected 1 source." in result.get("answer", ""), result.get("answer", ""))
+    agent_runtime = result.get("agent_graph_runtime") or {}
+    visited = agent_runtime.get("visited_nodes") or []
+    assert_true("graph_audit_node", "mcagent.graph_crawler_audit_route" in visited, str(visited))
+    assert_true("legacy_not_visited", "mcagent.legacy_adapter" not in visited, str(visited))
+    adapter = agent_runtime.get("runtime_adapter") or {}
+    assert_true("graph_audit_adapter", adapter.get("adapter") == "graph_crawler_audit_route_executor", str(adapter))
+    route_execution = agent_runtime.get("route_execution_contract") or {}
+    assert_true("graph_audit_execution_fact", route_execution.get("route_execution_executed_by_graph") is True, str(route_execution))
+    legacy_surface = agent_runtime.get("legacy_handler_surface_contract") or {}
+    assert_true("graph_audit_surface_fact", legacy_surface.get("handler_executed_by_contract") is True, str(legacy_surface))
+    assert_true("graph_audit_surface_not_legacy", legacy_surface.get("legacy_handlers_still_run_in_adapter") is False, str(legacy_surface))
+    graph_runtime = result.get("graph_runtime") or {}
+    assert_true("conversation_audit_node", "mcagent_graph.graph_crawler_audit_route" in graph_runtime.get("visited_nodes", []), str(graph_runtime))
+
+
 def main() -> int:
     test_fastapi_core_routes()
     test_fastapi_sse_chat_shape()
     test_fastapi_agent_message_endpoint_dispatches()
     test_agent_selected_status_bypasses_legacy_delivery()
+    test_agent_selected_crawler_audit_bypasses_legacy_delivery()
     print("FASTAPI BACKEND SCENARIOS PASSED")
     return 0
 

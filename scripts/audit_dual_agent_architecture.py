@@ -85,7 +85,7 @@ def audit(root: Path = ROOT) -> dict[str, Any]:
             if contains(files["legacy_adapter"], "deliver_via_legacy_runtime", "legacy_web_server_runtime", "does not choose tools")
             and contains(files["mcagent_graph"], "legacy_adapter", "deliver_via_legacy_runtime")
             and contains(files["crawler_graph"], "legacy_adapter", "deliver_via_legacy_runtime")
-            and contains(files["conversation_graph"], "mcagent_graph.legacy_adapter", "crawler_graph.legacy_adapter")
+            and contains(files["conversation_graph"], "_agent_runtime_node", ".legacy_adapter")
             else "fail",
             "evidence": f"{files['legacy_adapter'].relative_to(root)}; {files['conversation_graph'].relative_to(root)}",
         },
@@ -177,8 +177,9 @@ def audit(root: Path = ROOT) -> dict[str, Any]:
                 "route_execution_executed_by_graph",
                 "side_effect_executed_by_contract",
                 "graph_status_route_executor",
+                "graph_crawler_audit_route_executor",
             )
-            and contains(files["graph_route_execution"], "GRAPH_STATUS_ROUTE_EXECUTOR", "already Agent-selected", "legacy_runtime_adapter_bypassed")
+            and contains(files["graph_route_execution"], "GRAPH_STATUS_ROUTE_EXECUTOR", "GRAPH_CRAWLER_AUDIT_ROUTE_EXECUTOR", "already Agent-selected", "legacy_runtime_adapter_bypassed")
             and contains(files["mcagent_graph"], "prepare_route_execution_contract", "mcagent_route_execution_facts_contract")
             and contains(files["crawler_graph"], "prepare_route_execution_contract", "crawler_route_execution_facts_contract")
             and contains(files["route_result_contract"], "route_execution_contract_id")
@@ -191,6 +192,15 @@ def audit(root: Path = ROOT) -> dict[str, Any]:
             if contains(files["mcagent_graph"], "graph_status_route", 'decision.get("route_intent") == "status"', "status_executor")
             and contains(files["crawler_graph"], "graph_status_route", 'decision.get("route_intent") == "status"', "status_executor")
             and contains(files["web_server"], "_execute_graph_status_route", "_route_agent_decision_for_graph", "Graph status execution requires an Agent-selected status route.")
+            else "fail",
+            "evidence": f"{files['mcagent_graph'].relative_to(root)}; {files['crawler_graph'].relative_to(root)}; {files['web_server'].relative_to(root)}",
+        },
+        {
+            "id": "graph_crawler_audit_route_migrated",
+            "status": "pass"
+            if contains(files["mcagent_graph"], "graph_crawler_audit_route", 'decision.get("route_intent") == "crawler_audit"', "crawler_audit_executor")
+            and contains(files["crawler_graph"], "graph_crawler_audit_route", 'decision.get("route_intent") == "crawler_audit"', "crawler_audit_executor")
+            and contains(files["web_server"], "_execute_graph_crawler_audit_route", "_route_agent_decision_for_graph", "Graph crawler audit execution requires an Agent-selected crawler_audit route.")
             else "fail",
             "evidence": f"{files['mcagent_graph'].relative_to(root)}; {files['crawler_graph'].relative_to(root)}; {files['web_server'].relative_to(root)}",
         },
@@ -226,7 +236,7 @@ def audit(root: Path = ROOT) -> dict[str, Any]:
             if contains(files["legacy_adapter"], "legacy_web_server_runtime")
             and contains(files["web_server"], "def _chat_impl")
             else "pass",
-            "evidence": "Graph-selected status can bypass web_server._chat_impl; non-migrated route handlers still execute through the explicit legacy adapter during migration.",
+            "evidence": "Graph-selected status and crawler_audit can bypass web_server._chat_impl; non-migrated route handlers still execute through the explicit legacy adapter during migration.",
         },
     ]
     counts = {status: sum(1 for item in checks if item["status"] == status) for status in ("pass", "warn", "fail")}

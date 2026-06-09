@@ -5066,3 +5066,36 @@ Next migration loop:
 1. Migrate another side-effect-free handler, likely `crawler_audit`, using the same Agent-selected-route gate.
 2. Keep side-effect handlers such as `delegate_crawler` behind legacy execution until CrawlerAgent route decision, side-effect authorization facts, and job-start ownership are all represented by explicit graph nodes.
 3. Continue avoiding phrase-specific routing rules and keep AgentMessage as the transport only.
+
+## 2026-06-09 Stage 73: Graph-Executed Crawler Audit Route
+
+Stage 73 migrates the second side-effect-free route handler out of the legacy `_chat_impl()` execution path.
+
+Before this stage, graph-selected `status` could bypass the legacy adapter, but an Agent-selected `crawler_audit` route still had to enter `_chat_impl()` and `_handle_crawler_audit_route()` even though it only reads recent Crawler self-audit facts.
+
+Implemented changes:
+
+1. Extended `mcagent/graphs/graph_route_execution.py` with `graph_crawler_audit_route_executor_metadata()`.
+2. `MCagentGraph` and `CrawlerAgentGraph` now include `graph_crawler_audit_route` nodes.
+3. The new graph route runs only when the injected existing Agent router/LLM produced a routed decision with `route_intent == "crawler_audit"`.
+4. `_send_agent_message()` now injects `_execute_graph_crawler_audit_route()` alongside the existing graph status executor.
+5. The graph crawler-audit executor reuses the Agent route trace and confirmation, reads recent Crawler self-audit facts, and returns the same result shape with trace and AgentMessage reply support.
+6. Route execution and legacy handler surface contracts now recognize both graph-executed `status` and graph-executed `crawler_audit`.
+7. The architecture audit and FastAPI scenarios now prove an Agent-selected `crawler_audit` route bypasses legacy delivery.
+
+Boundary:
+
+The graph crawler-audit route executes only after the Agent router selected `crawler_audit`. It does not infer audit intent from keywords, start jobs, persist evidence, judge sources, choose tools, alter AgentMessage routing, or write a subjective final answer. Non-migrated route handlers still run through the explicit legacy adapter during migration.
+
+Current score:
+
+1. Two-Agent shape: 9.3/10.
+2. Legacy runtime migration: 8.9/10. `status` and `crawler_audit` no longer require `_chat_impl()` in production graph delivery, but direct answer, temporary extract, local inventory, delegate, crawler action-plan delegation, no-retrieval, and RAG answer generation remain legacy handlers.
+3. Tool-objectivity principle: 9.7/10.
+4. Regression coverage: 9.8/10.
+
+Next migration loop:
+
+1. Migrate the next side-effect-free handler with the smallest blast radius, likely `local_corpus_inventory` or no-retrieval result handling.
+2. Keep side-effect handlers behind Agent-owned route decisions and explicit side-effect authorization facts.
+3. Continue shrinking `_chat_impl()` without adding keyword routing or letting contracts replace Agent judgment.

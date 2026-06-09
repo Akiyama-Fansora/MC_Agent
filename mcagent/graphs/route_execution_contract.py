@@ -4,6 +4,7 @@ from typing import Any
 
 
 EXECUTION_TRACE_STAGES = {"retrieve", "answer", "delegate", "extract", "status", "audit", "done"}
+GRAPH_ROUTE_EXECUTORS = {"graph_status_route_executor", "graph_crawler_audit_route_executor"}
 
 
 def _trace_steps(result: dict[str, Any]) -> list[dict[str, Any]]:
@@ -41,7 +42,8 @@ def build_route_execution_contract(
 
     trace = _trace_steps(result)
     graph_executor = result.get("graph_route_executor") if isinstance(result.get("graph_route_executor"), dict) else {}
-    graph_status_executed = graph_executor.get("adapter") == "graph_status_route_executor"
+    graph_executor_adapter = str(graph_executor.get("adapter") or "")
+    graph_route_executed = graph_executor_adapter in GRAPH_ROUTE_EXECUTORS
     execution_stages = sorted({str(step.get("stage") or "") for step in trace if step.get("stage") in EXECUTION_TRACE_STAGES})
     sources = result.get("sources") if isinstance(result.get("sources"), list) else []
     answer = str(result.get("answer") or "")
@@ -111,14 +113,14 @@ def build_route_execution_contract(
             "error_present": bool(result.get("error")),
         },
         "decision_owner": decision_owner,
-        "route_execution_executed_by_graph": graph_status_executed,
+        "route_execution_executed_by_graph": graph_route_executed,
         "side_effect_executed_by_contract": False,
         "response_changed_by_contract": False,
         "legacy_execution_still_runs_in_adapter": runtime_adapter.get("adapter") == "legacy_web_server_runtime",
-        "legacy_trace_observation_only": not graph_status_executed,
+        "legacy_trace_observation_only": not graph_route_executed,
         "objective_contract": (
-            "The graph records Agent route execution facts. For migrated status routes, the graph may execute the "
-            "already-selected side-effect-free status handler; this contract does not start jobs, persist evidence, "
-            "judge evidence, alter routing, or write the final response."
+            "The graph records Agent route execution facts. For migrated status and crawler_audit routes, the graph "
+            "may execute only the already-selected side-effect-free handler; this contract does not start jobs, "
+            "persist evidence, judge evidence, alter routing, or write the final response."
         ),
     }

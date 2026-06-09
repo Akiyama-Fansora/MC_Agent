@@ -17,8 +17,9 @@ EmitFn = Callable[[str, Any], None]
 AgentDeliveryFn = Callable[..., dict[str, Any]]
 AgentRouteDeciderFn = Callable[..., dict[str, Any]]
 StatusExecutorFn = Callable[..., dict[str, Any]]
+CrawlerAuditExecutorFn = Callable[..., dict[str, Any]]
 _GRAPH_CACHE_LOCK = threading.Lock()
-_GRAPH_CACHE: dict[tuple[int, int, int, int, int], Any] = {}
+_GRAPH_CACHE: dict[tuple[int, int, int, int, int, int], Any] = {}
 
 
 def _agent_id_for_route(message: AgentMessage) -> str:
@@ -50,6 +51,14 @@ def _payload_with_message(payload: dict[str, Any], message: AgentMessage) -> dic
     return next_payload
 
 
+def _agent_runtime_node(prefix: str, adapter_name: str) -> str:
+    if adapter_name == "graph_status_route_executor":
+        return f"{prefix}.graph_status_route"
+    if adapter_name == "graph_crawler_audit_route_executor":
+        return f"{prefix}.graph_crawler_audit_route"
+    return f"{prefix}.legacy_adapter"
+
+
 def build_conversation_graph(
     config: AppConfig,
     agent_delivery: AgentDeliveryFn,
@@ -57,6 +66,7 @@ def build_conversation_graph(
     *,
     route_decider: AgentRouteDeciderFn | None = None,
     status_executor: StatusExecutorFn | None = None,
+    crawler_audit_executor: CrawlerAuditExecutorFn | None = None,
 ):
     builder = StateGraph(ConversationGraphState)
 
@@ -104,11 +114,12 @@ def build_conversation_graph(
             thread_id=str(state.get("thread_id") or "default"),
             route_decider=route_decider,
             status_executor=status_executor,
+            crawler_audit_executor=crawler_audit_executor,
         )
         agent_runtime = result.get("agent_graph_runtime") if isinstance(result.get("agent_graph_runtime"), dict) else {}
         adapter = agent_runtime.get("runtime_adapter") if isinstance(agent_runtime.get("runtime_adapter"), dict) else {}
         adapter_name = str(adapter.get("adapter") or "agent_graph_runtime")
-        runtime_node = "mcagent_graph.graph_status_route" if adapter_name == "graph_status_route_executor" else "mcagent_graph.legacy_adapter"
+        runtime_node = _agent_runtime_node("mcagent_graph", adapter_name)
         return {
             "result": result,
             **_append_event(
@@ -130,11 +141,12 @@ def build_conversation_graph(
             thread_id=str(state.get("thread_id") or "default"),
             route_decider=route_decider,
             status_executor=status_executor,
+            crawler_audit_executor=crawler_audit_executor,
         )
         agent_runtime = result.get("agent_graph_runtime") if isinstance(result.get("agent_graph_runtime"), dict) else {}
         adapter = agent_runtime.get("runtime_adapter") if isinstance(agent_runtime.get("runtime_adapter"), dict) else {}
         adapter_name = str(adapter.get("adapter") or "agent_graph_runtime")
-        runtime_node = "crawler_graph.graph_status_route" if adapter_name == "graph_status_route_executor" else "crawler_graph.legacy_adapter"
+        runtime_node = _agent_runtime_node("crawler_graph", adapter_name)
         return {
             "result": result,
             **_append_event(
@@ -214,6 +226,7 @@ def dispatch_agent_message_graph(
     metadata: dict[str, Any] | None = None,
     route_decider: AgentRouteDeciderFn | None = None,
     status_executor: StatusExecutorFn | None = None,
+    crawler_audit_executor: CrawlerAuditExecutorFn | None = None,
 ) -> dict[str, Any]:
     """Deliver a From-Content-To message through the LangGraph conversation runtime.
 
@@ -223,14 +236,28 @@ def dispatch_agent_message_graph(
 
     thread_id = str(conversation_id or payload.get("session_id") or payload.get("conversation_id") or "default")
     if emit is None:
-        cache_key = (id(config), id(agent_delivery), id(route_decider), id(status_executor), 0)
+        cache_key = (id(config), id(agent_delivery), id(route_decider), id(status_executor), id(crawler_audit_executor), 0)
         with _GRAPH_CACHE_LOCK:
             graph = _GRAPH_CACHE.get(cache_key)
             if graph is None:
-                graph = build_conversation_graph(config, agent_delivery, emit=None, route_decider=route_decider, status_executor=status_executor)
+                graph = build_conversation_graph(
+                    config,
+                    agent_delivery,
+                    emit=None,
+                    route_decider=route_decider,
+                    status_executor=status_executor,
+                    crawler_audit_executor=crawler_audit_executor,
+                )
                 _GRAPH_CACHE[cache_key] = graph
     else:
-        graph = build_conversation_graph(config, agent_delivery, emit=emit, route_decider=route_decider, status_executor=status_executor)
+        graph = build_conversation_graph(
+            config,
+            agent_delivery,
+            emit=emit,
+            route_decider=route_decider,
+            status_executor=status_executor,
+            crawler_audit_executor=crawler_audit_executor,
+        )
     initial_state: ConversationGraphState = {
         "thread_id": thread_id,
         "incoming": {

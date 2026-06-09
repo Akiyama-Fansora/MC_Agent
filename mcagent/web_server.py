@@ -9311,7 +9311,7 @@ def _route_agent_decision_for_graph(
     return {
         **base,
         "routed": True,
-        "legacy_fallback_required": route.route_intent != "status",
+        "legacy_fallback_required": route.route_intent not in {"status", "crawler_audit"},
         "route_intent": route.route_intent,
         "selected_tool": str(tool_decision.get("tool") or route.route_intent),
         "tool_decision": tool_decision,
@@ -9381,6 +9381,58 @@ def _execute_graph_status_route(
     return response
 
 
+def _execute_graph_crawler_audit_route(
+    config: AppConfig,  # noqa: ARG001 - the audit route reads recent in-memory job facts only.
+    payload: dict[str, Any],
+    *,
+    emit: Any | None = None,
+    agent_id: str,
+    graph_name: str,  # noqa: ARG001 - recorded by graph adapter metadata.
+    node_name: str,  # noqa: ARG001 - recorded by graph adapter metadata.
+    runtime_request: dict[str, Any],  # noqa: ARG001 - recorded by graph adapter metadata.
+    route_decision: dict[str, Any],
+) -> dict[str, Any]:
+    if str(route_decision.get("route_intent") or "") != "crawler_audit":
+        raise RuntimeError("Graph crawler audit execution requires an Agent-selected crawler_audit route.")
+    trace = [dict(step) for step in route_decision.get("trace") or [] if isinstance(step, dict)]
+    tool_decision = route_decision.get("tool_decision") if isinstance(route_decision.get("tool_decision"), dict) else {}
+    audit_confirmation = _reuse_route_confirmation(
+        dict(route_decision.get("route_confirmation") if isinstance(route_decision.get("route_confirmation"), dict) else {}),
+        proposed_tool="crawler_audit",
+        proposed_goal=str(tool_decision.get("reason") or "Read recent Crawler audit details."),
+    )
+    step = _trace_step("audit", "next_step_confirmed", audit_confirmation)
+    trace.append(step)
+    if emit is not None:
+        emit("trace", step)
+    original_question = str(route_decision.get("original_question") or payload.get("question") or payload.get("query") or "")
+    response = dict(
+        _recent_crawler_audit_answer(original_question)
+        or {
+            "answer": "No matching recent Crawler self-audit record was found. This read-only route did not start a new collection job.",
+            "sources": [],
+            "context": "",
+            "agent": agent_id,
+        }
+    )
+    answer_step = _trace_step("answer", "recent_crawler_audit", {"source": "jobs", "job_id": (response.get("job") or {}).get("id")})
+    trace.append(answer_step)
+    if emit is not None:
+        emit("trace", answer_step)
+    response.setdefault("agent", agent_id)
+    response.setdefault("session_id", str(payload.get("session_id") or runtime_request.get("session_id") or route_decision.get("session_id") or ""))
+    response["metadata"] = {
+        **(response.get("metadata") if isinstance(response.get("metadata"), dict) else {}),
+        "graph_route_decision": {
+            "routed": True,
+            "route_decision_id": route_decision.get("route_decision_id") or "",
+            "route_intent": route_decision.get("route_intent") or "",
+            "decision_owner": route_decision.get("decision_owner") or "",
+        },
+    }
+    return _with_trace(response, trace)
+
+
 def _agent_message_response_trace(request: AgentMessage, reply: AgentMessage) -> dict[str, Any]:
     return {
         "request": request.to_dict(),
@@ -9440,6 +9492,7 @@ def _send_agent_message(
         agent_delivery=_deliver_agent_message,
         route_decider=_route_agent_decision_for_graph,
         status_executor=_execute_graph_status_route,
+        crawler_audit_executor=_execute_graph_crawler_audit_route,
     )
     _record_agent_response_event(normalize_session_id(message.conversation_id or payload.get("session_id")), result)
     return result
