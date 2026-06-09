@@ -85,6 +85,15 @@ def audit(root: Path = ROOT) -> dict[str, Any]:
             "evidence": f"{files['legacy_adapter'].relative_to(root)}; {files['conversation_graph'].relative_to(root)}",
         },
         {
+            "id": "explicit_runtime_request_contracts",
+            "status": "pass"
+            if contains(files["mcagent_graph"], "prepare_runtime_request", "mcagent_local_runtime_request", "MCagent LLM")
+            and contains(files["crawler_graph"], "prepare_runtime_request", "crawler_collection_runtime_request", "CrawlerAgent LLM")
+            and contains(files["legacy_adapter"], "runtime_request", "runtime_request_id", "contract_kind")
+            else "fail",
+            "evidence": f"{files['mcagent_graph'].relative_to(root)}; {files['crawler_graph'].relative_to(root)}; {files['legacy_adapter'].relative_to(root)}",
+        },
+        {
             "id": "legacy_runtime_coupling_visible",
             "status": "warn"
             if contains(files["legacy_adapter"], "legacy_web_server_runtime")

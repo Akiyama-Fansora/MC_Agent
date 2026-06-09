@@ -118,7 +118,50 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             ),
         }
 
+    def prepare_runtime_request(state: AgentGraphState) -> dict[str, Any]:
+        payload = dict(state.get("payload") or {})
+        thread_id = str(state.get("thread_id") or payload.get("session_id") or "default")
+        message = payload.get("agent_message") if isinstance(payload.get("agent_message"), dict) else {}
+        runtime_request = {
+            "request_id": f"{thread_id}:mcagent_rag:runtime_request",
+            "node": "mcagent.prepare_runtime_request",
+            "graph": "MCagentGraph",
+            "agent_id": "mcagent_rag",
+            "session_id": str(payload.get("session_id") or thread_id),
+            "contract_kind": "mcagent_local_runtime_request",
+            "payload": payload,
+            "message": {
+                "from_agent": str(message.get("from_agent") or payload.get("message_from") or "User"),
+                "to_agent": str(message.get("to_agent") or "MCagent"),
+                "intent": str(message.get("intent") or ""),
+                "has_agent_message": bool(message),
+            },
+            "tool_boundary": state.get("tool_boundary") or {},
+            "selected_tool_groups": state.get("selected_tool_groups") or {},
+            "memory_context": state.get("memory_context") or {},
+            "retrieval_contract": state.get("retrieval_contract") or {},
+            "decision_owner": "MCagent LLM",
+            "objective_contract": (
+                "The graph prepares objective runtime inputs for MCagent. It does not choose the final tool, "
+                "judge evidence sufficiency, or write the natural-language answer."
+            ),
+        }
+        return {
+            "runtime_request": runtime_request,
+            **_append(
+                state,
+                "mcagent.prepare_runtime_request",
+                "runtime_request_prepared",
+                {
+                    "request_id": runtime_request["request_id"],
+                    "contract_kind": runtime_request["contract_kind"],
+                    "decision_owner": runtime_request["decision_owner"],
+                },
+            ),
+        }
+
     def run_legacy_adapter(state: AgentGraphState) -> dict[str, Any]:
+        runtime_request = state.get("runtime_request") if isinstance(state.get("runtime_request"), dict) else {}
         result = deliver_via_legacy_runtime(
             config,
             dict(state.get("payload") or {}),
@@ -127,6 +170,7 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             agent_id="mcagent_rag",
             graph_name="MCagentGraph",
             node_name="mcagent.legacy_adapter",
+            runtime_request=runtime_request,
         )
         return {
             "result": result,
@@ -148,6 +192,7 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             "selected_tool_groups": state.get("selected_tool_groups") or {},
             "memory_context": state.get("memory_context") or {},
             "retrieval_contract": state.get("retrieval_contract") or {},
+            "runtime_request": state.get("runtime_request") or {},
             "runtime_adapter": state.get("runtime_adapter") or result.get("legacy_runtime_adapter") or {},
             "visited_nodes": [*state.get("visited_nodes", []), "mcagent.finalize"],
             "events": [*state.get("graph_events", []), _event("mcagent.finalize", "ready")],
@@ -166,13 +211,15 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
     builder.add_node("load_memory_boundary", load_memory_boundary)
     builder.add_node("select_local_tools", select_local_tools)
     builder.add_node("prepare_local_retrieval", prepare_local_retrieval)
+    builder.add_node("prepare_runtime_request", prepare_runtime_request)
     builder.add_node("legacy_adapter", run_legacy_adapter)
     builder.add_node("finalize", finalize)
     builder.add_edge(START, "receive")
     builder.add_edge("receive", "load_memory_boundary")
     builder.add_edge("load_memory_boundary", "select_local_tools")
     builder.add_edge("select_local_tools", "prepare_local_retrieval")
-    builder.add_edge("prepare_local_retrieval", "legacy_adapter")
+    builder.add_edge("prepare_local_retrieval", "prepare_runtime_request")
+    builder.add_edge("prepare_runtime_request", "legacy_adapter")
     builder.add_edge("legacy_adapter", "finalize")
     builder.add_edge("finalize", END)
     return builder.compile()

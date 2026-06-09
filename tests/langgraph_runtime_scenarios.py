@@ -81,10 +81,17 @@ def test_conversation_graph_routes_only_by_message_target() -> None:
     assert_true("mcagent_subgraph", agent_runtime.get("agent_graph") == "MCagentGraph", str(agent_runtime))
     assert_true("mcagent_select_local_tools_node", "mcagent.select_local_tools" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("mcagent_prepare_local_retrieval_node", "mcagent.prepare_local_retrieval" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
+    assert_true("mcagent_prepare_runtime_request_node", "mcagent.prepare_runtime_request" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("mcagent_legacy_adapter_node", "mcagent.legacy_adapter" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
+    runtime_request = agent_runtime.get("runtime_request") or {}
+    assert_true("mcagent_runtime_request_kind", runtime_request.get("contract_kind") == "mcagent_local_runtime_request", str(runtime_request))
+    assert_true("mcagent_runtime_request_owner", runtime_request.get("decision_owner") == "MCagent LLM", str(runtime_request))
+    assert_true("mcagent_runtime_request_payload_agent", (runtime_request.get("payload") or {}).get("agent") == "mcagent_rag", str(runtime_request))
     adapter = agent_runtime.get("runtime_adapter") or {}
     assert_true("mcagent_runtime_adapter_visible", adapter.get("adapter") == "legacy_web_server_runtime", str(adapter))
     assert_true("mcagent_runtime_adapter_owner", adapter.get("decision_owner") == "MCagent LLM", str(adapter))
+    assert_true("mcagent_adapter_consumed_runtime_request", adapter.get("runtime_request_id") == runtime_request.get("request_id"), str(adapter))
+    assert_true("mcagent_adapter_contract_kind", adapter.get("contract_kind") == "mcagent_local_runtime_request", str(adapter))
     boundary = agent_runtime.get("tool_boundary") or {}
     assert_true("mcagent_local_only", "local_rag" in boundary.get("allowed_capability_groups", []), str(boundary))
     assert_true("mcagent_blocks_web", "web_search" in boundary.get("blocked_capability_groups", []), str(boundary))
@@ -133,10 +140,19 @@ def test_conversation_graph_can_dispatch_to_crawler_node() -> None:
     assert_true("crawler_subgraph", agent_runtime.get("agent_graph") == "CrawlerAgentGraph", str(agent_runtime))
     assert_true("crawler_select_tool_groups_node", "crawler.select_tool_groups" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("crawler_prepare_mission_contract_node", "crawler.prepare_mission_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
+    assert_true("crawler_prepare_runtime_request_node", "crawler.prepare_runtime_request" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("crawler_legacy_adapter_node", "crawler.legacy_adapter" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
+    runtime_request = agent_runtime.get("runtime_request") or {}
+    assert_true("crawler_runtime_request_kind", runtime_request.get("contract_kind") == "crawler_collection_runtime_request", str(runtime_request))
+    assert_true("crawler_runtime_request_owner", runtime_request.get("decision_owner") == "CrawlerAgent LLM", str(runtime_request))
+    assert_true("crawler_runtime_request_payload_agent", (runtime_request.get("payload") or {}).get("agent") == "crawler_agent", str(runtime_request))
+    request_message = runtime_request.get("message") or {}
+    assert_true("crawler_runtime_request_delivery", request_message.get("delivery_target") == "MCagent/RAG", str(runtime_request))
     adapter = agent_runtime.get("runtime_adapter") or {}
     assert_true("crawler_runtime_adapter_visible", adapter.get("adapter") == "legacy_web_server_runtime", str(adapter))
     assert_true("crawler_runtime_adapter_owner", adapter.get("decision_owner") == "CrawlerAgent LLM", str(adapter))
+    assert_true("crawler_adapter_consumed_runtime_request", adapter.get("runtime_request_id") == runtime_request.get("request_id"), str(adapter))
+    assert_true("crawler_adapter_contract_kind", adapter.get("contract_kind") == "crawler_collection_runtime_request", str(adapter))
     boundary = agent_runtime.get("tool_boundary") or {}
     assert_true("crawler_general_web", "web_discovery" in boundary.get("allowed_capability_groups", []), str(boundary))
     assert_true("crawler_optional_domain_toolsets", "optional_domain_toolsets" in boundary.get("allowed_capability_groups", []), str(boundary))

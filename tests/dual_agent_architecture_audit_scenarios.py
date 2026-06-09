@@ -25,6 +25,7 @@ def test_architecture_audit_reports_two_agent_shape_and_migration_warning() -> N
     assert_true("mcagent_boundary", checks["mcagent_blocks_public_web_tools"]["status"] == "pass", str(checks["mcagent_blocks_public_web_tools"]))
     assert_true("crawler_split", checks["crawler_general_and_domain_tools_split"]["status"] == "pass", str(checks["crawler_general_and_domain_tools_split"]))
     assert_true("explicit_legacy_adapter", checks["explicit_legacy_runtime_adapter"]["status"] == "pass", str(checks["explicit_legacy_runtime_adapter"]))
+    assert_true("explicit_runtime_request_contracts", checks["explicit_runtime_request_contracts"]["status"] == "pass", str(checks["explicit_runtime_request_contracts"]))
     assert_true("legacy_warning_visible", checks["legacy_runtime_coupling_visible"]["status"] == "warn", str(checks["legacy_runtime_coupling_visible"]))
 
 

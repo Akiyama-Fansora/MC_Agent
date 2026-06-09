@@ -135,7 +135,52 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             ),
         }
 
+    def prepare_runtime_request(state: AgentGraphState) -> dict[str, Any]:
+        payload = dict(state.get("payload") or {})
+        thread_id = str(state.get("thread_id") or payload.get("session_id") or "default")
+        message = payload.get("agent_message") if isinstance(payload.get("agent_message"), dict) else {}
+        metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+        runtime_request = {
+            "request_id": f"{thread_id}:crawler_agent:runtime_request",
+            "node": "crawler.prepare_runtime_request",
+            "graph": "CrawlerAgentGraph",
+            "agent_id": "crawler_agent",
+            "session_id": str(payload.get("session_id") or thread_id),
+            "contract_kind": "crawler_collection_runtime_request",
+            "payload": payload,
+            "message": {
+                "from_agent": str(message.get("from_agent") or payload.get("message_from") or "User"),
+                "to_agent": str(message.get("to_agent") or "CrawlerAgent"),
+                "intent": str(message.get("intent") or ""),
+                "delivery_target": str(metadata.get("delivery_target") or payload.get("delivery_target") or ""),
+                "has_agent_message": bool(message),
+            },
+            "tool_boundary": state.get("tool_boundary") or {},
+            "selected_tool_groups": state.get("selected_tool_groups") or {},
+            "memory_context": state.get("memory_context") or {},
+            "mission_contract": state.get("mission_contract") or {},
+            "decision_owner": "CrawlerAgent LLM",
+            "objective_contract": (
+                "The graph prepares objective runtime inputs for CrawlerAgent. It does not pick sources, "
+                "enable a domain toolset, judge observations, persist evidence, or write the final report."
+            ),
+        }
+        return {
+            "runtime_request": runtime_request,
+            **_append(
+                state,
+                "crawler.prepare_runtime_request",
+                "runtime_request_prepared",
+                {
+                    "request_id": runtime_request["request_id"],
+                    "contract_kind": runtime_request["contract_kind"],
+                    "decision_owner": runtime_request["decision_owner"],
+                },
+            ),
+        }
+
     def run_legacy_adapter(state: AgentGraphState) -> dict[str, Any]:
+        runtime_request = state.get("runtime_request") if isinstance(state.get("runtime_request"), dict) else {}
         result = deliver_via_legacy_runtime(
             config,
             dict(state.get("payload") or {}),
@@ -144,6 +189,7 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             agent_id="crawler_agent",
             graph_name="CrawlerAgentGraph",
             node_name="crawler.legacy_adapter",
+            runtime_request=runtime_request,
         )
         return {
             "result": result,
@@ -165,6 +211,7 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             "selected_tool_groups": state.get("selected_tool_groups") or {},
             "memory_context": state.get("memory_context") or {},
             "mission_contract": state.get("mission_contract") or {},
+            "runtime_request": state.get("runtime_request") or {},
             "runtime_adapter": state.get("runtime_adapter") or result.get("legacy_runtime_adapter") or {},
             "visited_nodes": [*state.get("visited_nodes", []), "crawler.finalize"],
             "events": [*state.get("graph_events", []), _event("crawler.finalize", "ready")],
@@ -183,13 +230,15 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
     builder.add_node("understand_boundary", understand_boundary)
     builder.add_node("select_tool_groups", select_tool_groups)
     builder.add_node("prepare_mission_contract", prepare_mission_contract)
+    builder.add_node("prepare_runtime_request", prepare_runtime_request)
     builder.add_node("legacy_adapter", run_legacy_adapter)
     builder.add_node("finalize", finalize)
     builder.add_edge(START, "receive")
     builder.add_edge("receive", "understand_boundary")
     builder.add_edge("understand_boundary", "select_tool_groups")
     builder.add_edge("select_tool_groups", "prepare_mission_contract")
-    builder.add_edge("prepare_mission_contract", "legacy_adapter")
+    builder.add_edge("prepare_mission_contract", "prepare_runtime_request")
+    builder.add_edge("prepare_runtime_request", "legacy_adapter")
     builder.add_edge("legacy_adapter", "finalize")
     builder.add_edge("finalize", END)
     return builder.compile()

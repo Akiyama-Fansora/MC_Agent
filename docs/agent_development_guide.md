@@ -4709,3 +4709,35 @@ Remaining migration plan:
 4. Keep every extracted block objective unless the receiving Agent LLM is explicitly making the decision.
 
 Verified commands for this stage are listed in the turn summary.
+
+## 2026-06-09 Stage 62: Runtime Request Contracts Before Legacy Adapter
+
+Stage 62 extracts one more objective graph responsibility from the legacy runtime boundary: preparing the runtime request that will be handed to the remaining legacy adapter.
+
+Before this stage, `MCagentGraph` and `CrawlerAgentGraph` exposed tool and mission boundaries, then immediately delegated through `legacy_adapter`. The adapter was explicit, but the exact runtime input contract was still implicit.
+
+Implemented changes:
+
+1. `MCagentGraph` now runs `mcagent.prepare_runtime_request` before `mcagent.legacy_adapter`.
+2. `CrawlerAgentGraph` now runs `crawler.prepare_runtime_request` before `crawler.legacy_adapter`.
+3. Runtime requests include objective fields: request id, graph, agent id, session id, payload, message summary, tool boundary, selected tool groups, memory context, and the relevant retrieval or mission contract.
+4. `legacy_adapter` now consumes the runtime request payload and records `runtime_request_id`, `runtime_request_node`, `contract_kind`, `payload_agent`, and payload keys in `legacy_runtime_adapter` metadata.
+5. The architecture audit now checks `explicit_runtime_request_contracts`.
+
+Boundary:
+
+Runtime request nodes do not choose tools, pick sources, enable domain tools, judge evidence, persist observations, or write final answers. They only collect objective graph inputs so the next migration stages can replace legacy `_chat_impl()` blocks with graph-owned nodes one by one.
+
+Current score:
+
+1. Two-Agent shape: 9/10.
+2. Legacy runtime migration: 6/10. The adapter remains, but graph-owned runtime request contracts now sit directly before it.
+3. Tool-objectivity principle: 8.5/10.
+4. Regression coverage: 8.5/10.
+
+Next migration loop:
+
+1. Move MCagent route-understanding inputs from `_chat_impl()` into a graph node.
+2. Move MCagent local retrieval execution into a graph node once route choice is explicit.
+3. Move CrawlerAgent source planning inputs into a graph node, while keeping source choice owned by CrawlerAgent LLM.
+4. Continue reducing `web_server._chat_impl()` until the legacy adapter becomes unnecessary.
