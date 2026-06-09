@@ -5,10 +5,29 @@ from typing import Any
 
 GRAPH_STATUS_ROUTE_EXECUTOR = "graph_status_route_executor"
 GRAPH_CRAWLER_AUDIT_ROUTE_EXECUTOR = "graph_crawler_audit_route_executor"
+GRAPH_LOCAL_CORPUS_INVENTORY_ROUTE_EXECUTOR = "graph_local_corpus_inventory_route_executor"
 
 
 def _display_agent(agent_id: str) -> str:
     return "CrawlerAgent" if agent_id == "crawler_agent" else "MCagent" if agent_id == "mcagent_rag" else agent_id
+
+
+def graph_route_decision_allows_execution(route_decision: dict[str, Any] | None) -> bool:
+    route_decision = route_decision if isinstance(route_decision, dict) else {}
+    confirmation = route_decision.get("route_confirmation") if isinstance(route_decision.get("route_confirmation"), dict) else {}
+    return bool(confirmation.get("proceed", True))
+
+
+def graph_route_decision_has_action_tool(route_decision: dict[str, Any] | None, tool_name: str) -> bool:
+    route_decision = route_decision if isinstance(route_decision, dict) else {}
+    wanted = tool_name.strip().lower()
+    action_plan = route_decision.get("action_plan") if isinstance(route_decision.get("action_plan"), list) else []
+    tool_decision = route_decision.get("tool_decision") if isinstance(route_decision.get("tool_decision"), dict) else {}
+    tool_decision_plan = tool_decision.get("action_plan") if isinstance(tool_decision.get("action_plan"), list) else []
+    for item in [*action_plan, *tool_decision_plan]:
+        if isinstance(item, dict) and str(item.get("tool") or "").strip().lower() == wanted:
+            return True
+    return bool(route_decision.get("planned_delegate")) and wanted == "delegate_crawler"
 
 
 def _base_route_executor_metadata(
@@ -79,6 +98,26 @@ def graph_crawler_audit_route_executor_metadata(
         adapter=GRAPH_CRAWLER_AUDIT_ROUTE_EXECUTOR,
         migration_status="graph_crawler_audit_route_migrated",
         route_label="crawler_audit",
+        agent_id=agent_id,
+        graph_name=graph_name,
+        node_name=node_name,
+        runtime_request=runtime_request,
+        route_decision=route_decision,
+    )
+
+
+def graph_local_corpus_inventory_route_executor_metadata(
+    *,
+    agent_id: str,
+    graph_name: str,
+    node_name: str,
+    runtime_request: dict[str, Any] | None = None,
+    route_decision: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return _base_route_executor_metadata(
+        adapter=GRAPH_LOCAL_CORPUS_INVENTORY_ROUTE_EXECUTOR,
+        migration_status="graph_local_corpus_inventory_route_migrated",
+        route_label="local_corpus_inventory",
         agent_id=agent_id,
         graph_name=graph_name,
         node_name=node_name,

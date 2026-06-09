@@ -5099,3 +5099,35 @@ Next migration loop:
 1. Migrate the next side-effect-free handler with the smallest blast radius, likely `local_corpus_inventory` or no-retrieval result handling.
 2. Keep side-effect handlers behind Agent-owned route decisions and explicit side-effect authorization facts.
 3. Continue shrinking `_chat_impl()` without adding keyword routing or letting contracts replace Agent judgment.
+
+## 2026-06-09 Stage 74: Graph-Executed Safe Local Inventory Route
+
+Stage 74 migrates the pure-read part of `local_corpus_inventory` route execution.
+
+Before this stage, `status` and `crawler_audit` could execute from graph nodes after an Agent-owned route decision, but Agent-selected local corpus inventory still had to enter `_chat_impl()`. The local inventory handler is mostly read-only, but it also contains a completeness-review branch that may start a Crawler delegation when the Agent action plan already selected `delegate_crawler`. That means the whole legacy handler cannot be migrated as one side-effect-free block.
+
+Implemented changes:
+
+1. Added graph executor metadata for `graph_local_corpus_inventory_route_executor`.
+2. Added graph route confirmation gates so migrated graph routes do not execute when Agent confirmation has `proceed: false`.
+3. `MCagentGraph` and `CrawlerAgentGraph` now include `graph_local_corpus_inventory_route` nodes.
+4. The inventory graph route runs only when the existing Agent router selected `local_corpus_inventory`, confirmation allows execution, and the Agent action plan does not include `delegate_crawler`.
+5. `_execute_graph_local_corpus_inventory_route()` reuses the Agent route trace and confirmation, reads the local corpus inventory, preserves the completeness review as observation, and records that suggested delegate side effects are not executed unless the Agent action plan selected them.
+6. Route execution, handler-surface contracts, architecture audit, and FastAPI scenarios now distinguish safe graph-executed inventory from legacy inventory paths that may still contain side-effect branches.
+
+Boundary:
+
+The graph local inventory route does not infer intent from keywords, start Crawler jobs, persist evidence, select sources, judge evidence sufficiency, or alter AgentMessage routing. If the Agent action plan includes `delegate_crawler`, the graph refuses to execute the inventory handler and leaves the route on the legacy adapter path, where the existing side-effect gate remains in force.
+
+Current score:
+
+1. Two-Agent shape: 9.4/10.
+2. Legacy runtime migration: 9.0/10. `status`, `crawler_audit`, and safe `local_corpus_inventory` no longer require `_chat_impl()` in production graph delivery; side-effect-capable inventory branches, direct answer, temporary extract, delegate, crawler action-plan delegation, no-retrieval, and RAG answer generation remain legacy handlers.
+3. Tool-objectivity principle: 9.7/10.
+4. Regression coverage: 9.8/10.
+
+Next migration loop:
+
+1. Migrate the next side-effect-free branch only where it cannot trigger background collection, likely no-retrieval result handling without selected delegate.
+2. Keep temporary extraction and delegation in legacy until their network/filesystem side-effect boundaries are represented explicitly.
+3. Continue requiring Agent-owned route decisions and confirmations before any graph-executed handler can run.

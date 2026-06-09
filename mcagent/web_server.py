@@ -9308,15 +9308,25 @@ def _route_agent_decision_for_graph(
     )
     route = router.route(run, session_summary=session_summary)
     tool_decision = dict(route.tool_decision)
+    route_confirmation = dict(route.route_confirmation)
+    action_plan = [dict(item) for item in route.action_plan if isinstance(item, dict)]
+    confirmation_allows = bool(route_confirmation.get("proceed", True))
+    graph_migrated_route = (
+        route.route_intent in {"status", "crawler_audit"} and confirmation_allows
+    ) or (
+        route.route_intent == "local_corpus_inventory"
+        and confirmation_allows
+        and not _action_plan_has_tool(action_plan, "delegate_crawler")
+    )
     return {
         **base,
         "routed": True,
-        "legacy_fallback_required": route.route_intent not in {"status", "crawler_audit"},
+        "legacy_fallback_required": not graph_migrated_route,
         "route_intent": route.route_intent,
         "selected_tool": str(tool_decision.get("tool") or route.route_intent),
         "tool_decision": tool_decision,
-        "route_confirmation": dict(route.route_confirmation),
-        "action_plan": [dict(item) for item in route.action_plan if isinstance(item, dict)],
+        "route_confirmation": route_confirmation,
+        "action_plan": action_plan,
         "rag_focus": route.rag_focus,
         "planned_workflow": route.planned_workflow,
         "planned_delegate": route.planned_delegate,
@@ -9350,9 +9360,12 @@ def _execute_graph_status_route(
 ) -> dict[str, Any]:
     if str(route_decision.get("route_intent") or "") != "status":
         raise RuntimeError("Graph status execution requires an Agent-selected status route.")
+    route_confirmation = dict(route_decision.get("route_confirmation") if isinstance(route_decision.get("route_confirmation"), dict) else {})
+    if not bool(route_confirmation.get("proceed", True)):
+        raise RuntimeError("Graph status execution requires Agent confirmation to proceed.")
     trace = [dict(step) for step in route_decision.get("trace") or [] if isinstance(step, dict)]
     status_confirmation = _reuse_route_confirmation(
-        dict(route_decision.get("route_confirmation") if isinstance(route_decision.get("route_confirmation"), dict) else {}),
+        route_confirmation,
         proposed_tool="status",
         proposed_goal="Read crawler/import/background job status.",
     )
@@ -9394,10 +9407,13 @@ def _execute_graph_crawler_audit_route(
 ) -> dict[str, Any]:
     if str(route_decision.get("route_intent") or "") != "crawler_audit":
         raise RuntimeError("Graph crawler audit execution requires an Agent-selected crawler_audit route.")
+    route_confirmation = dict(route_decision.get("route_confirmation") if isinstance(route_decision.get("route_confirmation"), dict) else {})
+    if not bool(route_confirmation.get("proceed", True)):
+        raise RuntimeError("Graph crawler audit execution requires Agent confirmation to proceed.")
     trace = [dict(step) for step in route_decision.get("trace") or [] if isinstance(step, dict)]
     tool_decision = route_decision.get("tool_decision") if isinstance(route_decision.get("tool_decision"), dict) else {}
     audit_confirmation = _reuse_route_confirmation(
-        dict(route_decision.get("route_confirmation") if isinstance(route_decision.get("route_confirmation"), dict) else {}),
+        route_confirmation,
         proposed_tool="crawler_audit",
         proposed_goal=str(tool_decision.get("reason") or "Read recent Crawler audit details."),
     )
@@ -9431,6 +9447,107 @@ def _execute_graph_crawler_audit_route(
         },
     }
     return _with_trace(response, trace)
+
+
+def _graph_route_decision_has_delegate_action(route_decision: dict[str, Any]) -> bool:
+    action_plan = [dict(item) for item in route_decision.get("action_plan") or [] if isinstance(item, dict)]
+    tool_decision = route_decision.get("tool_decision") if isinstance(route_decision.get("tool_decision"), dict) else {}
+    tool_action_plan = [dict(item) for item in tool_decision.get("action_plan") or [] if isinstance(item, dict)]
+    return bool(route_decision.get("planned_delegate")) or _action_plan_has_tool(action_plan, "delegate_crawler") or _action_plan_has_tool(tool_action_plan, "delegate_crawler")
+
+
+def _execute_graph_local_corpus_inventory_route(
+    config: AppConfig,
+    payload: dict[str, Any],
+    *,
+    emit: Any | None = None,
+    agent_id: str,
+    graph_name: str,  # noqa: ARG001 - recorded by graph adapter metadata.
+    node_name: str,  # noqa: ARG001 - recorded by graph adapter metadata.
+    runtime_request: dict[str, Any],  # noqa: ARG001 - recorded by graph adapter metadata.
+    route_decision: dict[str, Any],
+) -> dict[str, Any]:
+    if str(route_decision.get("route_intent") or "") != "local_corpus_inventory":
+        raise RuntimeError("Graph local corpus inventory execution requires an Agent-selected local_corpus_inventory route.")
+    if _graph_route_decision_has_delegate_action(route_decision):
+        raise RuntimeError("Graph local corpus inventory execution requires a side-effect-free action_plan.")
+    route_confirmation = dict(route_decision.get("route_confirmation") if isinstance(route_decision.get("route_confirmation"), dict) else {})
+    if not bool(route_confirmation.get("proceed", True)):
+        raise RuntimeError("Graph local corpus inventory execution requires Agent confirmation to proceed.")
+    trace = [dict(step) for step in route_decision.get("trace") or [] if isinstance(step, dict)]
+    tool_decision = route_decision.get("tool_decision") if isinstance(route_decision.get("tool_decision"), dict) else {}
+    inventory_confirmation = _reuse_route_confirmation(
+        route_confirmation,
+        proposed_tool="local_corpus_inventory",
+        proposed_goal=str(tool_decision.get("reason") or "Inspect local corpus coverage and representative indexed documents."),
+    )
+    for step in (
+        _trace_step("retrieve", "inventory_next_step_confirmed", inventory_confirmation),
+        _trace_step("retrieve", "inventory_scanning", {"db_path": str(config.paths.db_path)}),
+    ):
+        trace.append(step)
+        if emit is not None:
+            emit("trace", step)
+    question = str(route_decision.get("question") or payload.get("question") or payload.get("query") or "")
+    original_question = str(route_decision.get("original_question") or question)
+    inventory = dict(_local_corpus_inventory_answer(config, question))
+    done_step = _trace_step(
+        "retrieve",
+        "inventory_done",
+        {
+            "sources": len(inventory.get("sources") or []),
+            "context_chars": len(str(inventory.get("context") or "")),
+        },
+    )
+    trace.append(done_step)
+    if emit is not None:
+        emit("trace", done_step)
+    action_plan = [dict(item) for item in route_decision.get("action_plan") or [] if isinstance(item, dict)]
+    completeness = _tool_route_completeness_review(
+        config,
+        agent=agent_id,
+        model=str(route_decision.get("model") or ""),
+        original_question=original_question,
+        selected_tool="local_corpus_inventory",
+        tool_answer=str(inventory.get("answer") or ""),
+        tool_decision=tool_decision,
+        route_confirmation=inventory_confirmation,
+        action_plan=action_plan,
+    )
+    if completeness.get("missing_side_effect"):
+        gap_step = _trace_step("plan", "route_completeness_gap", completeness)
+        trace.append(gap_step)
+        if emit is not None:
+            emit("trace", gap_step)
+        if str(completeness.get("tool") or "").strip() == "delegate_crawler":
+            blocked_step = _trace_step(
+                "plan",
+                "inventory_missing_side_effect_not_executed",
+                {
+                    "reason": "Completeness review suggested delegate_crawler, but the graph-executed inventory route has no Agent-selected delegate side-effect step.",
+                    "required_agent_selection": "delegate_crawler or planned_workflow with delegate_crawler",
+                },
+            )
+            trace.append(blocked_step)
+            if emit is not None:
+                emit("trace", blocked_step)
+    _append_session(payload, original_question, str(inventory.get("answer") or ""), list(inventory.get("sources") or []))
+    ready_step = _trace_step("done", "response_ready", {"sources": len(inventory.get("sources") or [])})
+    trace.append(ready_step)
+    if emit is not None:
+        emit("trace", ready_step)
+    inventory.setdefault("agent", agent_id)
+    inventory.setdefault("session_id", str(payload.get("session_id") or runtime_request.get("session_id") or route_decision.get("session_id") or ""))
+    inventory["metadata"] = {
+        **(inventory.get("metadata") if isinstance(inventory.get("metadata"), dict) else {}),
+        "graph_route_decision": {
+            "routed": True,
+            "route_decision_id": route_decision.get("route_decision_id") or "",
+            "route_intent": route_decision.get("route_intent") or "",
+            "decision_owner": route_decision.get("decision_owner") or "",
+        },
+    }
+    return _with_trace(inventory, trace)
 
 
 def _agent_message_response_trace(request: AgentMessage, reply: AgentMessage) -> dict[str, Any]:
@@ -9493,6 +9610,7 @@ def _send_agent_message(
         route_decider=_route_agent_decision_for_graph,
         status_executor=_execute_graph_status_route,
         crawler_audit_executor=_execute_graph_crawler_audit_route,
+        local_corpus_inventory_executor=_execute_graph_local_corpus_inventory_route,
     )
     _record_agent_response_event(normalize_session_id(message.conversation_id or payload.get("session_id")), result)
     return result

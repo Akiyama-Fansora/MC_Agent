@@ -4,7 +4,11 @@ from typing import Any
 
 
 EXECUTION_TRACE_STAGES = {"retrieve", "answer", "delegate", "extract", "status", "audit", "done"}
-GRAPH_ROUTE_EXECUTORS = {"graph_status_route_executor", "graph_crawler_audit_route_executor"}
+GRAPH_ROUTE_EXECUTORS = {
+    "graph_status_route_executor",
+    "graph_crawler_audit_route_executor",
+    "graph_local_corpus_inventory_route_executor",
+}
 
 
 def _trace_steps(result: dict[str, Any]) -> list[dict[str, Any]]:
@@ -119,8 +123,8 @@ def build_route_execution_contract(
         "legacy_execution_still_runs_in_adapter": runtime_adapter.get("adapter") == "legacy_web_server_runtime",
         "legacy_trace_observation_only": not graph_route_executed,
         "objective_contract": (
-            "The graph records Agent route execution facts. For migrated status and crawler_audit routes, the graph "
-            "may execute only the already-selected side-effect-free handler; this contract does not start jobs, "
-            "persist evidence, judge evidence, alter routing, or write the final response."
+            "The graph records Agent route execution facts. For migrated status, crawler_audit, and safe "
+            "local_corpus_inventory routes, the graph may execute only the already-selected side-effect-free handler; "
+            "this contract does not start jobs, persist evidence, judge evidence, alter routing, or write the final response."
         ),
     }

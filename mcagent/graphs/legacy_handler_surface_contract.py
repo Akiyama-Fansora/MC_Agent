@@ -82,7 +82,7 @@ LEGACY_HANDLER_SURFACES = [
         "side_effect_surface": False,
     },
 ]
-MIGRATED_GRAPH_HANDLER_SURFACES = {"status", "crawler_audit"}
+MIGRATED_GRAPH_HANDLER_SURFACES = {"status", "crawler_audit", "local_corpus_inventory"}
 
 
 def _surface_candidates_for_agent(agent_id: str) -> list[dict[str, Any]]:
@@ -164,7 +164,7 @@ def build_legacy_handler_surface_contract(
         "legacy_trace_observation_only": not graph_handler_executed,
         "objective_contract": (
             "The graph records handler surface facts. It does not select handlers, start jobs, persist evidence, "
-            "judge evidence, or alter routing. Migrated status and crawler_audit routes may be observed as "
-            "graph-executed only after the Agent router selected that route."
+            "judge evidence, or alter routing. Migrated status, crawler_audit, and safe local_corpus_inventory "
+            "routes may be observed as graph-executed only after the Agent router selected that route."
         ),
     }
