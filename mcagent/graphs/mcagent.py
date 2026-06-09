@@ -10,6 +10,7 @@ from ..session_state import DEFAULT_SESSION_STORE
 from .agent_state import AgentGraphState
 from .legacy_adapter import deliver_via_legacy_runtime
 from .route_decision_output_contract import build_route_decision_output_contract
+from .route_execution_contract import build_route_execution_contract
 from .route_result_contract import build_route_result_contract
 from .state import GraphEvent
 
@@ -360,6 +361,7 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
         message_preflight = state.get("message_preflight_contract") if isinstance(state.get("message_preflight_contract"), dict) else {}
         contextual_question = state.get("contextual_question_contract") if isinstance(state.get("contextual_question_contract"), dict) else {}
         route_decision_output = state.get("route_decision_output_contract") if isinstance(state.get("route_decision_output_contract"), dict) else {}
+        route_execution = state.get("route_execution_contract") if isinstance(state.get("route_execution_contract"), dict) else {}
         thread_id = str(state.get("thread_id") or runtime_request.get("session_id") or result.get("session_id") or "default")
         contract = build_route_result_contract(
             thread_id=thread_id,
@@ -375,6 +377,7 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             message_preflight_contract=message_preflight,
             contextual_question_contract=contextual_question,
             route_decision_output_contract=route_decision_output,
+            route_execution_contract=route_execution,
         )
         shape = contract["result_shape"]
         return {
@@ -389,6 +392,48 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
                     "answer_present": shape["answer_present"],
                     "source_count": shape["source_count"],
                     "job_id_present": shape["job_id_present"],
+                },
+            ),
+        }
+
+    def prepare_route_execution_contract(state: AgentGraphState) -> dict[str, Any]:
+        result = dict(state.get("result") or {})
+        runtime_request = state.get("runtime_request") if isinstance(state.get("runtime_request"), dict) else {}
+        runtime_adapter = state.get("runtime_adapter") if isinstance(state.get("runtime_adapter"), dict) else {}
+        route_input = state.get("route_input_contract") if isinstance(state.get("route_input_contract"), dict) else {}
+        route_decision_output = state.get("route_decision_output_contract") if isinstance(state.get("route_decision_output_contract"), dict) else {}
+        message_preflight = state.get("message_preflight_contract") if isinstance(state.get("message_preflight_contract"), dict) else {}
+        contextual_question = state.get("contextual_question_contract") if isinstance(state.get("contextual_question_contract"), dict) else {}
+        thread_id = str(state.get("thread_id") or runtime_request.get("session_id") or result.get("session_id") or "default")
+        contract = build_route_execution_contract(
+            thread_id=thread_id,
+            graph_name="MCagentGraph",
+            agent_id="mcagent_rag",
+            node_name="mcagent.prepare_route_execution_contract",
+            contract_kind="mcagent_route_execution_facts_contract",
+            decision_owner="MCagent LLM",
+            result=result,
+            runtime_request=runtime_request,
+            runtime_adapter=runtime_adapter,
+            route_input_contract=route_input,
+            route_decision_output_contract=route_decision_output,
+            message_preflight_contract=message_preflight,
+            contextual_question_contract=contextual_question,
+        )
+        trace_facts = contract["trace_facts"]
+        result_facts = contract["result_facts"]
+        return {
+            "route_execution_contract": contract,
+            **_append(
+                state,
+                "mcagent.prepare_route_execution_contract",
+                "route_execution_facts_recorded",
+                {
+                    "contract_id": contract["contract_id"],
+                    "contract_kind": contract["contract_kind"],
+                    "observed_execution_stages": trace_facts["observed_execution_stages"],
+                    "answer_present": result_facts["answer_present"],
+                    "job_present": result_facts["job_present"],
                 },
             ),
         }
@@ -446,6 +491,7 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             "runtime_request": state.get("runtime_request") or {},
             "runtime_adapter": state.get("runtime_adapter") or result.get("legacy_runtime_adapter") or {},
             "route_decision_output_contract": state.get("route_decision_output_contract") or {},
+            "route_execution_contract": state.get("route_execution_contract") or {},
             "route_result_contract": state.get("route_result_contract") or {},
             "visited_nodes": [*state.get("visited_nodes", []), "mcagent.finalize"],
             "events": [*state.get("graph_events", []), _event("mcagent.finalize", "ready")],
@@ -470,6 +516,7 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
     builder.add_node("prepare_runtime_request", prepare_runtime_request)
     builder.add_node("legacy_adapter", run_legacy_adapter)
     builder.add_node("prepare_route_decision_output_contract", prepare_route_decision_output_contract)
+    builder.add_node("prepare_route_execution_contract", prepare_route_execution_contract)
     builder.add_node("prepare_route_result_contract", prepare_route_result_contract)
     builder.add_node("finalize", finalize)
     builder.add_edge(START, "receive")
@@ -482,7 +529,8 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
     builder.add_edge("prepare_route_input_contract", "prepare_runtime_request")
     builder.add_edge("prepare_runtime_request", "legacy_adapter")
     builder.add_edge("legacy_adapter", "prepare_route_decision_output_contract")
-    builder.add_edge("prepare_route_decision_output_contract", "prepare_route_result_contract")
+    builder.add_edge("prepare_route_decision_output_contract", "prepare_route_execution_contract")
+    builder.add_edge("prepare_route_execution_contract", "prepare_route_result_contract")
     builder.add_edge("prepare_route_result_contract", "finalize")
     builder.add_edge("finalize", END)
     return builder.compile()

@@ -26,6 +26,7 @@ def audit(root: Path = ROOT) -> dict[str, Any]:
         "crawler_graph": graphs / "crawler.py",
         "legacy_adapter": graphs / "legacy_adapter.py",
         "route_decision_output_contract": graphs / "route_decision_output_contract.py",
+        "route_execution_contract": graphs / "route_execution_contract.py",
         "route_result_contract": graphs / "route_result_contract.py",
         "agent_message": root / "mcagent" / "agent_message.py",
         "agent_runtime": root / "mcagent" / "agent_runtime.py",
@@ -161,6 +162,23 @@ def audit(root: Path = ROOT) -> dict[str, Any]:
             and contains(files["route_result_contract"], "route_decision_output_contract_id")
             else "fail",
             "evidence": f"{files['route_decision_output_contract'].relative_to(root)}; {files['mcagent_graph'].relative_to(root)}; {files['crawler_graph'].relative_to(root)}; {files['route_result_contract'].relative_to(root)}",
+        },
+        {
+            "id": "explicit_route_execution_contracts",
+            "status": "pass"
+            if contains(
+                files["route_execution_contract"],
+                "build_route_execution_contract",
+                "legacy route execution facts",
+                "route_execution_executed_by_graph",
+                "side_effect_executed_by_contract",
+                "legacy_trace_observation_only",
+            )
+            and contains(files["mcagent_graph"], "prepare_route_execution_contract", "mcagent_route_execution_facts_contract")
+            and contains(files["crawler_graph"], "prepare_route_execution_contract", "crawler_route_execution_facts_contract")
+            and contains(files["route_result_contract"], "route_execution_contract_id")
+            else "fail",
+            "evidence": f"{files['route_execution_contract'].relative_to(root)}; {files['mcagent_graph'].relative_to(root)}; {files['crawler_graph'].relative_to(root)}; {files['route_result_contract'].relative_to(root)}",
         },
         {
             "id": "explicit_route_result_contracts",

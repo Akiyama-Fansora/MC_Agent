@@ -32,6 +32,7 @@ def test_architecture_audit_reports_two_agent_shape_and_migration_warning() -> N
     assert_true("explicit_source_planning_contracts", checks["explicit_source_planning_contracts"]["status"] == "pass", str(checks["explicit_source_planning_contracts"]))
     assert_true("explicit_side_effect_authorization_contracts", checks["explicit_side_effect_authorization_contracts"]["status"] == "pass", str(checks["explicit_side_effect_authorization_contracts"]))
     assert_true("explicit_route_decision_output_contracts", checks["explicit_route_decision_output_contracts"]["status"] == "pass", str(checks["explicit_route_decision_output_contracts"]))
+    assert_true("explicit_route_execution_contracts", checks["explicit_route_execution_contracts"]["status"] == "pass", str(checks["explicit_route_execution_contracts"]))
     assert_true("explicit_route_result_contracts", checks["explicit_route_result_contracts"]["status"] == "pass", str(checks["explicit_route_result_contracts"]))
     assert_true("legacy_warning_visible", checks["legacy_runtime_coupling_visible"]["status"] == "warn", str(checks["legacy_runtime_coupling_visible"]))
 

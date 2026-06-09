@@ -4967,3 +4967,36 @@ Next migration loop:
 1. Extract a graph-visible route execution handoff boundary for the selected route without moving handler behavior yet.
 2. Move CrawlerAgent job-start handling only after route output and side-effect facts agree on the Agent-owned selection.
 3. Continue replacing legacy branches with tested graph nodes that expose facts first and execute only where the receiving Agent owns the decision.
+
+## 2026-06-09 Stage 70: Route Execution Facts
+
+Stage 70 exposes what the legacy runtime already executed after route selection.
+
+Before this stage, route decision output facts were visible, but the graph still had no objective contract for the handler/execution surface that followed: answer generation, retrieval, delegation, temporary extraction, status, audit, or final done traces. That made `_chat_impl()` look like one opaque block even after route input and route output became visible.
+
+Implemented changes:
+
+1. Added `mcagent/graphs/route_execution_contract.py` as a shared objective helper.
+2. `MCagentGraph` now runs `mcagent.prepare_route_execution_contract` after route decision output recording and before route result shape recording.
+3. `CrawlerAgentGraph` now runs `crawler.prepare_route_execution_contract` after route decision output recording and before route result shape recording.
+4. The contract records trace facts only: observed execution stages, answer/retrieve/delegate/extract/status/audit/done statuses, answer-generation trace presence, response-ready trace presence, insufficient-evidence trace presence, and router-error trace presence.
+5. The contract records result facts only: result keys, answer/context/source shape, job/delegation/collaboration/temporary-extract presence, AgentMessage presence, and error presence.
+6. Route result contracts now link back to `route_execution_contract_id`.
+7. The architecture audit now checks `explicit_route_execution_contracts`.
+
+Boundary:
+
+The route execution contract does not run handlers, start background jobs, persist evidence, judge evidence, alter routing, approve side effects, or write the final response. It only observes trace/result facts already returned by the legacy adapter. If the legacy result has no execution trace, the contract records that absence instead of inventing a handler.
+
+Current score:
+
+1. Two-Agent shape: 9/10.
+2. Legacy runtime migration: 8.3/10. Route input, route output, execution surface, side-effect facts, and result shape are now visible; the route handlers themselves still run in `_chat_impl()` and related legacy functions.
+3. Tool-objectivity principle: 9.5/10.
+4. Regression coverage: 9.5/10.
+
+Next migration loop:
+
+1. Split a no-op route execution handoff adapter around legacy handlers so each handler surface can be migrated one at a time.
+2. Move side-effect handler startup only after route output, route execution facts, and side-effect authorization facts all preserve Agent-owned selection.
+3. Keep AgentMessage as the bus only; do not let graph contracts choose tools or execute side effects.

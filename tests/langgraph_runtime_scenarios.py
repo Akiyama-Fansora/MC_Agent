@@ -87,6 +87,7 @@ def test_conversation_graph_routes_only_by_message_target() -> None:
     assert_true("mcagent_prepare_runtime_request_node", "mcagent.prepare_runtime_request" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("mcagent_legacy_adapter_node", "mcagent.legacy_adapter" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("mcagent_prepare_route_decision_output_node", "mcagent.prepare_route_decision_output_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
+    assert_true("mcagent_prepare_route_execution_node", "mcagent.prepare_route_execution_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("mcagent_prepare_route_result_node", "mcagent.prepare_route_result_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     message_preflight = agent_runtime.get("message_preflight_contract") or {}
     assert_true("mcagent_message_preflight_exists", message_preflight.get("agent_id") == "mcagent_rag", str(message_preflight))
@@ -142,6 +143,22 @@ def test_conversation_graph_routes_only_by_message_target() -> None:
     assert_true("mcagent_route_decision_output_graph_did_not_decide", route_decision_output.get("route_decision_executed_by_graph") is False, str(route_decision_output))
     assert_true("mcagent_route_decision_output_observation_only", route_decision_output.get("legacy_trace_observation_only") is True, str(route_decision_output))
     assert_true("mcagent_route_decision_output_no_decision_fields", not {"tool", "route_intent", "action_plan", "proceed", "allow", "deny"} & set(route_decision_output), str(route_decision_output))
+    route_execution = agent_runtime.get("route_execution_contract") or {}
+    execution_trace_facts = route_execution.get("trace_facts") or {}
+    execution_result_facts = route_execution.get("result_facts") or {}
+    assert_true("mcagent_route_execution_kind", route_execution.get("contract_kind") == "mcagent_route_execution_facts_contract", str(route_execution))
+    assert_true("mcagent_route_execution_owner", route_execution.get("decision_owner") == "MCagent LLM", str(route_execution))
+    assert_true("mcagent_route_execution_links_runtime", route_execution.get("runtime_request_id") == runtime_request.get("request_id"), str(route_execution))
+    assert_true("mcagent_route_execution_links_route_input", route_execution.get("route_input_contract_id") == route_input.get("contract_id"), str(route_execution))
+    assert_true("mcagent_route_execution_links_route_decision", route_execution.get("route_decision_output_contract_id") == route_decision_output.get("contract_id"), str(route_execution))
+    assert_true("mcagent_route_execution_links_message_preflight", route_execution.get("message_preflight_contract_id") == message_preflight.get("contract_id"), str(route_execution))
+    assert_true("mcagent_route_execution_links_contextual_question", route_execution.get("contextual_question_contract_id") == contextual_question.get("contract_id"), str(route_execution))
+    assert_true("mcagent_route_execution_no_fake_stages", execution_trace_facts.get("observed_execution_stages") == [], str(route_execution))
+    assert_true("mcagent_route_execution_answer_shape", execution_result_facts.get("answer_present") is True and execution_result_facts.get("job_present") is False, str(route_execution))
+    assert_true("mcagent_route_execution_graph_did_not_execute", route_execution.get("route_execution_executed_by_graph") is False, str(route_execution))
+    assert_true("mcagent_route_execution_no_side_effect", route_execution.get("side_effect_executed_by_contract") is False, str(route_execution))
+    assert_true("mcagent_route_execution_observation_only", route_execution.get("legacy_trace_observation_only") is True, str(route_execution))
+    assert_true("mcagent_route_execution_no_decision_fields", not {"tool", "route_intent", "action_plan", "handler", "proceed", "allow", "deny"} & set(route_execution), str(route_execution))
     route_result = agent_runtime.get("route_result_contract") or {}
     result_shape = route_result.get("result_shape") or {}
     assert_true("mcagent_route_result_kind", route_result.get("contract_kind") == "mcagent_route_result_contract", str(route_result))
@@ -151,6 +168,7 @@ def test_conversation_graph_routes_only_by_message_target() -> None:
     assert_true("mcagent_route_result_links_message_preflight", route_result.get("message_preflight_contract_id") == message_preflight.get("contract_id"), str(route_result))
     assert_true("mcagent_route_result_links_contextual_question", route_result.get("contextual_question_contract_id") == contextual_question.get("contract_id"), str(route_result))
     assert_true("mcagent_route_result_links_route_decision_output", route_result.get("route_decision_output_contract_id") == route_decision_output.get("contract_id"), str(route_result))
+    assert_true("mcagent_route_result_links_route_execution", route_result.get("route_execution_contract_id") == route_execution.get("contract_id"), str(route_result))
     assert_true("mcagent_route_result_agent_shape", result_shape.get("agent") == "mcagent_rag", str(route_result))
     assert_true("mcagent_route_result_answer_shape", result_shape.get("answer_present") is True and result_shape.get("source_count") == 0, str(route_result))
     assert_true("mcagent_route_result_no_tool_decision", "tool" not in route_result and "route_intent" not in route_result and "action_plan" not in route_result, str(route_result))
@@ -209,6 +227,7 @@ def test_conversation_graph_can_dispatch_to_crawler_node() -> None:
     assert_true("crawler_prepare_runtime_request_node", "crawler.prepare_runtime_request" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("crawler_legacy_adapter_node", "crawler.legacy_adapter" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("crawler_prepare_route_decision_output_node", "crawler.prepare_route_decision_output_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
+    assert_true("crawler_prepare_route_execution_node", "crawler.prepare_route_execution_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("crawler_prepare_route_result_node", "crawler.prepare_route_result_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     source_planning = agent_runtime.get("source_planning_contract") or {}
     assert_true("crawler_source_planning_kind", source_planning.get("contract_kind") == "crawler_source_planning_input_contract", str(source_planning))
@@ -275,6 +294,23 @@ def test_conversation_graph_can_dispatch_to_crawler_node() -> None:
     assert_true("crawler_route_decision_output_graph_did_not_decide", route_decision_output.get("route_decision_executed_by_graph") is False, str(route_decision_output))
     assert_true("crawler_route_decision_output_observation_only", route_decision_output.get("legacy_trace_observation_only") is True, str(route_decision_output))
     assert_true("crawler_route_decision_output_no_decision_fields", not {"tool", "route_intent", "action_plan", "proceed", "allow", "deny"} & set(route_decision_output), str(route_decision_output))
+    route_execution = agent_runtime.get("route_execution_contract") or {}
+    execution_trace_facts = route_execution.get("trace_facts") or {}
+    execution_result_facts = route_execution.get("result_facts") or {}
+    assert_true("crawler_route_execution_kind", route_execution.get("contract_kind") == "crawler_route_execution_facts_contract", str(route_execution))
+    assert_true("crawler_route_execution_owner", route_execution.get("decision_owner") == "CrawlerAgent LLM", str(route_execution))
+    assert_true("crawler_route_execution_links_runtime", route_execution.get("runtime_request_id") == runtime_request.get("request_id"), str(route_execution))
+    assert_true("crawler_route_execution_links_route_input", route_execution.get("route_input_contract_id") == route_input.get("contract_id"), str(route_execution))
+    assert_true("crawler_route_execution_links_route_decision", route_execution.get("route_decision_output_contract_id") == route_decision_output.get("contract_id"), str(route_execution))
+    assert_true("crawler_route_execution_links_message_preflight", route_execution.get("message_preflight_contract_id") == message_preflight.get("contract_id"), str(route_execution))
+    assert_true("crawler_route_execution_links_source_planning", route_execution.get("source_planning_contract_id") == source_planning.get("contract_id"), str(route_execution))
+    assert_true("crawler_route_execution_links_side_effect_auth", route_execution.get("side_effect_authorization_contract_id") == side_effect_auth.get("contract_id"), str(route_execution))
+    assert_true("crawler_route_execution_no_fake_stages", execution_trace_facts.get("observed_execution_stages") == [], str(route_execution))
+    assert_true("crawler_route_execution_answer_shape", execution_result_facts.get("answer_present") is True and execution_result_facts.get("job_present") is False, str(route_execution))
+    assert_true("crawler_route_execution_graph_did_not_execute", route_execution.get("route_execution_executed_by_graph") is False, str(route_execution))
+    assert_true("crawler_route_execution_no_side_effect", route_execution.get("side_effect_executed_by_contract") is False, str(route_execution))
+    assert_true("crawler_route_execution_observation_only", route_execution.get("legacy_trace_observation_only") is True, str(route_execution))
+    assert_true("crawler_route_execution_no_decision_fields", not {"tool", "route_intent", "action_plan", "handler", "proceed", "allow", "deny"} & set(route_execution), str(route_execution))
     route_result = agent_runtime.get("route_result_contract") or {}
     result_shape = route_result.get("result_shape") or {}
     assert_true("crawler_route_result_kind", route_result.get("contract_kind") == "crawler_route_result_contract", str(route_result))
@@ -285,6 +321,7 @@ def test_conversation_graph_can_dispatch_to_crawler_node() -> None:
     assert_true("crawler_route_result_links_source_planning", route_result.get("source_planning_contract_id") == source_planning.get("contract_id"), str(route_result))
     assert_true("crawler_route_result_links_side_effect_auth", route_result.get("side_effect_authorization_contract_id") == side_effect_auth.get("contract_id"), str(route_result))
     assert_true("crawler_route_result_links_route_decision_output", route_result.get("route_decision_output_contract_id") == route_decision_output.get("contract_id"), str(route_result))
+    assert_true("crawler_route_result_links_route_execution", route_result.get("route_execution_contract_id") == route_execution.get("contract_id"), str(route_result))
     assert_true("crawler_route_result_agent_shape", result_shape.get("agent") == "crawler_agent", str(route_result))
     assert_true("crawler_route_result_answer_shape", result_shape.get("answer_present") is True and result_shape.get("source_count") == 0, str(route_result))
     assert_true("crawler_route_result_no_tool_decision", "tool" not in route_result and "route_intent" not in route_result and "action_plan" not in route_result, str(route_result))
