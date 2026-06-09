@@ -94,6 +94,15 @@ def audit(root: Path = ROOT) -> dict[str, Any]:
             "evidence": f"{files['mcagent_graph'].relative_to(root)}; {files['crawler_graph'].relative_to(root)}; {files['legacy_adapter'].relative_to(root)}",
         },
         {
+            "id": "explicit_route_input_contracts",
+            "status": "pass"
+            if contains(files["mcagent_graph"], "prepare_route_input_contract", "mcagent_route_input_contract", "It does not select a tool")
+            and contains(files["crawler_graph"], "prepare_route_input_contract", "crawler_route_input_contract", "It does not select a source")
+            and contains(files["legacy_adapter"], "route_input_contract_id")
+            else "fail",
+            "evidence": f"{files['mcagent_graph'].relative_to(root)}; {files['crawler_graph'].relative_to(root)}; {files['legacy_adapter'].relative_to(root)}",
+        },
+        {
             "id": "legacy_runtime_coupling_visible",
             "status": "warn"
             if contains(files["legacy_adapter"], "legacy_web_server_runtime")

@@ -135,11 +135,59 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             ),
         }
 
+    def prepare_route_input_contract(state: AgentGraphState) -> dict[str, Any]:
+        payload = dict(state.get("payload") or {})
+        thread_id = str(state.get("thread_id") or payload.get("session_id") or "default")
+        message = payload.get("agent_message") if isinstance(payload.get("agent_message"), dict) else {}
+        metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+        selected_groups = dict(state.get("selected_tool_groups") or {})
+        route_input_contract = {
+            "contract_id": f"{thread_id}:crawler_agent:route_input",
+            "node": "crawler.prepare_route_input_contract",
+            "graph": "CrawlerAgentGraph",
+            "agent_id": "crawler_agent",
+            "session_id": str(payload.get("session_id") or thread_id),
+            "contract_kind": "crawler_route_input_contract",
+            "original_question": str(payload.get("question") or payload.get("query") or ""),
+            "contextual_question_hint": str(payload.get("question") or payload.get("query") or ""),
+            "message": {
+                "from_agent": str(message.get("from_agent") or payload.get("message_from") or "User"),
+                "to_agent": str(message.get("to_agent") or "CrawlerAgent"),
+                "intent": str(message.get("intent") or ""),
+                "delivery_target": str(metadata.get("delivery_target") or payload.get("delivery_target") or ""),
+                "has_agent_message": bool(message),
+            },
+            "candidate_route_tools": list(selected_groups.get("default_tools") or []),
+            "candidate_domain_toolsets": dict(selected_groups.get("candidate_domain_toolsets") or {}),
+            "session_memory": state.get("memory_context") or {},
+            "mission_contract": state.get("mission_contract") or {},
+            "decision_owner": "CrawlerAgent LLM",
+            "objective_contract": (
+                "The graph prepares objective inputs for the later CrawlerAgent routing decision. "
+                "It does not select a source, choose a tool, create a route_intent, or confirm side effects."
+            ),
+        }
+        return {
+            "route_input_contract": route_input_contract,
+            **_append(
+                state,
+                "crawler.prepare_route_input_contract",
+                "route_input_contract_prepared",
+                {
+                    "contract_id": route_input_contract["contract_id"],
+                    "contract_kind": route_input_contract["contract_kind"],
+                    "candidate_route_tool_count": len(route_input_contract["candidate_route_tools"]),
+                    "decision_owner": route_input_contract["decision_owner"],
+                },
+            ),
+        }
+
     def prepare_runtime_request(state: AgentGraphState) -> dict[str, Any]:
         payload = dict(state.get("payload") or {})
         thread_id = str(state.get("thread_id") or payload.get("session_id") or "default")
         message = payload.get("agent_message") if isinstance(payload.get("agent_message"), dict) else {}
         metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+        route_input_contract = state.get("route_input_contract") if isinstance(state.get("route_input_contract"), dict) else {}
         runtime_request = {
             "request_id": f"{thread_id}:crawler_agent:runtime_request",
             "node": "crawler.prepare_runtime_request",
@@ -159,6 +207,8 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             "selected_tool_groups": state.get("selected_tool_groups") or {},
             "memory_context": state.get("memory_context") or {},
             "mission_contract": state.get("mission_contract") or {},
+            "route_input_contract": route_input_contract,
+            "route_input_contract_id": route_input_contract.get("contract_id") or "",
             "decision_owner": "CrawlerAgent LLM",
             "objective_contract": (
                 "The graph prepares objective runtime inputs for CrawlerAgent. It does not pick sources, "
@@ -211,6 +261,7 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             "selected_tool_groups": state.get("selected_tool_groups") or {},
             "memory_context": state.get("memory_context") or {},
             "mission_contract": state.get("mission_contract") or {},
+            "route_input_contract": state.get("route_input_contract") or {},
             "runtime_request": state.get("runtime_request") or {},
             "runtime_adapter": state.get("runtime_adapter") or result.get("legacy_runtime_adapter") or {},
             "visited_nodes": [*state.get("visited_nodes", []), "crawler.finalize"],
@@ -230,6 +281,7 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
     builder.add_node("understand_boundary", understand_boundary)
     builder.add_node("select_tool_groups", select_tool_groups)
     builder.add_node("prepare_mission_contract", prepare_mission_contract)
+    builder.add_node("prepare_route_input_contract", prepare_route_input_contract)
     builder.add_node("prepare_runtime_request", prepare_runtime_request)
     builder.add_node("legacy_adapter", run_legacy_adapter)
     builder.add_node("finalize", finalize)
@@ -237,7 +289,8 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
     builder.add_edge("receive", "understand_boundary")
     builder.add_edge("understand_boundary", "select_tool_groups")
     builder.add_edge("select_tool_groups", "prepare_mission_contract")
-    builder.add_edge("prepare_mission_contract", "prepare_runtime_request")
+    builder.add_edge("prepare_mission_contract", "prepare_route_input_contract")
+    builder.add_edge("prepare_route_input_contract", "prepare_runtime_request")
     builder.add_edge("prepare_runtime_request", "legacy_adapter")
     builder.add_edge("legacy_adapter", "finalize")
     builder.add_edge("finalize", END)

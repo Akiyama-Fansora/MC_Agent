@@ -118,10 +118,56 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             ),
         }
 
+    def prepare_route_input_contract(state: AgentGraphState) -> dict[str, Any]:
+        payload = dict(state.get("payload") or {})
+        thread_id = str(state.get("thread_id") or payload.get("session_id") or "default")
+        message = payload.get("agent_message") if isinstance(payload.get("agent_message"), dict) else {}
+        selected_groups = dict(state.get("selected_tool_groups") or {})
+        route_input_contract = {
+            "contract_id": f"{thread_id}:mcagent_rag:route_input",
+            "node": "mcagent.prepare_route_input_contract",
+            "graph": "MCagentGraph",
+            "agent_id": "mcagent_rag",
+            "session_id": str(payload.get("session_id") or thread_id),
+            "contract_kind": "mcagent_route_input_contract",
+            "original_question": str(payload.get("question") or payload.get("query") or ""),
+            "contextual_question_hint": str(payload.get("question") or payload.get("query") or ""),
+            "message": {
+                "from_agent": str(message.get("from_agent") or payload.get("message_from") or "User"),
+                "to_agent": str(message.get("to_agent") or "MCagent"),
+                "intent": str(message.get("intent") or ""),
+                "has_agent_message": bool(message),
+            },
+            "candidate_route_tools": list(selected_groups.get("default_tools") or []),
+            "blocked_capability_groups": list((state.get("tool_boundary") or {}).get("blocked_capability_groups") or []),
+            "session_memory": state.get("memory_context") or {},
+            "retrieval_contract": state.get("retrieval_contract") or {},
+            "decision_owner": "MCagent LLM",
+            "objective_contract": (
+                "The graph prepares objective inputs for the later tool-routing decision. "
+                "It does not select a tool, create a route_intent, or confirm side effects."
+            ),
+        }
+        return {
+            "route_input_contract": route_input_contract,
+            **_append(
+                state,
+                "mcagent.prepare_route_input_contract",
+                "route_input_contract_prepared",
+                {
+                    "contract_id": route_input_contract["contract_id"],
+                    "contract_kind": route_input_contract["contract_kind"],
+                    "candidate_route_tool_count": len(route_input_contract["candidate_route_tools"]),
+                    "decision_owner": route_input_contract["decision_owner"],
+                },
+            ),
+        }
+
     def prepare_runtime_request(state: AgentGraphState) -> dict[str, Any]:
         payload = dict(state.get("payload") or {})
         thread_id = str(state.get("thread_id") or payload.get("session_id") or "default")
         message = payload.get("agent_message") if isinstance(payload.get("agent_message"), dict) else {}
+        route_input_contract = state.get("route_input_contract") if isinstance(state.get("route_input_contract"), dict) else {}
         runtime_request = {
             "request_id": f"{thread_id}:mcagent_rag:runtime_request",
             "node": "mcagent.prepare_runtime_request",
@@ -140,6 +186,8 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             "selected_tool_groups": state.get("selected_tool_groups") or {},
             "memory_context": state.get("memory_context") or {},
             "retrieval_contract": state.get("retrieval_contract") or {},
+            "route_input_contract": route_input_contract,
+            "route_input_contract_id": route_input_contract.get("contract_id") or "",
             "decision_owner": "MCagent LLM",
             "objective_contract": (
                 "The graph prepares objective runtime inputs for MCagent. It does not choose the final tool, "
@@ -192,6 +240,7 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             "selected_tool_groups": state.get("selected_tool_groups") or {},
             "memory_context": state.get("memory_context") or {},
             "retrieval_contract": state.get("retrieval_contract") or {},
+            "route_input_contract": state.get("route_input_contract") or {},
             "runtime_request": state.get("runtime_request") or {},
             "runtime_adapter": state.get("runtime_adapter") or result.get("legacy_runtime_adapter") or {},
             "visited_nodes": [*state.get("visited_nodes", []), "mcagent.finalize"],
@@ -211,6 +260,7 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
     builder.add_node("load_memory_boundary", load_memory_boundary)
     builder.add_node("select_local_tools", select_local_tools)
     builder.add_node("prepare_local_retrieval", prepare_local_retrieval)
+    builder.add_node("prepare_route_input_contract", prepare_route_input_contract)
     builder.add_node("prepare_runtime_request", prepare_runtime_request)
     builder.add_node("legacy_adapter", run_legacy_adapter)
     builder.add_node("finalize", finalize)
@@ -218,7 +268,8 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
     builder.add_edge("receive", "load_memory_boundary")
     builder.add_edge("load_memory_boundary", "select_local_tools")
     builder.add_edge("select_local_tools", "prepare_local_retrieval")
-    builder.add_edge("prepare_local_retrieval", "prepare_runtime_request")
+    builder.add_edge("prepare_local_retrieval", "prepare_route_input_contract")
+    builder.add_edge("prepare_route_input_contract", "prepare_runtime_request")
     builder.add_edge("prepare_runtime_request", "legacy_adapter")
     builder.add_edge("legacy_adapter", "finalize")
     builder.add_edge("finalize", END)

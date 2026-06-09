@@ -147,12 +147,18 @@ def test_fastapi_agent_message_endpoint_dispatches() -> None:
     assert_true("agent_message_graph_node", "crawler_graph.legacy_adapter" in graph_runtime.get("visited_nodes", []), str(graph_runtime))
     agent_runtime = body.get("agent_graph_runtime") or {}
     assert_true("agent_message_agent_graph", agent_runtime.get("agent_graph") == "CrawlerAgentGraph", str(agent_runtime))
+    assert_true("agent_message_route_input_node", "crawler.prepare_route_input_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
+    route_input = agent_runtime.get("route_input_contract") or {}
+    assert_true("agent_message_route_input", route_input.get("contract_kind") == "crawler_route_input_contract", str(route_input))
+    assert_true("agent_message_route_input_no_tool", "tool" not in route_input and "route_intent" not in route_input, str(route_input))
     assert_true("agent_message_runtime_request_node", "crawler.prepare_runtime_request" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     runtime_request = agent_runtime.get("runtime_request") or {}
     assert_true("agent_message_runtime_request", runtime_request.get("contract_kind") == "crawler_collection_runtime_request", str(runtime_request))
+    assert_true("agent_message_runtime_request_route_input", runtime_request.get("route_input_contract_id") == route_input.get("contract_id"), str(runtime_request))
     adapter = agent_runtime.get("runtime_adapter") or {}
     assert_true("agent_message_legacy_adapter", adapter.get("adapter") == "legacy_web_server_runtime", str(adapter))
     assert_true("agent_message_adapter_consumed_request", adapter.get("runtime_request_id") == runtime_request.get("request_id"), str(adapter))
+    assert_true("agent_message_adapter_consumed_route_input", adapter.get("route_input_contract_id") == route_input.get("contract_id"), str(adapter))
 
 
 def main() -> int:

@@ -18,6 +18,7 @@ def _runtime_request_summary(runtime_request: dict[str, Any] | None) -> dict[str
     return {
         "runtime_request_id": runtime_request.get("request_id") or "",
         "runtime_request_node": runtime_request.get("node") or "",
+        "route_input_contract_id": runtime_request.get("route_input_contract_id") or "",
         "contract_kind": runtime_request.get("contract_kind") or "",
         "session_id": runtime_request.get("session_id") or payload.get("session_id") or "",
         "payload_agent": payload.get("agent") or "",

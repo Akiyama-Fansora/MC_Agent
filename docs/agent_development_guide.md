@@ -4741,3 +4741,36 @@ Next migration loop:
 2. Move MCagent local retrieval execution into a graph node once route choice is explicit.
 3. Move CrawlerAgent source planning inputs into a graph node, while keeping source choice owned by CrawlerAgent LLM.
 4. Continue reducing `web_server._chat_impl()` until the legacy adapter becomes unnecessary.
+
+## 2026-06-09 Stage 63: Route Input Contracts Before Runtime Requests
+
+Stage 63 moves another pre-routing responsibility out of the implicit legacy boundary: preparing the objective route input contract that a later routing decision will need.
+
+Before this stage, the graph prepared a runtime request but did not separately expose the inputs that the tool-routing LLM would later receive inside `_chat_impl()`. That made it harder to distinguish objective route inputs from the actual Agent decision.
+
+Implemented changes:
+
+1. `MCagentGraph` now runs `mcagent.prepare_route_input_contract` before `mcagent.prepare_runtime_request`.
+2. `CrawlerAgentGraph` now runs `crawler.prepare_route_input_contract` before `crawler.prepare_runtime_request`.
+3. Route input contracts include objective fields: contract id, graph, agent id, session id, original question, contextual question hint, message summary, candidate route tools, session memory, and the relevant retrieval or mission contract.
+4. Runtime requests now carry `route_input_contract` and `route_input_contract_id`.
+5. `legacy_adapter` metadata now records `route_input_contract_id`, allowing the adapter result to be traced back to the graph-prepared route input.
+6. The architecture audit now checks `explicit_route_input_contracts`.
+
+Boundary:
+
+Route input contracts do not call an LLM, select a tool, choose a source, create a `route_intent`, confirm side effects, persist evidence, or write final text. They only prepare objective inputs for the later Agent-owned routing decision.
+
+Current score:
+
+1. Two-Agent shape: 9/10.
+2. Legacy runtime migration: 6.5/10. The remaining `_chat_impl()` dependency still executes the route, but graph-owned route inputs now exist before the adapter.
+3. Tool-objectivity principle: 8.7/10.
+4. Regression coverage: 8.7/10.
+
+Next migration loop:
+
+1. Add graph-side message/preflight observation contracts for context-only and collection-request AgentMessages.
+2. Move MCagent contextual-question preparation into an objective graph node without deciding the tool route.
+3. Move CrawlerAgent source-planning inputs into a graph node while preserving CrawlerAgent LLM ownership of source choice.
+4. Keep replacing legacy blocks with objective contracts first, then executable graph nodes once contracts are stable.
