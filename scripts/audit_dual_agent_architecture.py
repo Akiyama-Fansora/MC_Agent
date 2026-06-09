@@ -121,6 +121,15 @@ def audit(root: Path = ROOT) -> dict[str, Any]:
             "evidence": f"{files['mcagent_graph'].relative_to(root)}; {files['legacy_adapter'].relative_to(root)}",
         },
         {
+            "id": "explicit_source_planning_contracts",
+            "status": "pass"
+            if contains(files["crawler_graph"], "prepare_source_planning_contract", "crawler_source_planning_input_contract", "It does not choose sources")
+            and contains(files["legacy_adapter"], "source_planning_contract_id")
+            and contains(files["route_result_contract"], "source_planning_contract_id")
+            else "fail",
+            "evidence": f"{files['crawler_graph'].relative_to(root)}; {files['legacy_adapter'].relative_to(root)}; {files['route_result_contract'].relative_to(root)}",
+        },
+        {
             "id": "explicit_route_result_contracts",
             "status": "pass"
             if contains(files["mcagent_graph"], "prepare_route_result_contract", "mcagent_route_result_contract")

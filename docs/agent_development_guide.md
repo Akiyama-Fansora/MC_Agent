@@ -4871,3 +4871,35 @@ Next migration loop:
 1. Move CrawlerAgent source-planning input preparation into graph state while preserving CrawlerAgent LLM ownership of source choice.
 2. Add graph-side route decision output contracts before moving actual route execution.
 3. Continue reducing `_chat_impl()` only after each boundary is objective and tested.
+
+## 2026-06-09 Stage 67: CrawlerAgent Source-Planning Input Contracts
+
+Stage 67 moves CrawlerAgent source-planning inputs into the graph without moving source selection itself.
+
+Before this stage, the legacy planner entry path in `_chat_impl()` and crawler job startup gathered task text, delivery target, source directory, session context, and candidate source/tool hints implicitly. That made it harder to see what the CrawlerAgent planner was allowed to consider before it selected sources and tasks.
+
+Implemented changes:
+
+1. `CrawlerAgentGraph` now runs `crawler.prepare_source_planning_contract` after mission preparation and before message preflight.
+2. The contract records objective planning inputs: planning question, collection target, delivery target, requester, source directory path/existence, candidate general tools, candidate domain toolsets, message source hints, and session summary topics/entities.
+3. Route input contracts and runtime requests now carry `source_planning_contract` and `source_planning_contract_id`.
+4. `legacy_adapter` metadata now records `source_planning_contract_id`.
+5. Route result contracts link back to `source_planning_contract_id` for CrawlerAgent paths.
+6. The architecture audit now checks `explicit_source_planning_contracts`.
+
+Boundary:
+
+The source-planning contract does not choose sources, create tasks, build an `action_plan`, select tools, run tools, persist evidence, judge observations, or change the payload handed to legacy runtime. It only exposes objective inputs that the existing legacy planner still consumes during migration.
+
+Current score:
+
+1. Two-Agent shape: 9/10.
+2. Legacy runtime migration: 7.7/10. CrawlerAgent planner inputs are now visible, but the planner and route execution still run in `_chat_impl()` and related legacy functions.
+3. Tool-objectivity principle: 9.2/10.
+4. Regression coverage: 9.2/10.
+
+Next migration loop:
+
+1. Add graph-side route decision output contracts before moving actual route execution.
+2. Separate CrawlerAgent job-start authorization facts from the legacy route handler while keeping side-effect decisions Agent-owned.
+3. Continue extracting `_chat_impl()` only after each boundary is objective and tested.

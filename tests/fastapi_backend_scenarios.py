@@ -147,6 +147,11 @@ def test_fastapi_agent_message_endpoint_dispatches() -> None:
     assert_true("agent_message_graph_node", "crawler_graph.legacy_adapter" in graph_runtime.get("visited_nodes", []), str(graph_runtime))
     agent_runtime = body.get("agent_graph_runtime") or {}
     assert_true("agent_message_agent_graph", agent_runtime.get("agent_graph") == "CrawlerAgentGraph", str(agent_runtime))
+    assert_true("agent_message_source_planning_node", "crawler.prepare_source_planning_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
+    source_planning = agent_runtime.get("source_planning_contract") or {}
+    assert_true("agent_message_source_planning", source_planning.get("contract_kind") == "crawler_source_planning_input_contract", str(source_planning))
+    assert_true("agent_message_source_planning_tools", "fetch_url" in source_planning.get("candidate_general_tools", []), str(source_planning))
+    assert_true("agent_message_source_planning_no_plan", not {"tool", "route_intent", "sources", "tasks", "action_plan", "selected_sources"} & set(source_planning), str(source_planning))
     assert_true("agent_message_preflight_node", "crawler.prepare_message_preflight_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     message_preflight = agent_runtime.get("message_preflight_contract") or {}
     assert_true("agent_message_preflight", message_preflight.get("agent_id") == "crawler_agent", str(message_preflight))
@@ -155,16 +160,19 @@ def test_fastapi_agent_message_endpoint_dispatches() -> None:
     route_input = agent_runtime.get("route_input_contract") or {}
     assert_true("agent_message_route_input", route_input.get("contract_kind") == "crawler_route_input_contract", str(route_input))
     assert_true("agent_message_route_input_preflight", route_input.get("message_preflight_contract_id") == message_preflight.get("contract_id"), str(route_input))
+    assert_true("agent_message_route_input_source_planning", route_input.get("source_planning_contract_id") == source_planning.get("contract_id"), str(route_input))
     assert_true("agent_message_route_input_no_tool", "tool" not in route_input and "route_intent" not in route_input, str(route_input))
     assert_true("agent_message_runtime_request_node", "crawler.prepare_runtime_request" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     runtime_request = agent_runtime.get("runtime_request") or {}
     assert_true("agent_message_runtime_request", runtime_request.get("contract_kind") == "crawler_collection_runtime_request", str(runtime_request))
     assert_true("agent_message_runtime_request_preflight", runtime_request.get("message_preflight_contract_id") == message_preflight.get("contract_id"), str(runtime_request))
+    assert_true("agent_message_runtime_request_source_planning", runtime_request.get("source_planning_contract_id") == source_planning.get("contract_id"), str(runtime_request))
     assert_true("agent_message_runtime_request_route_input", runtime_request.get("route_input_contract_id") == route_input.get("contract_id"), str(runtime_request))
     adapter = agent_runtime.get("runtime_adapter") or {}
     assert_true("agent_message_legacy_adapter", adapter.get("adapter") == "legacy_web_server_runtime", str(adapter))
     assert_true("agent_message_adapter_consumed_request", adapter.get("runtime_request_id") == runtime_request.get("request_id"), str(adapter))
     assert_true("agent_message_adapter_consumed_preflight", adapter.get("message_preflight_contract_id") == message_preflight.get("contract_id"), str(adapter))
+    assert_true("agent_message_adapter_consumed_source_planning", adapter.get("source_planning_contract_id") == source_planning.get("contract_id"), str(adapter))
     assert_true("agent_message_adapter_consumed_route_input", adapter.get("route_input_contract_id") == route_input.get("contract_id"), str(adapter))
     assert_true("agent_message_route_result_node", "crawler.prepare_route_result_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     route_result = agent_runtime.get("route_result_contract") or {}
@@ -173,6 +181,7 @@ def test_fastapi_agent_message_endpoint_dispatches() -> None:
     assert_true("agent_message_route_result_request", route_result.get("runtime_request_id") == runtime_request.get("request_id"), str(route_result))
     assert_true("agent_message_route_result_route_input", route_result.get("route_input_contract_id") == route_input.get("contract_id"), str(route_result))
     assert_true("agent_message_route_result_preflight", route_result.get("message_preflight_contract_id") == message_preflight.get("contract_id"), str(route_result))
+    assert_true("agent_message_route_result_source_planning", route_result.get("source_planning_contract_id") == source_planning.get("contract_id"), str(route_result))
     assert_true("agent_message_route_result_shape", result_shape.get("answer_present") is True and result_shape.get("has_agent_message") is True, str(route_result))
     assert_true("agent_message_route_result_no_tool", "tool" not in route_result and "route_intent" not in route_result and "action_plan" not in route_result, str(route_result))
 

@@ -17,6 +17,7 @@ def build_route_result_contract(
     route_input_contract: dict[str, Any],
     message_preflight_contract: dict[str, Any],
     contextual_question_contract: dict[str, Any] | None = None,
+    source_planning_contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Describe the legacy result shape without judging or changing it."""
 
@@ -31,6 +32,7 @@ def build_route_result_contract(
         if str(result.get(key) or "").strip()
     ]
     contextual_question_contract = contextual_question_contract or {}
+    source_planning_contract = source_planning_contract or {}
     return {
         "contract_id": f"{thread_id}:{agent_id}:route_result",
         "node": node_name,
@@ -42,6 +44,7 @@ def build_route_result_contract(
         "route_input_contract_id": route_input_contract.get("contract_id") or runtime_request.get("route_input_contract_id") or "",
         "message_preflight_contract_id": message_preflight_contract.get("contract_id") or runtime_request.get("message_preflight_contract_id") or "",
         "contextual_question_contract_id": contextual_question_contract.get("contract_id") or runtime_request.get("contextual_question_contract_id") or "",
+        "source_planning_contract_id": source_planning_contract.get("contract_id") or runtime_request.get("source_planning_contract_id") or "",
         "legacy_adapter": {
             "adapter": runtime_adapter.get("adapter") or "",
             "node": runtime_adapter.get("node") or "",

@@ -136,6 +136,75 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             ),
         }
 
+    def prepare_source_planning_contract(state: AgentGraphState) -> dict[str, Any]:
+        payload = dict(state.get("payload") or {})
+        thread_id = str(state.get("thread_id") or payload.get("session_id") or "default")
+        message = payload.get("agent_message") if isinstance(payload.get("agent_message"), dict) else {}
+        metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+        selected_groups = dict(state.get("selected_tool_groups") or {})
+        mission = state.get("mission_contract") if isinstance(state.get("mission_contract"), dict) else {}
+        memory = state.get("memory_context") if isinstance(state.get("memory_context"), dict) else {}
+        summary = memory.get("summary") if isinstance(memory.get("summary"), dict) else {}
+        preferred_hints = metadata.get("preferred_sources") if isinstance(metadata.get("preferred_sources"), list) else payload.get("preferred_sources")
+        candidate_hints = metadata.get("candidate_sources") if isinstance(metadata.get("candidate_sources"), list) else payload.get("candidate_sources")
+        preferred_hint_values = [str(item) for item in preferred_hints[:16]] if isinstance(preferred_hints, list) else []
+        candidate_hint_records = [dict(item) for item in candidate_hints[:16] if isinstance(item, dict)] if isinstance(candidate_hints, list) else []
+        planning_question = str(payload.get("question") or payload.get("query") or "")
+        collection_target = str(
+            metadata.get("collection_target")
+            or metadata.get("task_goal")
+            or payload.get("collection_target")
+            or payload.get("task_goal")
+            or planning_question
+        )
+        contract = {
+            "contract_id": f"{thread_id}:crawler_agent:source_planning",
+            "node": "crawler.prepare_source_planning_contract",
+            "graph": "CrawlerAgentGraph",
+            "agent_id": "crawler_agent",
+            "session_id": str(payload.get("session_id") or thread_id),
+            "contract_kind": "crawler_source_planning_input_contract",
+            "planning_question": planning_question,
+            "collection_target": collection_target,
+            "delivery_target": str(mission.get("delivery_target") or metadata.get("delivery_target") or payload.get("delivery_target") or ""),
+            "requested_by": str(metadata.get("requested_by") or payload.get("requested_by") or mission.get("from_agent") or ""),
+            "source_dir": str(config.paths.source_dir),
+            "source_dir_exists": config.paths.source_dir.exists(),
+            "candidate_general_tools": list(selected_groups.get("default_tools") or []),
+            "candidate_domain_toolsets": dict(selected_groups.get("candidate_domain_toolsets") or {}),
+            "message_hints": {
+                "preferred_source_hints": preferred_hint_values,
+                "candidate_hint_records": candidate_hint_records,
+                "candidate_hint_count": len(candidate_hint_records),
+            },
+            "session_context": {
+                "turn_count": memory.get("turn_count") or 0,
+                "summary_topics": [str(item) for item in (summary.get("topics") or [])[:12]],
+                "summary_entities": [str(item) for item in (summary.get("entities") or [])[:12]],
+            },
+            "mission_contract": mission,
+            "decision_owner": "CrawlerAgent LLM",
+            "planner_still_runs_in_legacy_adapter": True,
+            "objective_contract": (
+                "The graph records source-planning inputs only. It does not choose sources, "
+                "create tasks, build an action_plan, run tools, persist evidence, or judge observations."
+            ),
+        }
+        return {
+            "source_planning_contract": contract,
+            **_append(
+                state,
+                "crawler.prepare_source_planning_contract",
+                "source_planning_inputs_prepared",
+                {
+                    "contract_id": contract["contract_id"],
+                    "contract_kind": contract["contract_kind"],
+                    "candidate_general_tool_count": len(contract["candidate_general_tools"]),
+                    "candidate_domain_toolsets": list(contract["candidate_domain_toolsets"].keys()),
+                },
+            ),
+        }
+
     def prepare_message_preflight_contract(state: AgentGraphState) -> dict[str, Any]:
         payload = dict(state.get("payload") or {})
         thread_id = str(state.get("thread_id") or payload.get("session_id") or "default")
@@ -198,6 +267,7 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
         metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
         selected_groups = dict(state.get("selected_tool_groups") or {})
         message_preflight = state.get("message_preflight_contract") if isinstance(state.get("message_preflight_contract"), dict) else {}
+        source_planning = state.get("source_planning_contract") if isinstance(state.get("source_planning_contract"), dict) else {}
         route_input_contract = {
             "contract_id": f"{thread_id}:crawler_agent:route_input",
             "node": "crawler.prepare_route_input_contract",
@@ -218,6 +288,8 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             "candidate_domain_toolsets": dict(selected_groups.get("candidate_domain_toolsets") or {}),
             "message_preflight_contract": message_preflight,
             "message_preflight_contract_id": message_preflight.get("contract_id") or "",
+            "source_planning_contract": source_planning,
+            "source_planning_contract_id": source_planning.get("contract_id") or "",
             "session_memory": state.get("memory_context") or {},
             "mission_contract": state.get("mission_contract") or {},
             "decision_owner": "CrawlerAgent LLM",
@@ -248,6 +320,7 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
         metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
         route_input_contract = state.get("route_input_contract") if isinstance(state.get("route_input_contract"), dict) else {}
         message_preflight = state.get("message_preflight_contract") if isinstance(state.get("message_preflight_contract"), dict) else {}
+        source_planning = state.get("source_planning_contract") if isinstance(state.get("source_planning_contract"), dict) else {}
         runtime_request = {
             "request_id": f"{thread_id}:crawler_agent:runtime_request",
             "node": "crawler.prepare_runtime_request",
@@ -267,6 +340,8 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             "selected_tool_groups": state.get("selected_tool_groups") or {},
             "memory_context": state.get("memory_context") or {},
             "mission_contract": state.get("mission_contract") or {},
+            "source_planning_contract": source_planning,
+            "source_planning_contract_id": source_planning.get("contract_id") or "",
             "message_preflight_contract": message_preflight,
             "message_preflight_contract_id": message_preflight.get("contract_id") or "",
             "route_input_contract": route_input_contract,
@@ -320,6 +395,7 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
         runtime_adapter = state.get("runtime_adapter") if isinstance(state.get("runtime_adapter"), dict) else {}
         route_input = state.get("route_input_contract") if isinstance(state.get("route_input_contract"), dict) else {}
         message_preflight = state.get("message_preflight_contract") if isinstance(state.get("message_preflight_contract"), dict) else {}
+        source_planning = state.get("source_planning_contract") if isinstance(state.get("source_planning_contract"), dict) else {}
         thread_id = str(state.get("thread_id") or runtime_request.get("session_id") or result.get("session_id") or "default")
         contract = build_route_result_contract(
             thread_id=thread_id,
@@ -333,6 +409,7 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             runtime_adapter=runtime_adapter,
             route_input_contract=route_input,
             message_preflight_contract=message_preflight,
+            source_planning_contract=source_planning,
         )
         shape = contract["result_shape"]
         return {
@@ -360,6 +437,7 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             "selected_tool_groups": state.get("selected_tool_groups") or {},
             "memory_context": state.get("memory_context") or {},
             "mission_contract": state.get("mission_contract") or {},
+            "source_planning_contract": state.get("source_planning_contract") or {},
             "message_preflight_contract": state.get("message_preflight_contract") or {},
             "route_input_contract": state.get("route_input_contract") or {},
             "runtime_request": state.get("runtime_request") or {},
@@ -382,6 +460,7 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
     builder.add_node("understand_boundary", understand_boundary)
     builder.add_node("select_tool_groups", select_tool_groups)
     builder.add_node("prepare_mission_contract", prepare_mission_contract)
+    builder.add_node("prepare_source_planning_contract", prepare_source_planning_contract)
     builder.add_node("prepare_message_preflight_contract", prepare_message_preflight_contract)
     builder.add_node("prepare_route_input_contract", prepare_route_input_contract)
     builder.add_node("prepare_runtime_request", prepare_runtime_request)
@@ -392,7 +471,8 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
     builder.add_edge("receive", "understand_boundary")
     builder.add_edge("understand_boundary", "select_tool_groups")
     builder.add_edge("select_tool_groups", "prepare_mission_contract")
-    builder.add_edge("prepare_mission_contract", "prepare_message_preflight_contract")
+    builder.add_edge("prepare_mission_contract", "prepare_source_planning_contract")
+    builder.add_edge("prepare_source_planning_contract", "prepare_message_preflight_contract")
     builder.add_edge("prepare_message_preflight_contract", "prepare_route_input_contract")
     builder.add_edge("prepare_route_input_contract", "prepare_runtime_request")
     builder.add_edge("prepare_runtime_request", "legacy_adapter")
