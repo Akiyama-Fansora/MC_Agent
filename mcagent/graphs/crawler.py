@@ -260,6 +260,66 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             ),
         }
 
+    def prepare_side_effect_authorization_contract(state: AgentGraphState) -> dict[str, Any]:
+        payload = dict(state.get("payload") or {})
+        thread_id = str(state.get("thread_id") or payload.get("session_id") or "default")
+        message = payload.get("agent_message") if isinstance(payload.get("agent_message"), dict) else {}
+        metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+        message_preflight = state.get("message_preflight_contract") if isinstance(state.get("message_preflight_contract"), dict) else {}
+        preflight_message = message_preflight.get("message") if isinstance(message_preflight.get("message"), dict) else {}
+        flags = message_preflight.get("flags") if isinstance(message_preflight.get("flags"), dict) else {}
+        metadata_tool = str(preflight_message.get("metadata_tool") or metadata.get("tool") or "")
+        intent = str(preflight_message.get("intent") or message.get("intent") or payload.get("intent") or "")
+        collection_request = bool(flags.get("collection_request_agent_message"))
+        contract = {
+            "contract_id": f"{thread_id}:crawler_agent:side_effect_authorization",
+            "node": "crawler.prepare_side_effect_authorization_contract",
+            "graph": "CrawlerAgentGraph",
+            "agent_id": "crawler_agent",
+            "session_id": str(payload.get("session_id") or thread_id),
+            "contract_kind": "crawler_side_effect_authorization_facts_contract",
+            "side_effect_surface": "start_background_job",
+            "message_preflight_contract": message_preflight,
+            "message_preflight_contract_id": message_preflight.get("contract_id") or "",
+            "facts": {
+                "has_agent_message": bool(message),
+                "from_agent": str(preflight_message.get("from_agent") or message.get("from_agent") or payload.get("message_from") or "User"),
+                "to_agent": str(preflight_message.get("to_agent") or message.get("to_agent") or "CrawlerAgent"),
+                "to_agent_id": str(preflight_message.get("to_agent_id") or message.get("to_agent_id") or payload.get("agent") or "crawler_agent"),
+                "intent": intent,
+                "metadata_tool": metadata_tool,
+                "collection_request_agent_message": collection_request,
+                "metadata_mentions_delegate_crawler": metadata_tool == "delegate_crawler",
+                "message_only_cannot_execute_side_effect": bool(flags.get("message_only_cannot_execute_side_effect", True)),
+            },
+            "required_agent_owned_decision": (
+                "CrawlerAgent must later choose delegate_crawler, or planned_workflow with delegate_crawler in its action_plan, "
+                "before the legacy runtime may start a background collection job."
+            ),
+            "authorization_evaluation_executed": False,
+            "side_effect_executed": False,
+            "legacy_guard_still_runs_in_adapter": True,
+            "decision_owner": "CrawlerAgent LLM",
+            "objective_contract": (
+                "The graph records side-effect authorization facts only. It does not approve or deny execution, "
+                "select delegate_crawler, create an action_plan, start a background job, or persist evidence."
+            ),
+        }
+        return {
+            "side_effect_authorization_contract": contract,
+            **_append(
+                state,
+                "crawler.prepare_side_effect_authorization_contract",
+                "side_effect_authorization_facts_prepared",
+                {
+                    "contract_id": contract["contract_id"],
+                    "contract_kind": contract["contract_kind"],
+                    "collection_request_agent_message": collection_request,
+                    "side_effect_executed": contract["side_effect_executed"],
+                },
+            ),
+        }
+
     def prepare_route_input_contract(state: AgentGraphState) -> dict[str, Any]:
         payload = dict(state.get("payload") or {})
         thread_id = str(state.get("thread_id") or payload.get("session_id") or "default")
@@ -268,6 +328,7 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
         selected_groups = dict(state.get("selected_tool_groups") or {})
         message_preflight = state.get("message_preflight_contract") if isinstance(state.get("message_preflight_contract"), dict) else {}
         source_planning = state.get("source_planning_contract") if isinstance(state.get("source_planning_contract"), dict) else {}
+        side_effect_authorization = state.get("side_effect_authorization_contract") if isinstance(state.get("side_effect_authorization_contract"), dict) else {}
         route_input_contract = {
             "contract_id": f"{thread_id}:crawler_agent:route_input",
             "node": "crawler.prepare_route_input_contract",
@@ -290,6 +351,8 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             "message_preflight_contract_id": message_preflight.get("contract_id") or "",
             "source_planning_contract": source_planning,
             "source_planning_contract_id": source_planning.get("contract_id") or "",
+            "side_effect_authorization_contract": side_effect_authorization,
+            "side_effect_authorization_contract_id": side_effect_authorization.get("contract_id") or "",
             "session_memory": state.get("memory_context") or {},
             "mission_contract": state.get("mission_contract") or {},
             "decision_owner": "CrawlerAgent LLM",
@@ -321,6 +384,7 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
         route_input_contract = state.get("route_input_contract") if isinstance(state.get("route_input_contract"), dict) else {}
         message_preflight = state.get("message_preflight_contract") if isinstance(state.get("message_preflight_contract"), dict) else {}
         source_planning = state.get("source_planning_contract") if isinstance(state.get("source_planning_contract"), dict) else {}
+        side_effect_authorization = state.get("side_effect_authorization_contract") if isinstance(state.get("side_effect_authorization_contract"), dict) else {}
         runtime_request = {
             "request_id": f"{thread_id}:crawler_agent:runtime_request",
             "node": "crawler.prepare_runtime_request",
@@ -344,6 +408,8 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             "source_planning_contract_id": source_planning.get("contract_id") or "",
             "message_preflight_contract": message_preflight,
             "message_preflight_contract_id": message_preflight.get("contract_id") or "",
+            "side_effect_authorization_contract": side_effect_authorization,
+            "side_effect_authorization_contract_id": side_effect_authorization.get("contract_id") or "",
             "route_input_contract": route_input_contract,
             "route_input_contract_id": route_input_contract.get("contract_id") or "",
             "decision_owner": "CrawlerAgent LLM",
@@ -396,6 +462,7 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
         route_input = state.get("route_input_contract") if isinstance(state.get("route_input_contract"), dict) else {}
         message_preflight = state.get("message_preflight_contract") if isinstance(state.get("message_preflight_contract"), dict) else {}
         source_planning = state.get("source_planning_contract") if isinstance(state.get("source_planning_contract"), dict) else {}
+        side_effect_authorization = state.get("side_effect_authorization_contract") if isinstance(state.get("side_effect_authorization_contract"), dict) else {}
         thread_id = str(state.get("thread_id") or runtime_request.get("session_id") or result.get("session_id") or "default")
         contract = build_route_result_contract(
             thread_id=thread_id,
@@ -410,6 +477,7 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             route_input_contract=route_input,
             message_preflight_contract=message_preflight,
             source_planning_contract=source_planning,
+            side_effect_authorization_contract=side_effect_authorization,
         )
         shape = contract["result_shape"]
         return {
@@ -439,6 +507,7 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             "mission_contract": state.get("mission_contract") or {},
             "source_planning_contract": state.get("source_planning_contract") or {},
             "message_preflight_contract": state.get("message_preflight_contract") or {},
+            "side_effect_authorization_contract": state.get("side_effect_authorization_contract") or {},
             "route_input_contract": state.get("route_input_contract") or {},
             "runtime_request": state.get("runtime_request") or {},
             "runtime_adapter": state.get("runtime_adapter") or result.get("legacy_runtime_adapter") or {},
@@ -462,6 +531,7 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
     builder.add_node("prepare_mission_contract", prepare_mission_contract)
     builder.add_node("prepare_source_planning_contract", prepare_source_planning_contract)
     builder.add_node("prepare_message_preflight_contract", prepare_message_preflight_contract)
+    builder.add_node("prepare_side_effect_authorization_contract", prepare_side_effect_authorization_contract)
     builder.add_node("prepare_route_input_contract", prepare_route_input_contract)
     builder.add_node("prepare_runtime_request", prepare_runtime_request)
     builder.add_node("legacy_adapter", run_legacy_adapter)
@@ -473,7 +543,8 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
     builder.add_edge("select_tool_groups", "prepare_mission_contract")
     builder.add_edge("prepare_mission_contract", "prepare_source_planning_contract")
     builder.add_edge("prepare_source_planning_contract", "prepare_message_preflight_contract")
-    builder.add_edge("prepare_message_preflight_contract", "prepare_route_input_contract")
+    builder.add_edge("prepare_message_preflight_contract", "prepare_side_effect_authorization_contract")
+    builder.add_edge("prepare_side_effect_authorization_contract", "prepare_route_input_contract")
     builder.add_edge("prepare_route_input_contract", "prepare_runtime_request")
     builder.add_edge("prepare_runtime_request", "legacy_adapter")
     builder.add_edge("legacy_adapter", "prepare_route_result_contract")

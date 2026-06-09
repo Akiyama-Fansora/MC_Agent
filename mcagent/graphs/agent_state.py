@@ -17,6 +17,7 @@ class AgentGraphState(TypedDict):
     mission_contract: NotRequired[dict[str, Any]]
     source_planning_contract: NotRequired[dict[str, Any]]
     message_preflight_contract: NotRequired[dict[str, Any]]
+    side_effect_authorization_contract: NotRequired[dict[str, Any]]
     contextual_question_contract: NotRequired[dict[str, Any]]
     route_input_contract: NotRequired[dict[str, Any]]
     runtime_request: NotRequired[dict[str, Any]]

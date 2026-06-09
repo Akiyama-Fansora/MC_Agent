@@ -130,6 +130,21 @@ def audit(root: Path = ROOT) -> dict[str, Any]:
             "evidence": f"{files['crawler_graph'].relative_to(root)}; {files['legacy_adapter'].relative_to(root)}; {files['route_result_contract'].relative_to(root)}",
         },
         {
+            "id": "explicit_side_effect_authorization_contracts",
+            "status": "pass"
+            if contains(
+                files["crawler_graph"],
+                "prepare_side_effect_authorization_contract",
+                "crawler_side_effect_authorization_facts_contract",
+                "authorization_evaluation_executed",
+                "side_effect_executed",
+            )
+            and contains(files["legacy_adapter"], "side_effect_authorization_contract_id")
+            and contains(files["route_result_contract"], "side_effect_authorization_contract_id")
+            else "fail",
+            "evidence": f"{files['crawler_graph'].relative_to(root)}; {files['legacy_adapter'].relative_to(root)}; {files['route_result_contract'].relative_to(root)}",
+        },
+        {
             "id": "explicit_route_result_contracts",
             "status": "pass"
             if contains(files["mcagent_graph"], "prepare_route_result_contract", "mcagent_route_result_contract")

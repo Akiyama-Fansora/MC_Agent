@@ -21,6 +21,7 @@ def _runtime_request_summary(runtime_request: dict[str, Any] | None) -> dict[str
         "message_preflight_contract_id": runtime_request.get("message_preflight_contract_id") or "",
         "contextual_question_contract_id": runtime_request.get("contextual_question_contract_id") or "",
         "source_planning_contract_id": runtime_request.get("source_planning_contract_id") or "",
+        "side_effect_authorization_contract_id": runtime_request.get("side_effect_authorization_contract_id") or "",
         "route_input_contract_id": runtime_request.get("route_input_contract_id") or "",
         "contract_kind": runtime_request.get("contract_kind") or "",
         "session_id": runtime_request.get("session_id") or payload.get("session_id") or "",

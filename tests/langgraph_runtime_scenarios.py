@@ -190,6 +190,7 @@ def test_conversation_graph_can_dispatch_to_crawler_node() -> None:
     assert_true("crawler_prepare_mission_contract_node", "crawler.prepare_mission_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("crawler_prepare_source_planning_node", "crawler.prepare_source_planning_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("crawler_prepare_message_preflight_node", "crawler.prepare_message_preflight_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
+    assert_true("crawler_prepare_side_effect_authorization_node", "crawler.prepare_side_effect_authorization_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("crawler_prepare_route_input_node", "crawler.prepare_route_input_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("crawler_prepare_runtime_request_node", "crawler.prepare_runtime_request" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("crawler_legacy_adapter_node", "crawler.legacy_adapter" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
@@ -206,6 +207,19 @@ def test_conversation_graph_can_dispatch_to_crawler_node() -> None:
     assert_true("crawler_message_preflight_exists", message_preflight.get("agent_id") == "crawler_agent", str(message_preflight))
     assert_true("crawler_message_preflight_collection", (message_preflight.get("flags") or {}).get("collection_request_agent_message") is True, str(message_preflight))
     assert_true("crawler_message_preflight_no_tool", "tool" not in message_preflight and "route_intent" not in message_preflight, str(message_preflight))
+    side_effect_auth = agent_runtime.get("side_effect_authorization_contract") or {}
+    side_effect_facts = side_effect_auth.get("facts") or {}
+    assert_true("crawler_side_effect_auth_kind", side_effect_auth.get("contract_kind") == "crawler_side_effect_authorization_facts_contract", str(side_effect_auth))
+    assert_true("crawler_side_effect_auth_owner", side_effect_auth.get("decision_owner") == "CrawlerAgent LLM", str(side_effect_auth))
+    assert_true("crawler_side_effect_auth_surface", side_effect_auth.get("side_effect_surface") == "start_background_job", str(side_effect_auth))
+    assert_true("crawler_side_effect_auth_links_preflight", side_effect_auth.get("message_preflight_contract_id") == message_preflight.get("contract_id"), str(side_effect_auth))
+    assert_true("crawler_side_effect_auth_has_message", side_effect_facts.get("has_agent_message") is True, str(side_effect_auth))
+    assert_true("crawler_side_effect_auth_collection", side_effect_facts.get("collection_request_agent_message") is True, str(side_effect_auth))
+    assert_true("crawler_side_effect_auth_no_delegate_metadata", side_effect_facts.get("metadata_mentions_delegate_crawler") is False, str(side_effect_auth))
+    assert_true("crawler_side_effect_auth_message_only", side_effect_facts.get("message_only_cannot_execute_side_effect") is True, str(side_effect_auth))
+    assert_true("crawler_side_effect_auth_no_evaluation", side_effect_auth.get("authorization_evaluation_executed") is False, str(side_effect_auth))
+    assert_true("crawler_side_effect_auth_no_execution", side_effect_auth.get("side_effect_executed") is False, str(side_effect_auth))
+    assert_true("crawler_side_effect_auth_no_decision_fields", not {"tool", "route_intent", "action_plan", "allow", "deny", "proceed"} & set(side_effect_auth), str(side_effect_auth))
     route_input = agent_runtime.get("route_input_contract") or {}
     assert_true("crawler_route_input_kind", route_input.get("contract_kind") == "crawler_route_input_contract", str(route_input))
     assert_true("crawler_route_input_owner", route_input.get("decision_owner") == "CrawlerAgent LLM", str(route_input))
@@ -213,12 +227,14 @@ def test_conversation_graph_can_dispatch_to_crawler_node() -> None:
     assert_true("crawler_route_input_no_tool_decision", "tool" not in route_input and "route_intent" not in route_input, str(route_input))
     assert_true("crawler_route_input_links_message_preflight", route_input.get("message_preflight_contract_id") == message_preflight.get("contract_id"), str(route_input))
     assert_true("crawler_route_input_links_source_planning", route_input.get("source_planning_contract_id") == source_planning.get("contract_id"), str(route_input))
+    assert_true("crawler_route_input_links_side_effect_auth", route_input.get("side_effect_authorization_contract_id") == side_effect_auth.get("contract_id"), str(route_input))
     runtime_request = agent_runtime.get("runtime_request") or {}
     assert_true("crawler_runtime_request_kind", runtime_request.get("contract_kind") == "crawler_collection_runtime_request", str(runtime_request))
     assert_true("crawler_runtime_request_owner", runtime_request.get("decision_owner") == "CrawlerAgent LLM", str(runtime_request))
     assert_true("crawler_runtime_request_payload_agent", (runtime_request.get("payload") or {}).get("agent") == "crawler_agent", str(runtime_request))
     assert_true("crawler_runtime_request_links_message_preflight", runtime_request.get("message_preflight_contract_id") == message_preflight.get("contract_id"), str(runtime_request))
     assert_true("crawler_runtime_request_links_source_planning", runtime_request.get("source_planning_contract_id") == source_planning.get("contract_id"), str(runtime_request))
+    assert_true("crawler_runtime_request_links_side_effect_auth", runtime_request.get("side_effect_authorization_contract_id") == side_effect_auth.get("contract_id"), str(runtime_request))
     assert_true("crawler_runtime_request_links_route_input", runtime_request.get("route_input_contract_id") == route_input.get("contract_id"), str(runtime_request))
     request_message = runtime_request.get("message") or {}
     assert_true("crawler_runtime_request_delivery", request_message.get("delivery_target") == "MCagent/RAG", str(runtime_request))
@@ -228,6 +244,7 @@ def test_conversation_graph_can_dispatch_to_crawler_node() -> None:
     assert_true("crawler_adapter_consumed_runtime_request", adapter.get("runtime_request_id") == runtime_request.get("request_id"), str(adapter))
     assert_true("crawler_adapter_links_message_preflight", adapter.get("message_preflight_contract_id") == message_preflight.get("contract_id"), str(adapter))
     assert_true("crawler_adapter_links_source_planning", adapter.get("source_planning_contract_id") == source_planning.get("contract_id"), str(adapter))
+    assert_true("crawler_adapter_links_side_effect_auth", adapter.get("side_effect_authorization_contract_id") == side_effect_auth.get("contract_id"), str(adapter))
     assert_true("crawler_adapter_links_route_input", adapter.get("route_input_contract_id") == route_input.get("contract_id"), str(adapter))
     assert_true("crawler_adapter_contract_kind", adapter.get("contract_kind") == "crawler_collection_runtime_request", str(adapter))
     route_result = agent_runtime.get("route_result_contract") or {}
@@ -238,6 +255,7 @@ def test_conversation_graph_can_dispatch_to_crawler_node() -> None:
     assert_true("crawler_route_result_links_route_input", route_result.get("route_input_contract_id") == route_input.get("contract_id"), str(route_result))
     assert_true("crawler_route_result_links_message_preflight", route_result.get("message_preflight_contract_id") == message_preflight.get("contract_id"), str(route_result))
     assert_true("crawler_route_result_links_source_planning", route_result.get("source_planning_contract_id") == source_planning.get("contract_id"), str(route_result))
+    assert_true("crawler_route_result_links_side_effect_auth", route_result.get("side_effect_authorization_contract_id") == side_effect_auth.get("contract_id"), str(route_result))
     assert_true("crawler_route_result_agent_shape", result_shape.get("agent") == "crawler_agent", str(route_result))
     assert_true("crawler_route_result_answer_shape", result_shape.get("answer_present") is True and result_shape.get("source_count") == 0, str(route_result))
     assert_true("crawler_route_result_no_tool_decision", "tool" not in route_result and "route_intent" not in route_result and "action_plan" not in route_result, str(route_result))

@@ -4903,3 +4903,35 @@ Next migration loop:
 1. Add graph-side route decision output contracts before moving actual route execution.
 2. Separate CrawlerAgent job-start authorization facts from the legacy route handler while keeping side-effect decisions Agent-owned.
 3. Continue extracting `_chat_impl()` only after each boundary is objective and tested.
+
+## 2026-06-09 Stage 68: CrawlerAgent Side-Effect Authorization Facts
+
+Stage 68 exposes the facts that exist immediately before CrawlerAgent could reach a background collection side effect.
+
+Before this stage, the important safety boundary lived only inside legacy `web_server.py`: a received AgentMessage could request collection, but the legacy runtime still required a later CrawlerAgent-owned `delegate_crawler` decision before starting a background job. This stage does not move that decision into the graph. It only makes the pre-side-effect facts visible and testable.
+
+Implemented changes:
+
+1. `CrawlerAgentGraph` now runs `crawler.prepare_side_effect_authorization_contract` after message preflight and before route input preparation.
+2. The contract records objective facts: whether an AgentMessage exists, from/to agent names, to-agent id, intent, metadata tool, collection-request flag, whether metadata names `delegate_crawler`, and whether a message alone cannot execute a side effect.
+3. Route input contracts and runtime requests now carry `side_effect_authorization_contract` and `side_effect_authorization_contract_id`.
+4. `legacy_adapter` metadata now records `side_effect_authorization_contract_id`.
+5. Route result contracts link back to `side_effect_authorization_contract_id` for CrawlerAgent paths.
+6. The architecture audit now checks `explicit_side_effect_authorization_contracts`.
+
+Boundary:
+
+The side-effect authorization contract does not approve execution, deny execution, choose `delegate_crawler`, create an `action_plan`, start a background job, persist evidence, or judge whether collection is warranted. It records facts only. The legacy guard still runs behind the adapter until the side-effect handler is migrated under explicit CrawlerAgent ownership.
+
+Current score:
+
+1. Two-Agent shape: 9/10.
+2. Legacy runtime migration: 7.9/10. The side-effect boundary is now visible before route execution, but actual job-start handling still runs in the legacy runtime.
+3. Tool-objectivity principle: 9.3/10.
+4. Regression coverage: 9.3/10.
+
+Next migration loop:
+
+1. Add graph-side route decision output contracts before moving actual route execution.
+2. Extract CrawlerAgent job-start handling only after the Agent-owned decision output is visible and tested.
+3. Continue shrinking `_chat_impl()` while preserving AgentMessage bus semantics and LLM ownership of route decisions.
