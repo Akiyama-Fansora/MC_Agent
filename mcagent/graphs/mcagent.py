@@ -118,11 +118,67 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             ),
         }
 
+    def prepare_message_preflight_contract(state: AgentGraphState) -> dict[str, Any]:
+        payload = dict(state.get("payload") or {})
+        thread_id = str(state.get("thread_id") or payload.get("session_id") or "default")
+        message = payload.get("agent_message") if isinstance(payload.get("agent_message"), dict) else {}
+        metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+        intent = str(message.get("intent") or payload.get("intent") or "")
+        metadata_tool = str(metadata.get("tool") or "")
+        from_agent = str(message.get("from_agent") or payload.get("message_from") or "User")
+        to_agent_id = str(message.get("to_agent_id") or payload.get("agent") or "mcagent_rag")
+        context_only = from_agent == "CrawlerAgent" and (intent == "mcagent_context_request" or metadata_tool == "mcagent_context")
+        collection_request = to_agent_id == "crawler_agent" and (
+            intent == "collection_request" or metadata_tool in {"collection_request", "delegate_crawler"}
+        )
+        contract = {
+            "contract_id": f"{thread_id}:mcagent_rag:message_preflight",
+            "node": "mcagent.prepare_message_preflight_contract",
+            "graph": "MCagentGraph",
+            "agent_id": "mcagent_rag",
+            "session_id": str(payload.get("session_id") or thread_id),
+            "has_agent_message": bool(message),
+            "message": {
+                "message_id": str(message.get("message_id") or ""),
+                "from_agent": from_agent,
+                "from_agent_id": str(message.get("from_agent_id") or ""),
+                "to_agent": str(message.get("to_agent") or "MCagent"),
+                "to_agent_id": to_agent_id,
+                "intent": intent,
+                "metadata_tool": metadata_tool,
+                "requires_reply": bool(message.get("requires_reply", True)),
+            },
+            "flags": {
+                "context_only_agent_message": context_only,
+                "collection_request_agent_message": collection_request,
+                "message_only_cannot_execute_side_effect": True,
+            },
+            "decision_owner": "MCagent LLM",
+            "objective_contract": (
+                "The graph records message preflight facts only. It does not reply to context requests, "
+                "select tools, or execute side effects."
+            ),
+        }
+        return {
+            "message_preflight_contract": contract,
+            **_append(
+                state,
+                "mcagent.prepare_message_preflight_contract",
+                "message_preflight_prepared",
+                {
+                    "contract_id": contract["contract_id"],
+                    "context_only_agent_message": context_only,
+                    "collection_request_agent_message": collection_request,
+                },
+            ),
+        }
+
     def prepare_route_input_contract(state: AgentGraphState) -> dict[str, Any]:
         payload = dict(state.get("payload") or {})
         thread_id = str(state.get("thread_id") or payload.get("session_id") or "default")
         message = payload.get("agent_message") if isinstance(payload.get("agent_message"), dict) else {}
         selected_groups = dict(state.get("selected_tool_groups") or {})
+        message_preflight = state.get("message_preflight_contract") if isinstance(state.get("message_preflight_contract"), dict) else {}
         route_input_contract = {
             "contract_id": f"{thread_id}:mcagent_rag:route_input",
             "node": "mcagent.prepare_route_input_contract",
@@ -140,6 +196,8 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             },
             "candidate_route_tools": list(selected_groups.get("default_tools") or []),
             "blocked_capability_groups": list((state.get("tool_boundary") or {}).get("blocked_capability_groups") or []),
+            "message_preflight_contract": message_preflight,
+            "message_preflight_contract_id": message_preflight.get("contract_id") or "",
             "session_memory": state.get("memory_context") or {},
             "retrieval_contract": state.get("retrieval_contract") or {},
             "decision_owner": "MCagent LLM",
@@ -168,6 +226,7 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
         thread_id = str(state.get("thread_id") or payload.get("session_id") or "default")
         message = payload.get("agent_message") if isinstance(payload.get("agent_message"), dict) else {}
         route_input_contract = state.get("route_input_contract") if isinstance(state.get("route_input_contract"), dict) else {}
+        message_preflight = state.get("message_preflight_contract") if isinstance(state.get("message_preflight_contract"), dict) else {}
         runtime_request = {
             "request_id": f"{thread_id}:mcagent_rag:runtime_request",
             "node": "mcagent.prepare_runtime_request",
@@ -186,6 +245,8 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             "selected_tool_groups": state.get("selected_tool_groups") or {},
             "memory_context": state.get("memory_context") or {},
             "retrieval_contract": state.get("retrieval_contract") or {},
+            "message_preflight_contract": message_preflight,
+            "message_preflight_contract_id": message_preflight.get("contract_id") or "",
             "route_input_contract": route_input_contract,
             "route_input_contract_id": route_input_contract.get("contract_id") or "",
             "decision_owner": "MCagent LLM",
@@ -240,6 +301,7 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             "selected_tool_groups": state.get("selected_tool_groups") or {},
             "memory_context": state.get("memory_context") or {},
             "retrieval_contract": state.get("retrieval_contract") or {},
+            "message_preflight_contract": state.get("message_preflight_contract") or {},
             "route_input_contract": state.get("route_input_contract") or {},
             "runtime_request": state.get("runtime_request") or {},
             "runtime_adapter": state.get("runtime_adapter") or result.get("legacy_runtime_adapter") or {},
@@ -260,6 +322,7 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
     builder.add_node("load_memory_boundary", load_memory_boundary)
     builder.add_node("select_local_tools", select_local_tools)
     builder.add_node("prepare_local_retrieval", prepare_local_retrieval)
+    builder.add_node("prepare_message_preflight_contract", prepare_message_preflight_contract)
     builder.add_node("prepare_route_input_contract", prepare_route_input_contract)
     builder.add_node("prepare_runtime_request", prepare_runtime_request)
     builder.add_node("legacy_adapter", run_legacy_adapter)
@@ -268,7 +331,8 @@ def build_mcagent_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
     builder.add_edge("receive", "load_memory_boundary")
     builder.add_edge("load_memory_boundary", "select_local_tools")
     builder.add_edge("select_local_tools", "prepare_local_retrieval")
-    builder.add_edge("prepare_local_retrieval", "prepare_route_input_contract")
+    builder.add_edge("prepare_local_retrieval", "prepare_message_preflight_contract")
+    builder.add_edge("prepare_message_preflight_contract", "prepare_route_input_contract")
     builder.add_edge("prepare_route_input_contract", "prepare_runtime_request")
     builder.add_edge("prepare_runtime_request", "legacy_adapter")
     builder.add_edge("legacy_adapter", "finalize")

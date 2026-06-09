@@ -4774,3 +4774,36 @@ Next migration loop:
 2. Move MCagent contextual-question preparation into an objective graph node without deciding the tool route.
 3. Move CrawlerAgent source-planning inputs into a graph node while preserving CrawlerAgent LLM ownership of source choice.
 4. Keep replacing legacy blocks with objective contracts first, then executable graph nodes once contracts are stable.
+
+## 2026-06-09 Stage 64: AgentMessage Preflight Contracts
+
+Stage 64 moves another runtime-before-routing observation into the Agent graphs: objective AgentMessage preflight facts.
+
+Before this stage, `_chat_impl()` detected context-only MCagent messages and CrawlerAgent collection requests internally. The behavior was correct, but the graph did not expose these facts before handing control to the legacy adapter.
+
+Implemented changes:
+
+1. `MCagentGraph` now runs `mcagent.prepare_message_preflight_contract` before route input preparation.
+2. `CrawlerAgentGraph` now runs `crawler.prepare_message_preflight_contract` before route input preparation.
+3. Message preflight contracts record message id, from/to agents, intent, metadata tool, reply requirement, and boolean flags for context-only and collection-request messages.
+4. Route input contracts and runtime requests now carry `message_preflight_contract` and `message_preflight_contract_id`.
+5. `legacy_adapter` metadata now records `message_preflight_contract_id`.
+6. The architecture audit now checks `explicit_message_preflight_contracts`.
+
+Boundary:
+
+Message preflight contracts do not reply to context requests, choose crawler tools, start background jobs, persist evidence, create route intents, or execute side effects. They only record objective facts about the received AgentMessage so later graph nodes can consume them safely.
+
+Current score:
+
+1. Two-Agent shape: 9/10.
+2. Legacy runtime migration: 7/10. More pre-routing state is now explicit in graph contracts, though `_chat_impl()` still executes routing and route handlers.
+3. Tool-objectivity principle: 9/10.
+4. Regression coverage: 9/10.
+
+Next migration loop:
+
+1. Move MCagent contextual-question preparation into a graph-owned objective node.
+2. Add graph contracts for route result shape before moving actual route execution.
+3. Move CrawlerAgent source-planning input preparation into graph state.
+4. Continue replacing legacy branches only after their objective contracts are tested.

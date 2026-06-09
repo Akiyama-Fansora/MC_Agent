@@ -81,23 +81,32 @@ def test_conversation_graph_routes_only_by_message_target() -> None:
     assert_true("mcagent_subgraph", agent_runtime.get("agent_graph") == "MCagentGraph", str(agent_runtime))
     assert_true("mcagent_select_local_tools_node", "mcagent.select_local_tools" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("mcagent_prepare_local_retrieval_node", "mcagent.prepare_local_retrieval" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
+    assert_true("mcagent_prepare_message_preflight_node", "mcagent.prepare_message_preflight_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("mcagent_prepare_route_input_node", "mcagent.prepare_route_input_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("mcagent_prepare_runtime_request_node", "mcagent.prepare_runtime_request" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("mcagent_legacy_adapter_node", "mcagent.legacy_adapter" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
+    message_preflight = agent_runtime.get("message_preflight_contract") or {}
+    assert_true("mcagent_message_preflight_exists", message_preflight.get("agent_id") == "mcagent_rag", str(message_preflight))
+    assert_true("mcagent_message_preflight_context_false", (message_preflight.get("flags") or {}).get("context_only_agent_message") is False, str(message_preflight))
+    assert_true("mcagent_message_preflight_collection_false", (message_preflight.get("flags") or {}).get("collection_request_agent_message") is False, str(message_preflight))
+    assert_true("mcagent_message_preflight_no_tool", "tool" not in message_preflight and "route_intent" not in message_preflight, str(message_preflight))
     route_input = agent_runtime.get("route_input_contract") or {}
     assert_true("mcagent_route_input_kind", route_input.get("contract_kind") == "mcagent_route_input_contract", str(route_input))
     assert_true("mcagent_route_input_owner", route_input.get("decision_owner") == "MCagent LLM", str(route_input))
     assert_true("mcagent_route_input_has_rag_tool", "local_rag_search" in route_input.get("candidate_route_tools", []), str(route_input))
     assert_true("mcagent_route_input_no_tool_decision", "tool" not in route_input and "route_intent" not in route_input, str(route_input))
+    assert_true("mcagent_route_input_links_message_preflight", route_input.get("message_preflight_contract_id") == message_preflight.get("contract_id"), str(route_input))
     runtime_request = agent_runtime.get("runtime_request") or {}
     assert_true("mcagent_runtime_request_kind", runtime_request.get("contract_kind") == "mcagent_local_runtime_request", str(runtime_request))
     assert_true("mcagent_runtime_request_owner", runtime_request.get("decision_owner") == "MCagent LLM", str(runtime_request))
     assert_true("mcagent_runtime_request_payload_agent", (runtime_request.get("payload") or {}).get("agent") == "mcagent_rag", str(runtime_request))
+    assert_true("mcagent_runtime_request_links_message_preflight", runtime_request.get("message_preflight_contract_id") == message_preflight.get("contract_id"), str(runtime_request))
     assert_true("mcagent_runtime_request_links_route_input", runtime_request.get("route_input_contract_id") == route_input.get("contract_id"), str(runtime_request))
     adapter = agent_runtime.get("runtime_adapter") or {}
     assert_true("mcagent_runtime_adapter_visible", adapter.get("adapter") == "legacy_web_server_runtime", str(adapter))
     assert_true("mcagent_runtime_adapter_owner", adapter.get("decision_owner") == "MCagent LLM", str(adapter))
     assert_true("mcagent_adapter_consumed_runtime_request", adapter.get("runtime_request_id") == runtime_request.get("request_id"), str(adapter))
+    assert_true("mcagent_adapter_links_message_preflight", adapter.get("message_preflight_contract_id") == message_preflight.get("contract_id"), str(adapter))
     assert_true("mcagent_adapter_links_route_input", adapter.get("route_input_contract_id") == route_input.get("contract_id"), str(adapter))
     assert_true("mcagent_adapter_contract_kind", adapter.get("contract_kind") == "mcagent_local_runtime_request", str(adapter))
     boundary = agent_runtime.get("tool_boundary") or {}
@@ -148,18 +157,25 @@ def test_conversation_graph_can_dispatch_to_crawler_node() -> None:
     assert_true("crawler_subgraph", agent_runtime.get("agent_graph") == "CrawlerAgentGraph", str(agent_runtime))
     assert_true("crawler_select_tool_groups_node", "crawler.select_tool_groups" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("crawler_prepare_mission_contract_node", "crawler.prepare_mission_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
+    assert_true("crawler_prepare_message_preflight_node", "crawler.prepare_message_preflight_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("crawler_prepare_route_input_node", "crawler.prepare_route_input_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("crawler_prepare_runtime_request_node", "crawler.prepare_runtime_request" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     assert_true("crawler_legacy_adapter_node", "crawler.legacy_adapter" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
+    message_preflight = agent_runtime.get("message_preflight_contract") or {}
+    assert_true("crawler_message_preflight_exists", message_preflight.get("agent_id") == "crawler_agent", str(message_preflight))
+    assert_true("crawler_message_preflight_collection", (message_preflight.get("flags") or {}).get("collection_request_agent_message") is True, str(message_preflight))
+    assert_true("crawler_message_preflight_no_tool", "tool" not in message_preflight and "route_intent" not in message_preflight, str(message_preflight))
     route_input = agent_runtime.get("route_input_contract") or {}
     assert_true("crawler_route_input_kind", route_input.get("contract_kind") == "crawler_route_input_contract", str(route_input))
     assert_true("crawler_route_input_owner", route_input.get("decision_owner") == "CrawlerAgent LLM", str(route_input))
     assert_true("crawler_route_input_has_fetch_tool", "fetch_url" in route_input.get("candidate_route_tools", []), str(route_input))
     assert_true("crawler_route_input_no_tool_decision", "tool" not in route_input and "route_intent" not in route_input, str(route_input))
+    assert_true("crawler_route_input_links_message_preflight", route_input.get("message_preflight_contract_id") == message_preflight.get("contract_id"), str(route_input))
     runtime_request = agent_runtime.get("runtime_request") or {}
     assert_true("crawler_runtime_request_kind", runtime_request.get("contract_kind") == "crawler_collection_runtime_request", str(runtime_request))
     assert_true("crawler_runtime_request_owner", runtime_request.get("decision_owner") == "CrawlerAgent LLM", str(runtime_request))
     assert_true("crawler_runtime_request_payload_agent", (runtime_request.get("payload") or {}).get("agent") == "crawler_agent", str(runtime_request))
+    assert_true("crawler_runtime_request_links_message_preflight", runtime_request.get("message_preflight_contract_id") == message_preflight.get("contract_id"), str(runtime_request))
     assert_true("crawler_runtime_request_links_route_input", runtime_request.get("route_input_contract_id") == route_input.get("contract_id"), str(runtime_request))
     request_message = runtime_request.get("message") or {}
     assert_true("crawler_runtime_request_delivery", request_message.get("delivery_target") == "MCagent/RAG", str(runtime_request))
@@ -167,6 +183,7 @@ def test_conversation_graph_can_dispatch_to_crawler_node() -> None:
     assert_true("crawler_runtime_adapter_visible", adapter.get("adapter") == "legacy_web_server_runtime", str(adapter))
     assert_true("crawler_runtime_adapter_owner", adapter.get("decision_owner") == "CrawlerAgent LLM", str(adapter))
     assert_true("crawler_adapter_consumed_runtime_request", adapter.get("runtime_request_id") == runtime_request.get("request_id"), str(adapter))
+    assert_true("crawler_adapter_links_message_preflight", adapter.get("message_preflight_contract_id") == message_preflight.get("contract_id"), str(adapter))
     assert_true("crawler_adapter_links_route_input", adapter.get("route_input_contract_id") == route_input.get("contract_id"), str(adapter))
     assert_true("crawler_adapter_contract_kind", adapter.get("contract_kind") == "crawler_collection_runtime_request", str(adapter))
     boundary = agent_runtime.get("tool_boundary") or {}
