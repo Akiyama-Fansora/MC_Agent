@@ -4935,3 +4935,35 @@ Next migration loop:
 1. Add graph-side route decision output contracts before moving actual route execution.
 2. Extract CrawlerAgent job-start handling only after the Agent-owned decision output is visible and tested.
 3. Continue shrinking `_chat_impl()` while preserving AgentMessage bus semantics and LLM ownership of route decisions.
+
+## 2026-06-09 Stage 69: Route Decision Output Facts
+
+Stage 69 exposes the route-output facts that the legacy runtime has already emitted in trace records.
+
+Before this stage, graph contracts exposed route inputs and result shape, but the route decision output itself was still opaque. The router could record `decide/tool_selected`, `decide/next_step_confirmed`, and plan trace steps inside legacy `_chat_impl()`, yet the graph had no separate objective contract for observing those outputs after the adapter returned.
+
+Implemented changes:
+
+1. Added `mcagent/graphs/route_decision_output_contract.py` as a shared objective helper.
+2. `MCagentGraph` now runs `mcagent.prepare_route_decision_output_contract` after `mcagent.legacy_adapter` and before route result shape recording.
+3. `CrawlerAgentGraph` now runs `crawler.prepare_route_decision_output_contract` after `crawler.legacy_adapter` and before route result shape recording.
+4. The contract records trace facts only: whether a tool-selected trace exists, observed selected tool text, observed decision keys, whether a next-step confirmation trace exists, observed confirmation tool/suggested tool/proceed value, plan trace presence, observed plan step count/tool names, and result job-id presence.
+5. Route result contracts now link back to `route_decision_output_contract_id`.
+6. The architecture audit now checks `explicit_route_decision_output_contracts`.
+
+Boundary:
+
+The route decision output contract does not call an LLM, select tools, create route intents, confirm next steps, alter routing, start jobs, judge evidence, or write final text. It only observes trace facts already returned by the legacy adapter. If the legacy result has no route trace, the contract records that absence instead of inventing a decision.
+
+Current score:
+
+1. Two-Agent shape: 9/10.
+2. Legacy runtime migration: 8.1/10. The route input, route output, side-effect fact boundary, and result shape are now visible, but route execution still runs in `_chat_impl()`.
+3. Tool-objectivity principle: 9.4/10.
+4. Regression coverage: 9.4/10.
+
+Next migration loop:
+
+1. Extract a graph-visible route execution handoff boundary for the selected route without moving handler behavior yet.
+2. Move CrawlerAgent job-start handling only after route output and side-effect facts agree on the Agent-owned selection.
+3. Continue replacing legacy branches with tested graph nodes that expose facts first and execute only where the receiving Agent owns the decision.

@@ -19,6 +19,7 @@ def build_route_result_contract(
     contextual_question_contract: dict[str, Any] | None = None,
     source_planning_contract: dict[str, Any] | None = None,
     side_effect_authorization_contract: dict[str, Any] | None = None,
+    route_decision_output_contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Describe the legacy result shape without judging or changing it."""
 
@@ -35,6 +36,7 @@ def build_route_result_contract(
     contextual_question_contract = contextual_question_contract or {}
     source_planning_contract = source_planning_contract or {}
     side_effect_authorization_contract = side_effect_authorization_contract or {}
+    route_decision_output_contract = route_decision_output_contract or {}
     return {
         "contract_id": f"{thread_id}:{agent_id}:route_result",
         "node": node_name,
@@ -48,6 +50,7 @@ def build_route_result_contract(
         "contextual_question_contract_id": contextual_question_contract.get("contract_id") or runtime_request.get("contextual_question_contract_id") or "",
         "source_planning_contract_id": source_planning_contract.get("contract_id") or runtime_request.get("source_planning_contract_id") or "",
         "side_effect_authorization_contract_id": side_effect_authorization_contract.get("contract_id") or runtime_request.get("side_effect_authorization_contract_id") or "",
+        "route_decision_output_contract_id": route_decision_output_contract.get("contract_id") or "",
         "legacy_adapter": {
             "adapter": runtime_adapter.get("adapter") or "",
             "node": runtime_adapter.get("node") or "",

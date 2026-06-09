@@ -189,6 +189,22 @@ def test_fastapi_agent_message_endpoint_dispatches() -> None:
     assert_true("agent_message_adapter_consumed_source_planning", adapter.get("source_planning_contract_id") == source_planning.get("contract_id"), str(adapter))
     assert_true("agent_message_adapter_consumed_side_effect_auth", adapter.get("side_effect_authorization_contract_id") == side_effect_auth.get("contract_id"), str(adapter))
     assert_true("agent_message_adapter_consumed_route_input", adapter.get("route_input_contract_id") == route_input.get("contract_id"), str(adapter))
+    assert_true("agent_message_route_decision_output_node", "crawler.prepare_route_decision_output_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
+    route_decision_output = agent_runtime.get("route_decision_output_contract") or {}
+    route_decision_facts = route_decision_output.get("trace_facts") or {}
+    assert_true("agent_message_route_decision_output", route_decision_output.get("contract_kind") == "crawler_route_decision_output_facts_contract", str(route_decision_output))
+    assert_true("agent_message_route_decision_output_owner", route_decision_output.get("decision_owner") == "CrawlerAgent LLM", str(route_decision_output))
+    assert_true("agent_message_route_decision_output_request", route_decision_output.get("runtime_request_id") == runtime_request.get("request_id"), str(route_decision_output))
+    assert_true("agent_message_route_decision_output_route_input", route_decision_output.get("route_input_contract_id") == route_input.get("contract_id"), str(route_decision_output))
+    assert_true("agent_message_route_decision_output_preflight", route_decision_output.get("message_preflight_contract_id") == message_preflight.get("contract_id"), str(route_decision_output))
+    assert_true("agent_message_route_decision_output_source_planning", route_decision_output.get("source_planning_contract_id") == source_planning.get("contract_id"), str(route_decision_output))
+    assert_true("agent_message_route_decision_output_side_effect_auth", route_decision_output.get("side_effect_authorization_contract_id") == side_effect_auth.get("contract_id"), str(route_decision_output))
+    assert_true("agent_message_route_decision_output_observed_tool", route_decision_facts.get("observed_selected_tool") == "direct_answer", str(route_decision_output))
+    assert_true("agent_message_route_decision_output_tool_trace", route_decision_facts.get("has_tool_selected_trace") is True, str(route_decision_output))
+    assert_true("agent_message_route_decision_output_confirmation_trace", route_decision_facts.get("has_next_step_confirmation_trace") is True, str(route_decision_output))
+    assert_true("agent_message_route_decision_output_confirmation_tool", route_decision_facts.get("observed_confirmation_tool") == "direct_answer", str(route_decision_output))
+    assert_true("agent_message_route_decision_output_graph_did_not_decide", route_decision_output.get("route_decision_executed_by_graph") is False, str(route_decision_output))
+    assert_true("agent_message_route_decision_output_no_tool", not {"tool", "route_intent", "action_plan", "proceed", "allow", "deny"} & set(route_decision_output), str(route_decision_output))
     assert_true("agent_message_route_result_node", "crawler.prepare_route_result_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
     route_result = agent_runtime.get("route_result_contract") or {}
     result_shape = route_result.get("result_shape") or {}
@@ -198,6 +214,7 @@ def test_fastapi_agent_message_endpoint_dispatches() -> None:
     assert_true("agent_message_route_result_preflight", route_result.get("message_preflight_contract_id") == message_preflight.get("contract_id"), str(route_result))
     assert_true("agent_message_route_result_source_planning", route_result.get("source_planning_contract_id") == source_planning.get("contract_id"), str(route_result))
     assert_true("agent_message_route_result_side_effect_auth", route_result.get("side_effect_authorization_contract_id") == side_effect_auth.get("contract_id"), str(route_result))
+    assert_true("agent_message_route_result_route_decision_output", route_result.get("route_decision_output_contract_id") == route_decision_output.get("contract_id"), str(route_result))
     assert_true("agent_message_route_result_shape", result_shape.get("answer_present") is True and result_shape.get("has_agent_message") is True, str(route_result))
     assert_true("agent_message_route_result_no_tool", "tool" not in route_result and "route_intent" not in route_result and "action_plan" not in route_result, str(route_result))
 

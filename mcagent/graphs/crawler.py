@@ -9,6 +9,7 @@ from ..config import AppConfig
 from ..session_state import DEFAULT_SESSION_STORE
 from .agent_state import AgentGraphState
 from .legacy_adapter import deliver_via_legacy_runtime
+from .route_decision_output_contract import build_route_decision_output_contract
 from .route_result_contract import build_route_result_contract
 from .state import GraphEvent
 
@@ -463,6 +464,7 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
         message_preflight = state.get("message_preflight_contract") if isinstance(state.get("message_preflight_contract"), dict) else {}
         source_planning = state.get("source_planning_contract") if isinstance(state.get("source_planning_contract"), dict) else {}
         side_effect_authorization = state.get("side_effect_authorization_contract") if isinstance(state.get("side_effect_authorization_contract"), dict) else {}
+        route_decision_output = state.get("route_decision_output_contract") if isinstance(state.get("route_decision_output_contract"), dict) else {}
         thread_id = str(state.get("thread_id") or runtime_request.get("session_id") or result.get("session_id") or "default")
         contract = build_route_result_contract(
             thread_id=thread_id,
@@ -478,6 +480,7 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             message_preflight_contract=message_preflight,
             source_planning_contract=source_planning,
             side_effect_authorization_contract=side_effect_authorization,
+            route_decision_output_contract=route_decision_output,
         )
         shape = contract["result_shape"]
         return {
@@ -492,6 +495,47 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
                     "answer_present": shape["answer_present"],
                     "source_count": shape["source_count"],
                     "job_id_present": shape["job_id_present"],
+                },
+            ),
+        }
+
+    def prepare_route_decision_output_contract(state: AgentGraphState) -> dict[str, Any]:
+        result = dict(state.get("result") or {})
+        runtime_request = state.get("runtime_request") if isinstance(state.get("runtime_request"), dict) else {}
+        runtime_adapter = state.get("runtime_adapter") if isinstance(state.get("runtime_adapter"), dict) else {}
+        route_input = state.get("route_input_contract") if isinstance(state.get("route_input_contract"), dict) else {}
+        message_preflight = state.get("message_preflight_contract") if isinstance(state.get("message_preflight_contract"), dict) else {}
+        source_planning = state.get("source_planning_contract") if isinstance(state.get("source_planning_contract"), dict) else {}
+        side_effect_authorization = state.get("side_effect_authorization_contract") if isinstance(state.get("side_effect_authorization_contract"), dict) else {}
+        thread_id = str(state.get("thread_id") or runtime_request.get("session_id") or result.get("session_id") or "default")
+        contract = build_route_decision_output_contract(
+            thread_id=thread_id,
+            graph_name="CrawlerAgentGraph",
+            agent_id="crawler_agent",
+            node_name="crawler.prepare_route_decision_output_contract",
+            contract_kind="crawler_route_decision_output_facts_contract",
+            decision_owner="CrawlerAgent LLM",
+            result=result,
+            runtime_request=runtime_request,
+            runtime_adapter=runtime_adapter,
+            route_input_contract=route_input,
+            message_preflight_contract=message_preflight,
+            source_planning_contract=source_planning,
+            side_effect_authorization_contract=side_effect_authorization,
+        )
+        facts = contract["trace_facts"]
+        return {
+            "route_decision_output_contract": contract,
+            **_append(
+                state,
+                "crawler.prepare_route_decision_output_contract",
+                "route_decision_output_facts_recorded",
+                {
+                    "contract_id": contract["contract_id"],
+                    "contract_kind": contract["contract_kind"],
+                    "has_tool_selected_trace": facts["has_tool_selected_trace"],
+                    "observed_selected_tool": facts["observed_selected_tool"],
+                    "result_job_id_present": facts["result_job_id_present"],
                 },
             ),
         }
@@ -511,6 +555,7 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
             "route_input_contract": state.get("route_input_contract") or {},
             "runtime_request": state.get("runtime_request") or {},
             "runtime_adapter": state.get("runtime_adapter") or result.get("legacy_runtime_adapter") or {},
+            "route_decision_output_contract": state.get("route_decision_output_contract") or {},
             "route_result_contract": state.get("route_result_contract") or {},
             "visited_nodes": [*state.get("visited_nodes", []), "crawler.finalize"],
             "events": [*state.get("graph_events", []), _event("crawler.finalize", "ready")],
@@ -535,6 +580,7 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
     builder.add_node("prepare_route_input_contract", prepare_route_input_contract)
     builder.add_node("prepare_runtime_request", prepare_runtime_request)
     builder.add_node("legacy_adapter", run_legacy_adapter)
+    builder.add_node("prepare_route_decision_output_contract", prepare_route_decision_output_contract)
     builder.add_node("prepare_route_result_contract", prepare_route_result_contract)
     builder.add_node("finalize", finalize)
     builder.add_edge(START, "receive")
@@ -547,7 +593,8 @@ def build_crawler_graph(config: AppConfig, agent_delivery: AgentDeliveryFn, emit
     builder.add_edge("prepare_side_effect_authorization_contract", "prepare_route_input_contract")
     builder.add_edge("prepare_route_input_contract", "prepare_runtime_request")
     builder.add_edge("prepare_runtime_request", "legacy_adapter")
-    builder.add_edge("legacy_adapter", "prepare_route_result_contract")
+    builder.add_edge("legacy_adapter", "prepare_route_decision_output_contract")
+    builder.add_edge("prepare_route_decision_output_contract", "prepare_route_result_contract")
     builder.add_edge("prepare_route_result_contract", "finalize")
     builder.add_edge("finalize", END)
     return builder.compile()
