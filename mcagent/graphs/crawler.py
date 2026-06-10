@@ -10,10 +10,12 @@ from ..session_state import DEFAULT_SESSION_STORE
 from .agent_state import AgentGraphState
 from .graph_route_execution import (
     GRAPH_CRAWLER_AUDIT_ROUTE_EXECUTOR,
+    GRAPH_DIRECT_ANSWER_NODE_EXECUTOR,
     GRAPH_LOCAL_CORPUS_INVENTORY_ROUTE_EXECUTOR,
     GRAPH_ROUTER_ERROR_ROUTE_EXECUTOR,
     GRAPH_STATUS_ROUTE_EXECUTOR,
     graph_crawler_audit_route_executor_metadata,
+    graph_direct_answer_node_executor_metadata,
     graph_local_corpus_inventory_route_executor_metadata,
     graph_route_decision_allows_execution,
     graph_route_decision_has_action_tool,
@@ -35,6 +37,7 @@ StatusExecutorFn = Callable[..., dict[str, Any]]
 CrawlerAuditExecutorFn = Callable[..., dict[str, Any]]
 LocalCorpusInventoryExecutorFn = Callable[..., dict[str, Any]]
 RouterErrorExecutorFn = Callable[..., dict[str, Any]]
+DirectAnswerExecutorFn = Callable[..., dict[str, Any]]
 
 
 def _event(node: str, status: str, detail: dict[str, Any] | None = None) -> GraphEvent:
@@ -58,6 +61,7 @@ def build_crawler_graph(
     crawler_audit_executor: CrawlerAuditExecutorFn | None = None,
     local_corpus_inventory_executor: LocalCorpusInventoryExecutorFn | None = None,
     router_error_executor: RouterErrorExecutorFn | None = None,
+    direct_answer_executor: DirectAnswerExecutorFn | None = None,
 ):
     builder = StateGraph(AgentGraphState)
 
@@ -717,6 +721,46 @@ def build_crawler_graph(
             ),
         }
 
+    def run_graph_direct_answer_node(state: AgentGraphState) -> dict[str, Any]:
+        runtime_request = state.get("runtime_request") if isinstance(state.get("runtime_request"), dict) else {}
+        route_decision = state.get("route_decision") if isinstance(state.get("route_decision"), dict) else {}
+        result = dict(
+            direct_answer_executor(
+                config,
+                dict(state.get("payload") or {}),
+                emit=emit,
+                agent_id="crawler_agent",
+                graph_name="CrawlerAgentGraph",
+                node_name="crawler.graph_direct_answer_node",
+                runtime_request=runtime_request,
+                route_decision=route_decision,
+            )
+        )
+        adapter = graph_direct_answer_node_executor_metadata(
+            agent_id="crawler_agent",
+            graph_name="CrawlerAgentGraph",
+            node_name="crawler.graph_direct_answer_node",
+            runtime_request=runtime_request,
+            route_decision=route_decision,
+        )
+        metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+        result["metadata"] = {**metadata, "graph_route_executor": adapter}
+        result["graph_route_executor"] = adapter
+        return {
+            "result": result,
+            "runtime_adapter": adapter,
+            **_append(
+                state,
+                "crawler.graph_direct_answer_node",
+                "executed_agent_selected_direct_answer",
+                {
+                    "agent": "crawler_agent",
+                    "adapter": GRAPH_DIRECT_ANSWER_NODE_EXECUTOR,
+                    "route_decision_id": route_decision.get("route_decision_id") or "",
+                },
+            ),
+        }
+
     def prepare_route_result_contract(state: AgentGraphState) -> dict[str, Any]:
         result = dict(state.get("result") or {})
         runtime_request = state.get("runtime_request") if isinstance(state.get("runtime_request"), dict) else {}
@@ -931,6 +975,7 @@ def build_crawler_graph(
     builder.add_node("graph_crawler_audit_route", run_graph_crawler_audit_route)
     builder.add_node("graph_local_corpus_inventory_route", run_graph_local_corpus_inventory_route)
     builder.add_node("graph_router_error_route", run_graph_router_error_route)
+    builder.add_node("graph_direct_answer_node", run_graph_direct_answer_node)
     builder.add_node("prepare_route_decision_output_contract", prepare_route_decision_output_contract)
     builder.add_node("prepare_route_execution_contract", prepare_route_execution_contract)
     builder.add_node("prepare_legacy_handler_surface_contract", prepare_legacy_handler_surface_contract)
@@ -956,6 +1001,8 @@ def build_crawler_graph(
             return "crawler_audit"
         if router_error_executor is not None and decision.get("routed") and decision.get("route_intent") == "router_error":
             return "router_error"
+        if direct_answer_executor is not None and decision.get("routed") and decision.get("route_intent") == "direct_answer" and allows_execution:
+            return "direct_answer"
         if (
             local_corpus_inventory_executor is not None
             and decision.get("routed")
@@ -974,6 +1021,7 @@ def build_crawler_graph(
             "crawler_audit": "graph_crawler_audit_route",
             "local_corpus_inventory": "graph_local_corpus_inventory_route",
             "router_error": "graph_router_error_route",
+            "direct_answer": "graph_direct_answer_node",
             "legacy": "legacy_adapter",
         },
     )
@@ -981,6 +1029,7 @@ def build_crawler_graph(
     builder.add_edge("graph_crawler_audit_route", "prepare_route_decision_output_contract")
     builder.add_edge("graph_local_corpus_inventory_route", "prepare_route_decision_output_contract")
     builder.add_edge("graph_router_error_route", "prepare_route_decision_output_contract")
+    builder.add_edge("graph_direct_answer_node", "prepare_route_decision_output_contract")
     builder.add_edge("legacy_adapter", "prepare_route_decision_output_contract")
     builder.add_edge("prepare_route_decision_output_contract", "prepare_route_execution_contract")
     builder.add_edge("prepare_route_execution_contract", "prepare_legacy_handler_surface_contract")
@@ -1002,6 +1051,7 @@ def run_crawler_graph(
     crawler_audit_executor: CrawlerAuditExecutorFn | None = None,
     local_corpus_inventory_executor: LocalCorpusInventoryExecutorFn | None = None,
     router_error_executor: RouterErrorExecutorFn | None = None,
+    direct_answer_executor: DirectAnswerExecutorFn | None = None,
 ) -> dict[str, Any]:
     graph = build_crawler_graph(
         config,
@@ -1012,6 +1062,7 @@ def run_crawler_graph(
         crawler_audit_executor=crawler_audit_executor,
         local_corpus_inventory_executor=local_corpus_inventory_executor,
         router_error_executor=router_error_executor,
+        direct_answer_executor=direct_answer_executor,
     )
     final_state = graph.invoke(
         {

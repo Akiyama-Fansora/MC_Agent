@@ -9319,6 +9319,8 @@ def _route_agent_decision_for_graph(
         and not _action_plan_has_tool(action_plan, "delegate_crawler")
     ) or (
         route.route_intent == "router_error"
+    ) or (
+        route.route_intent == "direct_answer" and confirmation_allows
     )
     return {
         **base,
@@ -9593,6 +9595,76 @@ def _execute_graph_router_error_route(
     return _with_trace(response, trace)
 
 
+def _execute_graph_direct_answer_node(
+    config: AppConfig,
+    payload: dict[str, Any],
+    *,
+    emit: Any | None = None,
+    agent_id: str,
+    graph_name: str,  # noqa: ARG001 - recorded by graph adapter metadata.
+    node_name: str,  # noqa: ARG001 - recorded by graph adapter metadata.
+    runtime_request: dict[str, Any],
+    route_decision: dict[str, Any],
+) -> dict[str, Any]:
+    if str(route_decision.get("route_intent") or "") != "direct_answer":
+        raise RuntimeError("Graph direct answer execution requires an Agent-selected direct_answer route.")
+    route_confirmation = dict(route_decision.get("route_confirmation") if isinstance(route_decision.get("route_confirmation"), dict) else {})
+    if not bool(route_confirmation.get("proceed", True)):
+        raise RuntimeError("Graph direct answer execution requires Agent confirmation to proceed.")
+    graph_payload = dict(payload)
+    graph_payload["agent"] = agent_id
+    graph_payload["question"] = str(route_decision.get("question") or payload.get("question") or payload.get("query") or "")
+    if "session_id" not in graph_payload:
+        graph_payload["session_id"] = str(runtime_request.get("session_id") or route_decision.get("session_id") or "")
+    run = build_agent_execution_context(config, graph_payload, token_resolver=_answer_max_tokens, emit=emit)
+    original_question = str(route_decision.get("original_question") or run.original_question)
+    question = str(route_decision.get("question") or run.question)
+    run.original_question = original_question
+    run.question = question
+    trace = run.trace.steps
+    for step in route_decision.get("trace") or []:
+        if isinstance(step, dict):
+            trace.append(dict(step))
+    session_summary = route_decision.get("session_summary") if isinstance(route_decision.get("session_summary"), dict) else _session_summary(graph_payload)
+    tool_decision = route_decision.get("tool_decision") if isinstance(route_decision.get("tool_decision"), dict) else {}
+    action_plan = [dict(item) for item in route_decision.get("action_plan") or [] if isinstance(item, dict)]
+    executor = AgentToolExecutor(
+        generate_direct_answer=_generate_direct_answer,
+        generate_direct_answer_stream=_generate_direct_answer_stream,
+        generate_grounded_answer=_generate_grounded_answer,
+        generate_grounded_answer_stream=_generate_grounded_answer_stream,
+        repair_answer=_repair_list_answer,
+        status_answer=_crawler_monitor_answer,
+    )
+    response = _handle_direct_answer_route(
+        config=config,
+        agent=agent_id,
+        model=run.model,
+        original_question=original_question,
+        question=question,
+        tool_decision=tool_decision,
+        route_confirmation=route_confirmation,
+        action_plan=action_plan,
+        executor=executor,
+        run=run,
+        session_summary=dict(session_summary),
+        add_trace=run.add_trace,
+    )
+    response.setdefault("agent", agent_id)
+    response.setdefault("session_id", str(graph_payload.get("session_id") or runtime_request.get("session_id") or route_decision.get("session_id") or ""))
+    response["metadata"] = {
+        **(response.get("metadata") if isinstance(response.get("metadata"), dict) else {}),
+        "graph_route_decision": {
+            "routed": True,
+            "route_decision_id": route_decision.get("route_decision_id") or "",
+            "route_intent": route_decision.get("route_intent") or "",
+            "decision_owner": route_decision.get("decision_owner") or "",
+            "agent_answer_generation": True,
+        },
+    }
+    return response
+
+
 def _agent_message_response_trace(request: AgentMessage, reply: AgentMessage) -> dict[str, Any]:
     return {
         "request": request.to_dict(),
@@ -9655,6 +9727,7 @@ def _send_agent_message(
         crawler_audit_executor=_execute_graph_crawler_audit_route,
         local_corpus_inventory_executor=_execute_graph_local_corpus_inventory_route,
         router_error_executor=_execute_graph_router_error_route,
+        direct_answer_executor=_execute_graph_direct_answer_node,
     )
     _record_agent_response_event(normalize_session_id(message.conversation_id or payload.get("session_id")), result)
     return result

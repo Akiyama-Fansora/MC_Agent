@@ -7,6 +7,7 @@ GRAPH_STATUS_ROUTE_EXECUTOR = "graph_status_route_executor"
 GRAPH_CRAWLER_AUDIT_ROUTE_EXECUTOR = "graph_crawler_audit_route_executor"
 GRAPH_LOCAL_CORPUS_INVENTORY_ROUTE_EXECUTOR = "graph_local_corpus_inventory_route_executor"
 GRAPH_ROUTER_ERROR_ROUTE_EXECUTOR = "graph_router_error_route_executor"
+GRAPH_DIRECT_ANSWER_NODE_EXECUTOR = "graph_direct_answer_node_executor"
 
 
 def _display_agent(agent_id: str) -> str:
@@ -53,6 +54,11 @@ def _base_route_executor_metadata(
         "runtime_request_id": runtime_request.get("request_id") or "",
         "contract_kind": runtime_request.get("contract_kind") or "",
         "session_id": runtime_request.get("session_id") or "",
+        "message_preflight_contract_id": runtime_request.get("message_preflight_contract_id") or "",
+        "contextual_question_contract_id": runtime_request.get("contextual_question_contract_id") or "",
+        "source_planning_contract_id": runtime_request.get("source_planning_contract_id") or "",
+        "side_effect_authorization_contract_id": runtime_request.get("side_effect_authorization_contract_id") or "",
+        "route_input_contract_id": runtime_request.get("route_input_contract_id") or "",
         "route_decision_id": route_decision.get("route_decision_id") or "",
         "route_intent": route_decision.get("route_intent") or "",
         "migration_status": migration_status,
@@ -63,6 +69,48 @@ def _base_route_executor_metadata(
         "objective_boundary": (
             f"The graph executed only the already Agent-selected, side-effect-free {route_label} route. "
             "It did not choose a tool, start jobs, judge evidence, persist data, or alter AgentMessage routing."
+        ),
+    }
+
+
+def _base_answer_node_metadata(
+    *,
+    adapter: str,
+    migration_status: str,
+    agent_id: str,
+    graph_name: str,
+    node_name: str,
+    runtime_request: dict[str, Any] | None = None,
+    route_decision: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    runtime_request = runtime_request if isinstance(runtime_request, dict) else {}
+    route_decision = route_decision if isinstance(route_decision, dict) else {}
+    display_agent = _display_agent(agent_id)
+    return {
+        "adapter": adapter,
+        "agent_id": agent_id,
+        "graph": graph_name,
+        "node": node_name,
+        "runtime_request_id": runtime_request.get("request_id") or "",
+        "contract_kind": runtime_request.get("contract_kind") or "",
+        "session_id": runtime_request.get("session_id") or "",
+        "message_preflight_contract_id": runtime_request.get("message_preflight_contract_id") or "",
+        "contextual_question_contract_id": runtime_request.get("contextual_question_contract_id") or "",
+        "source_planning_contract_id": runtime_request.get("source_planning_contract_id") or "",
+        "side_effect_authorization_contract_id": runtime_request.get("side_effect_authorization_contract_id") or "",
+        "route_input_contract_id": runtime_request.get("route_input_contract_id") or "",
+        "route_decision_id": route_decision.get("route_decision_id") or "",
+        "route_intent": route_decision.get("route_intent") or "",
+        "migration_status": migration_status,
+        "decision_owner": f"{display_agent} LLM",
+        "route_decision_executed_by_graph": bool(route_decision.get("routed")),
+        "legacy_runtime_adapter_bypassed": True,
+        "side_effect_executed": False,
+        "agent_answer_generation": True,
+        "objective_boundary": (
+            "The graph executed only the already Agent-selected direct-answer final response node. "
+            "This node may call the receiving Agent's answer model, but it does not choose a tool, "
+            "start jobs, judge evidence, persist data, or alter AgentMessage routing."
         ),
     }
 
@@ -139,6 +187,25 @@ def graph_router_error_route_executor_metadata(
         adapter=GRAPH_ROUTER_ERROR_ROUTE_EXECUTOR,
         migration_status="graph_router_error_route_migrated",
         route_label="router_error",
+        agent_id=agent_id,
+        graph_name=graph_name,
+        node_name=node_name,
+        runtime_request=runtime_request,
+        route_decision=route_decision,
+    )
+
+
+def graph_direct_answer_node_executor_metadata(
+    *,
+    agent_id: str,
+    graph_name: str,
+    node_name: str,
+    runtime_request: dict[str, Any] | None = None,
+    route_decision: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return _base_answer_node_metadata(
+        adapter=GRAPH_DIRECT_ANSWER_NODE_EXECUTOR,
+        migration_status="graph_direct_answer_node_migrated",
         agent_id=agent_id,
         graph_name=graph_name,
         node_name=node_name,

@@ -144,7 +144,7 @@ def test_fastapi_agent_message_endpoint_dispatches() -> None:
     graph_runtime = body.get("graph_runtime") or {}
     assert_true("agent_message_graph_runtime", graph_runtime.get("runtime") == "langgraph", str(graph_runtime))
     assert_true("agent_message_graph_target", graph_runtime.get("active_agent") == "crawler_agent", str(graph_runtime))
-    assert_true("agent_message_graph_node", "crawler_graph.legacy_adapter" in graph_runtime.get("visited_nodes", []), str(graph_runtime))
+    assert_true("agent_message_graph_node", "crawler_graph.graph_direct_answer_node" in graph_runtime.get("visited_nodes", []), str(graph_runtime))
     agent_runtime = body.get("agent_graph_runtime") or {}
     assert_true("agent_message_agent_graph", agent_runtime.get("agent_graph") == "CrawlerAgentGraph", str(agent_runtime))
     assert_true("agent_message_source_planning_node", "crawler.prepare_source_planning_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
@@ -183,7 +183,7 @@ def test_fastapi_agent_message_endpoint_dispatches() -> None:
     assert_true("agent_message_runtime_request_side_effect_auth", runtime_request.get("side_effect_authorization_contract_id") == side_effect_auth.get("contract_id"), str(runtime_request))
     assert_true("agent_message_runtime_request_route_input", runtime_request.get("route_input_contract_id") == route_input.get("contract_id"), str(runtime_request))
     adapter = agent_runtime.get("runtime_adapter") or {}
-    assert_true("agent_message_legacy_adapter", adapter.get("adapter") == "legacy_web_server_runtime", str(adapter))
+    assert_true("agent_message_direct_answer_adapter", adapter.get("adapter") == "graph_direct_answer_node_executor", str(adapter))
     assert_true("agent_message_adapter_consumed_request", adapter.get("runtime_request_id") == runtime_request.get("request_id"), str(adapter))
     assert_true("agent_message_adapter_consumed_preflight", adapter.get("message_preflight_contract_id") == message_preflight.get("contract_id"), str(adapter))
     assert_true("agent_message_adapter_consumed_source_planning", adapter.get("source_planning_contract_id") == source_planning.get("contract_id"), str(adapter))
@@ -222,7 +222,7 @@ def test_fastapi_agent_message_endpoint_dispatches() -> None:
     assert_true("agent_message_route_execution_stages", "answer" in execution_trace_facts.get("observed_execution_stages", []), str(route_execution))
     assert_true("agent_message_route_execution_answer_result", execution_result_facts.get("answer_present") is True, str(route_execution))
     assert_true("agent_message_route_execution_no_job", execution_result_facts.get("job_present") is False and execution_result_facts.get("delegation_present") is False, str(route_execution))
-    assert_true("agent_message_route_execution_graph_did_not_execute", route_execution.get("route_execution_executed_by_graph") is False, str(route_execution))
+    assert_true("agent_message_route_execution_graph_executed", route_execution.get("route_execution_executed_by_graph") is True, str(route_execution))
     assert_true("agent_message_route_execution_no_side_effect", route_execution.get("side_effect_executed_by_contract") is False, str(route_execution))
     assert_true("agent_message_route_execution_no_tool", not {"tool", "route_intent", "action_plan", "handler", "proceed", "allow", "deny"} & set(route_execution), str(route_execution))
     assert_true("agent_message_legacy_surface_node", "crawler.prepare_legacy_handler_surface_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
@@ -237,7 +237,7 @@ def test_fastapi_agent_message_endpoint_dispatches() -> None:
     assert_true("agent_message_legacy_surface_candidates", {"direct_answer", "rag_answer_generation", "delegate_crawler"}.issubset(surface_names), str(legacy_surface))
     assert_true("agent_message_legacy_surface_observed_answer", {"direct_answer", "rag_answer_generation"} & observed_surfaces, str(legacy_surface))
     assert_true("agent_message_legacy_surface_graph_did_not_select", legacy_surface.get("handler_selection_executed_by_graph") is False, str(legacy_surface))
-    assert_true("agent_message_legacy_surface_graph_did_not_execute", legacy_surface.get("handler_executed_by_contract") is False, str(legacy_surface))
+    assert_true("agent_message_legacy_surface_graph_executed", legacy_surface.get("handler_executed_by_contract") is True, str(legacy_surface))
     assert_true("agent_message_legacy_surface_no_side_effect", legacy_surface.get("side_effect_executed_by_contract") is False, str(legacy_surface))
     assert_true("agent_message_legacy_surface_no_selected_handler", not {"tool", "route_intent", "action_plan", "handler", "selected_handler", "proceed", "allow", "deny"} & set(legacy_surface), str(legacy_surface))
     assert_true("agent_message_route_result_node", "crawler.prepare_route_result_contract" in agent_runtime.get("visited_nodes", []), str(agent_runtime))
@@ -297,6 +297,58 @@ def test_agent_selected_status_bypasses_legacy_delivery() -> None:
     assert_true("graph_status_execution_fact", route_execution.get("route_execution_executed_by_graph") is True, str(route_execution))
     graph_runtime = result.get("graph_runtime") or {}
     assert_true("conversation_status_node", "mcagent_graph.graph_status_route" in graph_runtime.get("visited_nodes", []), str(graph_runtime))
+
+
+def test_agent_selected_direct_answer_bypasses_legacy_delivery() -> None:
+    fake = SequencedClient(
+        [
+            '{"tool":"direct_answer","reason":"simple greeting","collection_target":"","delivery_target":"human"}',
+            '{"proceed":true,"tool":"direct_answer","reason":"confirmed direct reply"}',
+            '{"missing_side_effect":false,"action":"allow","reason":"direct answer is enough"}',
+            "Hello from graph direct answer.",
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    original_delivery = web_server._deliver_agent_message
+
+    def forbidden_delivery(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AssertionError("legacy delivery should not run for graph-executed direct_answer")
+
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake, "fake")  # type: ignore[assignment]
+    web_server._deliver_agent_message = forbidden_delivery  # type: ignore[assignment]
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = web_server._send_agent_message(
+                make_temp_config(Path(tmp)),
+                {"session_id": "fastapi-direct-answer-graph"},
+                from_agent="User",
+                content="hello",
+                to_agent="MCagent",
+                intent="user_chat",
+                conversation_id="fastapi-direct-answer-graph",
+            )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._deliver_agent_message = original_delivery  # type: ignore[assignment]
+
+    traces = [(step.get("stage"), step.get("status")) for step in result.get("trace") or []]
+    assert_true("direct_answer_trace", ("answer", "generating") in traces, str(traces))
+    assert_true("direct_answer_response", "Hello from graph direct answer." in result.get("answer", ""), result.get("answer", ""))
+    assert_true("direct_answer_no_job", not result.get("job") and not result.get("delegation"), str(result))
+    agent_runtime = result.get("agent_graph_runtime") or {}
+    visited = agent_runtime.get("visited_nodes") or []
+    assert_true("graph_direct_answer_node", "mcagent.graph_direct_answer_node" in visited, str(visited))
+    assert_true("legacy_not_visited", "mcagent.legacy_adapter" not in visited, str(visited))
+    adapter = agent_runtime.get("runtime_adapter") or {}
+    assert_true("graph_direct_answer_adapter", adapter.get("adapter") == "graph_direct_answer_node_executor", str(adapter))
+    route_execution = agent_runtime.get("route_execution_contract") or {}
+    assert_true("graph_direct_answer_execution_fact", route_execution.get("route_execution_executed_by_graph") is True, str(route_execution))
+    assert_true("graph_direct_answer_generation_fact", (route_execution.get("trace_facts") or {}).get("has_answer_generation_trace") is True, str(route_execution))
+    legacy_surface = agent_runtime.get("legacy_handler_surface_contract") or {}
+    assert_true("graph_direct_answer_surface_fact", legacy_surface.get("handler_executed_by_contract") is True, str(legacy_surface))
+    assert_true("graph_direct_answer_surface_not_legacy", legacy_surface.get("legacy_handlers_still_run_in_adapter") is False, str(legacy_surface))
+    graph_runtime = result.get("graph_runtime") or {}
+    assert_true("conversation_direct_answer_node", "mcagent_graph.graph_direct_answer_node" in graph_runtime.get("visited_nodes", []), str(graph_runtime))
 
 
 def test_agent_selected_crawler_audit_bypasses_legacy_delivery() -> None:
@@ -521,6 +573,7 @@ def main() -> int:
     test_fastapi_sse_chat_shape()
     test_fastapi_agent_message_endpoint_dispatches()
     test_agent_selected_status_bypasses_legacy_delivery()
+    test_agent_selected_direct_answer_bypasses_legacy_delivery()
     test_agent_selected_crawler_audit_bypasses_legacy_delivery()
     test_agent_selected_safe_local_inventory_bypasses_legacy_delivery()
     test_agent_selected_router_error_bypasses_legacy_delivery()

@@ -5172,3 +5172,36 @@ Next migration loop:
 1. Do not migrate another route until its LLM or side-effect boundary is represented explicitly as an Agent-owned node.
 2. If continuing migration, split final-answer generation from objective contracts first, then consider `direct_answer` or `rag_answer_generation` as Agent answer nodes.
 3. Keep `temporary_extract` and delegation behind explicit side-effect authorization and job-start ownership nodes before moving them out of legacy.
+
+## 2026-06-10 Stage 76: Graph-Executed Direct Answer Agent Node
+
+Stage 76 migrates `direct_answer` out of the legacy `_chat_impl()` execution path as an Agent-owned final-answer node.
+
+This route is intentionally not modeled as a purely objective tool executor. `direct_answer` calls the current Agent's answer model and writes the natural-language reply. The graph may host that node only after the existing Agent router/LLM selected `route_intent == "direct_answer"` and confirmation allowed execution.
+
+Implemented changes:
+
+1. Added `graph_direct_answer_node_executor` metadata with `agent_answer_generation=true`.
+2. `MCagentGraph` and `CrawlerAgentGraph` now include `graph_direct_answer_node` nodes.
+3. `ConversationGraph` maps the new adapter to `mcagent_graph.graph_direct_answer_node` or `crawler_graph.graph_direct_answer_node`.
+4. `_execute_graph_direct_answer_node()` reuses the Agent route decision, Agent session summary, confirmation, and `_handle_direct_answer_route()`.
+5. The existing direct-answer completeness review is preserved. If it observes a missing side effect, the graph records the gap and still refuses to add `delegate_crawler` unless the Agent had selected that side effect.
+6. Route execution and handler-surface contracts now recognize `graph_direct_answer_node_executor` as graph-executed while still marking it as Agent answer generation, not objective tool output.
+7. FastAPI and LangGraph runtime scenarios prove direct answers bypass legacy delivery for both MCagent and CrawlerAgent.
+
+Boundary:
+
+The graph direct-answer node does not select tools, infer intent from keywords, inspect evidence, start jobs, persist data, or alter AgentMessage routing. It may call the receiving Agent's final-answer model because that is the Agent's own response act, not a tool replacing Agent judgment. If confirmation denies the direct answer, the graph refuses execution and leaves the path to legacy migration handling.
+
+Current score:
+
+1. Two-Agent shape: 9.6/10.
+2. Legacy runtime migration: 9.25/10. `status`, `crawler_audit`, safe `local_corpus_inventory`, `router_error`, and `direct_answer` no longer require `_chat_impl()` in production graph delivery.
+3. Tool-objectivity principle: 9.8/10. The score stays below perfect because RAG answer generation and network/job side-effect routes still need explicit Agent-owned graph nodes before migration.
+4. Regression coverage: 9.9/10.
+
+Next migration loop:
+
+1. Migrate `rag_answer_generation` only after splitting retrieval/evidence selection/final-answer generation into clear Agent-owned graph boundaries.
+2. Split `no_retrieval_results` after RAG retrieval state is graph-visible.
+3. Keep `temporary_extract` and delegation behind explicit network/job side-effect authorization nodes.

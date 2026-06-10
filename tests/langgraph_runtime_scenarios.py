@@ -567,6 +567,114 @@ def test_graph_router_error_route_executes_for_both_agents() -> None:
     assert_true("crawler_conversation_node", "crawler_graph.graph_router_error_route" in (crawler_result.get("graph_runtime") or {}).get("visited_nodes", []), str(crawler_result))
 
 
+def test_graph_direct_answer_node_executes_for_both_agents() -> None:
+    deliveries: list[str] = []
+    executions: list[dict[str, str]] = []
+
+    def legacy(config: AppConfig, payload: dict[str, Any], emit: Any | None = None) -> dict[str, Any]:  # noqa: ARG001
+        deliveries.append(str(payload.get("agent") or ""))
+        return {"answer": "legacy should not run", "agent": payload.get("agent"), "sources": [], "context": ""}
+
+    def route_decider(
+        config: AppConfig,
+        payload: dict[str, Any],
+        *,
+        agent_id: str,
+        graph_name: str,
+        node_name: str,
+        runtime_request: dict[str, Any],
+    ) -> dict[str, Any]:  # noqa: ARG001
+        return {
+            "route_decision_id": f"{payload.get('session_id')}:{agent_id}:direct_answer",
+            "node": node_name,
+            "graph": graph_name,
+            "agent_id": agent_id,
+            "agent": agent_id,
+            "session_id": str(payload.get("session_id") or ""),
+            "routed": True,
+            "route_intent": "direct_answer",
+            "selected_tool": "direct_answer",
+            "decision_owner": "CrawlerAgent LLM" if agent_id == "crawler_agent" else "MCagent LLM",
+            "legacy_fallback_required": False,
+            "tool_decision": {"tool": "direct_answer", "reason": f"{agent_id} can answer directly"},
+            "route_confirmation": {"proceed": True, "tool": "direct_answer", "reason": "confirmed"},
+            "action_plan": [],
+            "trace": [{"stage": "decide", "status": "tool_selected", "detail": {"tool": "direct_answer"}}],
+        }
+
+    def direct_answer_executor(
+        config: AppConfig,
+        payload: dict[str, Any],
+        *,
+        emit: Any | None = None,
+        agent_id: str,
+        graph_name: str,
+        node_name: str,
+        runtime_request: dict[str, Any],
+        route_decision: dict[str, Any],
+    ) -> dict[str, Any]:  # noqa: ARG001
+        executions.append({"agent": agent_id, "node": node_name})
+        return {
+            "answer": f"{agent_id} direct answer",
+            "agent": agent_id,
+            "sources": [],
+            "context": "",
+            "trace": [{"stage": "answer", "status": "generating", "detail": {"model": "fake", "mode": "direct"}}],
+            "metadata": {
+                "graph_route_decision": {
+                    "routed": True,
+                    "route_decision_id": route_decision.get("route_decision_id") or "",
+                    "route_intent": "direct_answer",
+                    "decision_owner": route_decision.get("decision_owner") or "",
+                    "agent_answer_generation": True,
+                }
+            },
+        }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        config = make_temp_config(Path(tmp))
+        mc_result = dispatch_agent_message_graph(
+            config,
+            {"session_id": "runtime-direct-answer-mc"},
+            from_agent="User",
+            content="hello mc",
+            to_agent="MCagent",
+            conversation_id="runtime-direct-answer-mc",
+            agent_delivery=legacy,
+            route_decider=route_decider,
+            direct_answer_executor=direct_answer_executor,
+        )
+        crawler_result = dispatch_agent_message_graph(
+            config,
+            {"session_id": "runtime-direct-answer-crawler"},
+            from_agent="User",
+            content="hello crawler",
+            to_agent="CrawlerAgent",
+            conversation_id="runtime-direct-answer-crawler",
+            agent_delivery=legacy,
+            route_decider=route_decider,
+            direct_answer_executor=direct_answer_executor,
+        )
+
+    assert_true("legacy_not_called", deliveries == [], str(deliveries))
+    assert_true("both_direct_answer_executed", executions == [
+        {"agent": "mcagent_rag", "node": "mcagent.graph_direct_answer_node"},
+        {"agent": "crawler_agent", "node": "crawler.graph_direct_answer_node"},
+    ], str(executions))
+    mc_runtime = mc_result.get("agent_graph_runtime") or {}
+    crawler_runtime = crawler_result.get("agent_graph_runtime") or {}
+    assert_true("mc_graph_direct_answer_node", "mcagent.graph_direct_answer_node" in mc_runtime.get("visited_nodes", []), str(mc_runtime))
+    assert_true("crawler_graph_direct_answer_node", "crawler.graph_direct_answer_node" in crawler_runtime.get("visited_nodes", []), str(crawler_runtime))
+    assert_true("mc_direct_answer_legacy_not_visited", "mcagent.legacy_adapter" not in mc_runtime.get("visited_nodes", []), str(mc_runtime))
+    assert_true("crawler_direct_answer_legacy_not_visited", "crawler.legacy_adapter" not in crawler_runtime.get("visited_nodes", []), str(crawler_runtime))
+    assert_true("mc_direct_answer_adapter", (mc_runtime.get("runtime_adapter") or {}).get("adapter") == "graph_direct_answer_node_executor", str(mc_runtime))
+    assert_true("crawler_direct_answer_adapter", (crawler_runtime.get("runtime_adapter") or {}).get("adapter") == "graph_direct_answer_node_executor", str(crawler_runtime))
+    assert_true("mc_direct_answer_execution_contract", (mc_runtime.get("route_execution_contract") or {}).get("route_execution_executed_by_graph") is True, str(mc_runtime))
+    assert_true("crawler_direct_answer_execution_contract", (crawler_runtime.get("route_execution_contract") or {}).get("route_execution_executed_by_graph") is True, str(crawler_runtime))
+    assert_true("mc_direct_answer_conversation_node", "mcagent_graph.graph_direct_answer_node" in (mc_result.get("graph_runtime") or {}).get("visited_nodes", []), str(mc_result))
+    assert_true("crawler_direct_answer_conversation_node", "crawler_graph.graph_direct_answer_node" in (crawler_result.get("graph_runtime") or {}).get("visited_nodes", []), str(crawler_result))
+
+
 def test_crawler_background_job_enters_langgraph_runtime() -> None:
     class FakeJob:
         id = "job-graph-test"
@@ -1584,6 +1692,7 @@ def main() -> int:
     test_non_streaming_graph_reuses_checkpointed_runtime_without_reusing_emit()
     test_agent_subgraphs_load_session_memory_context()
     test_graph_router_error_route_executes_for_both_agents()
+    test_graph_direct_answer_node_executes_for_both_agents()
     test_crawler_background_job_enters_langgraph_runtime()
     test_crawler_job_plan_preparation_is_objective_and_reusable()
     test_crawler_task_preparation_routes_archive_urls_objectively()
