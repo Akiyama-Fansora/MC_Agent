@@ -351,6 +351,85 @@ def test_agent_selected_direct_answer_bypasses_legacy_delivery() -> None:
     assert_true("conversation_direct_answer_node", "mcagent_graph.graph_direct_answer_node" in graph_runtime.get("visited_nodes", []), str(graph_runtime))
 
 
+def test_agent_selected_temporary_extract_bypasses_legacy_delivery() -> None:
+    fake = SequencedClient(
+        [
+            '{"tool":"temporary_extract","reason":"read one public page without saving","collection_target":"https://example.com","delivery_target":"human"}',
+            '{"proceed":true,"tool":"temporary_extract","reason":"confirmed temporary read"}',
+            "temporary extract summary",
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    original_delivery = web_server._deliver_agent_message
+    original_extract_service = web_server.CrawlerTemporaryExtractService
+
+    class FakeExtractResult:
+        url = "https://example.com"
+        status_code = 200
+        content_type = "text/html"
+        text_chars = 42
+
+        def to_response(self, agent: str) -> dict[str, object]:
+            return {
+                "answer": "temporary extract summary",
+                "sources": [{"title": "Example", "url": self.url}],
+                "context": "example page text",
+                "agent": agent,
+                "temporary_extract": {"saved_to_local": False, "url": self.url},
+            }
+
+    class FakeExtractService:
+        def run(self, *, question, collection_target, summarize, review_summarize, choose_url):  # noqa: ANN001, ANN201
+            assert_true("temporary_extract_question_passed", bool(question), str(question))
+            assert_true("temporary_extract_target_passed", collection_target == "https://example.com", str(collection_target))
+            return FakeExtractResult()
+
+    def forbidden_delivery(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AssertionError("legacy delivery should not run for graph-executed temporary_extract")
+
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake, "fake")  # type: ignore[assignment]
+    web_server._deliver_agent_message = forbidden_delivery  # type: ignore[assignment]
+    web_server.CrawlerTemporaryExtractService = FakeExtractService  # type: ignore[assignment]
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = web_server._send_agent_message(
+                make_temp_config(Path(tmp)),
+                {"session_id": "fastapi-temporary-extract-graph"},
+                from_agent="User",
+                content="read https://example.com once",
+                to_agent="CrawlerAgent",
+                intent="user_chat",
+                conversation_id="fastapi-temporary-extract-graph",
+            )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._deliver_agent_message = original_delivery  # type: ignore[assignment]
+        web_server.CrawlerTemporaryExtractService = original_extract_service  # type: ignore[assignment]
+
+    traces = [(step.get("stage"), step.get("status")) for step in result.get("trace") or []]
+    assert_true("temporary_extract_confirmed", ("extract", "next_step_confirmed") in traces, str(traces))
+    assert_true("temporary_extract_extracted", ("extract", "temporary_url_extracted") in traces, str(traces))
+    assert_true("temporary_extract_response", result.get("answer") == "temporary extract summary", str(result))
+    assert_true("temporary_extract_no_job", not result.get("job") and not result.get("delegation"), str(result))
+    assert_true("temporary_extract_saved_false", (result.get("temporary_extract") or {}).get("saved_to_local") is False, str(result))
+    agent_runtime = result.get("agent_graph_runtime") or {}
+    visited = agent_runtime.get("visited_nodes") or []
+    assert_true("graph_temporary_extract_node", "crawler.graph_temporary_extract_node" in visited, str(visited))
+    assert_true("legacy_not_visited", "crawler.legacy_adapter" not in visited, str(visited))
+    adapter = agent_runtime.get("runtime_adapter") or {}
+    assert_true("graph_temporary_extract_adapter", adapter.get("adapter") == "graph_temporary_extract_node_executor", str(adapter))
+    assert_true("graph_temporary_extract_saved_false", adapter.get("saved_to_local") is False, str(adapter))
+    route_execution = agent_runtime.get("route_execution_contract") or {}
+    assert_true("graph_temporary_extract_execution_fact", route_execution.get("route_execution_executed_by_graph") is True, str(route_execution))
+    assert_true("graph_temporary_extract_stage_fact", (route_execution.get("trace_facts") or {}).get("has_extract_trace") is True, str(route_execution))
+    assert_true("graph_temporary_extract_result_fact", (route_execution.get("result_facts") or {}).get("temporary_extract_present") is True, str(route_execution))
+    legacy_surface = agent_runtime.get("legacy_handler_surface_contract") or {}
+    assert_true("graph_temporary_extract_surface_fact", legacy_surface.get("handler_executed_by_contract") is True, str(legacy_surface))
+    assert_true("graph_temporary_extract_surface_not_legacy", legacy_surface.get("legacy_handlers_still_run_in_adapter") is False, str(legacy_surface))
+    graph_runtime = result.get("graph_runtime") or {}
+    assert_true("conversation_temporary_extract_node", "crawler_graph.graph_temporary_extract_node" in graph_runtime.get("visited_nodes", []), str(graph_runtime))
+
+
 def test_agent_selected_crawler_audit_bypasses_legacy_delivery() -> None:
     fake = SequencedClient(
         [
@@ -574,6 +653,7 @@ def main() -> int:
     test_fastapi_agent_message_endpoint_dispatches()
     test_agent_selected_status_bypasses_legacy_delivery()
     test_agent_selected_direct_answer_bypasses_legacy_delivery()
+    test_agent_selected_temporary_extract_bypasses_legacy_delivery()
     test_agent_selected_crawler_audit_bypasses_legacy_delivery()
     test_agent_selected_safe_local_inventory_bypasses_legacy_delivery()
     test_agent_selected_router_error_bypasses_legacy_delivery()

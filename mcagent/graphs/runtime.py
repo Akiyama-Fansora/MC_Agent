@@ -21,8 +21,9 @@ CrawlerAuditExecutorFn = Callable[..., dict[str, Any]]
 LocalCorpusInventoryExecutorFn = Callable[..., dict[str, Any]]
 RouterErrorExecutorFn = Callable[..., dict[str, Any]]
 DirectAnswerExecutorFn = Callable[..., dict[str, Any]]
+TemporaryExtractExecutorFn = Callable[..., dict[str, Any]]
 _GRAPH_CACHE_LOCK = threading.Lock()
-_GRAPH_CACHE: dict[tuple[int, int, int, int, int, int, int, int, int], Any] = {}
+_GRAPH_CACHE: dict[tuple[int, int, int, int, int, int, int, int, int, int], Any] = {}
 
 
 def _agent_id_for_route(message: AgentMessage) -> str:
@@ -65,6 +66,8 @@ def _agent_runtime_node(prefix: str, adapter_name: str) -> str:
         return f"{prefix}.graph_router_error_route"
     if adapter_name == "graph_direct_answer_node_executor":
         return f"{prefix}.graph_direct_answer_node"
+    if adapter_name == "graph_temporary_extract_node_executor":
+        return f"{prefix}.graph_temporary_extract_node"
     return f"{prefix}.legacy_adapter"
 
 
@@ -79,6 +82,7 @@ def build_conversation_graph(
     local_corpus_inventory_executor: LocalCorpusInventoryExecutorFn | None = None,
     router_error_executor: RouterErrorExecutorFn | None = None,
     direct_answer_executor: DirectAnswerExecutorFn | None = None,
+    temporary_extract_executor: TemporaryExtractExecutorFn | None = None,
 ):
     builder = StateGraph(ConversationGraphState)
 
@@ -130,6 +134,7 @@ def build_conversation_graph(
             local_corpus_inventory_executor=local_corpus_inventory_executor,
             router_error_executor=router_error_executor,
             direct_answer_executor=direct_answer_executor,
+            temporary_extract_executor=temporary_extract_executor,
         )
         agent_runtime = result.get("agent_graph_runtime") if isinstance(result.get("agent_graph_runtime"), dict) else {}
         adapter = agent_runtime.get("runtime_adapter") if isinstance(agent_runtime.get("runtime_adapter"), dict) else {}
@@ -160,6 +165,7 @@ def build_conversation_graph(
             local_corpus_inventory_executor=local_corpus_inventory_executor,
             router_error_executor=router_error_executor,
             direct_answer_executor=direct_answer_executor,
+            temporary_extract_executor=temporary_extract_executor,
         )
         agent_runtime = result.get("agent_graph_runtime") if isinstance(result.get("agent_graph_runtime"), dict) else {}
         adapter = agent_runtime.get("runtime_adapter") if isinstance(agent_runtime.get("runtime_adapter"), dict) else {}
@@ -248,6 +254,7 @@ def dispatch_agent_message_graph(
     local_corpus_inventory_executor: LocalCorpusInventoryExecutorFn | None = None,
     router_error_executor: RouterErrorExecutorFn | None = None,
     direct_answer_executor: DirectAnswerExecutorFn | None = None,
+    temporary_extract_executor: TemporaryExtractExecutorFn | None = None,
 ) -> dict[str, Any]:
     """Deliver a From-Content-To message through the LangGraph conversation runtime.
 
@@ -266,6 +273,7 @@ def dispatch_agent_message_graph(
             id(local_corpus_inventory_executor),
             id(router_error_executor),
             id(direct_answer_executor),
+            id(temporary_extract_executor),
             0,
         )
         with _GRAPH_CACHE_LOCK:
@@ -281,6 +289,7 @@ def dispatch_agent_message_graph(
                     local_corpus_inventory_executor=local_corpus_inventory_executor,
                     router_error_executor=router_error_executor,
                     direct_answer_executor=direct_answer_executor,
+                    temporary_extract_executor=temporary_extract_executor,
                 )
                 _GRAPH_CACHE[cache_key] = graph
     else:
@@ -294,6 +303,7 @@ def dispatch_agent_message_graph(
             local_corpus_inventory_executor=local_corpus_inventory_executor,
             router_error_executor=router_error_executor,
             direct_answer_executor=direct_answer_executor,
+            temporary_extract_executor=temporary_extract_executor,
         )
     initial_state: ConversationGraphState = {
         "thread_id": thread_id,

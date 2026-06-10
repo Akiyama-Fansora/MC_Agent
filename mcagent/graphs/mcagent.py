@@ -14,6 +14,7 @@ from .graph_route_execution import (
     GRAPH_LOCAL_CORPUS_INVENTORY_ROUTE_EXECUTOR,
     GRAPH_ROUTER_ERROR_ROUTE_EXECUTOR,
     GRAPH_STATUS_ROUTE_EXECUTOR,
+    GRAPH_TEMPORARY_EXTRACT_NODE_EXECUTOR,
     graph_crawler_audit_route_executor_metadata,
     graph_direct_answer_node_executor_metadata,
     graph_local_corpus_inventory_route_executor_metadata,
@@ -21,6 +22,7 @@ from .graph_route_execution import (
     graph_route_decision_has_action_tool,
     graph_router_error_route_executor_metadata,
     graph_status_route_executor_metadata,
+    graph_temporary_extract_node_executor_metadata,
 )
 from .legacy_handler_surface_contract import build_legacy_handler_surface_contract
 from .legacy_adapter import deliver_via_legacy_runtime
@@ -38,6 +40,7 @@ CrawlerAuditExecutorFn = Callable[..., dict[str, Any]]
 LocalCorpusInventoryExecutorFn = Callable[..., dict[str, Any]]
 RouterErrorExecutorFn = Callable[..., dict[str, Any]]
 DirectAnswerExecutorFn = Callable[..., dict[str, Any]]
+TemporaryExtractExecutorFn = Callable[..., dict[str, Any]]
 
 
 def _event(node: str, status: str, detail: dict[str, Any] | None = None) -> GraphEvent:
@@ -62,6 +65,7 @@ def build_mcagent_graph(
     local_corpus_inventory_executor: LocalCorpusInventoryExecutorFn | None = None,
     router_error_executor: RouterErrorExecutorFn | None = None,
     direct_answer_executor: DirectAnswerExecutorFn | None = None,
+    temporary_extract_executor: TemporaryExtractExecutorFn | None = None,
 ):
     builder = StateGraph(AgentGraphState)
 
@@ -657,6 +661,46 @@ def build_mcagent_graph(
             ),
         }
 
+    def run_graph_temporary_extract_node(state: AgentGraphState) -> dict[str, Any]:
+        runtime_request = state.get("runtime_request") if isinstance(state.get("runtime_request"), dict) else {}
+        route_decision = state.get("route_decision") if isinstance(state.get("route_decision"), dict) else {}
+        result = dict(
+            temporary_extract_executor(
+                config,
+                dict(state.get("payload") or {}),
+                emit=emit,
+                agent_id="mcagent_rag",
+                graph_name="MCagentGraph",
+                node_name="mcagent.graph_temporary_extract_node",
+                runtime_request=runtime_request,
+                route_decision=route_decision,
+            )
+        )
+        adapter = graph_temporary_extract_node_executor_metadata(
+            agent_id="mcagent_rag",
+            graph_name="MCagentGraph",
+            node_name="mcagent.graph_temporary_extract_node",
+            runtime_request=runtime_request,
+            route_decision=route_decision,
+        )
+        metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+        result["metadata"] = {**metadata, "graph_route_executor": adapter}
+        result["graph_route_executor"] = adapter
+        return {
+            "result": result,
+            "runtime_adapter": adapter,
+            **_append(
+                state,
+                "mcagent.graph_temporary_extract_node",
+                "executed_agent_selected_temporary_extract",
+                {
+                    "agent": "mcagent_rag",
+                    "adapter": GRAPH_TEMPORARY_EXTRACT_NODE_EXECUTOR,
+                    "route_decision_id": route_decision.get("route_decision_id") or "",
+                },
+            ),
+        }
+
     def prepare_route_result_contract(state: AgentGraphState) -> dict[str, Any]:
         result = dict(state.get("result") or {})
         runtime_request = state.get("runtime_request") if isinstance(state.get("runtime_request"), dict) else {}
@@ -862,6 +906,7 @@ def build_mcagent_graph(
     builder.add_node("graph_local_corpus_inventory_route", run_graph_local_corpus_inventory_route)
     builder.add_node("graph_router_error_route", run_graph_router_error_route)
     builder.add_node("graph_direct_answer_node", run_graph_direct_answer_node)
+    builder.add_node("graph_temporary_extract_node", run_graph_temporary_extract_node)
     builder.add_node("prepare_route_decision_output_contract", prepare_route_decision_output_contract)
     builder.add_node("prepare_route_execution_contract", prepare_route_execution_contract)
     builder.add_node("prepare_legacy_handler_surface_contract", prepare_legacy_handler_surface_contract)
@@ -888,6 +933,8 @@ def build_mcagent_graph(
             return "router_error"
         if direct_answer_executor is not None and decision.get("routed") and decision.get("route_intent") == "direct_answer" and allows_execution:
             return "direct_answer"
+        if temporary_extract_executor is not None and decision.get("routed") and decision.get("route_intent") == "temporary_extract" and allows_execution:
+            return "temporary_extract"
         if (
             local_corpus_inventory_executor is not None
             and decision.get("routed")
@@ -907,6 +954,7 @@ def build_mcagent_graph(
             "local_corpus_inventory": "graph_local_corpus_inventory_route",
             "router_error": "graph_router_error_route",
             "direct_answer": "graph_direct_answer_node",
+            "temporary_extract": "graph_temporary_extract_node",
             "legacy": "legacy_adapter",
         },
     )
@@ -915,6 +963,7 @@ def build_mcagent_graph(
     builder.add_edge("graph_local_corpus_inventory_route", "prepare_route_decision_output_contract")
     builder.add_edge("graph_router_error_route", "prepare_route_decision_output_contract")
     builder.add_edge("graph_direct_answer_node", "prepare_route_decision_output_contract")
+    builder.add_edge("graph_temporary_extract_node", "prepare_route_decision_output_contract")
     builder.add_edge("legacy_adapter", "prepare_route_decision_output_contract")
     builder.add_edge("prepare_route_decision_output_contract", "prepare_route_execution_contract")
     builder.add_edge("prepare_route_execution_contract", "prepare_legacy_handler_surface_contract")
@@ -937,6 +986,7 @@ def run_mcagent_graph(
     local_corpus_inventory_executor: LocalCorpusInventoryExecutorFn | None = None,
     router_error_executor: RouterErrorExecutorFn | None = None,
     direct_answer_executor: DirectAnswerExecutorFn | None = None,
+    temporary_extract_executor: TemporaryExtractExecutorFn | None = None,
 ) -> dict[str, Any]:
     graph = build_mcagent_graph(
         config,
@@ -948,6 +998,7 @@ def run_mcagent_graph(
         local_corpus_inventory_executor=local_corpus_inventory_executor,
         router_error_executor=router_error_executor,
         direct_answer_executor=direct_answer_executor,
+        temporary_extract_executor=temporary_extract_executor,
     )
     final_state = graph.invoke(
         {

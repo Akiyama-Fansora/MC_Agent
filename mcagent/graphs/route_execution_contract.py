@@ -10,6 +10,7 @@ GRAPH_ROUTE_EXECUTORS = {
     "graph_local_corpus_inventory_route_executor",
     "graph_router_error_route_executor",
     "graph_direct_answer_node_executor",
+    "graph_temporary_extract_node_executor",
 }
 
 
@@ -126,8 +127,8 @@ def build_route_execution_contract(
         "legacy_trace_observation_only": not graph_route_executed,
         "objective_contract": (
             "The graph records Agent route execution facts. For migrated status, crawler_audit, router_error, safe "
-            "local_corpus_inventory, and direct_answer routes, the graph may execute only the already-selected handler. "
-            "The direct_answer handler is an Agent-owned final-answer node; this contract does not start jobs, persist "
-            "evidence, judge evidence, alter routing, or select a tool."
+            "local_corpus_inventory, direct_answer, and temporary_extract routes, the graph may execute only the already-selected handler. "
+            "The direct_answer and temporary_extract handlers are Agent-owned answer/extraction nodes; this contract does not start jobs, "
+            "persist evidence, judge evidence, alter routing, or select a tool."
         ),
     }

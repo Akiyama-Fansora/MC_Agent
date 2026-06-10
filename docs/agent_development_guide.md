@@ -5205,3 +5205,36 @@ Next migration loop:
 1. Migrate `rag_answer_generation` only after splitting retrieval/evidence selection/final-answer generation into clear Agent-owned graph boundaries.
 2. Split `no_retrieval_results` after RAG retrieval state is graph-visible.
 3. Keep `temporary_extract` and delegation behind explicit network/job side-effect authorization nodes.
+
+## 2026-06-10 Stage 77: Graph-Executed Temporary Extract Agent Node
+
+Stage 77 migrates `temporary_extract` out of the legacy `_chat_impl()` execution path as an Agent-owned temporary extraction/answer node.
+
+This route is not treated as a pure objective fact contract. `temporary_extract` may discover or read one public page and then call the receiving Agent's summary/review model. The graph can host it only after the existing Agent router/LLM selected `route_intent == "temporary_extract"` and confirmation allowed execution.
+
+Implemented changes:
+
+1. Added `graph_temporary_extract_node_executor` metadata with `agent_answer_generation=true`, `temporary_extract=true`, and `saved_to_local=false`.
+2. `MCagentGraph` and `CrawlerAgentGraph` now include `graph_temporary_extract_node` nodes.
+3. `ConversationGraph` maps the new adapter to `mcagent_graph.graph_temporary_extract_node` or `crawler_graph.graph_temporary_extract_node`.
+4. `_execute_graph_temporary_extract_node()` reuses the Agent route decision, session summary, confirmation, and `_handle_temporary_extract_route()`.
+5. The existing no-persistence guard is preserved. If confirmation or review suggests `delegate_crawler`, the graph records that suggestion and still refuses to start a background job unless the Agent selected a delegate route or planned workflow.
+6. Route execution and handler-surface contracts now recognize `graph_temporary_extract_node_executor` as graph-executed while recording extract traces and temporary-extract result facts.
+7. FastAPI and LangGraph runtime scenarios prove temporary extraction bypasses legacy delivery for both MCagent and CrawlerAgent while preserving the From-Content-To message bus.
+
+Boundary:
+
+The graph temporary-extract node does not infer intent from keywords, choose sources independently of the Agent-selected route, start background jobs, persist evidence, upgrade to `delegate_crawler`, judge broader evidence sufficiency, or alter AgentMessage routing. It may temporarily read a public URL and call the Agent's summary/review model because that is the selected Agent-owned route execution, not a tool replacing Agent judgment.
+
+Current score:
+
+1. Two-Agent shape: 9.65/10.
+2. Legacy runtime migration: 9.35/10. `status`, `crawler_audit`, safe `local_corpus_inventory`, `router_error`, `direct_answer`, and `temporary_extract` no longer require `_chat_impl()` in production graph delivery.
+3. Tool-objectivity principle: 9.8/10. The score stays below perfect because RAG answer generation, no-retrieval post-processing, and job-starting delegation still need explicit Agent-owned graph boundaries before migration.
+4. Regression coverage: 9.9/10.
+
+Next migration loop:
+
+1. Do not migrate `delegate_crawler` until job-start authorization and action-plan side effects are represented as Agent-owned graph nodes.
+2. Migrate `no_retrieval_results` only after RAG retrieval state is graph-visible and the selected-delegate branch can be separated from the no-side-effect response branch.
+3. Migrate `rag_answer_generation` only after retrieval, evidence selection, final-answer generation, protocol review, and optional selected delegation are split into explicit Agent-owned steps.

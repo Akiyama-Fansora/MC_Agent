@@ -8,6 +8,7 @@ GRAPH_CRAWLER_AUDIT_ROUTE_EXECUTOR = "graph_crawler_audit_route_executor"
 GRAPH_LOCAL_CORPUS_INVENTORY_ROUTE_EXECUTOR = "graph_local_corpus_inventory_route_executor"
 GRAPH_ROUTER_ERROR_ROUTE_EXECUTOR = "graph_router_error_route_executor"
 GRAPH_DIRECT_ANSWER_NODE_EXECUTOR = "graph_direct_answer_node_executor"
+GRAPH_TEMPORARY_EXTRACT_NODE_EXECUTOR = "graph_temporary_extract_node_executor"
 
 
 def _display_agent(agent_id: str) -> str:
@@ -212,3 +213,35 @@ def graph_direct_answer_node_executor_metadata(
         runtime_request=runtime_request,
         route_decision=route_decision,
     )
+
+
+def graph_temporary_extract_node_executor_metadata(
+    *,
+    agent_id: str,
+    graph_name: str,
+    node_name: str,
+    runtime_request: dict[str, Any] | None = None,
+    route_decision: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    metadata = _base_answer_node_metadata(
+        adapter=GRAPH_TEMPORARY_EXTRACT_NODE_EXECUTOR,
+        migration_status="graph_temporary_extract_node_migrated",
+        agent_id=agent_id,
+        graph_name=graph_name,
+        node_name=node_name,
+        runtime_request=runtime_request,
+        route_decision=route_decision,
+    )
+    metadata.update(
+        {
+            "agent_answer_generation": True,
+            "temporary_extract": True,
+            "saved_to_local": False,
+            "objective_boundary": (
+                "The graph executed only the already Agent-selected temporary_extract node. "
+                "This node may temporarily read a public URL and call the receiving Agent's summary/review model, "
+                "but it does not choose sources, start background jobs, persist evidence, or upgrade to delegate_crawler."
+            ),
+        }
+    )
+    return metadata

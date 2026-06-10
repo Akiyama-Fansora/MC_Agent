@@ -9321,6 +9321,8 @@ def _route_agent_decision_for_graph(
         route.route_intent == "router_error"
     ) or (
         route.route_intent == "direct_answer" and confirmation_allows
+    ) or (
+        route.route_intent == "temporary_extract" and confirmation_allows
     )
     return {
         **base,
@@ -9665,6 +9667,79 @@ def _execute_graph_direct_answer_node(
     return response
 
 
+def _execute_graph_temporary_extract_node(
+    config: AppConfig,
+    payload: dict[str, Any],
+    *,
+    emit: Any | None = None,
+    agent_id: str,
+    graph_name: str,  # noqa: ARG001 - recorded by graph adapter metadata.
+    node_name: str,  # noqa: ARG001 - recorded by graph adapter metadata.
+    runtime_request: dict[str, Any],
+    route_decision: dict[str, Any],
+) -> dict[str, Any]:
+    if str(route_decision.get("route_intent") or "") != "temporary_extract":
+        raise RuntimeError("Graph temporary extract execution requires an Agent-selected temporary_extract route.")
+    route_confirmation = dict(route_decision.get("route_confirmation") if isinstance(route_decision.get("route_confirmation"), dict) else {})
+    if not bool(route_confirmation.get("proceed", True)):
+        raise RuntimeError("Graph temporary extract execution requires Agent confirmation to proceed.")
+    graph_payload = dict(payload)
+    graph_payload["agent"] = agent_id
+    graph_payload["question"] = str(route_decision.get("question") or payload.get("question") or payload.get("query") or "")
+    if "session_id" not in graph_payload:
+        graph_payload["session_id"] = str(runtime_request.get("session_id") or route_decision.get("session_id") or "")
+    run = build_agent_execution_context(config, graph_payload, token_resolver=_answer_max_tokens, emit=emit)
+    original_question = str(route_decision.get("original_question") or run.original_question)
+    question = str(route_decision.get("question") or run.question)
+    run.original_question = original_question
+    run.question = question
+    trace = run.trace.steps
+    for step in route_decision.get("trace") or []:
+        if isinstance(step, dict):
+            trace.append(dict(step))
+    session_summary = route_decision.get("session_summary") if isinstance(route_decision.get("session_summary"), dict) else _session_summary(graph_payload)
+    tool_decision = route_decision.get("tool_decision") if isinstance(route_decision.get("tool_decision"), dict) else {}
+    executor = AgentToolExecutor(
+        generate_direct_answer=_generate_direct_answer,
+        generate_direct_answer_stream=_generate_direct_answer_stream,
+        generate_grounded_answer=_generate_grounded_answer,
+        generate_grounded_answer_stream=_generate_grounded_answer_stream,
+        repair_answer=_repair_list_answer,
+        status_answer=_crawler_monitor_answer,
+    )
+    response = _handle_temporary_extract_route(
+        config=config,
+        agent=agent_id,
+        model=run.model,
+        temperature=run.temperature,
+        max_tokens=run.max_tokens,
+        original_question=original_question,
+        question=question,
+        tool_decision=tool_decision,
+        route_confirmation=route_confirmation,
+        executor=executor,
+        run=run,
+        session_summary=dict(session_summary),
+        trace=trace,
+        add_trace=run.add_trace,
+    )
+    response.setdefault("agent", agent_id)
+    response.setdefault("session_id", str(graph_payload.get("session_id") or runtime_request.get("session_id") or route_decision.get("session_id") or ""))
+    response["metadata"] = {
+        **(response.get("metadata") if isinstance(response.get("metadata"), dict) else {}),
+        "graph_route_decision": {
+            "routed": True,
+            "route_decision_id": route_decision.get("route_decision_id") or "",
+            "route_intent": route_decision.get("route_intent") or "",
+            "decision_owner": route_decision.get("decision_owner") or "",
+            "agent_answer_generation": True,
+            "temporary_extract": True,
+            "saved_to_local": False,
+        },
+    }
+    return response
+
+
 def _agent_message_response_trace(request: AgentMessage, reply: AgentMessage) -> dict[str, Any]:
     return {
         "request": request.to_dict(),
@@ -9728,6 +9803,7 @@ def _send_agent_message(
         local_corpus_inventory_executor=_execute_graph_local_corpus_inventory_route,
         router_error_executor=_execute_graph_router_error_route,
         direct_answer_executor=_execute_graph_direct_answer_node,
+        temporary_extract_executor=_execute_graph_temporary_extract_node,
     )
     _record_agent_response_event(normalize_session_id(message.conversation_id or payload.get("session_id")), result)
     return result
