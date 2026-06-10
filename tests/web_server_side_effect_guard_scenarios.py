@@ -730,11 +730,11 @@ def test_explicit_mcagent_to_crawler_handoff_starts_job_after_agent_selects_dele
     assert_true("delegate_confirmed", ("delegate", "next_step_confirmed") in statuses, str(statuses))
 
 
-def test_explicit_mcagent_to_crawler_handoff_relays_before_heavy_router() -> None:
+def test_explicit_mcagent_to_crawler_handoff_uses_agent_selected_message_tool() -> None:
     tmp = tempfile.TemporaryDirectory()
-    question = "让MCagent转达Crawler去获取乌托邦整合包资料，先问MCagent本地缺口，再采集公开网页补入RAG。"
+    question = "让 MCagent 转达 Crawler 去获取乌托邦整合包资料，先问 MCagent 本地缺口，再采集公开网页补入 RAG。"
     original_send = web_server._send_agent_message
-    original_router = web_server.LlmAgentToolRouterService
+    original_selector = web_server._selected_llm_client
     calls: list[dict[str, Any]] = []
 
     def fake_send(config: AppConfig, payload: dict[str, Any], *, from_agent: str, content: str, to_agent: str, metadata: dict[str, Any] | None = None, **kwargs: Any):  # noqa: ARG001
@@ -742,12 +742,15 @@ def test_explicit_mcagent_to_crawler_handoff_relays_before_heavy_router() -> Non
         job = web_server.Job(id="relay-job", kind="crawler", title=content, status="queued", summary="queued")
         return {"answer": "我是 CrawlerAgent。已启动后台采集任务。", "agent": "crawler_agent", "job": web_server._job_to_dict(job)}
 
-    class ForbiddenRouter:
-        def __init__(self, *args, **kwargs):  # noqa: ANN001
-            raise AssertionError("explicit MCagent->Crawler relay should not enter the heavy MCagent router before sending the AgentMessage")
+    fake_client = SequencedClient(
+        [
+            '{"tool":"delegate_crawler","reason":"MCagent selected collection handoff to CrawlerAgent","collection_target":"乌托邦整合包资料，先问 MCagent 本地缺口，再采集公开网页补入 RAG","delivery_target":"MCagent/RAG"}',
+            '{"proceed":true,"tool":"delegate_crawler","reason":"confirmed selected CrawlerAgent collection handoff"}',
+        ]
+    )
 
     web_server._send_agent_message = fake_send  # type: ignore[assignment]
-    web_server.LlmAgentToolRouterService = ForbiddenRouter  # type: ignore[assignment]
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake_client, "fake")  # type: ignore[assignment]
     try:
         result = web_server._chat_impl(
             make_temp_config(Path(tmp.name)),
@@ -760,9 +763,12 @@ def test_explicit_mcagent_to_crawler_handoff_relays_before_heavy_router() -> Non
         )
     finally:
         web_server._send_agent_message = original_send  # type: ignore[assignment]
-        web_server.LlmAgentToolRouterService = original_router  # type: ignore[assignment]
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
         tmp.cleanup()
 
+    statuses = [(item.get("stage"), item.get("status")) for item in result.get("trace") or []]
+    assert_true("mcagent_router_selected_tool", ("decide", "tool_selected") in statuses, str(statuses))
+    assert_true("delegate_confirmed", ("delegate", "next_step_confirmed") in statuses, str(statuses))
     assert_equal("one_message", len(calls), 1)
     assert_equal("from_agent", calls[0]["from_agent"], "MCagent")
     assert_equal("to_agent", calls[0]["to_agent"], "CrawlerAgent")
@@ -770,7 +776,6 @@ def test_explicit_mcagent_to_crawler_handoff_relays_before_heavy_router() -> Non
     assert_equal("requested_by", calls[0]["metadata"].get("requested_by"), "user_via_mcagent")
     assert_equal("delivery_target", calls[0]["metadata"].get("delivery_target"), "MCagent/RAG")
     assert_true("content_keeps_target", "乌托邦整合包" in calls[0]["content"], calls[0]["content"])
-    assert_true("answer_prefix", "MCagent 已通过 From-Content-To" in result.get("answer", ""), result.get("answer", ""))
     assert_equal("job", result.get("job", {}).get("id"), "relay-job")
 
 
@@ -4150,7 +4155,7 @@ if __name__ == "__main__":
     test_crawler_collection_request_message_starts_job_after_crawler_selects_delegate()
     test_direct_crawler_planned_workflow_preserves_selected_action_plan_for_job()
     test_direct_crawler_mcagent_context_step_with_delegate_starts_background_job()
-    test_explicit_mcagent_to_crawler_handoff_relays_before_heavy_router()
+    test_explicit_mcagent_to_crawler_handoff_uses_agent_selected_message_tool()
     test_explicit_handoff_with_source_audit_requirements_still_relays_fast()
     test_modrinth_plain_mod_task_does_not_parse_modpack_contents()
     test_known_modrinth_project_skips_are_reusable_existing_evidence()

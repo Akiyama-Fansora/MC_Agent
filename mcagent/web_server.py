@@ -9273,13 +9273,6 @@ def _route_agent_decision_for_graph(
         return {**base, "routed": False, "route_intent": "", "legacy_fallback_required": True, "reason": "invalid_encoding_precheck"}
     session_summary = _session_summary(payload)
     session_summary = _session_summary_with_received_message(session_summary, incoming_message)
-    if (
-        agent == "mcagent_rag"
-        and incoming_message.from_agent_id == "user"
-        and _user_explicitly_asked_mcagent_to_tell_crawler(original_question)
-        and not _forbids_crawler_handoff(original_question)
-    ):
-        return {**base, "routed": False, "route_intent": "", "legacy_fallback_required": True, "reason": "legacy_pre_route_message_relay"}
     retrieval_note = ""
     if agent == "mcagent_rag":
         contextual_question, retrieval_note, rewritten = _contextualize_question(payload, question)
@@ -11611,6 +11604,110 @@ def _relay_user_crawler_request_via_message_bus(
     return response
 
 
+def _handle_ask_crawler_agent_route(
+    *,
+    config: AppConfig,
+    payload: dict[str, Any],
+    agent: str,
+    model: str,
+    original_question: str,
+    question: str,
+    tool_decision: dict[str, Any],
+    route_confirmation: dict[str, Any],
+    executor: AgentToolExecutor,
+    run: Any,
+    session_summary: dict[str, Any],
+    trace: list[dict[str, Any]],
+    add_trace: Any,
+) -> dict[str, Any]:
+    ask_confirmation = _reuse_route_confirmation(
+        route_confirmation,
+        proposed_tool="ask_crawler_agent",
+        proposed_goal=str(tool_decision.get("reason") or "Send a no-persistence AgentMessage to CrawlerAgent and return its reply."),
+    )
+    add_trace("message", "ask_crawler_next_step_confirmed", ask_confirmation)
+    if not bool(ask_confirmation.get("proceed", True)):
+        return executor.direct_answer(run, session_summary=session_summary, mode="direct_after_ask_crawler_cancelled")
+
+    crawler_question = str(
+        tool_decision.get("message")
+        or tool_decision.get("collection_target")
+        or original_question
+        or question
+    ).strip()
+    if not crawler_question:
+        crawler_question = original_question or question
+    message_payload = dict(payload)
+    message_payload["agent"] = "crawler_agent"
+    message_payload["model"] = model
+    message_payload["requested_by"] = "user_via_mcagent"
+    message_payload["preserve_crawler_request"] = True
+    message_payload["session_summary"] = {
+        **dict(session_summary or {}),
+        "requested_by": "user_via_mcagent",
+        "handoff_from": "MCagent",
+        "original_user_request": original_question,
+        "task_goal": crawler_question,
+        "delivery_target": "human",
+        "message_transport": "From-Content-To",
+        "no_persistence": True,
+    }
+    metadata = {
+        "tool": "ask_crawler_agent",
+        "requested_by": "user_via_mcagent",
+        "delivery_target": "human",
+        "no_persistence": True,
+    }
+    add_trace(
+        "message",
+        "ask_crawler_agent_relayed",
+        {
+            "reason": "MCagent selected the no-persistence CrawlerAgent message tool; CrawlerAgent still owns the reply route.",
+            "to_agent": "CrawlerAgent",
+            "message": crawler_question,
+        },
+    )
+    crawler_response = _send_agent_message(
+        config,
+        message_payload,
+        from_agent="MCagent",
+        content=crawler_question,
+        to_agent="CrawlerAgent",
+        intent="agent_question",
+        conversation_id=str(payload.get("session_id") or ""),
+        metadata=metadata,
+    )
+    crawler_answer = str(crawler_response.get("answer") or "").strip()
+    answer = crawler_answer
+    if crawler_answer and not crawler_answer.lstrip().lower().startswith("crawleragent"):
+        answer = "CrawlerAgent 回复：\n\n" + crawler_answer
+    response = {
+        "answer": answer or "CrawlerAgent 没有返回可显示的回复。",
+        "sources": list(crawler_response.get("sources") or []),
+        "context": str(crawler_response.get("context") or ""),
+        "agent": agent,
+        "crawler_response": crawler_response,
+        "trace": [*trace, *list(crawler_response.get("trace") or [])] if isinstance(crawler_response.get("trace"), list) else list(trace),
+        "metadata": {
+            "ask_crawler_agent": {
+                "transport": "From-Content-To",
+                "intent": "agent_question",
+                "no_persistence": True,
+                "crawler_agent": str(crawler_response.get("agent") or "crawler_agent"),
+            }
+        },
+    }
+    if isinstance(crawler_response.get("agent_message"), dict):
+        response["agent_message"] = agent_reply_message_from_payload(
+            {**payload, "agent": agent},
+            from_agent_id=agent,
+            content=response["answer"],
+        ).to_dict()
+    add_trace("done", "response_ready", {"sources": len(response["sources"]), "asked_crawler_agent": True, "delegated": False})
+    response["trace"] = trace if not isinstance(crawler_response.get("trace"), list) else [*trace, *list(crawler_response.get("trace") or [])]
+    return response
+
+
 def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = None) -> dict[str, Any]:
     run = build_agent_execution_context(config, payload, token_resolver=_answer_max_tokens, emit=emit)
     original_question = run.original_question
@@ -11640,22 +11737,6 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
     retrieval_note = ""
     session_summary = _session_summary(payload)
     session_summary = _session_summary_with_received_message(session_summary, incoming_message)
-    if (
-        agent == "mcagent_rag"
-        and incoming_message.from_agent_id == "user"
-        and _user_explicitly_asked_mcagent_to_tell_crawler(original_question)
-        and not _forbids_crawler_handoff(original_question)
-    ):
-        return _relay_user_crawler_request_via_message_bus(
-            config,
-            payload,
-            original_question=original_question,
-            question=question,
-            model=model,
-            trace=trace,
-            add_trace=add_trace,
-            session_summary=session_summary,
-        )
     if agent == "mcagent_rag":
         contextual_question, retrieval_note, rewritten = _contextualize_question(payload, question)
         if rewritten:
@@ -11780,6 +11861,22 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
             executor=executor,
             run=run,
             session_summary=session_summary,
+            add_trace=add_trace,
+        )
+    if route_intent == "ask_crawler_agent":
+        return _handle_ask_crawler_agent_route(
+            config=config,
+            payload=payload,
+            agent=agent,
+            model=model,
+            original_question=original_question,
+            question=question,
+            tool_decision=tool_decision,
+            route_confirmation=route_confirmation,
+            executor=executor,
+            run=run,
+            session_summary=session_summary,
+            trace=trace,
             add_trace=add_trace,
         )
     if route_intent == "crawler_audit":

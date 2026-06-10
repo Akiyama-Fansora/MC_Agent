@@ -102,7 +102,7 @@ class AgentToolRouterService:
                 planned_delegate=False,
             )
 
-        if route_intent in {"temporary_extract", "status"}:
+        if route_intent in {"temporary_extract", "status", "ask_crawler_agent"}:
             route_confirmation = {
                 "proceed": True,
                 "tool": route_intent,
@@ -334,6 +334,7 @@ class LlmAgentToolRouterService(AgentToolRouterService):
                 "CrawlerAgent 工具边界：temporary_extract 是即时读取、抽取、总结且不保存；delegate_crawler 会启动后台采集循环，通常会产生本地导出或补库。若用户目标明确是只读/只总结且不保存，应选择没有持久化副作用的工具。\n"
                 "CrawlerAgent 复合沟通边界：如果用户要求先问 MCagent、查看 MCagent 本地缺口或获取 MCagent 上下文，并且同一目标还要求再补充、采集、入库或交付资料，这不是单独的 mcagent_context，也不是本地 RAG 回答；必须选择 planned_workflow，并在 action_plan 中依次包含 mcagent_context 与 delegate_crawler。只有用户只要求问 MCagent、没有后续采集副作用时，才选择 mcagent_context 单步。\n"
                 "跨 Agent 沟通原则：消息通道只负责把内容送给目标 Agent，收到消息的 Agent 再根据自己的工具目录判断下一步。若当前 Agent 需要对方能力，选择能完成这次消息投递的工具，例如向 MCagent 询问本地上下文或向 CrawlerAgent 交付采集目标。\n"
+                "MCagent 向 CrawlerAgent 沟通的能力分两类：ask_crawler_agent 是普通无持久化转问，只发送 AgentMessage 并返回 CrawlerAgent 的回复；delegate_crawler 是采集/保存/补库/后台任务委托，会产生持久化或 job 副作用。用户只是要求“问/咨询/转给 CrawlerAgent 回答”时不要由 MCagent 自己抢答，也不要启动 delegate_crawler；只有用户目标包含采集、爬取、保存、入库、补库、后台任务或持续收集时才选择 delegate_crawler。\n"
                 "委托交接原则：collection_target 不是搜索词，也不是给工具的死规则，而是给 CrawlerAgent 的自然语言任务目标。若任务目标依赖上下文，要把相关背景自然写进目标；不要拆成关键词，也不要丢掉用户原话。\n"
                 "复合任务可以选择 planned_workflow，并给出 action_plan；简单、可直接回答的内容可以选择 direct_answer。\n"
                 "planned_workflow 完整性原则：action_plan 必须覆盖用户请求中的所有可执行副作用。若用户目标要求采集、补充资料、保存、入库、交付给另一个 Agent 或启动后台工作，计划不能只停在 local_rag_search/local_corpus_inventory/final_answer_llm；必须包含能产生该副作用的真实工具，例如 delegate_crawler。若用户只要求解释或总结，则不要加入有持久化副作用的工具。\n"

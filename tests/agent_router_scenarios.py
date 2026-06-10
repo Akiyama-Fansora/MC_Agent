@@ -140,6 +140,22 @@ def test_no_persistence_routes_skip_second_llm_confirmation() -> None:
     assert_equal("confirm_not_called", calls["confirm"], 0)
     assert_equal("confirmation_planner", route.route_confirmation["planner"], "runtime")
 
+    tmp2, run2 = make_run("Ask CrawlerAgent for its own simple reply.")
+    calls = {"confirm": 0}
+    try:
+        service = AgentToolRouterService(
+            decide_tool=lambda *args, **kwargs: {"tool": "ask_crawler_agent", "reason": "route a normal question to CrawlerAgent"},
+            confirm_next_step=lambda *args, **kwargs: calls.__setitem__("confirm", calls["confirm"] + 1) or {"proceed": True},
+            action_plan_has_tool=lambda _plan, _tool: False,
+        )
+        ask_route = service.route(run2, session_summary={})
+    finally:
+        tmp2.cleanup()
+
+    assert_equal("ask_crawler_route", ask_route.route_intent, "ask_crawler_agent")
+    assert_equal("ask_crawler_confirm_not_called", calls["confirm"], 0)
+    assert_equal("ask_crawler_confirmation_planner", ask_route.route_confirmation["planner"], "runtime")
+
 
 def test_direct_answer_can_be_corrected_when_side_effect_is_required() -> None:
     tmp, run = make_run("问下MCAgent乌托邦整合包还缺哪些东西 你去网上找补给他")

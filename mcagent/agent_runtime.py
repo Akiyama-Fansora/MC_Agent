@@ -531,8 +531,21 @@ MCAGENT_TOOLS = [
         llm_final_answer_required=False,
     ),
     ToolSpec(
+        name="ask_crawler_agent",
+        description=(
+            "Send a normal no-persistence AgentMessage to CrawlerAgent and return CrawlerAgent's reply. "
+            "Use when the user asks MCagent to ask, consult, or route a question to CrawlerAgent, but does not request "
+            "background collection, saving, ingest, or a persistent crawler job."
+        ),
+        input_schema={"message": "natural-language question or instruction for CrawlerAgent"},
+        result_schema={"answer": "CrawlerAgent reply delivered over AgentMessage", "agent_message": "message bus reply"},
+        side_effects="agent_message_no_persistence",
+        terminal=True,
+        llm_final_answer_required=False,
+    ),
+    ToolSpec(
         name="delegate_crawler",
-        description="Send a natural-language Minecraft data collection task or evidence gap to CrawlerAgent with context and delivery target.",
+        description="Send a natural-language Minecraft data collection task or evidence gap to CrawlerAgent with context and delivery target; this starts or reuses a background collection job.",
         input_schema={"handoff_contract": "caller, goal, context, acceptance criteria"},
         result_schema={"job_id": "crawler job", "handoff": "agent-to-agent message"},
         side_effects="start_background_job",

@@ -351,6 +351,45 @@ def test_agent_selected_direct_answer_bypasses_legacy_delivery() -> None:
     assert_true("conversation_direct_answer_node", "mcagent_graph.graph_direct_answer_node" in graph_runtime.get("visited_nodes", []), str(graph_runtime))
 
 
+def test_mcagent_can_ask_crawler_agent_without_collection_side_effect() -> None:
+    fake = SequencedClient(
+        [
+            '{"tool":"ask_crawler_agent","reason":"user wants CrawlerAgent to answer","collection_target":"1+1 equals what?","delivery_target":"human"}',
+            '{"tool":"direct_answer","reason":"simple arithmetic reply","collection_target":"","delivery_target":"human"}',
+            '{"proceed":true,"tool":"direct_answer","reason":"confirmed direct reply"}',
+            '{"missing_side_effect":false,"action":"allow","reason":"simple reply has no required side effect"}',
+            "1+1=2. -- CrawlerAgent",
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake, "fake")  # type: ignore[assignment]
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = web_server._send_agent_message(
+                make_temp_config(Path(tmp)),
+                {"session_id": "fastapi-ask-crawler-no-job"},
+                from_agent="User",
+                content="Please ask CrawlerAgent to answer this: 1+1 equals what?",
+                to_agent="MCagent",
+                intent="user_chat",
+                conversation_id="fastapi-ask-crawler-no-job",
+            )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+
+    assert_true("ask_crawler_answer", "1+1=2" in str(result.get("answer") or ""), str(result))
+    assert_true("ask_crawler_no_job", not result.get("job") and not result.get("delegation"), str(result))
+    assert_true("ask_crawler_response_visible", (result.get("crawler_response") or {}).get("agent") == "crawler_agent", str(result))
+    traces = [(step.get("stage"), step.get("status")) for step in result.get("trace") or []]
+    assert_true("ask_crawler_relay_trace", ("message", "ask_crawler_agent_relayed") in traces, str(traces))
+    assert_true("crawler_received_message", any(step.get("stage") == "message" and step.get("status") == "received" and (step.get("detail") or {}).get("to_agent") == "CrawlerAgent" for step in result.get("trace") or []), str(result.get("trace")))
+    crawler_runtime = (result.get("crawler_response") or {}).get("agent_graph_runtime") or {}
+    assert_true("crawler_graph_runtime", crawler_runtime.get("agent_graph") == "CrawlerAgentGraph", str(crawler_runtime))
+    assert_true("crawler_direct_node", "crawler.graph_direct_answer_node" in crawler_runtime.get("visited_nodes", []), str(crawler_runtime))
+    metadata = result.get("metadata") or {}
+    assert_true("ask_crawler_metadata", ((metadata.get("ask_crawler_agent") or {}).get("no_persistence") is True), str(metadata))
+
+
 def test_agent_selected_temporary_extract_bypasses_legacy_delivery() -> None:
     fake = SequencedClient(
         [
@@ -653,6 +692,7 @@ def main() -> int:
     test_fastapi_agent_message_endpoint_dispatches()
     test_agent_selected_status_bypasses_legacy_delivery()
     test_agent_selected_direct_answer_bypasses_legacy_delivery()
+    test_mcagent_can_ask_crawler_agent_without_collection_side_effect()
     test_agent_selected_temporary_extract_bypasses_legacy_delivery()
     test_agent_selected_crawler_audit_bypasses_legacy_delivery()
     test_agent_selected_safe_local_inventory_bypasses_legacy_delivery()

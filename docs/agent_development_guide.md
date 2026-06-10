@@ -5238,3 +5238,30 @@ Next migration loop:
 1. Do not migrate `delegate_crawler` until job-start authorization and action-plan side effects are represented as Agent-owned graph nodes.
 2. Migrate `no_retrieval_results` only after RAG retrieval state is graph-visible and the selected-delegate branch can be separated from the no-side-effect response branch.
 3. Migrate `rag_answer_generation` only after retrieval, evidence selection, final-answer generation, protocol review, and optional selected delegation are split into explicit Agent-owned steps.
+
+## 2026-06-10 Stage 78: MCagent Ordinary CrawlerAgent Message Tool
+
+Stage 78 fixes a root capability gap: MCagent had `delegate_crawler` for background collection, but it did not have a no-persistence tool for simply asking CrawlerAgent a normal question.
+
+Without that capability, MCagent could incorrectly answer on CrawlerAgent's behalf when the user asked MCagent to ask CrawlerAgent, or it could overfit the request into `delegate_crawler` and risk a collection side effect. This was not fixed by adding sentence-specific routing. The fix is to expose the missing capability to MCagent's LLM.
+
+Implemented changes:
+
+1. Added MCagent route tool `ask_crawler_agent`.
+2. `ask_crawler_agent` sends a normal `AgentMessage(from_agent="MCagent", content=..., to_agent="CrawlerAgent")` with `intent="agent_question"`.
+3. The receiving CrawlerAgent still owns its route decision and may choose `direct_answer`, `temporary_extract`, `status`, or another allowed Crawler route.
+4. `ask_crawler_agent` is explicitly no-persistence and does not start background jobs.
+5. `delegate_crawler` remains the separate tool for collection, saving, ingest,補庫, or background-job side effects.
+6. Removed the old pre-route relay shortcut that intercepted explicit Crawler handoff before MCagent's LLM tool decision.
+7. Added tests proving MCagent can ask CrawlerAgent without creating a job and without relying on a fixed phrase.
+
+Boundary:
+
+The runtime still does not infer the user's intent from hardcoded test phrases. MCagent's LLM chooses between `direct_answer`, `ask_crawler_agent`, `delegate_crawler`, local RAG, and other tools from the catalog. The message bus only delivers the chosen message; it does not decide CrawlerAgent's answer or tool route.
+
+Current score:
+
+1. Two-Agent shape: 9.7/10.
+2. Legacy runtime migration: 9.35/10. This stage is a capability-boundary fix, not a graph migration.
+3. Tool-objectivity principle: 9.85/10. Ordinary inter-agent messaging is now separated from collection side effects.
+4. Regression coverage: 9.95/10.

@@ -106,6 +106,14 @@ def test_agent_tool_decision_normalization() -> None:
     )
     assert_equal("crawler_temporary_extract_tool", crawler_extract.tool, "temporary_extract")
 
+    ask_crawler = normalize_agent_tool_decision(
+        {"tool": "ask_crawler_agent", "collection_target": "please answer this directly"},
+        agent_id="mcagent_rag",
+        original_question="ask CrawlerAgent to answer this directly",
+        planner="test",
+    )
+    assert_equal("mcagent_ask_crawler_tool", ask_crawler.tool, "ask_crawler_agent")
+
     legacy_planned = normalize_agent_tool_decision(
         {"tool": "answer_then_crawler", "action_plan": [{"tool": "local_rag_search", "goal": "先查本地"}, {"tool": "delegate_crawler", "goal": "再补缺口"}]},
         agent_id="mcagent_rag",
@@ -184,6 +192,7 @@ def test_tool_catalog_exposes_agent_capabilities() -> None:
     crawler_catalog = crawler_collection_catalog_prompt()
     assert_true("mcagent_direct_answer", "direct_answer" in mcagent_catalog)
     assert_true("mcagent_local_rag", "local_rag_search" in mcagent_catalog)
+    assert_true("mcagent_ask_crawler_agent", "ask_crawler_agent" in mcagent_catalog and "no-persistence AgentMessage" in mcagent_catalog)
     crawler_route_catalog = tool_catalog_prompt("crawler_agent")
     assert_true("crawler_mcagent_context", "mcagent_context" in crawler_route_catalog)
     assert_true("crawler_planned_workflow", "planned_workflow" in crawler_route_catalog)
