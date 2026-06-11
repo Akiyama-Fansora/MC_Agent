@@ -1931,6 +1931,103 @@ def test_mcagent_natural_language_inventory_plan_uses_inventory_node() -> None:
     assert_true("natural_plan_step_normalized", any((step or {}).get("tool") == "local_corpus_inventory" for step in steps), str(steps))
 
 
+def test_mcagent_information_needs_candidate_set_uses_inventory_before_rag() -> None:
+    candidate_prompts = [
+        "我本地这些整合包哪个更适合新手",
+        "从本地资料里挑一个适合开荒的包",
+        "本地资料最完整的整合包是哪几个",
+        "想玩科技向，库存里有什么可以选",
+    ]
+    original_selector = web_server._selected_llm_client
+    original_delivery = web_server._deliver_agent_message
+    original_inventory = web_server._local_corpus_inventory_answer
+    original_retriever = web_server.RagRetrievalService.retrieve
+
+    def forbidden_delivery(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AssertionError("information-needs inventory route should not use legacy delivery")
+
+    def fake_inventory(_config: AppConfig, _question: str) -> dict[str, object]:
+        return {
+            "answer": "Inventory observation includes Craftoria, Prominence II, Utopian Journey, Closing Song, and VanillaEra.",
+            "sources": [{"title": "local inventory", "document_id": 1}],
+            "context": "inventory context",
+            "agent": "mcagent_rag",
+            "metadata": {
+                "inventory_observation": {
+                    "document_count": 5,
+                    "scanned_documents": 5,
+                    "entity_candidates": [
+                        {"canonical_name": "Craftoria", "raw_titles": ["Craftoria-1.31.0 pack internals"], "reasons": ["pack internal path"]},
+                        {"canonical_name": "Prominence II", "raw_titles": ["Prominence II Hasturian Era"], "reasons": ["mrpack path"]},
+                        {"canonical_name": "Closing Song", "raw_titles": ["closing song pack internals"], "reasons": ["pack internal path"]},
+                    ],
+                    "bucket_summary": [{"bucket": "modpack_internals", "documents": 5, "distinct_titles": 3}],
+                    "tool_boundary": "objective observation only",
+                }
+            },
+        }
+
+    def forbidden_rag(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AssertionError("candidate_set information need must run inventory before RAG")
+
+    try:
+        web_server._deliver_agent_message = forbidden_delivery  # type: ignore[assignment]
+        web_server._local_corpus_inventory_answer = fake_inventory  # type: ignore[assignment]
+        web_server.RagRetrievalService.retrieve = forbidden_rag  # type: ignore[assignment]
+        for index, prompt in enumerate(candidate_prompts):
+            fake = SequencedClient(
+                [
+                    json.dumps(
+                        {
+                            "tool": "answer",
+                            "reason": "I need a candidate set before judging the user's selection request.",
+                            "information_needs": [
+                                {
+                                    "need_type": "candidate_set",
+                                    "scope": "local modpack corpus",
+                                    "reason": "The answer must choose from local modpack candidates.",
+                                    "observation_hint": "local corpus inventory",
+                                },
+                                {
+                                    "need_type": "candidate_attributes",
+                                    "scope": "candidate modpacks",
+                                    "reason": "The candidates need visible attributes before I can judge fit.",
+                                },
+                            ],
+                        }
+                    ),
+                    "I can judge from the inventory: Craftoria and Closing Song are visible candidates; Prominence II needs more gameplay evidence.",
+                ]
+            )
+            web_server._selected_llm_client = lambda *_args, _fake=fake, **_kwargs: (_fake, "fake")  # type: ignore[assignment]
+            with tempfile.TemporaryDirectory() as tmp:
+                result = web_server._send_agent_message(
+                    make_temp_config(Path(tmp)),
+                    {"session_id": f"fastapi-info-needs-{index}", "model": "fake-model"},
+                    from_agent="User",
+                    content=prompt,
+                    to_agent="MCagent",
+                    intent="user_chat",
+                    conversation_id=f"fastapi-info-needs-{index}",
+                )
+            answer = str(result.get("answer") or "")
+            assert_true(f"inventory_answer_{index}", "Craftoria" in answer and "Prominence" in answer, answer)
+            agent_runtime = result.get("agent_graph_runtime") or {}
+            visited = agent_runtime.get("visited_nodes") or []
+            assert_true(f"inventory_graph_node_{index}", "mcagent.graph_local_corpus_inventory_route" in visited, str(visited))
+            assert_true(f"rag_not_called_{index}", "mcagent.graph_rag_answer_route" not in visited, str(visited))
+            route_decision = agent_runtime.get("route_decision") or {}
+            assert_true(f"route_information_needs_{index}", (route_decision.get("information_needs") or [{}])[0].get("need_type") == "candidate_set", str(route_decision))
+            traces = [(step.get("stage"), step.get("status")) for step in result.get("trace") or []]
+            assert_true(f"information_needs_trace_{index}", ("plan", "information_needs") in traces, str(traces))
+            assert_true(f"observation_selected_trace_{index}", ("plan", "information_need_observation_selected") in traces, str(traces))
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._deliver_agent_message = original_delivery  # type: ignore[assignment]
+        web_server._local_corpus_inventory_answer = original_inventory  # type: ignore[assignment]
+        web_server.RagRetrievalService.retrieve = original_retriever  # type: ignore[assignment]
+
+
 def main() -> int:
     test_fastapi_core_routes()
     test_fastapi_sse_chat_shape()
@@ -1958,6 +2055,7 @@ def main() -> int:
     test_mcagent_inventory_plan_cannot_smuggle_delegate_tool()
     test_mcagent_inventory_planned_workflow_without_handoff_uses_inventory_node()
     test_mcagent_natural_language_inventory_plan_uses_inventory_node()
+    test_mcagent_information_needs_candidate_set_uses_inventory_before_rag()
     print("FASTAPI BACKEND SCENARIOS PASSED")
     return 0
 

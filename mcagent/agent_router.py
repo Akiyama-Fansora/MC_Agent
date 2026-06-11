@@ -7,7 +7,7 @@ import time
 from typing import Any, Callable, Protocol
 
 from .config import AppConfig
-from .agent_runtime import normalize_agent_tool_decision, tool_catalog_prompt, tool_names_for_agent
+from .agent_runtime import normalize_agent_tool_decision, normalize_information_needs, tool_catalog_prompt, tool_names_for_agent
 
 
 class TraceCapableRun(Protocol):
@@ -38,6 +38,7 @@ class AgentRouteDecision:
     rag_focus: str = ""
     planned_workflow: bool = False
     planned_delegate: bool = False
+    information_needs: list[dict[str, Any]] = field(default_factory=list)
 
 
 class AgentToolRouterService:
@@ -78,6 +79,9 @@ class AgentToolRouterService:
         route_intent = str(tool_decision.get("tool") or "answer")
         action_plan = tool_decision.get("action_plan") if isinstance(tool_decision.get("action_plan"), list) else []
         rag_focus = str(tool_decision.get("rag_focus") or "").strip()
+        information_needs = normalize_information_needs(tool_decision.get("information_needs"))
+        if information_needs:
+            tool_decision["information_needs"] = information_needs
         run.add_trace(
             "decide",
             "tool_selected",
@@ -92,6 +96,8 @@ class AgentToolRouterService:
             run.add_trace("plan", "created", {"steps": action_plan})
         if rag_focus:
             run.add_trace("plan", "rag_focus", {"question": rag_focus})
+        if information_needs:
+            run.add_trace("plan", "information_needs", {"needs": information_needs})
 
         review_decision = self._review_cross_agent_message_miss(
             run,
@@ -104,6 +110,9 @@ class AgentToolRouterService:
             tool_decision = review_decision
             action_plan = tool_decision.get("action_plan") if isinstance(tool_decision.get("action_plan"), list) else []
             rag_focus = str(tool_decision.get("rag_focus") or "").strip()
+            information_needs = normalize_information_needs(tool_decision.get("information_needs"))
+            if information_needs:
+                tool_decision["information_needs"] = information_needs
             run.add_trace(
                 "decide",
                 "cross_agent_message_route_corrected",
@@ -131,6 +140,7 @@ class AgentToolRouterService:
                 rag_focus=rag_focus,
                 planned_workflow=False,
                 planned_delegate=False,
+                information_needs=information_needs,
             )
 
         if route_intent in {"temporary_extract", "status", "agent_message"}:
@@ -152,6 +162,7 @@ class AgentToolRouterService:
                 rag_focus=rag_focus,
                 planned_workflow=False,
                 planned_delegate=False,
+                information_needs=information_needs,
             )
 
         if self._can_reuse_collection_request_decision(run, route_intent=route_intent, action_plan=action_plan):
@@ -182,6 +193,7 @@ class AgentToolRouterService:
                 rag_focus=rag_focus,
                 planned_workflow=planned_workflow,
                 planned_delegate=planned_delegate,
+                information_needs=information_needs,
             )
 
         confirmation_started = time.time()
@@ -222,6 +234,7 @@ class AgentToolRouterService:
             rag_focus=rag_focus,
             planned_workflow=planned_workflow,
             planned_delegate=planned_delegate,
+            information_needs=information_needs,
         )
 
     def _can_reuse_collection_request_decision(
@@ -455,6 +468,7 @@ class LlmAgentToolRouterService(AgentToolRouterService):
                 "CrawlerAgent 复合沟通边界：如果 CrawlerAgent 收到用户要求先问 MCagent、查看 MCagent 本地缺口或获取 MCagent 上下文，并且同一目标还要求再补充、采集、入库或交付资料，这不是单独的 mcagent_context，也不是本地 RAG 回答；CrawlerAgent 可选择 planned_workflow，并在 action_plan 中依次包含 mcagent_context 与 delegate_crawler。只有用户只要求问 MCagent、没有后续采集副作用时，才选择 mcagent_context 单步。\n"
                 "跨 Agent 沟通原则：消息通道只负责把内容送给目标 Agent，收到消息的 Agent 再根据自己的工具目录判断下一步。若当前 Agent 需要对方能力，选择能完成这次消息投递的工具，例如向 MCagent 询问本地上下文或向 CrawlerAgent 交付采集目标。\n"
                 "Cross-Agent communication rule: agent_message is the only From-Content-To communication tool exposed to route a message to another participant. The LLM must semantically decide whether to_agent is User, MCagent, or CrawlerAgent; names such as MCagent/Crawler may also be ordinary words or names. agent_message has no persistence and does not choose the receiver's next tool. MCagent must never describe a separate delegation API/function/scheduler for talking to CrawlerAgent.\n"
+                "Information-needs planning layer: before choosing the next observation, list the facts the active Agent needs to answer. This is not a tool call and not a recommendation script. Use information_needs as a general model of missing facts: candidate_set when the answer requires choosing, ranking, comparing, recommending, selecting, or describing a set of local corpus entities; candidate_attributes when candidates must be compared by properties such as beginner fit, theme, versions, evidence coverage, or completeness; specific_evidence when the question is about one known subject; evaluation_criteria when the Agent needs criteria for judging fit or quality; external_gap only when public/outside data may be needed. Tools only observe; the Agent later judges from observations. Do not encode one user sentence or keyword as a special route.\n"
                 "CrawlerAgent 请求原则：给 CrawlerAgent 的 content 不是搜索词，也不是给工具的死规则，而是给 CrawlerAgent 的自然语言消息。若任务目标依赖上下文，要把相关背景自然写进消息；不要拆成关键词，也不要丢掉用户原话。\n"
                 "复合任务可以选择 planned_workflow，并给出 action_plan；简单、可直接回答的内容可以选择 direct_answer。\n"
                 "planned_workflow 完整性原则：action_plan 必须覆盖用户请求中的所有可执行动作。若 MCagent 的用户目标要求 CrawlerAgent 采集、补充资料、保存、入库或启动后台工作，MCagent 的计划不能伪造采集工具，只能包含 agent_message to CrawlerAgent；后续采集动作由 CrawlerAgent 收到消息后自己选择。若用户只要求解释或总结，则不要加入跨 Agent 消息。\n"
@@ -474,6 +488,7 @@ class LlmAgentToolRouterService(AgentToolRouterService):
                 "\"to_agent\":\"User|MCagent|CrawlerAgent; only when tool=agent_message\", "
                 "\"content\":\"From-Content-To message body; only when tool=agent_message\", "
                 "\"intent\":\"optional semantic intent for agent_message\", "
+                "\"information_needs\":[{\"need_type\":\"candidate_set|candidate_attributes|specific_evidence|evaluation_criteria|external_gap\",\"scope\":\"what corpus/entity/source set this fact concerns\",\"reason\":\"why the Agent needs this fact before judging\",\"observation_hint\":\"optional objective observation direction, not a forced tool\"}], "
                 f"\"action_plan\":[{{\"step\":1,\"tool\":\"{allowed_step_tools}\",\"goal\":\"这一步要完成什么\"}}]}}"
             )
             raw_text = client.chat(
@@ -484,7 +499,7 @@ class LlmAgentToolRouterService(AgentToolRouterService):
                 temperature=0.0,
                 max_tokens=1400,
             )
-            schema_hint = '{"tool":"allowed tool name","reason":"why","rag_focus":"","collection_target":"","delivery_target":"human|MCagent/RAG|","to_agent":"User|MCagent|CrawlerAgent","content":"message body","intent":"","action_plan":[]}'
+            schema_hint = '{"tool":"allowed tool name","reason":"why","rag_focus":"","collection_target":"","delivery_target":"human|MCagent/RAG|","to_agent":"User|MCagent|CrawlerAgent","content":"message body","intent":"","information_needs":[{"need_type":"candidate_set|candidate_attributes|specific_evidence|evaluation_criteria|external_gap","scope":"","reason":"","observation_hint":""}],"action_plan":[]}'
             try:
                 value = json_object_from_llm_text(raw_text)
             except Exception as parse_exc:

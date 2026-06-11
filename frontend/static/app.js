@@ -197,6 +197,28 @@ function actionActorForTrace(step, detail = {}) {
 function agentActionTextForTrace(step) {
   const detail = step?.detail || {};
   const stage = `${step?.stage || ""}:${step?.status || ""}`;
+  if (stage === "plan:information_needs") {
+    const labels = Array.isArray(detail.labels) && detail.labels.length
+      ? detail.labels
+      : (detail.needs || []).map((item) => {
+        const type = item.need_type || "";
+        return {
+          candidate_set: "候选集合",
+          candidate_attributes: "候选属性",
+          specific_evidence: "具体证据",
+          evaluation_criteria: "评价标准",
+          external_gap: "外部缺口",
+        }[type] || type;
+      }).filter(Boolean);
+    const reasons = (detail.needs || []).map((item) => item.reason || item.scope || "").filter(Boolean).slice(0, 2).join("；");
+    return `我判断这轮需要：${labels.join("、") || "更多事实"}${reasons ? `。原因：${reasons}` : ""}`;
+  }
+  if (stage === "plan:information_need_observation_selected") {
+    return `我先补一个客观观察：${detail.tool || "local_corpus_inventory"}。${detail.reason || ""}`;
+  }
+  if (stage === "plan:unmet_information_need_recovered") {
+    return `刚才检索没有结果，但我还有未满足的信息需求，所以先转去盘点候选集合。${detail.reason || ""}`;
+  }
   const agentReport = detailText(detail, ["agent_report", "narration", "progress_report", "self_report", "agent_observation"]);
   if (agentReport) return agentReport;
   const activeName = actionActorForTrace(step, detail);

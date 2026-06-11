@@ -196,6 +196,32 @@ def test_agent_tool_decision_normalization() -> None:
     assert_equal("natural_inventory_step", natural_language_plan.action_plan[0]["tool"], "local_corpus_inventory")
     assert_equal("natural_final_answer_step", natural_language_plan.action_plan[1]["tool"], "final_answer_llm")
 
+    needs_decision = normalize_agent_tool_decision(
+        {
+            "tool": "answer",
+            "information_needs": [
+                {
+                    "need_type": "candidate_set",
+                    "scope": "local modpack corpus",
+                    "reason": "The answer requires choosing among local candidates.",
+                    "observation_hint": "inspect local corpus inventory",
+                },
+                {"need_type": "unsupported_need", "scope": "ignored", "reason": "ignored"},
+                {
+                    "need_type": "candidate_attributes",
+                    "scope": "candidate modpacks",
+                    "reason": "Compare visible beginner-fit attributes.",
+                },
+            ],
+        },
+        agent_id="mcagent_rag",
+        original_question="Which local modpacks should I try first?",
+        planner="test",
+    )
+    assert_equal("information_need_count", len(needs_decision.information_needs), 2)
+    assert_equal("information_need_type", needs_decision.information_needs[0]["need_type"], "candidate_set")
+    assert_equal("invalid_information_need_filtered", [item["need_type"] for item in needs_decision.information_needs], ["candidate_set", "candidate_attributes"])
+
 
 def test_handoff_contract_preserves_context() -> None:
     contract = build_handoff_contract(

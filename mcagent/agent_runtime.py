@@ -7,6 +7,16 @@ from typing import Any, Iterable
 
 from .crawler_capabilities import capability_catalog_prompt
 
+INFORMATION_NEED_TYPES = frozenset(
+    {
+        "candidate_set",
+        "candidate_attributes",
+        "specific_evidence",
+        "evaluation_criteria",
+        "external_gap",
+    }
+)
+
 
 LLM_OWNERSHIP_PRINCIPLES = [
     "LLM owns interpretation, tool choice, reflection, and final answer wording.",
@@ -109,6 +119,7 @@ class AgentToolDecision:
     content: str = ""
     intent: str = ""
     action_plan: list[dict[str, Any]] = field(default_factory=list)
+    information_needs: list[dict[str, Any]] = field(default_factory=list)
     planner: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -122,6 +133,7 @@ class AgentToolDecision:
             "content": self.content,
             "intent": self.intent,
             "action_plan": self.action_plan,
+            "information_needs": self.information_needs,
             "planner": self.planner,
         }
 
@@ -198,6 +210,35 @@ def _normalize_action_step_tool(agent_id: str, raw_step_tool: str, goal: str, al
     return "" if step_tool not in allowed_action_tools else step_tool
 
 
+def normalize_information_needs(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    needs: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw in value[:10]:
+        if not isinstance(raw, dict):
+            continue
+        need_type = str(raw.get("need_type") or "").strip().lower()
+        if need_type not in INFORMATION_NEED_TYPES:
+            continue
+        scope = str(raw.get("scope") or "").strip()[:240]
+        reason = str(raw.get("reason") or "").strip()[:360]
+        observation_hint = str(raw.get("observation_hint") or "").strip()[:280]
+        key = (need_type, scope.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        item = {
+            "need_type": need_type,
+            "scope": scope,
+            "reason": reason,
+        }
+        if observation_hint:
+            item["observation_hint"] = observation_hint
+        needs.append(item)
+    return needs
+
+
 def normalize_agent_tool_decision(
     value: dict[str, Any],
     *,
@@ -233,6 +274,7 @@ def normalize_agent_tool_decision(
             if step_label:
                 normalized_step["step_label"] = step_label
             action_plan.append(normalized_step)
+    information_needs = normalize_information_needs(value.get("information_needs"))
 
     return AgentToolDecision(
         tool=tool,
@@ -251,6 +293,7 @@ def normalize_agent_tool_decision(
         content=str(value.get("content") or value.get("message") or "").strip(),
         intent=str(value.get("intent") or "").strip(),
         action_plan=action_plan,
+        information_needs=information_needs,
         planner=planner,
     )
 

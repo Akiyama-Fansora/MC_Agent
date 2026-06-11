@@ -29,6 +29,7 @@ from .agent_runtime import (
     build_handoff_contract,
     classify_crawler_tool_result,
     make_agent_loop_event,
+    normalize_information_needs,
 )
 from .artifact_reference_service import ArtifactReferenceService
 from .artifact_save_service import ArtifactSaveError, ArtifactSaveService
@@ -4814,6 +4815,18 @@ def _inventory_observation_for_prompt(inventory: dict[str, Any]) -> str:
     return json.dumps(compact, ensure_ascii=False, indent=2)
 
 
+def _inventory_information_needs_for_prompt(inventory: dict[str, Any]) -> str:
+    metadata = inventory.get("metadata") if isinstance(inventory.get("metadata"), dict) else {}
+    needs = normalize_information_needs(metadata.get("information_needs"))
+    if not needs:
+        return ""
+    return (
+        "\n\ninformation_needs_declared_by_agent:\n"
+        + json.dumps(needs, ensure_ascii=False, indent=2)
+        + "\n\nIf the needs include candidate_set or candidate_attributes, the Agent must use the raw inventory observation to identify candidates and visible attributes. If the user asks for recommendation, ranking, fit, or selection, the Agent must make that judgment itself from observations and separate judgeable candidates from evidence gaps."
+    )
+
+
 def _generate_inventory_agent_answer(
     config: AppConfig,
     *,
@@ -4826,6 +4839,7 @@ def _generate_inventory_agent_answer(
     agent: str,
 ) -> tuple[str, str]:
     observation_text = _inventory_observation_for_prompt(inventory)
+    observation_text += _inventory_information_needs_for_prompt(inventory)
     if not observation_text:
         return str(inventory.get("answer") or ""), ""
     role_name = "CrawlerAgent" if agent == "crawler_agent" else "MCagent"
@@ -9663,6 +9677,58 @@ def _trace_agent_message(add_trace: Any, message: AgentMessage, status: str = "r
     add_trace("message", status, message.to_dict())
 
 
+def _information_needs_from_mapping(value: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(value, dict):
+        return []
+    needs = normalize_information_needs(value.get("information_needs"))
+    if needs:
+        return needs
+    decision = value.get("tool_decision")
+    if isinstance(decision, dict):
+        return normalize_information_needs(decision.get("information_needs"))
+    return []
+
+
+def _needs_information_type(needs: list[dict[str, Any]], need_type: str) -> bool:
+    return any(str(item.get("need_type") or "") == need_type for item in needs if isinstance(item, dict))
+
+
+def _needs_candidate_set(needs: list[dict[str, Any]]) -> bool:
+    return _needs_information_type(needs, "candidate_set")
+
+
+def _information_need_type_labels(needs: list[dict[str, Any]]) -> list[str]:
+    labels = {
+        "candidate_set": "候选集合",
+        "candidate_attributes": "候选属性",
+        "specific_evidence": "具体证据",
+        "evaluation_criteria": "评价标准",
+        "external_gap": "外部缺口",
+    }
+    result: list[str] = []
+    for item in needs:
+        need_type = str((item or {}).get("need_type") or "")
+        label = labels.get(need_type, need_type)
+        if label and label not in result:
+            result.append(label)
+    return result
+
+
+def _trace_information_needs(add_trace: Any, needs: list[dict[str, Any]], *, reused_graph_route_decision: bool = False) -> None:
+    if not needs:
+        return
+    add_trace(
+        "plan",
+        "information_needs",
+        {
+            "needs": needs,
+            "need_types": [str(item.get("need_type") or "") for item in needs],
+            "labels": _information_need_type_labels(needs),
+            "reused_graph_route_decision": reused_graph_route_decision,
+        },
+    )
+
+
 def _trusted_graph_route_decision(payload: dict[str, Any], *, agent: str) -> dict[str, Any]:
     decision = payload.get("_graph_route_decision")
     if not isinstance(decision, dict):
@@ -9683,6 +9749,9 @@ def _route_from_graph_decision(decision: dict[str, Any], *, add_trace: Any, orig
     rag_focus = str(decision.get("rag_focus") or "")
     route_intent = str(decision.get("route_intent") or tool_decision.get("tool") or "answer")
     selected_tool = str(decision.get("selected_tool") or tool_decision.get("tool") or route_intent)
+    information_needs = _information_needs_from_mapping(decision) or _information_needs_from_mapping(tool_decision)
+    if information_needs:
+        tool_decision["information_needs"] = information_needs
     add_trace(
         "decide",
         "tool_selected",
@@ -9699,6 +9768,7 @@ def _route_from_graph_decision(decision: dict[str, Any], *, add_trace: Any, orig
         add_trace("plan", "created", {"steps": action_plan, "reused_graph_route_decision": True})
     if rag_focus:
         add_trace("plan", "rag_focus", {"question": rag_focus, "reused_graph_route_decision": True})
+    _trace_information_needs(add_trace, information_needs, reused_graph_route_decision=True)
     confirmation_trace = dict(route_confirmation)
     confirmation_trace["reused_graph_route_decision"] = True
     confirmation_trace["route_decision_id"] = decision.get("route_decision_id") or ""
@@ -9711,6 +9781,7 @@ def _route_from_graph_decision(decision: dict[str, Any], *, add_trace: Any, orig
         rag_focus=rag_focus,
         planned_workflow=bool(decision.get("planned_workflow")),
         planned_delegate=bool(decision.get("planned_delegate")),
+        information_needs=information_needs,
     )
 
 
@@ -9816,7 +9887,30 @@ def _route_agent_decision_for_graph(
     tool_decision = dict(route.tool_decision)
     route_confirmation = dict(route.route_confirmation)
     action_plan = [dict(item) for item in route.action_plan if isinstance(item, dict)]
+    information_needs = normalize_information_needs(route.information_needs or tool_decision.get("information_needs"))
+    if information_needs:
+        tool_decision["information_needs"] = information_needs
     route_intent_for_graph = route.route_intent
+    information_needs_force_inventory = (
+        agent == "mcagent_rag"
+        and _needs_candidate_set(information_needs)
+        and route.route_intent in {"answer", "local_rag_search"}
+        and not route.planned_delegate
+        and not _action_plan_has_tool(action_plan, "delegate_crawler")
+        and not _action_plan_has_tool(action_plan, "agent_message")
+    )
+    if information_needs_force_inventory:
+        route_intent_for_graph = "local_corpus_inventory"
+        run.add_trace(
+            "plan",
+            "information_need_observation_selected",
+            {
+                "need_type": "candidate_set",
+                "tool": "local_corpus_inventory",
+                "reason": "MCagent declared that it needs a candidate set before judging; runtime executes the objective inventory observation before local RAG fallback.",
+                "information_needs": information_needs,
+            },
+        )
     if (
         agent == "mcagent_rag"
         and route.planned_workflow
@@ -9892,6 +9986,7 @@ def _route_agent_decision_for_graph(
         "tool_decision": tool_decision,
         "route_confirmation": route_confirmation,
         "action_plan": action_plan,
+        "information_needs": information_needs,
         "rag_focus": route.rag_focus,
         "planned_workflow": route.planned_workflow,
         "original_route_intent": route.route_intent,
@@ -10060,6 +10155,15 @@ def _execute_graph_local_corpus_inventory_route(
     question = str(route_decision.get("question") or payload.get("question") or payload.get("query") or "")
     original_question = str(route_decision.get("original_question") or question)
     inventory = dict(_local_corpus_inventory_answer(config, question))
+    information_needs = _information_needs_from_mapping(route_decision) or _information_needs_from_mapping(tool_decision)
+    if information_needs:
+        inventory = {
+            **inventory,
+            "metadata": {
+                **(inventory.get("metadata") if isinstance(inventory.get("metadata"), dict) else {}),
+                "information_needs": information_needs,
+            },
+        }
     graph_payload = dict(payload)
     graph_payload["agent"] = agent_id
     run = build_agent_execution_context(config, graph_payload, token_resolver=_answer_max_tokens, emit=emit)
@@ -11596,6 +11700,15 @@ def _handle_local_corpus_inventory_route(
 
     add_trace("retrieve", "inventory_scanning", {"db_path": str(config.paths.db_path)})
     inventory = _local_corpus_inventory_answer(config, question)
+    information_needs = _information_needs_from_mapping(tool_decision)
+    if information_needs:
+        inventory = {
+            **inventory,
+            "metadata": {
+                **(inventory.get("metadata") if isinstance(inventory.get("metadata"), dict) else {}),
+                "information_needs": information_needs,
+            },
+        }
     inventory = _with_agent_inventory_answer(
         config,
         inventory,
@@ -12119,6 +12232,50 @@ def _handle_no_retrieval_results(
     trace: list[dict[str, Any]],
     add_trace: Any,
 ) -> dict[str, Any]:
+    information_needs = _information_needs_from_mapping(tool_decision)
+    if agent == "mcagent_rag" and _needs_candidate_set(information_needs):
+        add_trace(
+            "plan",
+            "unmet_information_need_recovered",
+            {
+                "need_type": "candidate_set",
+                "tool": "local_corpus_inventory",
+                "reason": "Local RAG returned no rough results, but MCagent had declared a candidate-set need that can still be objectively observed from the full local corpus inventory.",
+                "information_needs": information_needs,
+            },
+        )
+        executor = AgentToolExecutor(
+            generate_direct_answer=_generate_direct_answer,
+            generate_direct_answer_stream=_generate_direct_answer_stream,
+            generate_grounded_answer=_generate_grounded_answer,
+            generate_grounded_answer_stream=_generate_grounded_answer_stream,
+            repair_answer=_repair_list_answer,
+            status_answer=_crawler_monitor_answer,
+        )
+        fallback_run = build_agent_execution_context(config, {**payload, "agent": agent, "question": question}, token_resolver=_answer_max_tokens, emit=None)
+        fallback_run.original_question = original_question
+        fallback_run.question = question
+        return _handle_local_corpus_inventory_route(
+            config=config,
+            payload=payload,
+            agent=agent,
+            model=model,
+            original_question=original_question,
+            question=question,
+            tool_decision=tool_decision,
+            route_confirmation={
+                "proceed": True,
+                "tool": "local_corpus_inventory",
+                "reason": "Recovered unmet information need after empty RAG results.",
+                "planner": "information_needs_recovery",
+            },
+            action_plan=action_plan,
+            executor=executor,
+            run=fallback_run,
+            session_summary=session_summary,
+            trace=trace,
+            add_trace=add_trace,
+        )
     if planned_delegate:
         collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
         gap_summary = (
@@ -13449,6 +13606,28 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
     rag_focus = route.rag_focus
     planned_workflow = route.planned_workflow
     planned_delegate = route.planned_delegate
+    information_needs = normalize_information_needs(route.information_needs or tool_decision.get("information_needs"))
+    if information_needs:
+        tool_decision["information_needs"] = information_needs
+    if (
+        agent == "mcagent_rag"
+        and route_intent in {"answer", "local_rag_search"}
+        and _needs_candidate_set(information_needs)
+        and not planned_delegate
+        and not _action_plan_has_tool(action_plan, "delegate_crawler")
+        and not _action_plan_has_tool(action_plan, "agent_message")
+    ):
+        route_intent = "local_corpus_inventory"
+        add_trace(
+            "plan",
+            "information_need_observation_selected",
+            {
+                "need_type": "candidate_set",
+                "tool": "local_corpus_inventory",
+                "reason": "MCagent declared that it needs a candidate set before judging; runtime executes the objective inventory observation before local RAG fallback.",
+                "information_needs": information_needs,
+            },
+        )
     executor = AgentToolExecutor(
         generate_direct_answer=_generate_direct_answer,
         generate_direct_answer_stream=_generate_direct_answer_stream,

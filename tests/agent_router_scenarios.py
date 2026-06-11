@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -309,6 +310,46 @@ def test_llm_router_allows_local_corpus_inventory_tool() -> None:
     assert_true("inventory_in_catalog", "local_corpus_inventory" in fake.calls[0]["messages"][1]["content"])
 
 
+def test_llm_router_preserves_information_needs_in_route_and_trace() -> None:
+    tmp, run = make_run("Which local modpack should I try first?")
+    fake = FakeClient(
+        json.dumps(
+            {
+                "tool": "answer",
+                "reason": "The agent needs observations before judging.",
+                "information_needs": [
+                    {
+                        "need_type": "candidate_set",
+                        "scope": "local modpack corpus",
+                        "reason": "The answer must choose from local candidates.",
+                        "observation_hint": "inventory",
+                    },
+                    {
+                        "need_type": "candidate_attributes",
+                        "scope": "candidate modpacks",
+                        "reason": "The candidates need comparable attributes.",
+                    },
+                ],
+            }
+        )
+    )
+    try:
+        service = LlmAgentToolRouterService(
+            select_client=lambda _config, _model, _temperature: (fake, "fake-router"),
+            action_plan_has_tool=lambda _plan, _tool: False,
+        )
+        route = service.route(run, session_summary={})
+    finally:
+        tmp.cleanup()
+
+    assert_equal("route_tool", route.route_intent, "answer")
+    assert_equal("route_need_count", len(route.information_needs), 2)
+    assert_equal("tool_decision_need", route.tool_decision["information_needs"][0]["need_type"], "candidate_set")
+    statuses = [(step["stage"], step["status"]) for step in run.trace.steps]
+    assert_true("information_needs_trace", ("plan", "information_needs") in statuses, str(statuses))
+    assert_true("prompt_mentions_information_needs", "information_needs" in fake.calls[0]["messages"][1]["content"])
+
+
 def test_llm_router_reviews_missed_cross_agent_message_route() -> None:
     tmp, run = make_run("麻烦问一下 CrawlerAgent：1+1 等于几")
     fake = SequencedFakeClient(
@@ -517,6 +558,7 @@ def main() -> int:
     test_crawler_collection_request_reuses_agent_decision_confirmation()
     test_llm_router_owns_prompt_and_json_parsing()
     test_llm_router_allows_local_corpus_inventory_tool()
+    test_llm_router_preserves_information_needs_in_route_and_trace()
     test_llm_router_reviews_missed_cross_agent_message_route()
     test_llm_router_cross_agent_review_can_decline_ordinary_mentions()
     test_mcagent_router_exposes_crawler_contact_only_as_agent_message()

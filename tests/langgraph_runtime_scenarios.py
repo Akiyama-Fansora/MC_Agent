@@ -1766,6 +1766,75 @@ def test_no_retrieval_results_without_selected_delegate_does_not_start_job() -> 
     assert_true("no_auto_crawler_text", "本轮不会自动通知 Crawler" in str(result.get("answer") or ""), str(result))
 
 
+def test_no_retrieval_results_recovers_unmet_candidate_set_need_with_inventory() -> None:
+    trace: list[dict[str, Any]] = []
+
+    def add_trace(stage, status, detail=None):  # noqa: ANN001
+        item = {"stage": stage, "status": status, "detail": detail}
+        trace.append(item)
+        return item
+
+    original_inventory = web_server._local_corpus_inventory_answer
+    original_selector = web_server._selected_llm_client
+
+    def fake_inventory(_config, _question):  # noqa: ANN001
+        return {
+            "answer": "Inventory candidates: Craftoria, Closing Song, Prominence II.",
+            "sources": [{"title": "inventory", "document_id": 1}],
+            "context": "inventory context",
+            "agent": "mcagent_rag",
+            "metadata": {
+                "inventory_observation": {
+                    "document_count": 3,
+                    "scanned_documents": 3,
+                    "entity_candidates": [{"canonical_name": "Craftoria"}, {"canonical_name": "Closing Song"}, {"canonical_name": "Prominence II"}],
+                    "bucket_summary": [],
+                    "tool_boundary": "objective observation only",
+                }
+            },
+        }
+
+    class FakeClient:
+        def chat(self, *_args, **_kwargs):  # noqa: ANN002, ANN003
+            return "I found candidate modpacks from inventory and can now judge from visible evidence."
+
+    try:
+        web_server._local_corpus_inventory_answer = fake_inventory  # type: ignore[assignment]
+        web_server._selected_llm_client = lambda *_args, **_kwargs: (FakeClient(), "fake")  # type: ignore[assignment]
+        result = web_server._handle_no_retrieval_results(
+            config=make_temp_config(Path(tempfile.gettempdir())),
+            payload={"session_id": "candidate-set-recovery"},
+            agent="mcagent_rag",
+            model="fake",
+            original_question="Choose a local modpack for a new world.",
+            question="Choose a local modpack for a new world.",
+            tool_decision={
+                "tool": "answer",
+                "information_needs": [
+                    {
+                        "need_type": "candidate_set",
+                        "scope": "local modpack corpus",
+                        "reason": "The answer must choose from local candidates.",
+                    }
+                ],
+            },
+            action_plan=[],
+            planned_delegate=False,
+            evidence_question="Choose a local modpack for a new world.",
+            session_summary={},
+            trace=trace,
+            add_trace=add_trace,
+        )
+    finally:
+        web_server._local_corpus_inventory_answer = original_inventory  # type: ignore[assignment]
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+
+    statuses = [(item.get("stage"), item.get("status")) for item in result.get("trace") or []]
+    assert_true("recovery_trace", ("plan", "unmet_information_need_recovered") in statuses, str(statuses))
+    assert_true("inventory_trace", ("retrieve", "inventory_done") in statuses, str(statuses))
+    assert_true("inventory_answer", "candidate modpacks" in str(result.get("answer") or "") or "Craftoria" in str(result.get("answer") or ""), str(result))
+
+
 def test_no_retrieval_results_with_selected_delegate_starts_job() -> None:
     calls: list[dict[str, Any]] = []
 
@@ -1844,6 +1913,7 @@ def main() -> int:
     test_crawler_action_plan_delegate_route_starts_selected_job()
     test_mcagent_inventory_planned_workflow_delegates_only_selected_step()
     test_no_retrieval_results_without_selected_delegate_does_not_start_job()
+    test_no_retrieval_results_recovers_unmet_candidate_set_need_with_inventory()
     test_no_retrieval_results_with_selected_delegate_starts_job()
     print("LANGGRAPH RUNTIME SCENARIOS PASSED")
     return 0
