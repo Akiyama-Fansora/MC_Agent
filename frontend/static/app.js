@@ -15,6 +15,7 @@ const state = {
   editingProfileId: "",
   actionTimeline: [],
   actionTimelineSessionId: "",
+  actionTimelineTurnId: "",
 };
 
 const $ = (id) => document.getElementById(id);
@@ -337,6 +338,19 @@ function recordAgentAction({ actor = "", text = "", kind = "", meta = "", messag
   renderAgentActions();
 }
 
+function resetAgentActionsForTurn(sessionId = "", turnId = "", force = false) {
+  const nextSessionId = String(sessionId || "");
+  const nextTurnId = String(turnId || "");
+  if (!force && state.actionTimelineSessionId === nextSessionId && state.actionTimelineTurnId === nextTurnId) {
+    renderAgentActions();
+    return;
+  }
+  state.actionTimeline = [];
+  state.actionTimelineSessionId = nextSessionId;
+  state.actionTimelineTurnId = nextTurnId;
+  renderAgentActions();
+}
+
 function resetAgentActionsForSession(force = false) {
   const session = activeSession();
   const sessionId = session?.id || "";
@@ -346,6 +360,7 @@ function resetAgentActionsForSession(force = false) {
   }
   state.actionTimeline = [];
   state.actionTimelineSessionId = sessionId;
+  state.actionTimelineTurnId = "";
   for (const [index, message] of (session?.messages || []).entries()) {
     if (message.role !== "assistant") continue;
     const key = messageActionId(session.id, index);
@@ -1682,6 +1697,8 @@ async function sendQuestion(event) {
   const controller = new AbortController();
   const currentChat = { controller, sessionId: session.id, pendingIndex };
   state.currentChat = currentChat;
+  const messageKey = messageActionId(session.id, pendingIndex);
+  resetAgentActionsForTurn(session.id, messageKey, true);
   updateComposerState();
   renderMessages();
 
@@ -1709,7 +1726,6 @@ async function sendQuestion(event) {
 
   try {
     const pendingMessage = session.messages[pendingIndex];
-    const messageKey = messageActionId(session.id, pendingIndex);
     if (payload.agent === "mcagent_rag") {
       const initialText = `我收到你的问题：${question}`;
       setActivity(initialText, "thinking");
@@ -1881,6 +1897,7 @@ async function runCrawler() {
     const session = activeSession();
     const message = session.messages[pendingIndex];
     const messageKey = messageActionId(session.id, pendingIndex);
+    resetAgentActionsForTurn(session.id, messageKey, true);
     setInitialProcessStep(message, `我收到你的采集请求：${question}`, {
       actor: "CrawlerAgent",
       kind: "start",

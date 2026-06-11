@@ -131,8 +131,52 @@ def test_agent_action_timeline_survives_message_rerender() -> None:
     )
 
 
+def test_agent_action_timeline_resets_for_each_turn() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), FrontendHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/"
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page = browser.new_page(viewport={"width": 1440, "height": 1000})
+            page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            page.wait_for_selector("#agentActionTimeline", timeout=10000)
+            result = page.evaluate(
+                """
+                () => {
+                  resetAgentActionsForTurn("session-a", "turn-1", true);
+                  recordAgentAction({ actor: "MCagent", text: "first turn step", messageKey: "turn-1" });
+                  const firstCount = document.querySelectorAll("#agentActionTimeline .agent-action-row").length;
+                  resetAgentActionsForTurn("session-a", "turn-2", true);
+                  recordAgentAction({ actor: "MCagent", text: "second turn step", messageKey: "turn-2" });
+                  const rows = [...document.querySelectorAll("#agentActionTimeline .agent-action-text")]
+                    .map((item) => item.textContent.trim());
+                  return {
+                    firstCount,
+                    secondCount: rows.length,
+                    rows,
+                    sessionId: state.actionTimelineSessionId,
+                    turnId: state.actionTimelineTurnId
+                  };
+                }
+                """
+            )
+            browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert_equal("first_turn_count", result["firstCount"], 1)
+    assert_equal("second_turn_count", result["secondCount"], 1)
+    assert_equal("second_turn_rows", result["rows"], ["second turn step"])
+    assert_equal("timeline_session", result["sessionId"], "session-a")
+    assert_equal("timeline_turn", result["turnId"], "turn-2")
+
+
 def main() -> int:
     test_agent_action_timeline_survives_message_rerender()
+    test_agent_action_timeline_resets_for_each_turn()
     print("FRONTEND ACTION TIMELINE SCENARIOS PASSED")
     return 0
 

@@ -12772,6 +12772,20 @@ def _tool_route_completeness_review(
 ) -> dict[str, Any]:
     """Ask the active Agent whether an early-return tool covered the whole user request."""
 
+    del config, agent, model, original_question, selected_tool, tool_answer, tool_decision, route_confirmation, action_plan
+    return {
+        "missing_side_effect": False,
+        "tool": "",
+        "action": "allow",
+        "reason": (
+            "Runtime did not run a second semantic completeness judge. "
+            "Only the active Agent's selected route can introduce another tool or side effect."
+        ),
+        "collection_target": "",
+        "delivery_target": "",
+        "planner": "runtime_boundary_fact",
+    }
+
     try:
         client, label = _selected_llm_client(config, model, 0.0, agent=agent, timeout_seconds=RUNTIME_REVIEW_LLM_TIMEOUT_SECONDS)
         prompt = (

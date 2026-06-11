@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sys
 
@@ -16,7 +17,9 @@ from mcagent.agent_runtime import (  # noqa: E402
     general_collection_tools_for_crawler,
     make_agent_loop_event,
     normalize_agent_tool_decision,
+    objective_tools_for_agent,
     tool_catalog_prompt,
+    tool_catalog_json,
 )
 from mcagent.crawler_llm_planner import plan_crawler_tasks_rule_fallback  # noqa: E402
 from mcagent.web_server import _job_readable_summary  # noqa: E402
@@ -226,6 +229,21 @@ def test_tool_catalog_exposes_agent_capabilities() -> None:
     assert_true("mcagent_rag_not_inventory", "must not be used to claim what the entire local library contains" in mcagent_catalog, mcagent_catalog)
 
 
+def test_objective_observation_tools_are_role_separated() -> None:
+    mcagent_objective = {tool.name for tool in objective_tools_for_agent("mcagent_rag")}
+    crawler_objective = {tool.name for tool in objective_tools_for_agent("crawler_agent")}
+    assert_true("mcagent_has_local_index_tools", {"read_session_memory", "search_local_index", "inspect_local_corpus", "read_indexed_document"}.issubset(mcagent_objective))
+    assert_true("mcagent_no_browser_or_write_tools", not {"web_discovery", "playwright_snapshot", "browser_collect", "save_artifact", "list_directory"}.intersection(mcagent_objective), str(mcagent_objective))
+    assert_true("crawler_has_generic_file_tools", {"list_directory", "read_file", "search_files_by_name", "search_files_by_content", "get_file_metadata"}.issubset(crawler_objective))
+    assert_true("crawler_has_doc_web_browser_tools", {"extract_text_from_pdf", "extract_text_from_docx", "extract_text_from_excel", "fetch_url", "web_discovery", "playwright_snapshot", "browser_collect", "save_artifact"}.issubset(crawler_objective))
+    assert_true("crawler_no_mcagent_index_tool", "inspect_local_corpus" not in crawler_objective)
+    mcagent_json = json.loads(tool_catalog_json("mcagent_rag"))
+    crawler_json = json.loads(tool_catalog_json("crawler_agent"))
+    assert_true("catalog_json_route_tools", any(item["name"] == "agent_message" for item in mcagent_json["route_tools"]))
+    assert_true("catalog_json_objective_tools", any(item["name"] == "inspect_local_corpus" for item in mcagent_json["objective_observation_tools"]))
+    assert_true("crawler_catalog_json_objective_tools", any(item["name"] == "list_directory" for item in crawler_json["objective_observation_tools"]))
+
+
 def test_session_summary_preserves_recent_turns_from_ui_history() -> None:
     from mcagent import web_server
 
@@ -410,6 +428,7 @@ def main() -> int:
     test_agent_tool_decision_normalization()
     test_handoff_contract_preserves_context()
     test_tool_catalog_exposes_agent_capabilities()
+    test_objective_observation_tools_are_role_separated()
     test_crawler_collection_tools_are_grouped_by_general_and_domain()
     test_job_readable_summary_surfaces_observations()
     test_job_readable_recovers_target_from_long_question()

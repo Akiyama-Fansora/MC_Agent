@@ -339,7 +339,6 @@ def test_llm_router_cross_agent_review_can_decline_ordinary_mentions() -> None:
     fake = SequencedFakeClient(
         [
             '{"tool":"direct_answer","reason":"ordinary word explanation"}',
-            '{"proceed":true,"tool":"direct_answer","reason":"confirmed ordinary explanation"}',
         ]
     )
     try:
@@ -352,7 +351,8 @@ def test_llm_router_cross_agent_review_can_decline_ordinary_mentions() -> None:
         tmp.cleanup()
 
     assert_equal("keeps_direct_answer", route.route_intent, "direct_answer")
-    assert_equal("ordinary_mention_only_uses_initial_and_confirmation_calls", len(fake.calls), 2)
+    assert_equal("ordinary_mention_uses_only_agent_tool_selection_llm", len(fake.calls), 1)
+    assert_equal("runtime_preflight", route.route_confirmation.get("planner"), "runtime_preflight")
 
 
 def test_mcagent_router_exposes_crawler_contact_only_as_agent_message() -> None:

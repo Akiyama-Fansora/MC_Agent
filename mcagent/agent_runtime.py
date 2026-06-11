@@ -245,6 +245,193 @@ TOOL_RESULT_STATUSES = frozenset(
 )
 
 
+MCAGENT_OBJECTIVE_TOOL_NAMES = {
+    "read_session_memory",
+    "search_local_index",
+    "inspect_local_corpus",
+    "read_indexed_document",
+    "select_evidence",
+}
+
+
+CRAWLER_OBJECTIVE_TOOL_NAMES = {
+    "list_directory",
+    "read_file",
+    "search_files_by_name",
+    "search_files_by_content",
+    "get_file_metadata",
+    "extract_text_from_pdf",
+    "extract_text_from_docx",
+    "extract_text_from_excel",
+    "extract_text_from_archive",
+    "fetch_url",
+    "web_discovery",
+    "playwright_snapshot",
+    "browser_collect",
+    "save_artifact",
+}
+
+
+MCAGENT_OBJECTIVE_TOOLS = [
+    ToolSpec(
+        name="read_session_memory",
+        description="Read local conversation memory: user turns, agent replies, AgentMessage records, tool observations, and user corrections.",
+        input_schema={"session_id": "conversation id", "limit": "optional recent event limit"},
+        result_schema={"turns": "recent user/agent messages", "events": "AgentMessage/tool observations/preferences"},
+        side_effects="read_local_memory",
+        llm_final_answer_required=False,
+    ),
+    ToolSpec(
+        name="search_local_index",
+        description="Search the indexed local Minecraft knowledge base and return objective matching chunks/documents with scores, titles, paths, and snippets.",
+        input_schema={"query": "topic or evidence query", "limit": "optional result limit"},
+        result_schema={"matches": "ranked chunks/documents", "scores": "retrieval scores", "paths": "source paths"},
+        side_effects="read_local_index",
+        llm_final_answer_required=False,
+    ),
+    ToolSpec(
+        name="inspect_local_corpus",
+        description="Scan indexed local knowledge-base metadata across the whole corpus and return counts, titles, paths, source types, and mechanical entity candidates for Agent judgment.",
+        input_schema={"scope": "optional corpus scope such as modpacks, mods, vanilla, resources"},
+        result_schema={"counts": "objective counts by bucket", "documents": "representative raw records", "candidate_entities": "mechanically grouped names with evidence"},
+        side_effects="read_local_index",
+        llm_final_answer_required=False,
+    ),
+    ToolSpec(
+        name="read_indexed_document",
+        description="Read one already indexed local document/chunk/raw artifact by id/path for exact evidence inspection.",
+        input_schema={"document_id_or_path": "document id, chunk id, or source path", "max_chars": "optional read limit"},
+        result_schema={"text": "raw indexed text", "metadata": "title, path, source, timestamps"},
+        side_effects="read_local_index",
+        llm_final_answer_required=False,
+    ),
+    ToolSpec(
+        name="select_evidence",
+        description="Objectively package candidate evidence for the Agent to judge sufficiency; it does not decide the final answer.",
+        input_schema={"question": "user question", "candidates": "retrieval or corpus records"},
+        result_schema={"candidate_sources": "normalized evidence records", "gaps": "observable missing fields"},
+        side_effects="none",
+        llm_final_answer_required=False,
+    ),
+]
+
+
+CRAWLER_OBJECTIVE_TOOLS = [
+    ToolSpec(
+        name="list_directory",
+        description="List files and folders under a local path with optional recursion and shallow metadata.",
+        input_schema={"path": "directory path", "recursive": "optional boolean"},
+        result_schema={"entries": "names, paths, type, size, mtime"},
+        side_effects="read_filesystem",
+        llm_final_answer_required=False,
+    ),
+    ToolSpec(
+        name="read_file",
+        description="Read a local text file or text-like artifact with encoding and line/character limits.",
+        input_schema={"path": "file path", "encoding": "optional encoding", "start_line": "optional", "end_line": "optional", "max_chars": "optional"},
+        result_schema={"text": "file text", "metadata": "size, mtime, encoding, truncation"},
+        side_effects="read_filesystem",
+        llm_final_answer_required=False,
+    ),
+    ToolSpec(
+        name="search_files_by_name",
+        description="Find local files by glob or regex name pattern under a directory.",
+        input_schema={"path": "root directory", "pattern": "glob or regex", "recursive": "optional boolean"},
+        result_schema={"matches": "file paths and metadata"},
+        side_effects="read_filesystem",
+        llm_final_answer_required=False,
+    ),
+    ToolSpec(
+        name="search_files_by_content",
+        description="Search local text files for keywords or regex and return objective snippets with file paths and line numbers.",
+        input_schema={"path": "root path", "query": "keyword or regex", "max_files": "optional"},
+        result_schema={"matches": "paths, line numbers, snippets"},
+        side_effects="read_filesystem",
+        llm_final_answer_required=False,
+    ),
+    ToolSpec(
+        name="get_file_metadata",
+        description="Return local file metadata such as size, mtime, extension, type, and readability.",
+        input_schema={"path": "file or directory path"},
+        result_schema={"metadata": "objective filesystem metadata"},
+        side_effects="read_filesystem",
+        llm_final_answer_required=False,
+    ),
+    ToolSpec(
+        name="extract_text_from_pdf",
+        description="Extract text and page metadata from a local PDF for Agent review.",
+        input_schema={"path": "pdf path", "page_range": "optional"},
+        result_schema={"pages": "page text and metadata", "errors": "parse issues"},
+        side_effects="read_filesystem",
+        llm_final_answer_required=False,
+    ),
+    ToolSpec(
+        name="extract_text_from_docx",
+        description="Extract paragraphs/tables from a local Word document for Agent review.",
+        input_schema={"path": "docx path"},
+        result_schema={"text": "document text", "tables": "table text when available"},
+        side_effects="read_filesystem",
+        llm_final_answer_required=False,
+    ),
+    ToolSpec(
+        name="extract_text_from_excel",
+        description="Extract sheet names, cell ranges, and table-like text from a local spreadsheet.",
+        input_schema={"path": "xlsx/csv path", "sheet": "optional"},
+        result_schema={"sheets": "rows/cells/metadata"},
+        side_effects="read_filesystem",
+        llm_final_answer_required=False,
+    ),
+    ToolSpec(
+        name="extract_text_from_archive",
+        description="Inspect archive entries and optionally extract readable manifest/text files without judging relevance.",
+        input_schema={"path": "zip/7z/rar/tar path", "patterns": "optional file filters"},
+        result_schema={"entries": "archive listing", "texts": "selected text entries", "errors": "parse issues"},
+        side_effects="read_filesystem",
+        llm_final_answer_required=False,
+    ),
+    ToolSpec(
+        name="fetch_url",
+        description="Fetch one exact public URL and return status, headers, title, readable text, raw HTML path, and errors.",
+        input_schema={"url": "public URL"},
+        result_schema={"status_code": "HTTP status", "title": "page title", "text": "readable text", "raw_html_path": "optional"},
+        side_effects="network",
+        llm_final_answer_required=False,
+    ),
+    ToolSpec(
+        name="web_discovery",
+        description="Search public web sources and return candidate URLs, titles, snippets, and source engine metadata.",
+        input_schema={"query": "search query", "limit": "optional"},
+        result_schema={"candidates": "URLs, titles, snippets, engines"},
+        side_effects="network",
+        llm_final_answer_required=False,
+    ),
+    ToolSpec(
+        name="playwright_snapshot",
+        description="Open or search with a browser and return objective rendered-page observations: snapshot, text, screenshot path, console logs, network list, and action targets.",
+        input_schema={"url_or_query": "URL or search task", "max_pages": "optional"},
+        result_schema={"snapshot": "rendered page snapshot", "text": "page text", "screenshot_path": "optional", "network": "request list"},
+        side_effects="browser_network",
+        llm_final_answer_required=False,
+    ),
+    ToolSpec(
+        name="browser_collect",
+        description="Use browser automation to collect structured rows/fields/screenshots from pages chosen by CrawlerAgent.",
+        input_schema={"url_or_query": "target", "fields": "optional structured fields"},
+        result_schema={"records": "objective rows/fields/files", "blockers": "captcha/login/timeout facts"},
+        side_effects="browser_network_filesystem",
+        llm_final_answer_required=False,
+    ),
+    ToolSpec(
+        name="save_artifact",
+        description="Persist content that CrawlerAgent already has into a local artifact; returns path and manifest only.",
+        input_schema={"content": "content/ref", "path": "target path", "format": "optional format"},
+        result_schema={"path": "saved file", "manifest": "write metadata"},
+        side_effects="filesystem_write",
+        llm_final_answer_required=False,
+    ),
+]
+
+
 @dataclass(frozen=True, slots=True)
 class ToolObservation:
     tool_name: str
@@ -803,6 +990,14 @@ def tools_for_agent(agent_id: str) -> list[ToolSpec]:
     return list(MCAGENT_TOOLS)
 
 
+def objective_tools_for_agent(agent_id: str) -> list[ToolSpec]:
+    if agent_id == "crawler_agent":
+        return list(CRAWLER_OBJECTIVE_TOOLS)
+    if agent_id == "retriever_only":
+        return [tool for tool in MCAGENT_OBJECTIVE_TOOLS if tool.name == "search_local_index"]
+    return list(MCAGENT_OBJECTIVE_TOOLS)
+
+
 def collection_tools_for_crawler() -> list[ToolSpec]:
     return list(CRAWLER_COLLECTION_TOOLS)
 
@@ -813,8 +1008,20 @@ def tool_names_for_agent(agent_id: str) -> list[str]:
 
 def tool_catalog_prompt(agent_id: str, *, include_principles: bool = True) -> str:
     role = AGENT_ROLES.get(agent_id, AGENT_ROLES["mcagent_rag"])
-    lines: list[str] = [role.to_prompt_text(), "Available tools:"]
+    lines: list[str] = [
+        role.to_prompt_text(),
+        "Available tools are split into Agent route tools and objective observation tools.",
+        "Route tools the Agent may choose as its next step:",
+    ]
     lines.extend(tool.to_prompt_line() for tool in tools_for_agent(agent_id))
+    objective_tools = objective_tools_for_agent(agent_id)
+    if objective_tools:
+        lines.append("Objective observation tools available inside those routes:")
+        lines.extend(tool.to_prompt_line() for tool in objective_tools)
+        lines.append(
+            "Observation-tool boundary: these tools expose facts only. They do not decide whether evidence is enough, "
+            "which Agent to message, whether to continue, or what the final answer should say."
+        )
     if include_principles:
         lines.append("Runtime principles:")
         lines.extend(f"- {item}" for item in LLM_OWNERSHIP_PRINCIPLES)
@@ -822,7 +1029,13 @@ def tool_catalog_prompt(agent_id: str, *, include_principles: bool = True) -> st
 
 
 def tool_catalog_json(agent_id: str) -> str:
-    return json.dumps([tool.to_dict() for tool in tools_for_agent(agent_id)], ensure_ascii=False)
+    return json.dumps(
+        {
+            "route_tools": [tool.to_dict() for tool in tools_for_agent(agent_id)],
+            "objective_observation_tools": [tool.to_dict() for tool in objective_tools_for_agent(agent_id)],
+        },
+        ensure_ascii=False,
+    )
 
 
 def crawler_collection_catalog_prompt(*, include_principles: bool = True) -> str:

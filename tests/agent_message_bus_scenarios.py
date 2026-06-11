@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 import sys
@@ -55,28 +55,26 @@ class SequencedClient:
 
 
 def test_agent_message_tuple_and_payload_normalization() -> None:
-    message = make_agent_message("User", "你好", "MCAgent", intent="user_chat", conversation_id="s1")
-    assert_equal("tuple", message.to_tuple(), ("User", "你好", "MCagent"))
+    message = make_agent_message("User", "浣犲ソ", "MCAgent", intent="user_chat", conversation_id="s1")
+    assert_equal("tuple", message.to_tuple(), ("User", "浣犲ソ", "MCagent"))
     assert_equal("from_id", message.from_agent_id, "user")
     assert_equal("to_id", message.to_agent_id, "mcagent_rag")
     assert_true("message_id", message.message_id.startswith("msg_"))
 
     parsed = message_from_payload(
-        {"agent_message": {"from_agent": "Crawler", "to_agent": "MCAgent", "content": "本地还缺什么？"}},
+        {"agent_message": {"from_agent": "Crawler", "to_agent": "MCAgent", "content": "鏈湴杩樼己浠€涔堬紵"}},
         default_to_agent="MCagent",
         default_content="fallback",
     )
-    assert_equal("parsed_tuple", parsed.to_tuple(), ("CrawlerAgent", "本地还缺什么？", "MCagent"))
+    assert_equal("parsed_tuple", parsed.to_tuple(), ("CrawlerAgent", "鏈湴杩樼己浠€涔堬紵", "MCagent"))
 
 
 def test_chat_records_user_to_agent_message() -> None:
     tmp = tempfile.TemporaryDirectory()
     fake = SequencedClient(
         [
-            '{"tool":"direct_answer","reason":"simple greeting","collection_target":"你好","delivery_target":"human"}',
-            '{"proceed":true,"tool":"direct_answer","goal":"greet user","reason":"simple greeting"}',
-            '{"missing_side_effect":false,"action":"allow","reason":"simple greeting has no required side effect"}',
-            "你好，我是 CrawlerAgent。",
+            '{"tool":"direct_answer","reason":"simple greeting","collection_target":"浣犲ソ","delivery_target":"human"}',
+            "Hello, I am CrawlerAgent.",
         ]
     )
     original_selector = web_server._selected_llm_client
@@ -84,7 +82,7 @@ def test_chat_records_user_to_agent_message() -> None:
     try:
         result = web_server._chat_impl(
             make_temp_config(Path(tmp.name)),
-            {"agent": "crawler_agent", "question": "你好", "session_id": "message-bus-chat", "model": "fake-model"},
+            {"agent": "crawler_agent", "question": "浣犲ソ", "session_id": "message-bus-chat", "model": "fake-model"},
         )
     finally:
         web_server._selected_llm_client = original_selector  # type: ignore[assignment]
@@ -92,7 +90,7 @@ def test_chat_records_user_to_agent_message() -> None:
 
     message_steps = [step for step in result.get("trace", []) if step.get("stage") == "message" and step.get("status") == "received"]
     assert_true("message_trace", bool(message_steps))
-    assert_equal("message_tuple", tuple(message_steps[0]["detail"]["tuple"]), ("User", "你好", "CrawlerAgent"))
+    assert_equal("message_tuple", tuple(message_steps[0]["detail"]["tuple"]), ("User", "浣犲ソ", "CrawlerAgent"))
     assert_equal("agent_identity", result.get("agent"), "crawler_agent")
     reply = result.get("agent_message") or {}
     assert_equal("reply_tuple_agents", (reply.get("from_agent"), reply.get("to_agent")), ("CrawlerAgent", "User"))
@@ -103,10 +101,8 @@ def test_send_agent_message_dispatches_to_target_agent() -> None:
     tmp = tempfile.TemporaryDirectory()
     fake = SequencedClient(
         [
-            '{"tool":"direct_answer","reason":"simple greeting","collection_target":"你好","delivery_target":"human"}',
-            '{"proceed":true,"tool":"direct_answer","goal":"greet user","reason":"simple greeting"}',
-            '{"missing_side_effect":false,"action":"allow","reason":"simple greeting has no required side effect"}',
-            "你好，我是 MCagent。",
+            '{"tool":"direct_answer","reason":"simple greeting","collection_target":"浣犲ソ","delivery_target":"human"}',
+            "Hello, I am MCagent.",
         ]
     )
     original_selector = web_server._selected_llm_client
@@ -116,7 +112,7 @@ def test_send_agent_message_dispatches_to_target_agent() -> None:
             make_temp_config(Path(tmp.name)),
             {"session_id": "message-bus-dispatch", "model": "fake-model"},
             from_agent="User",
-            content="你好",
+            content="浣犲ソ",
             to_agent="MCAgent",
             conversation_id="message-bus-dispatch",
         )
@@ -127,7 +123,7 @@ def test_send_agent_message_dispatches_to_target_agent() -> None:
     message_steps = [step for step in result.get("trace", []) if step.get("stage") == "message" and step.get("status") == "received"]
     assert_true("message_trace", bool(message_steps))
     assert_equal("dispatch_agent", result.get("agent"), "mcagent_rag")
-    assert_equal("dispatch_tuple", tuple(message_steps[0]["detail"]["tuple"]), ("User", "你好", "MCagent"))
+    assert_equal("dispatch_tuple", tuple(message_steps[0]["detail"]["tuple"]), ("User", "浣犲ソ", "MCagent"))
     reply = result.get("agent_message") or {}
     assert_equal("dispatch_reply_agents", (reply.get("from_agent"), reply.get("to_agent")), ("MCagent", "User"))
     assert_true("dispatch_reply_to", bool(reply.get("reply_to")))
@@ -137,10 +133,9 @@ def test_message_bus_events_are_shared_session_memory() -> None:
     tmp = tempfile.TemporaryDirectory()
     fake = SequencedClient(
         [
-            '{"tool":"direct_answer","reason":"remember event","collection_target":"你好","delivery_target":"human"}',
-            '{"proceed":true,"tool":"direct_answer","goal":"answer","reason":"remember event"}',
-            '{"missing_side_effect":false,"action":"allow","reason":"no side effect"}',
-            "我记住了这次对话事件。",
+            '{"tool":"direct_answer","reason":"remember event","collection_target":"浣犲ソ","delivery_target":"human"}',
+            '{"should_send":false,"reason":"memory test records the incoming message only"}',
+            "I remembered this dialogue event.",
         ]
     )
     session_id = "message-bus-shared-memory"
@@ -152,7 +147,7 @@ def test_message_bus_events_are_shared_session_memory() -> None:
             make_temp_config(Path(tmp.name)),
             {"session_id": session_id, "model": "fake-model"},
             from_agent="User",
-            content="请让 CrawlerAgent 补农夫乐事资料",
+            content="Please ask CrawlerAgent to collect Farmer Delight data",
             to_agent="MCAgent",
             conversation_id=session_id,
         )
@@ -165,7 +160,7 @@ def test_message_bus_events_are_shared_session_memory() -> None:
     events = summary.get("recent_agent_events") or []
     assert_true("session_events_present", bool(events), str(summary))
     event_text = "\n".join(str(item.get("content") or item.get("answer") or item.get("task") or "") for item in events if isinstance(item, dict))
-    assert_true("event_mentions_farmer", "农夫乐事" in event_text, event_text)
+    assert_true("event_mentions_farmer", "Farmer Delight" in event_text, event_text)
     first = events[0]
     assert_equal("first_event_from", first.get("from_agent"), "User")
     assert_equal("first_event_to", first.get("to_agent"), "MCagent")
@@ -253,11 +248,11 @@ def test_crawler_job_start_requires_received_agent_message() -> None:
                 config,
                 {
                     "agent": "crawler_agent",
-                    "question": "采集公开资料",
+                    "question": "閲囬泦鍏紑璧勬枡",
                     "session_id": "missing-agent-message",
                     "source": "planner",
                 },
-                "采集公开资料",
+                "閲囬泦鍏紑璧勬枡",
             )
         except RuntimeError as exc:
             assert_true("requires_agent_message", "AgentMessage" in str(exc), str(exc))
@@ -276,12 +271,12 @@ def test_crawler_job_start_rejects_payload_forged_collection_intent() -> None:
                 config,
                 {
                     "agent": "crawler_agent",
-                    "question": "采集公开资料",
+                    "question": "閲囬泦鍏紑璧勬枡",
                     "session_id": "forged-intent",
                     "source": "planner",
                     "intent": "collection_request",
                 },
-                "采集公开资料",
+                "閲囬泦鍏紑璧勬枡",
             )
         except RuntimeError as exc:
             assert_true("requires_real_agent_message", "AgentMessage" in str(exc), str(exc))
@@ -297,7 +292,7 @@ def test_crawler_job_start_requires_crawler_selected_delegate_tool() -> None:
         config = make_temp_config(Path(tmp.name))
         message = make_agent_message(
             "User",
-            "采集公开资料",
+            "閲囬泦鍏紑璧勬枡",
             "CrawlerAgent",
             intent="collection_request",
             conversation_id="missing-tool",
@@ -308,12 +303,12 @@ def test_crawler_job_start_requires_crawler_selected_delegate_tool() -> None:
                 config,
                 {
                     "agent": "crawler_agent",
-                    "question": "采集公开资料",
+                    "question": "閲囬泦鍏紑璧勬枡",
                     "session_id": "missing-tool",
                     "source": "planner",
                     "agent_message": message.to_dict(),
                 },
-                "采集公开资料",
+                "閲囬泦鍏紑璧勬枡",
             )
         except RuntimeError as exc:
             assert_true("requires_delegate_tool", "delegate_crawler" in str(exc), str(exc))
@@ -327,11 +322,10 @@ def test_non_crawler_handoff_message_is_collection_request_not_tool_selection() 
     tmp = tempfile.TemporaryDirectory()
     fake = SequencedClient(
         [
-            '{"tool":"agent_message","reason":"MCagent asks CrawlerAgent through the message bus","to_agent":"CrawlerAgent","content":"采集公开资料并交给 MCagent/RAG","intent":"collection_request","delivery_target":"MCagent/RAG","metadata":{"tool":"collection_request","delivery_target":"MCagent/RAG"}}',
+            '{"tool":"agent_message","reason":"MCagent asks CrawlerAgent through the message bus","to_agent":"CrawlerAgent","content":"閲囬泦鍏紑璧勬枡骞朵氦缁?MCagent/RAG","intent":"collection_request","delivery_target":"MCagent/RAG","metadata":{"tool":"collection_request","delivery_target":"MCagent/RAG"}}',
             '{"proceed":true,"tool":"agent_message","reason":"confirmed"}',
             '{"tool":"answer","reason":"CrawlerAgent declines collection for this fake test"}',
             '{"proceed":true,"tool":"answer","reason":"confirmed"}',
-            '{"missing_side_effect":false,"action":"allow","reason":"fake decline"}',
             "CrawlerAgent fake reply.",
         ]
     )
@@ -354,7 +348,7 @@ def test_non_crawler_handoff_message_is_collection_request_not_tool_selection() 
             make_temp_config(Path(tmp.name)),
             {
                 "agent": "mcagent_rag",
-                "question": "请让 CrawlerAgent 采集公开资料并交给 MCagent/RAG",
+                "question": "璇疯 CrawlerAgent 閲囬泦鍏紑璧勬枡骞朵氦缁?MCagent/RAG",
                 "session_id": "handoff-metadata-boundary",
                 "model": "fake-model",
             },
@@ -406,18 +400,18 @@ def test_crawler_running_job_reuse_requires_matching_task_goal() -> None:
 
         first_job, first_created = web_server._start_crawler_job_from_crawler_tool(
             config,
-            payload_for("收集 Utopia Journey 乌托邦探险之旅 Boss 名称 召唤方式 掉落清单", session_id="reuse-goal-1"),
-            "收集 Utopia Journey 乌托邦探险之旅 Boss 名称 召唤方式 掉落清单",
+            payload_for("Fill Utopia Journey boss drops and summon method data", session_id="reuse-goal-1"),
+            "Fill Utopia Journey boss drops and summon method data",
         )
         same_job, same_created = web_server._start_crawler_job_from_crawler_tool(
             config,
-            payload_for("补齐 Utopia Journey 乌托邦探险之旅 Boss 掉落和召唤方式资料", session_id="reuse-goal-2"),
-            "补齐 Utopia Journey 乌托邦探险之旅 Boss 掉落和召唤方式资料",
+            payload_for("Fill Utopia Journey boss drops and summon method data", session_id="reuse-goal-2"),
+            "Fill Utopia Journey boss drops and summon method data",
         )
         different_job, different_created = web_server._start_crawler_job_from_crawler_tool(
             config,
-            payload_for("采集 FastAPI SSE EventSource 断线重连 StreamingResponse 官方资料", session_id="reuse-goal-3"),
-            "采集 FastAPI SSE EventSource 断线重连 StreamingResponse 官方资料",
+            payload_for("Collect FastAPI SSE EventSource reconnect StreamingResponse docs", session_id="reuse-goal-3"),
+            "Collect FastAPI SSE EventSource reconnect StreamingResponse docs",
         )
     finally:
         web_server._run_crawler_job = original_runner  # type: ignore[assignment]
@@ -438,7 +432,7 @@ def test_crawler_selected_delegate_marks_existing_message_before_job_start() -> 
     tmp = tempfile.TemporaryDirectory()
     fake = SequencedClient(
         [
-            '{"tool":"delegate_crawler","reason":"collect requested data","collection_target":"采集公开资料","delivery_target":"human"}',
+            '{"tool":"delegate_crawler","reason":"collect requested data","collection_target":"閲囬泦鍏紑璧勬枡","delivery_target":"human"}',
             '{"proceed":true,"tool":"delegate_crawler","reason":"ok"}',
             '{"handoff_brief":"CrawlerAgent accepted the user collection request.","reason":"handoff"}',
         ]
@@ -461,7 +455,7 @@ def test_crawler_selected_delegate_marks_existing_message_before_job_start() -> 
             make_temp_config(Path(tmp.name)),
             {"session_id": "crawler-selected-delegate", "model": "fake-model"},
             from_agent="User",
-            content="采集公开资料",
+            content="閲囬泦鍏紑璧勬枡",
             to_agent="CrawlerAgent",
             conversation_id="crawler-selected-delegate",
         )
@@ -472,7 +466,7 @@ def test_crawler_selected_delegate_marks_existing_message_before_job_start() -> 
 
     assert_true("job_started", bool(calls))
     message = calls[0]["message"]
-    assert_equal("message_tuple", message.to_tuple(), ("User", "采集公开资料", "CrawlerAgent"))
+    assert_equal("message_tuple", message.to_tuple(), ("User", "閲囬泦鍏紑璧勬枡", "CrawlerAgent"))
     assert_equal("message_tool", message.metadata.get("tool"), "delegate_crawler")
     assert_equal("message_intent", message.intent, "collection_request")
     assert_true("response_job", bool(result.get("job", {}).get("id")), str(result))
@@ -497,3 +491,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+

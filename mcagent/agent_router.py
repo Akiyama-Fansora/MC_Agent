@@ -527,70 +527,60 @@ class LlmAgentToolRouterService(AgentToolRouterService):
         proposed_goal: str,
         context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        if agent == "retriever_only" or bool(payload.get("no_llm")):
-            return {"proceed": True, "tool": proposed_tool, "goal": proposed_goal, "reason": "runtime mode confirmed", "planner": "runtime"}
-        try:
-            client, label = self._client_for_agent(config, model, 0.0, agent)
-            catalog = tool_catalog_prompt(agent, include_principles=True)
-            allowed_tools = ", ".join(tool_names_for_agent(agent))
-            prompt = (
-                "你是当前 Agent 的下一步行动确认器。只确认下一步工具动作，不回答用户问题，不写最终答案。\n"
-                "必须基于用户原话、会话摘要、上一步决策和当前上下文判断：现在是否应该执行 proposed_tool，目标是否说清楚，是否需要改用另一个允许工具。\n"
-                f"当前 Agent 工具目录：\n{catalog}\n"
-                f"允许工具名：{allowed_tools}, answer, evidence_select, final_answer_llm。\n"
-                "如果 proposed_tool 合理，proceed=true；如果不合理，proceed=false 并给出 suggested_tool。不要拆 Crawler 的搜索词，不要替工具生成最终回答。\n"
-                "CrawlerAgent 工具边界：temporary_extract 不保存本地文件；delegate_crawler 会启动后台采集循环。确认时必须检查 proposed_tool 的副作用是否符合用户对保存、入库、后台任务的要求。\n"
-                "跨 Agent 沟通原则：确认的是消息是否应送达目标 Agent 或当前 Agent 是否应执行所选工具；不要在确认器里替接收方决定后续搜索、保存或最终回答。\n"
-                "planned_workflow 完整性检查：如果 context.tool_decision.action_plan 没有覆盖用户明确要求的可执行副作用（例如采集、补充资料、保存、入库、交付给另一个 Agent、启动后台工作），proceed=false，并建议能完成该副作用的允许工具；如果 suggested_tool=planned_workflow，必须同时返回 action_plan，例如 mcagent_context 后 delegate_crawler。如果计划已经覆盖，则 proceed=true。\n"
-                "只输出 JSON。\n"
-                "额外工具 direct_answer：当用户只是问候、闲聊、询问系统能力、要求解释当前行为，或任何不需要本地资料/状态/Crawler 的问题时选择 direct_answer；选择它就不要触发 local_rag_search。\n"
-                f"active_agent: {agent}\n"
-                f"original_user_message: {original_question}\n"
-                f"session_summary: {json.dumps(session_summary or {}, ensure_ascii=False)}\n"
-                f"proposed_tool: {proposed_tool}\n"
-                f"proposed_goal: {proposed_goal}\n"
-                f"context: {json.dumps(context or {}, ensure_ascii=False)}\n"
-                "JSON schema: {\"proceed\":true, \"tool\":\"工具名\", \"suggested_tool\":\"可选\", \"goal\":\"确认后的下一步目标\", \"reason\":\"一句理由\", \"concern\":\"可选风险\", \"action_plan\":[{\"step\":1,\"tool\":\"mcagent_context|delegate_crawler|...\",\"goal\":\"步骤目标\"}]}"
-            )
-            raw_text = client.chat(
-                [
-                    {"role": "system", "content": "只输出合法 JSON。"},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.0,
-                max_tokens=900,
-            )
-            schema_hint = '{"proceed":true,"tool":"tool name","suggested_tool":"","goal":"confirmed next step","reason":"why","concern":"","action_plan":[]}'
-            try:
-                value = json_object_from_llm_text(raw_text)
-            except Exception as parse_exc:
-                try:
-                    value = repair_json_object_from_llm_text(client, raw_text, schema_hint=schema_hint, max_tokens=800)
-                except Exception as repair_exc:
-                    value = retry_json_object_with_compact_prompt(
-                        client,
-                        task_prompt=prompt,
-                        schema_hint=schema_hint,
-                        error=f"{type(parse_exc).__name__}: {parse_exc}; repair failed: {type(repair_exc).__name__}: {repair_exc}",
-                        max_tokens=900,
-                    )
-            tool = str(value.get("tool") or proposed_tool).strip() or proposed_tool
-            suggested = str(value.get("suggested_tool") or "").strip()
+        del config, payload, model, original_question, session_summary
+        allowed = set(tool_names_for_agent(agent)) | {"answer", "evidence_select", "final_answer_llm"}
+        action_plan: list[Any] = []
+        if context and isinstance(context.get("action_plan"), list):
+            action_plan = context.get("action_plan") or []
+        elif context and isinstance((context.get("tool_decision") or {}).get("action_plan"), list):
+            action_plan = (context.get("tool_decision") or {}).get("action_plan") or []
+
+        requested_tool = str(proposed_tool or "").strip() or "router_error"
+        invalid_plan_tools = [
+            str(item.get("tool") or "").strip()
+            for item in action_plan
+            if isinstance(item, dict)
+            and str(item.get("tool") or "").strip()
+            and str(item.get("tool") or "").strip() not in allowed
+        ]
+        if requested_tool not in allowed and requested_tool != "planned_workflow":
             return {
-                "proceed": bool(value.get("proceed", True)),
-                "tool": tool,
-                "suggested_tool": suggested,
-                "goal": str(value.get("goal") or proposed_goal).strip()[:500],
-                "reason": str(value.get("reason") or "Agent confirmed next step.").strip()[:500],
-                "concern": str(value.get("concern") or "").strip()[:500],
-                "action_plan": value.get("action_plan") if isinstance(value.get("action_plan"), list) else [],
-                "planner": label,
-            }
-        except Exception as exc:  # noqa: BLE001
-            return {
-                "proceed": True,
-                "tool": proposed_tool,
+                "proceed": False,
+                "tool": requested_tool,
+                "suggested_tool": "router_error",
                 "goal": proposed_goal,
-                "reason": f"Next-step confirmation failed; continuing with prior Agent decision: {type(exc).__name__}: {exc}",
-                "planner": "fallback_after_confirmation_error",
+                "reason": (
+                    f"Runtime preflight refused {requested_tool!r} because it is not in the current Agent's tool catalog. "
+                    "No alternate tool was chosen."
+                ),
+                "concern": "invalid_tool_for_agent",
+                "action_plan": action_plan,
+                "planner": "runtime_preflight",
             }
+        if invalid_plan_tools:
+            return {
+                "proceed": False,
+                "tool": requested_tool,
+                "suggested_tool": "router_error",
+                "goal": proposed_goal,
+                "reason": (
+                    "Runtime preflight refused the plan because it contains tools outside the current Agent's catalog: "
+                    + ", ".join(sorted(set(invalid_plan_tools)))
+                ),
+                "concern": "invalid_plan_tool_for_agent",
+                "action_plan": action_plan,
+                "planner": "runtime_preflight",
+            }
+        return {
+            "proceed": True,
+            "tool": requested_tool,
+            "suggested_tool": "",
+            "goal": proposed_goal,
+            "reason": (
+                "Runtime preflight checked the already selected Agent tool against the current Agent's catalog and side-effect boundary. "
+                "It did not reinterpret the user request or choose a different tool."
+            ),
+            "concern": "",
+            "action_plan": action_plan,
+            "planner": "runtime_preflight",
+        }
