@@ -640,7 +640,6 @@ function renderAssistantContent(message, sessionId, index) {
   const parts = splitAssistantText(message.text || "");
   return `
     <div class="message-body">${escapeHtml(parts.answer)}</div>
-    ${renderProcessLog(message.processLog, sectionKey(sessionId, index, "process"), shouldOpenProcessLog(message))}
     ${renderJobReadable(message.jobReadable, sectionKey(sessionId, index, "job"))}
     ${renderEvidencePanel(message.sources, parts.evidenceText, sectionKey(sessionId, index, "evidence"))}
     ${renderCollaboration(mergedCollaboration(message), sectionKey(sessionId, index, "collaboration"))}

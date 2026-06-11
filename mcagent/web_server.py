@@ -9815,6 +9815,13 @@ def _route_agent_decision_for_graph(
     tool_decision = dict(route.tool_decision)
     route_confirmation = dict(route.route_confirmation)
     action_plan = [dict(item) for item in route.action_plan if isinstance(item, dict)]
+    route_intent_for_graph = route.route_intent
+    if (
+        agent == "mcagent_rag"
+        and route.planned_workflow
+        and _action_plan_has_tool(action_plan, "local_corpus_inventory")
+    ):
+        route_intent_for_graph = "local_corpus_inventory"
     if (
         agent == "mcagent_rag"
         and route.route_intent in {"answer", "local_rag_search"}
@@ -9835,57 +9842,58 @@ def _route_agent_decision_for_graph(
         }
     confirmation_allows = bool(route_confirmation.get("proceed", True))
     graph_migrated_route = (
-        route.route_intent in {"status", "crawler_audit"} and confirmation_allows
+        route_intent_for_graph in {"status", "crawler_audit"} and confirmation_allows
     ) or (
-        route.route_intent == "agent_message" and confirmation_allows
+        route_intent_for_graph == "agent_message" and confirmation_allows
     ) or (
         agent == "mcagent_rag"
-        and route.route_intent == "local_corpus_inventory"
+        and route_intent_for_graph == "local_corpus_inventory"
         and confirmation_allows
         and _action_plan_has_tool(action_plan, "local_corpus_inventory")
         and (_action_plan_has_tool(action_plan, "agent_message") or _action_plan_has_tool(action_plan, "delegate_crawler"))
     ) or (
-        route.route_intent == "local_corpus_inventory"
+        route_intent_for_graph == "local_corpus_inventory"
         and confirmation_allows
         and not _action_plan_has_tool(action_plan, "delegate_crawler")
     ) or (
         agent == "crawler_agent"
         and confirmation_allows
-        and route.route_intent == "mcagent_context"
+        and route_intent_for_graph == "mcagent_context"
         and not _action_plan_has_tool(action_plan, "delegate_crawler")
     ) or (
         agent == "crawler_agent"
         and confirmation_allows
         and (
-            route.route_intent == "planned_workflow"
-            or route.route_intent == "delegate_crawler"
+            route_intent_for_graph == "planned_workflow"
+            or route_intent_for_graph == "delegate_crawler"
             or route.planned_delegate
             or _action_plan_has_tool(action_plan, "delegate_crawler")
         )
     ) or (
-        route.route_intent == "router_error"
+        route_intent_for_graph == "router_error"
     ) or (
-        route.route_intent == "direct_answer" and confirmation_allows
+        route_intent_for_graph == "direct_answer" and confirmation_allows
     ) or (
         agent == "mcagent_rag"
-        and route.route_intent in {"answer", "local_rag_search"}
+        and route_intent_for_graph in {"answer", "local_rag_search"}
         and confirmation_allows
         and not route.planned_delegate
         and not _action_plan_has_tool(action_plan, "delegate_crawler")
     ) or (
-        route.route_intent == "temporary_extract" and confirmation_allows
+        route_intent_for_graph == "temporary_extract" and confirmation_allows
     )
     return {
         **base,
         "routed": True,
         "legacy_fallback_required": not graph_migrated_route,
-        "route_intent": route.route_intent,
-        "selected_tool": str(tool_decision.get("tool") or route.route_intent),
+        "route_intent": route_intent_for_graph,
+        "selected_tool": str(tool_decision.get("tool") or route_intent_for_graph),
         "tool_decision": tool_decision,
         "route_confirmation": route_confirmation,
         "action_plan": action_plan,
         "rag_focus": route.rag_focus,
         "planned_workflow": route.planned_workflow,
+        "original_route_intent": route.route_intent,
         "planned_delegate": route.planned_delegate,
         "original_question": original_question,
         "question": question,

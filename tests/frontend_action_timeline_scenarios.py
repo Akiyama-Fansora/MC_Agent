@@ -105,11 +105,13 @@ def test_agent_action_timeline_survives_message_rerender() -> None:
                   state.actionTimelineSessionId = "";
                   renderMessages();
                   const firstCount = document.querySelectorAll("#agentActionTimeline .agent-action-row").length;
+                  const processPanelsAfterFirstRender = document.querySelectorAll(".message .process-panel").length;
                   renderMessages();
                   const secondCount = document.querySelectorAll("#agentActionTimeline .agent-action-row").length;
+                  const processPanelsAfterSecondRender = document.querySelectorAll(".message .process-panel").length;
                   const texts = [...document.querySelectorAll("#agentActionTimeline .agent-action-text")]
                     .map((item) => item.textContent.trim());
-                  return { firstCount, secondCount, texts };
+                  return { firstCount, secondCount, processPanelsAfterFirstRender, processPanelsAfterSecondRender, texts };
                 }
                 """
             )
@@ -120,6 +122,8 @@ def test_agent_action_timeline_survives_message_rerender() -> None:
 
     assert_equal("first_render_action_count", result["firstCount"], 3)
     assert_equal("second_render_action_count", result["secondCount"], 3)
+    assert_equal("process_panel_hidden_after_first_render", result["processPanelsAfterFirstRender"], 0)
+    assert_equal("process_panel_hidden_after_second_render", result["processPanelsAfterSecondRender"], 0)
     assert_equal(
         "action_texts",
         result["texts"],

@@ -1844,6 +1844,76 @@ def test_mcagent_inventory_plan_cannot_smuggle_delegate_tool() -> None:
     assert_true("conversation_graph_inventory_node", "mcagent_graph.graph_local_corpus_inventory_route" in graph_runtime.get("visited_nodes", []), str(graph_runtime))
 
 
+def test_mcagent_inventory_planned_workflow_without_handoff_uses_inventory_node() -> None:
+    fake = SequencedClient(
+        [
+            json.dumps(
+                {
+                    "tool": "planned_workflow",
+                    "reason": "The user asks for whole local corpus coverage plus beginner guidance, so I should inspect inventory first.",
+                    "action_plan": [
+                        {"step": 1, "tool": "local_corpus_inventory", "goal": "Inspect local modpack corpus coverage."},
+                        {"step": 2, "tool": "local_rag_search", "goal": "Use local evidence for beginner guidance after inventory."},
+                        {"step": 3, "tool": "final_answer_llm", "goal": "Summarize for the user."},
+                    ],
+                }
+            ),
+            json.dumps({"proceed": True, "tool": "planned_workflow", "reason": "confirmed compound local workflow"}),
+            "I can answer from the local inventory observation.",
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    original_delivery = web_server._deliver_agent_message
+    original_inventory = web_server._local_corpus_inventory_answer
+    original_retriever = web_server.RagRetrievalService.retrieve
+
+    def forbidden_delivery(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AssertionError("legacy delivery should not run for graph-executed inventory workflow")
+
+    def fake_inventory(_config: AppConfig, _question: str) -> dict[str, object]:
+        return {
+            "answer": "Inventory includes Craftoria, Prominence II, Utopian Journey, Closing Song, and VanillaEra.",
+            "sources": [{"title": "local inventory", "document_id": 1}],
+            "context": "inventory context",
+            "agent": "mcagent_rag",
+        }
+
+    def forbidden_rag(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AssertionError("inventory-first planned workflow should not fall into slow RAG evidence route")
+
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake, "fake")  # type: ignore[assignment]
+    web_server._deliver_agent_message = forbidden_delivery  # type: ignore[assignment]
+    web_server._local_corpus_inventory_answer = fake_inventory  # type: ignore[assignment]
+    web_server.RagRetrievalService.retrieve = forbidden_rag  # type: ignore[assignment]
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = web_server._send_agent_message(
+                make_temp_config(Path(tmp)),
+                {"session_id": "fastapi-inventory-planned-local"},
+                from_agent="User",
+                content="本地有哪些整合包 新手该怎么玩",
+                to_agent="MCagent",
+                intent="user_chat",
+                conversation_id="fastapi-inventory-planned-local",
+            )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._deliver_agent_message = original_delivery  # type: ignore[assignment]
+        web_server._local_corpus_inventory_answer = original_inventory  # type: ignore[assignment]
+        web_server.RagRetrievalService.retrieve = original_retriever  # type: ignore[assignment]
+
+    answer = str(result.get("answer") or "")
+    assert_true("inventory_answer", "Craftoria" in answer and "Utopian Journey" in answer, answer)
+    agent_runtime = result.get("agent_graph_runtime") or {}
+    visited = agent_runtime.get("visited_nodes") or []
+    assert_true("inventory_graph_node", "mcagent.graph_local_corpus_inventory_route" in visited, str(visited))
+    assert_true("inventory_no_legacy", "mcagent.legacy_adapter" not in visited, str(visited))
+    assert_true("inventory_no_rag_node", "mcagent.graph_rag_answer_route" not in visited, str(visited))
+    route_decision = agent_runtime.get("route_decision") or {}
+    assert_true("planned_workflow_normalized_to_inventory", route_decision.get("route_intent") == "local_corpus_inventory", str(route_decision))
+    assert_true("original_route_preserved", route_decision.get("original_route_intent") == "answer", str(route_decision))
+
+
 def main() -> int:
     test_fastapi_core_routes()
     test_fastapi_sse_chat_shape()
@@ -1869,6 +1939,7 @@ def main() -> int:
     test_crawler_mcagent_context_route_executes_in_graph_node()
     test_crawler_delegate_route_executes_in_graph_node()
     test_mcagent_inventory_plan_cannot_smuggle_delegate_tool()
+    test_mcagent_inventory_planned_workflow_without_handoff_uses_inventory_node()
     print("FASTAPI BACKEND SCENARIOS PASSED")
     return 0
 
