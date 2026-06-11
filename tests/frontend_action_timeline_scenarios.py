@@ -174,9 +174,61 @@ def test_agent_action_timeline_resets_for_each_turn() -> None:
     assert_equal("timeline_turn", result["turnId"], "turn-2")
 
 
+def test_agent_action_timeline_does_not_force_scroll_when_reviewing_old_steps() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), FrontendHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/"
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page = browser.new_page(viewport={"width": 1440, "height": 1000})
+            page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            page.wait_for_selector("#agentActionTimeline", timeout=10000)
+            result = page.evaluate(
+                """
+                () => {
+                  const timeline = document.querySelector("#agentActionTimeline");
+                  timeline.style.height = "220px";
+                  timeline.style.overflowY = "auto";
+                  state.actionTimeline = [];
+                  for (let index = 0; index < 40; index += 1) {
+                    state.actionTimeline.push({
+                      actor: "CrawlerAgent",
+                      text: `step ${index}`,
+                      kind: "crawler",
+                      meta: "",
+                      messageKey: "turn-scroll",
+                      time: Date.now() + index,
+                    });
+                  }
+                  renderAgentActions();
+                  timeline.scrollTop = 30;
+                  const before = timeline.scrollTop;
+                  recordAgentAction({ actor: "CrawlerAgent", text: "step 40", kind: "crawler", messageKey: "turn-scroll" });
+                  const afterReviewing = timeline.scrollTop;
+                  timeline.scrollTop = timeline.scrollHeight;
+                  recordAgentAction({ actor: "CrawlerAgent", text: "step 41", kind: "crawler", messageKey: "turn-scroll" });
+                  const afterBottom = timeline.scrollTop;
+                  const maxScroll = timeline.scrollHeight - timeline.clientHeight;
+                  return { before, afterReviewing, afterBottom, maxScroll };
+                }
+                """
+            )
+            browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert_equal("scroll_preserved_when_reviewing", result["afterReviewing"], result["before"])
+    if result["afterBottom"] < result["maxScroll"] - 4:
+        raise AssertionError(f"scroll_should_follow_near_bottom: {result!r}")
+
+
 def main() -> int:
     test_agent_action_timeline_survives_message_rerender()
     test_agent_action_timeline_resets_for_each_turn()
+    test_agent_action_timeline_does_not_force_scroll_when_reviewing_old_steps()
     print("FRONTEND ACTION TIMELINE SCENARIOS PASSED")
     return 0
 

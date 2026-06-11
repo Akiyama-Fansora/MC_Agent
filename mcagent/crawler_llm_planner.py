@@ -25,7 +25,7 @@ from .llm_profiles import client_for_agent
 
 ALLOWED_SOURCES = allowed_sources()
 SOURCE_DEFAULTS: dict[str, dict[str, Any]] = source_defaults()
-PLANNER_LLM_TIMEOUT_SECONDS = 90
+PLANNER_LLM_TIMEOUT_SECONDS: int | None = None
 
 AGENT_WORDS = {"MCagent", "MCAgent", "Crawler", "CrawlerAgent", "RAG", "LLM", "Agent"}
 GENERIC_ENGLISH_TARGETS = {

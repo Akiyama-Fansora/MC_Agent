@@ -321,6 +321,7 @@ function setActivity(text, kind = "idle") {
 function renderAgentActions() {
   const container = $("agentActionTimeline");
   if (!container) return;
+  const shouldFollow = isNearBottom(container, 80);
   const items = (state.actionTimeline || []).slice(-80);
   if ($("actionCount")) $("actionCount").textContent = String(items.length);
   if (!items.length) {
@@ -340,7 +341,7 @@ function renderAgentActions() {
       </div>
     </div>
   `).join("");
-  container.scrollTop = container.scrollHeight;
+  if (shouldFollow) container.scrollTop = container.scrollHeight;
 }
 
 function recordAgentAction({ actor = "", text = "", kind = "", meta = "", messageKey = "" } = {}) {

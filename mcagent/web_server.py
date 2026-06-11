@@ -91,7 +91,7 @@ RAW_HTML_SCAN_SECONDS = 6.0
 DEFAULT_ANSWER_MAX_TOKENS = 3000
 AUTO_ANSWER_MAX_TOKENS = 3000
 ANSWER_MAX_TOKENS_CAP = 6000
-DEFAULT_CRAWLER_PLANNER_TIMEOUT_SECONDS = 110
+DEFAULT_CRAWLER_PLANNER_TIMEOUT_SECONDS: int | None = None
 DEFAULT_MCAGENT_CONTEXT_TIMEOUT_SECONDS = 120
 DEFAULT_CHAT_RUNTIME_TIMEOUT_SECONDS = 75
 HANDOFF_BRIEF_LLM_TIMEOUT_SECONDS = 20
@@ -4152,7 +4152,7 @@ def _plan_crawler_with_job_timeout(job: Job, question: str, config: AppConfig, m
     planner_topic = context["planner_topic"]
     handoff_brief = context["handoff_brief"]
     delivery_target = context["delivery_target"]
-    timeout_limit = max(1, int(timeout_seconds or DEFAULT_CRAWLER_PLANNER_TIMEOUT_SECONDS))
+    timeout_limit = max(1, int(timeout_seconds)) if timeout_seconds is not None else None
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     future = executor.submit(plan_crawler_tasks_resilient, question, config.paths.source_dir, max_tasks=max_tasks, session_summary=session_summary)
     started = time.time()
@@ -4167,7 +4167,7 @@ def _plan_crawler_with_job_timeout(job: Job, question: str, config: AppConfig, m
                 return future.result(timeout=0.5)
             except concurrent.futures.TimeoutError:
                 elapsed = time.time() - started
-                if elapsed >= timeout_limit:
+                if timeout_limit is not None and elapsed >= timeout_limit:
                     future.cancel()
                     executor.shutdown(wait=False, cancel_futures=True)
                     fallback = plan_crawler_tasks_rule_fallback(

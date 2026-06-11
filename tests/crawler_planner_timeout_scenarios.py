@@ -1866,16 +1866,12 @@ def test_planner_client_uses_bounded_timeout_for_agent_planning() -> None:
     finally:
         crawler_llm_planner.client_for_agent = original_client_for_agent  # type: ignore[assignment]
     assert_equal("planner_agent", calls[0][0], "crawler_agent")
-    assert_equal("planner_timeout", calls[0][2], crawler_llm_planner.PLANNER_LLM_TIMEOUT_SECONDS)
+    assert_equal("planner_timeout", calls[0][2], 0)
 
 
-def test_job_planner_default_startup_timeout_is_bounded() -> None:
-    assert_true(
-        f"startup_timeout_bounded: {web_server.DEFAULT_CRAWLER_PLANNER_TIMEOUT_SECONDS}",
-        crawler_llm_planner.PLANNER_LLM_TIMEOUT_SECONDS
-        < web_server.DEFAULT_CRAWLER_PLANNER_TIMEOUT_SECONDS
-        <= crawler_llm_planner.PLANNER_LLM_TIMEOUT_SECONDS + 30,
-    )
+def test_job_planner_default_startup_timeout_is_unbounded() -> None:
+    assert_equal("default_startup_timeout", web_server.DEFAULT_CRAWLER_PLANNER_TIMEOUT_SECONDS, None)
+    assert_equal("planner_llm_timeout", crawler_llm_planner.PLANNER_LLM_TIMEOUT_SECONDS, None)
 
 
 def test_planner_json_chat_requests_json_object_mode() -> None:
@@ -2251,7 +2247,7 @@ if __name__ == "__main__":
     test_before_collecting_instruction_extracts_real_pack_alias_target()
     test_python_packaging_topics_target_ignores_public_prefix()
     test_planner_client_uses_bounded_timeout_for_agent_planning()
-    test_job_planner_default_startup_timeout_is_bounded()
+    test_job_planner_default_startup_timeout_is_unbounded()
     test_planner_json_chat_requests_json_object_mode()
     test_quick_recovery_plan_repairs_invalid_json_with_crawler_llm()
     test_sanitize_plan_accepts_llm_priority_labels()
