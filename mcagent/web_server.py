@@ -95,6 +95,7 @@ DEFAULT_MCAGENT_CONTEXT_TIMEOUT_SECONDS = 120
 DEFAULT_CHAT_RUNTIME_TIMEOUT_SECONDS = 75
 HANDOFF_BRIEF_LLM_TIMEOUT_SECONDS = 20
 RUNTIME_REVIEW_LLM_TIMEOUT_SECONDS = 20
+MCAGENT_EVIDENCE_SYNC_BUDGET_SECONDS = 10.0
 MAX_JOBS = 40
 GRAPH_ROUTE_DECISION_TOKEN = uuid.uuid4().hex
 GROW_PROGRESS_PATH = PROJECT_ROOT / "runtime" / "grow_knowledge_base_progress.json"
@@ -11806,9 +11807,6 @@ def _handle_mcagent_inventory_planned_workflow_route(
         delegated_handoff_brief = delegation.plan.handoff_brief
         answer = answer.rstrip() + delegation.note
 
-    plan_text = _format_action_plan_for_user(action_plan)
-    if plan_text and not answer.lstrip().startswith("执行计划："):
-        answer = plan_text + "\n\n" + answer
     _append_session(payload, original_question, answer, source_dicts)
     response: dict[str, Any] = {
         "answer": answer,
@@ -12204,6 +12202,7 @@ def _select_mcagent_rag_evidence_or_respond(
         retrieval_plan=retrieval_plan,
         final_k=final_k,
         add_trace=add_trace,
+        max_sync_seconds=MCAGENT_EVIDENCE_SYNC_BUDGET_SECONDS,
     )
     selected = evidence_result.selected
     evidence_report = evidence_result.report
@@ -12460,9 +12459,6 @@ def _handle_rag_answer_generation_route(
                     },
                 )
 
-    plan_text = _format_action_plan_for_user(action_plan) if planned_workflow else ""
-    if plan_text and not answer.lstrip().startswith("执行计划："):
-        answer = plan_text + "\n\n" + answer
     sources = format_sources(selected)
     if sources and not answer.rstrip().endswith(sources):
         answer = answer.rstrip() + "\n\n来源：\n" + sources

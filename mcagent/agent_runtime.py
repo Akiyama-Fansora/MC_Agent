@@ -145,6 +145,59 @@ def _safe_action_step_number(value: Any, fallback: int) -> tuple[int, str]:
         return fallback, text[:80]
 
 
+def _normalize_action_step_tool(agent_id: str, raw_step_tool: str, goal: str, allowed_action_tools: set[str]) -> str:
+    step_tool = TOOL_DECISION_ALIASES.get(raw_step_tool, raw_step_tool)
+    if step_tool in allowed_action_tools:
+        return step_tool
+    goal_text = str(goal or "").strip()
+    lowered_goal = goal_text.lower()
+    if agent_id == "mcagent_rag":
+        inventory_markers = (
+            "local corpus",
+            "local library",
+            "knowledge base",
+            "inventory",
+            "coverage",
+            "modpack corpus",
+            "what local",
+            "what the local",
+            "本地",
+            "资料库",
+            "知识库",
+            "库存",
+            "盘点",
+            "覆盖",
+            "有哪些资料",
+            "有哪些整合包",
+            "整合包清单",
+            "收录",
+        )
+        final_markers = (
+            "final answer",
+            "summarize",
+            "summary",
+            "organize answer",
+            "answer user",
+            "整理",
+            "总结",
+            "最终回答",
+            "生成回答",
+            "组织回答",
+        )
+        if any(marker in goal_text for marker in final_markers) or any(marker in lowered_goal for marker in final_markers):
+            return "final_answer_llm"
+        if any(marker in goal_text for marker in inventory_markers) or any(marker in lowered_goal for marker in inventory_markers):
+            return "local_corpus_inventory"
+    if agent_id == "crawler_agent":
+        context_markers = ("ask mcagent", "mcagent context", "local gap", "问 MCagent", "询问 MCagent", "本地缺口", "本地上下文")
+        collect_markers = ("collect", "crawl", "fetch", "save", "ingest", "采集", "爬取", "抓取", "保存", "入库", "补充")
+        if any(marker in goal_text for marker in context_markers) or any(marker in lowered_goal for marker in context_markers):
+            return "mcagent_context"
+        if any(marker in goal_text for marker in collect_markers) or any(marker in lowered_goal for marker in collect_markers):
+            return "delegate_crawler"
+    return "" if step_tool not in allowed_action_tools else step_tool
+
+
 def normalize_agent_tool_decision(
     value: dict[str, Any],
     *,
@@ -169,14 +222,13 @@ def normalize_agent_tool_decision(
             if not isinstance(step, dict):
                 continue
             raw_step_tool = str(step.get("tool") or "").strip().lower()
-            step_tool = TOOL_DECISION_ALIASES.get(raw_step_tool, raw_step_tool)
-            if step_tool not in allowed_action_tools:
-                step_tool = ""
+            goal = str(step.get("goal") or step.get("description") or "").strip()[:300]
+            step_tool = _normalize_action_step_tool(agent_id, raw_step_tool, goal, allowed_action_tools)
             step_number, step_label = _safe_action_step_number(step.get("step"), index)
             normalized_step = {
                 "step": step_number,
                 "tool": step_tool,
-                "goal": str(step.get("goal") or step.get("description") or "").strip()[:300],
+                "goal": goal,
             }
             if step_label:
                 normalized_step["step_label"] = step_label

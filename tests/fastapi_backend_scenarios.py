@@ -1862,6 +1862,75 @@ def test_mcagent_inventory_planned_workflow_without_handoff_uses_inventory_node(
     assert_true("original_route_preserved", route_decision.get("original_route_intent") == "answer", str(route_decision))
 
 
+def test_mcagent_natural_language_inventory_plan_uses_inventory_node() -> None:
+    fake = SequencedClient(
+        [
+            json.dumps(
+                {
+                    "tool": "planned_workflow",
+                    "reason": "The user asks for a corpus inventory and beginner overview.",
+                    "action_plan": [
+                        {"step": 1, "goal": "盘点本地知识库中收录的所有 Minecraft 整合包，输出名称、来源等基本情况"},
+                        {"step": 2, "goal": "结合整合包清单和新手玩法证据，生成面向用户的最终回答"},
+                    ],
+                }
+            ),
+            json.dumps({"proceed": True, "tool": "planned_workflow", "reason": "confirmed compound local workflow"}),
+            "I can answer from the local inventory observation.",
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    original_delivery = web_server._deliver_agent_message
+    original_inventory = web_server._local_corpus_inventory_answer
+    original_retriever = web_server.RagRetrievalService.retrieve
+
+    def forbidden_delivery(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AssertionError("legacy delivery should not run for graph-executed natural-language inventory workflow")
+
+    def fake_inventory(_config: AppConfig, _question: str) -> dict[str, object]:
+        return {
+            "answer": "Inventory includes Craftoria, Prominence II, Utopian Journey, Closing Song, and VanillaEra.",
+            "sources": [{"title": "local inventory", "document_id": 1}],
+            "context": "inventory context",
+            "agent": "mcagent_rag",
+        }
+
+    def forbidden_rag(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AssertionError("natural-language inventory plan should not fall into slow RAG evidence route")
+
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake, "fake")  # type: ignore[assignment]
+    web_server._deliver_agent_message = forbidden_delivery  # type: ignore[assignment]
+    web_server._local_corpus_inventory_answer = fake_inventory  # type: ignore[assignment]
+    web_server.RagRetrievalService.retrieve = forbidden_rag  # type: ignore[assignment]
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = web_server._send_agent_message(
+                make_temp_config(Path(tmp)),
+                {"session_id": "fastapi-inventory-natural-plan"},
+                from_agent="User",
+                content="本地有哪些整合包 新手该怎么玩",
+                to_agent="MCagent",
+                intent="user_chat",
+                conversation_id="fastapi-inventory-natural-plan",
+            )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._deliver_agent_message = original_delivery  # type: ignore[assignment]
+        web_server._local_corpus_inventory_answer = original_inventory  # type: ignore[assignment]
+        web_server.RagRetrievalService.retrieve = original_retriever  # type: ignore[assignment]
+
+    answer = str(result.get("answer") or "")
+    assert_true("inventory_answer", "Craftoria" in answer and "Utopian Journey" in answer, answer)
+    assert_true("plan_not_in_chat_answer", "执行计划：" not in answer, answer)
+    agent_runtime = result.get("agent_graph_runtime") or {}
+    visited = agent_runtime.get("visited_nodes") or []
+    assert_true("inventory_graph_node", "mcagent.graph_local_corpus_inventory_route" in visited, str(visited))
+    assert_true("inventory_no_rag_node", "mcagent.graph_rag_answer_route" not in visited, str(visited))
+    route_decision = agent_runtime.get("route_decision") or {}
+    steps = route_decision.get("action_plan") or []
+    assert_true("natural_plan_step_normalized", any((step or {}).get("tool") == "local_corpus_inventory" for step in steps), str(steps))
+
+
 def main() -> int:
     test_fastapi_core_routes()
     test_fastapi_sse_chat_shape()
@@ -1888,6 +1957,7 @@ def main() -> int:
     test_crawler_delegate_route_executes_in_graph_node()
     test_mcagent_inventory_plan_cannot_smuggle_delegate_tool()
     test_mcagent_inventory_planned_workflow_without_handoff_uses_inventory_node()
+    test_mcagent_natural_language_inventory_plan_uses_inventory_node()
     print("FASTAPI BACKEND SCENARIOS PASSED")
     return 0
 

@@ -69,8 +69,8 @@ def test_frontend_keeps_streamed_answer_when_connection_ends_badly() -> None:
     assert_true("usable_answer_guard", "hasUsableAnswer" in guarded_error_block)
     assert_true("partial_answer_not_replaced_by_error", "message.finalAnswerText = streamedAnswer || message.finalAnswerText ||" in guarded_error_block)
     assert_true("final_answer_not_polluted_by_process_block", 'return `${processText}' not in app and '最终回答：' not in app)
-    assert_true("process_log_kept_after_final", "function shouldOpenProcessLog" in app and "renderProcessLog(message.processLog" in app)
-    assert_true("process_log_opens_after_final", "return true;" in app[app.index("function shouldOpenProcessLog") : app.index("function renderProcessLog")])
+    assert_true("process_log_recorded_for_right_panel", "function appendProcessStep" in app and "recordAgentAction" in app)
+    assert_true("chat_window_does_not_duplicate_process_panel", "renderProcessLog(message.processLog" not in app)
     assert_true("initial_step_enters_process_log", "function setInitialProcessStep" in app and "setInitialProcessStep(pendingMessage, initialText" in app)
     assert_true("process_log_not_truncated", "message.processLog = [...current, value];" in app)
     assert_true("sources_cleared_only_without_usable_answer", "renderSources([]);" in guarded_error_block.split("} else {", 1)[1])
@@ -114,6 +114,7 @@ def test_backend_answer_templates_are_not_task_tickets() -> None:
     assert_true("crawler_delegate_first_person_source", "我是 CrawlerAgent。我已经收到这条 AgentMessage" in delegate_body)
     assert_true("crawler_delegate_no_third_person_job_source", "Crawler 多源采集任务已启动" not in delegate_body)
     assert_true("crawler_delegate_no_task_id_answer_source", "任务ID：" not in delegate_body and "任务卡片" not in delegate_body)
+    assert_true("planned_workflow_plan_text_not_prepended", 'answer = plan_text + "\\n\\n" + answer' not in web_server)
 
 
 def test_crawler_tool_catalog_exposes_temporary_and_persistent_paths() -> None:

@@ -181,6 +181,21 @@ def test_agent_tool_decision_normalization() -> None:
     assert_equal("labelled_step_label", labelled_step.action_plan[0]["step_label"], "check_coverage")
     assert_equal("second_labelled_step_number", labelled_step.action_plan[1]["step"], 2)
 
+    natural_language_plan = normalize_agent_tool_decision(
+        {
+            "tool": "planned_workflow",
+            "action_plan": [
+                {"step": 1, "goal": "盘点本地知识库中收录的所有 Minecraft 整合包，输出名称、来源等基本情况"},
+                {"step": 2, "goal": "结合整合包清单和新手玩法证据，生成面向用户的最终回答"},
+            ],
+        },
+        agent_id="mcagent_rag",
+        original_question="本地有哪些整合包 新手该怎么玩",
+        planner="test",
+    )
+    assert_equal("natural_inventory_step", natural_language_plan.action_plan[0]["tool"], "local_corpus_inventory")
+    assert_equal("natural_final_answer_step", natural_language_plan.action_plan[1]["tool"], "final_answer_llm")
+
 
 def test_handoff_contract_preserves_context() -> None:
     contract = build_handoff_contract(

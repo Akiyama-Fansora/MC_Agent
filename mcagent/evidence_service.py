@@ -67,7 +67,27 @@ class EvidenceWorkflowService:
         retrieval_plan: RetrievalPlan | None,
         final_k: int,
         add_trace: TraceFn,
+        max_sync_seconds: float = 8.0,
     ) -> EvidenceWorkflowResult:
+        workflow_started = time.monotonic()
+
+        def budget_left() -> float:
+            return max(0.0, float(max_sync_seconds) - (time.monotonic() - workflow_started))
+
+        def skip_remaining(step: str) -> None:
+            add_trace(
+                "decide",
+                "evidence_step_skipped",
+                {
+                    "step": step,
+                    "reason": "MCagent has spent the synchronous evidence budget for this turn; answer with current objective evidence and let the Agent decide whether to ask CrawlerAgent for more.",
+                    "elapsed_ms": round((time.monotonic() - workflow_started) * 1000),
+                    "max_sync_seconds": max_sync_seconds,
+                    "selected_count": len(selected),
+                    "verdict": report.verdict,
+                },
+            )
+
         add_trace("decide", "selecting_evidence", {"candidates": len(rough_results)})
         selected, report = self._selector_factory(final_k).select(evidence_question, rough_results, plan=retrieval_plan)
         selected = self._run_step(
@@ -75,6 +95,10 @@ class EvidenceWorkflowService:
             "prefer_parent_topic",
             lambda: self._prefer_parent_topic_results(evidence_question, selected, rough_results, final_k),
         )
+        if budget_left() <= 0:
+            skip_remaining("remaining_evidence_steps")
+            add_trace("decide", "evidence_selected", report.to_dict())
+            return EvidenceWorkflowResult(selected=selected, report=report)
 
         modpack_list_selected = self._run_step(
             add_trace,
@@ -93,17 +117,22 @@ class EvidenceWorkflowService:
             report.reasons = []
             report.selected_count = len(selected)
 
-        if self._needs_expensive_supplement(selected, report, final_k):
+        if budget_left() <= 0:
+            skip_remaining("expensive_supplements")
+        elif self._needs_expensive_supplement(selected, report, final_k):
             selected = self._run_step(
                 add_trace,
                 "project_keyword_supplement",
                 lambda: self._supplement_project_keyword_results(config, evidence_question, selected, final_k),
             )
-            selected = self._run_step(
-                add_trace,
-                "raw_html_supplement",
-                lambda: self._supplement_raw_html_results(config, evidence_question, selected, final_k),
-            )
+            if budget_left() <= 0:
+                skip_remaining("raw_html_supplement")
+            else:
+                selected = self._run_step(
+                    add_trace,
+                    "raw_html_supplement",
+                    lambda: self._supplement_raw_html_results(config, evidence_question, selected, final_k),
+                )
         else:
             add_trace(
                 "decide",
@@ -116,17 +145,24 @@ class EvidenceWorkflowService:
                     "verdict": report.verdict,
                 },
             )
-        selected = self._run_step(
-            add_trace,
-            "modpack_mod_list_context",
-            lambda: self._ensure_modpack_mod_list_context(config, evidence_question, selected, rough_results, final_k),
-        )
+        if budget_left() <= 0:
+            skip_remaining("modpack_mod_list_context")
+        else:
+            selected = self._run_step(
+                add_trace,
+                "modpack_mod_list_context",
+                lambda: self._ensure_modpack_mod_list_context(config, evidence_question, selected, rough_results, final_k),
+            )
 
-        fallback_selected = self._run_step(
-            add_trace,
-            "theme_fallback",
-            lambda: self._fallback_theme_results(evidence_question, rough_results, final_k),
-        )
+        if budget_left() <= 0:
+            fallback_selected = []
+            skip_remaining("theme_fallback")
+        else:
+            fallback_selected = self._run_step(
+                add_trace,
+                "theme_fallback",
+                lambda: self._fallback_theme_results(evidence_question, rough_results, final_k),
+            )
         if fallback_selected and len(selected) < min(4, final_k):
             selected = self._dedupe_results([*fallback_selected, *selected], final_k)
             if report.verdict != "ok":
