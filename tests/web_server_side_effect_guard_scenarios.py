@@ -332,7 +332,7 @@ def test_structured_save_request_is_not_corrected_to_temporary_extract() -> None
         result = web_server._chat_impl(
             make_temp_config(Path(tmp.name)),
             {
-                "agent": "crawler_agent",
+                "agent": "mcagent_rag",
                 "question": question,
                 "session_id": "structured-save-side-effect-test",
                 "model": "fake-model",
@@ -539,22 +539,23 @@ def test_runtime_status_request_runs_after_agent_selects_status_tool() -> None:
     assert_true("status_answer", "本地库" in str(result.get("answer") or "") and bool(result.get("status")))
 
 
-def test_mcagent_gap_delegation_overrides_human_delivery_to_rag() -> None:
+def test_mcagent_gap_request_reaches_crawler_only_through_agent_message() -> None:
     tmp = tempfile.TemporaryDirectory()
     question = "\u73b0\u5728\u4e4c\u6258\u90a6\u6574\u5408\u5305\u4f60\u672c\u5730\u8fd8\u7f3a\u54ea\u4e9b\u8d44\u6599\uff0c\u5217\u51fa\u6765\uff0c\u7136\u540e\u8ba9 Crawler \u53bb\u8865\u5145\u3002"
     fake_client = SequencedClient(
         [
             json.dumps(
                 {
-                    "tool": "delegate_crawler",
-                    "reason": "needs Crawler to collect missing local knowledge",
-                    "collection_target": question,
+                    "tool": "agent_message",
+                    "reason": "MCagent can only contact CrawlerAgent through AgentMessage",
+                    "to_agent": "CrawlerAgent",
+                    "content": question,
+                    "intent": "collection_request",
                     "delivery_target": "human",
                 },
                 ensure_ascii=False,
             ),
-            '{"proceed":true,"tool":"delegate_crawler","reason":"confirmed"}',
-            '{"handoff_brief":"MCagent delegates missing Utopia material to CrawlerAgent for RAG ingestion.","reason":"handoff"}',
+            '{"proceed":true,"tool":"agent_message","reason":"confirmed From-Content-To message"}',
         ]
     )
     original_selector = web_server._selected_llm_client
@@ -568,7 +569,7 @@ def test_mcagent_gap_delegation_overrides_human_delivery_to_rag() -> None:
         delegated_question = message.content
         job = web_server.Job(id="fake-mcagent-gap-job", kind="crawler", title=delegated_question, status="queued", summary="queued")
         job.result = {"plan": {"topic": delegated_question, "delivery_target": message.metadata.get("delivery_target")}}
-        return {"answer": "我是 CrawlerAgent。采集任务已启动。", "agent": "crawler_agent", "job": web_server._job_to_dict(job)}
+        return {"answer": "我是 CrawlerAgent。收到 AgentMessage 后，我会自行判断是否启动采集。", "agent": "crawler_agent", "job": web_server._job_to_dict(job)}
 
     def fail_direct_start(*args: Any, **kwargs: Any) -> Any:
         raise AssertionError("MCagent must send AgentMessage to CrawlerAgent instead of starting crawler job directly")
@@ -595,9 +596,10 @@ def test_mcagent_gap_delegation_overrides_human_delivery_to_rag() -> None:
     assert_true("delegated", bool(calls))
     assert_equal("message_from", calls[0]["message"].from_agent, "MCagent")
     assert_equal("message_to", calls[0]["message"].to_agent, "CrawlerAgent")
-    assert_equal("requested_by", result.get("delegation", {}).get("requested_by"), "user_via_mcagent")
-    assert_equal("delivery_target", result.get("delegation", {}).get("delivery_target"), "MCagent/RAG")
-    assert_equal("message_delivery", calls[0]["message"].metadata.get("delivery_target"), "MCagent/RAG")
+    assert_equal("message_request_kind", calls[0]["message"].metadata.get("tool"), "collection_request")
+    assert_equal("message_transport", calls[0]["message"].metadata.get("transport"), "From-Content-To")
+    assert_true("no_mcagent_direct_delegation", not result.get("delegation"), str(result))
+    assert_true("answer_mentions_message_bus", "From-Content-To" in str(result.get("answer") or ""), str(result.get("answer") or ""))
 
 
 def test_delegate_confirmation_can_cancel_background_job() -> None:
@@ -649,7 +651,7 @@ def test_delegate_confirmation_can_cancel_background_job() -> None:
         result = web_server._chat_impl(
             make_temp_config(Path(tmp.name)),
             {
-                "agent": "mcagent_rag",
+                "agent": "crawler_agent",
                 "question": "先别采集，说明一下现在为什么不需要启动后台任务",
                 "session_id": "delegate-confirmation-cancel-test",
                 "model": "fake-model",
@@ -666,7 +668,7 @@ def test_delegate_confirmation_can_cancel_background_job() -> None:
     assert_true("no_job_response", not result.get("job"), str(result.get("job")))
 
 
-def test_explicit_mcagent_to_crawler_handoff_starts_job_after_agent_selects_delegate() -> None:
+def test_explicit_mcagent_to_crawler_handoff_uses_agent_message_not_delegate() -> None:
     tmp = tempfile.TemporaryDirectory()
     question = "\u8bf7\u5148\u68c0\u67e5\u672c\u5730\u8d44\u6599\u91cc\u4e4c\u6258\u90a6\u63a2\u9669\u4e4b\u65c5 / Utopian Journey \u6574\u5408\u5305\u8fd8\u7f3a\u54ea\u4e9b\u5185\u5bb9\uff0c\u7136\u540e\u8ba9 CrawlerAgent \u53bb\u7f51\u4e0a\u91c7\u96c6\u7f3a\u5931\u7684\u516c\u5f00\u8d44\u6599\u5e76\u5165\u5e93\u7ed9 MCagent/RAG \u4f7f\u7528\u3002"
     original_send = web_server._send_agent_message
@@ -677,15 +679,16 @@ def test_explicit_mcagent_to_crawler_handoff_starts_job_after_agent_selects_dele
         [
             json.dumps(
                 {
-                    "tool": "delegate_crawler",
-                    "reason": "Agent chose Crawler collection with RAG delivery.",
-                    "collection_target": question,
+                    "tool": "agent_message",
+                    "reason": "MCagent can only send a From-Content-To message to CrawlerAgent.",
+                    "to_agent": "CrawlerAgent",
+                    "content": question,
+                    "intent": "collection_request",
                     "delivery_target": "MCagent/RAG",
                 },
                 ensure_ascii=False,
             ),
-            json.dumps({"proceed": True, "tool": "delegate_crawler", "reason": "confirmed"}, ensure_ascii=False),
-            json.dumps({"handoff_brief": "MCagent transfers the user's collection request to CrawlerAgent.", "reason": "handoff"}, ensure_ascii=False),
+            json.dumps({"proceed": True, "tool": "agent_message", "reason": "confirmed From-Content-To message"}, ensure_ascii=False),
         ]
     )
 
@@ -720,14 +723,17 @@ def test_explicit_mcagent_to_crawler_handoff_starts_job_after_agent_selects_dele
         tmp.cleanup()
 
     assert_true("delegated", bool(calls))
-    assert_equal("requested_by", calls[0]["payload"].get("requested_by"), "user_via_mcagent")
-    assert_equal("delivery_target", calls[0]["payload"].get("delivery_target"), "MCagent/RAG")
+    assert_true("requested_by_mcagent", str(calls[0]["payload"].get("requested_by") or "").startswith("user_via_mcagent"), str(calls[0]["payload"].get("requested_by")))
+    assert_equal("message_from", calls[0]["message"].from_agent, "MCagent")
+    assert_equal("message_tool", calls[0]["message"].metadata.get("tool"), "collection_request")
+    assert_equal("message_transport", calls[0]["message"].metadata.get("transport"), "From-Content-To")
     assert_true("clean_target_keeps_alias", "乌托邦探险之旅 / Utopian Journey" in calls[0]["question"], calls[0]["question"])
     assert_true("clean_target_no_agent_damage", "Crawle ent" not in calls[0]["question"] and "给 / 使用" not in calls[0]["question"], calls[0]["question"])
-    assert_true("has_job", result.get("job", {}).get("id") == "fake-fast-handoff-job")
+    assert_true("crawler_job_passed_through", result.get("job", {}).get("id") == "fake-fast-handoff-job", str(result.get("job")))
+    assert_true("answer_has_no_task_ticket", "任务ID：" not in str(result.get("answer") or "") and "补库动作：" not in str(result.get("answer") or ""), str(result.get("answer") or ""))
     statuses = [(item.get("stage"), item.get("status")) for item in result.get("trace") or []]
     assert_true("tool_selected", ("decide", "tool_selected") in statuses, str(statuses))
-    assert_true("delegate_confirmed", ("delegate", "next_step_confirmed") in statuses, str(statuses))
+    assert_true("agent_message_relayed", ("message", "agent_message_relayed") in statuses, str(statuses))
 
 
 def test_explicit_mcagent_to_crawler_handoff_uses_agent_selected_message_tool() -> None:
@@ -744,8 +750,8 @@ def test_explicit_mcagent_to_crawler_handoff_uses_agent_selected_message_tool() 
 
     fake_client = SequencedClient(
         [
-            '{"tool":"delegate_crawler","reason":"MCagent selected collection handoff to CrawlerAgent","collection_target":"乌托邦整合包资料，先问 MCagent 本地缺口，再采集公开网页补入 RAG","delivery_target":"MCagent/RAG"}',
-            '{"proceed":true,"tool":"delegate_crawler","reason":"confirmed selected CrawlerAgent collection handoff"}',
+            '{"tool":"agent_message","reason":"MCagent selected From-Content-To message to CrawlerAgent","to_agent":"CrawlerAgent","content":"乌托邦整合包资料，先问 MCagent 本地缺口，再采集公开网页补入 RAG","intent":"collection_request","delivery_target":"MCagent/RAG"}',
+            '{"proceed":true,"tool":"agent_message","reason":"confirmed selected CrawlerAgent message"}',
         ]
     )
 
@@ -768,25 +774,32 @@ def test_explicit_mcagent_to_crawler_handoff_uses_agent_selected_message_tool() 
 
     statuses = [(item.get("stage"), item.get("status")) for item in result.get("trace") or []]
     assert_true("mcagent_router_selected_tool", ("decide", "tool_selected") in statuses, str(statuses))
-    assert_true("delegate_confirmed", ("delegate", "next_step_confirmed") in statuses, str(statuses))
+    assert_true("agent_message_relayed", ("message", "agent_message_relayed") in statuses, str(statuses))
     assert_equal("one_message", len(calls), 1)
     assert_equal("from_agent", calls[0]["from_agent"], "MCagent")
     assert_equal("to_agent", calls[0]["to_agent"], "CrawlerAgent")
     assert_equal("tool", calls[0]["metadata"].get("tool"), "collection_request")
-    assert_equal("requested_by", calls[0]["metadata"].get("requested_by"), "user_via_mcagent")
+    assert_equal("transport", calls[0]["metadata"].get("transport"), "From-Content-To")
+    assert_true("requested_by", str(calls[0]["metadata"].get("requested_by") or "").startswith("user_via_mcagent"), str(calls[0]["metadata"]))
     assert_equal("delivery_target", calls[0]["metadata"].get("delivery_target"), "MCagent/RAG")
     assert_true("content_keeps_target", "乌托邦整合包" in calls[0]["content"], calls[0]["content"])
-    assert_equal("job", result.get("job", {}).get("id"), "relay-job")
+    assert_equal("crawler_job_passed_through", result.get("job", {}).get("id"), "relay-job")
+    assert_true("answer_has_no_task_ticket", "任务ID：" not in str(result.get("answer") or "") and "补库动作：" not in str(result.get("answer") or ""), str(result.get("answer") or ""))
 
 
-def test_explicit_handoff_with_source_audit_requirements_still_relays_fast() -> None:
+def test_explicit_handoff_detection_is_not_script_owned() -> None:
     question = (
         "让MCagent转达Crawler去获取 Playwright Python Trace Viewer 和网络录制相关的公开官方资料。"
         "要求：Crawler自己判断来源是否可用，记录接受/拒绝原因，保存为可引用资料；"
         "这不是Minecraft资料，不要用MC专用来源。"
     )
-    assert_true("handoff_detected", web_server._user_requested_mcagent_crawler_handoff(question))
-    assert_true("explicit_handoff", web_server._user_explicitly_asked_mcagent_to_tell_crawler(question))
+    for name in ("_user_requested_mcagent_crawler_handoff", "_user_explicitly_asked_mcagent_to_tell_crawler"):
+        try:
+            getattr(web_server, name)(question)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError(f"{name} must not script-classify cross-Agent handoff intent")
     cleaned = web_server._clean_crawler_task_question(question)
     assert_true("cleaned_keeps_target", "Playwright Python Trace Viewer" in cleaned, cleaned)
     assert_true("cleaned_drops_relay_prefix", not cleaned.startswith("让MCagent"), cleaned)
@@ -2473,6 +2486,124 @@ def test_agent_selected_local_corpus_inventory_route_executes_inventory_tool() -
     assert_true("answer", "本地资料库目前有" in result.get("answer", ""), result.get("answer", ""))
 
 
+def test_local_corpus_inventory_scans_full_database_without_recent_sample() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config = make_temp_config(Path(tmp))
+        conn = connect(config.paths.db_path)
+        init_db(conn)
+        try:
+            rows = []
+            chunks = []
+            for index in range(3001):
+                doc_id = index + 1
+                rows.append(
+                    (
+                        doc_id,
+                        f"bulk-mod-{index}",
+                        str(config.paths.source_dir / "modrinth_agent" / f"bulk_mod_{index}.md"),
+                        f"Bulk Mod {index}",
+                        None,
+                        "hash",
+                        "{}",
+                        f"2026-06-10T00:00:{index % 60:02d}+00:00",
+                    )
+                )
+                chunks.append((doc_id, 0, f"# Bulk Mod {index}\nA small indexed mod entry.", 0, 42, 12, "{}"))
+            rows.extend(
+                [
+                    (
+                        3002,
+                        "vanilla-route",
+                        str(config.paths.source_dir / "vefc_case" / "route_evidence.json"),
+                        "香草纪元:食旅纪行 route evidence draft",
+                        None,
+                        "hash",
+                        "{}",
+                        "2026-06-10T01:00:00+00:00",
+                    ),
+                    (
+                        3003,
+                        "vanilla-manifest",
+                        str(config.paths.source_dir / "vefc_case" / "modpack_manifests.json"),
+                        "VanillaEra:FaresChron manifest 结构化事实",
+                        None,
+                        "hash",
+                        "{}",
+                        "2026-06-10T01:00:01+00:00",
+                    ),
+                    (
+                        3004,
+                        "craftoria-internals",
+                        str(config.paths.source_dir / "manual_research" / "20260602_162152_Craftoria-1.31.0_pack_internals" / "Craftoria_pack_internal_inventory.md"),
+                        "Craftoria-1.31.0 pack internal inventory",
+                        None,
+                        "hash",
+                        "{}",
+                        "2026-06-10T01:00:02+00:00",
+                    ),
+                    (
+                        3005,
+                        "minepixel-internals",
+                        str(config.paths.source_dir / "manual_research" / "MinePIxelWuTuoBang" / "pack_internal" / "BetterDesertTemples.md"),
+                        "MinePIxelWuTuoBang Better Desert Temples internal note",
+                        None,
+                        "hash",
+                        "{}",
+                        "2026-06-10T01:00:03+00:00",
+                    ),
+                    (
+                        3006,
+                        "outside-local-note",
+                        str(Path(tmp) / "other_local_store" / "Deep Local Note.md"),
+                        "Deep Local Note",
+                        None,
+                        "hash",
+                        "{}",
+                        "2026-06-10T01:00:04+00:00",
+                    ),
+                ]
+            )
+            chunks.extend(
+                [
+                    (3002, 0, "entity: 香草纪元:食旅纪行\nsummary_path: D:/case/summary.json", 0, 61, 12, "{}"),
+                    (3003, 0, "整合包名称: VanillaEra:FaresChron\n整合包别名/同目录证据标题: 香草纪元:食旅纪行 route evidence draft\nmanifestType: minecraftModpack", 0, 118, 12, "{}"),
+                    (3004, 0, "# Craftoria pack internal inventory\nCraftoria pack internal inventory.", 0, 74, 12, "{}"),
+                    (3005, 0, "# MinePIxelWuTuoBang internals\nBetter Desert Temples local pack note.", 0, 70, 12, "{}"),
+                    (3006, 0, "# Deep Local Note\nThis document is indexed outside crawler_exports.", 0, 64, 12, "{}"),
+                ]
+            )
+            conn.executemany(
+                """
+                INSERT INTO documents(id, source_ref, source_path, title, url, content_hash, metadata_json, imported_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+            conn.executemany(
+                """
+                INSERT INTO chunks(document_id, chunk_index, text, start_char, end_char, token_estimate, metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                chunks,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = web_server._local_corpus_inventory_answer(config, "完整看一下本地资料库，不止乌托邦")
+        answer = str(result.get("answer") or "")
+        assert_true("full_scan_count", "全量扫描数据库中的 3006 篇文档" in answer, answer)
+        assert_true("no_recent_3000_sample", "最近 3000" not in answer and "只读取" not in answer, answer)
+        assert_true("non_crawler_exports_included", "Deep Local Note" in answer, answer)
+        assert_true("pack_internals_separated", "Craftoria-1.31.0" in answer and "MinePIxelWuTuoBang" in answer, answer)
+        metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+        observation = metadata.get("inventory_observation") if isinstance(metadata.get("inventory_observation"), dict) else {}
+        candidates = list(observation.get("entity_candidates") or [])
+        assert_true("observation_present", bool(observation) and observation.get("scanned_documents") == 3006, str(observation))
+        assert_true("raw_evidence_visible", any((item.get("raw_evidence") or [{}])[0].get("raw_source_path") for item in candidates), str(candidates[:3]))
+        assert_true("vanilla_candidate_has_raw_evidence", any("VanillaEra:FaresChron" in str(item) and "香草纪元" in str(item) for item in candidates), str(candidates[:8]))
+
+
 def test_inventory_route_review_cannot_add_unselected_delegate_side_effect() -> None:
     question = "现在某个资料主题你本地还缺哪些资料，列出来，然后让 Crawler 去补充。"
 
@@ -4145,9 +4276,9 @@ if __name__ == "__main__":
     test_reflection_local_source_request_prevents_context_skip()
     test_reflection_local_evidence_wording_requests_materialization()
     test_materializes_local_source_path_tasks_after_mcagent_context_reflection()
-    test_mcagent_gap_delegation_overrides_human_delivery_to_rag()
+    test_mcagent_gap_request_reaches_crawler_only_through_agent_message()
     test_delegate_confirmation_can_cancel_background_job()
-    test_explicit_mcagent_to_crawler_handoff_starts_job_after_agent_selects_delegate()
+    test_explicit_mcagent_to_crawler_handoff_uses_agent_message_not_delegate()
     test_recent_crawler_audit_question_answers_history_without_new_collection()
     test_recent_crawler_audit_question_matches_create_instead_of_higher_activity_job()
     test_crawler_collection_request_message_does_not_force_tool_choice()
@@ -4156,7 +4287,7 @@ if __name__ == "__main__":
     test_direct_crawler_planned_workflow_preserves_selected_action_plan_for_job()
     test_direct_crawler_mcagent_context_step_with_delegate_starts_background_job()
     test_explicit_mcagent_to_crawler_handoff_uses_agent_selected_message_tool()
-    test_explicit_handoff_with_source_audit_requirements_still_relays_fast()
+    test_explicit_handoff_detection_is_not_script_owned()
     test_modrinth_plain_mod_task_does_not_parse_modpack_contents()
     test_known_modrinth_project_skips_are_reusable_existing_evidence()
     test_modrinth_slug_query_is_direct_project_candidate()
@@ -4174,6 +4305,7 @@ if __name__ == "__main__":
     test_version_install_note_extracts_modpack_requirements()
     test_modpack_overview_surfaces_version_install_evidence()
     test_agent_selected_local_corpus_inventory_route_executes_inventory_tool()
+    test_local_corpus_inventory_scans_full_database_without_recent_sample()
     test_inventory_route_review_cannot_add_unselected_delegate_side_effect()
     test_local_corpus_inventory_is_not_keyword_forced_before_agent_choice()
     test_status_runs_only_after_agent_selects_status_tool()

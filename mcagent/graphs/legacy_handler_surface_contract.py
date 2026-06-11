@@ -75,6 +75,13 @@ LEGACY_HANDLER_SURFACES = [
         "side_effect_surface": False,
     },
     {
+        "surface": "mcagent_context_reply",
+        "legacy_handler": "_mcagent_context_message_reply",
+        "trace_stage": "retrieve",
+        "trace_statuses": ["mcagent_context_light_done"],
+        "side_effect_surface": False,
+    },
+    {
         "surface": "rag_answer_generation",
         "legacy_handler": "_handle_rag_answer_generation_route",
         "trace_stage": "answer",
@@ -82,7 +89,17 @@ LEGACY_HANDLER_SURFACES = [
         "side_effect_surface": False,
     },
 ]
-MIGRATED_GRAPH_HANDLER_SURFACES = {"status", "crawler_audit", "local_corpus_inventory", "router_error", "direct_answer", "temporary_extract"}
+MIGRATED_GRAPH_HANDLER_SURFACES = {
+    "status",
+    "crawler_audit",
+    "local_corpus_inventory",
+    "router_error",
+    "direct_answer",
+    "temporary_extract",
+    "rag_answer_generation",
+    "no_retrieval_results",
+    "mcagent_context_reply",
+}
 
 
 def _surface_candidates_for_agent(agent_id: str) -> list[dict[str, Any]]:
@@ -164,7 +181,8 @@ def build_legacy_handler_surface_contract(
         "legacy_trace_observation_only": not graph_handler_executed,
         "objective_contract": (
             "The graph records handler surface facts. It does not select handlers, start jobs, persist evidence, "
-            "judge evidence, or alter routing. Migrated status, crawler_audit, router_error, direct_answer, temporary_extract, and safe local_corpus_inventory "
-            "routes may be observed as graph-executed only after the Agent router selected that route."
+            "judge evidence, or alter routing. Migrated status, crawler_audit, router_error, direct_answer, temporary_extract, "
+            "safe local_corpus_inventory, rag_answer_generation, no_retrieval_results, and mcagent_context_reply surfaces may be observed as graph-executed "
+            "only after the Agent router selected that route."
         ),
     }

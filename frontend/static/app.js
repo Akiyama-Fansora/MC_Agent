@@ -13,9 +13,15 @@ const state = {
   llmProfiles: [],
   llmAssignments: {},
   editingProfileId: "",
+  actionTimeline: [],
+  actionTimelineSessionId: "",
 };
 
 const $ = (id) => document.getElementById(id);
+
+function messageActionId(sessionId, messageIndex) {
+  return `${sessionId}:${messageIndex}`;
+}
 
 function makeSessionName() {
   const now = new Date();
@@ -147,7 +153,7 @@ function parseSseEvent(chunk) {
 }
 
 function activityTextForTrace(step) {
-  return progressTextForTrace(step);
+  return agentActionTextForTrace(step);
 }
 
 function agentReplyContent(response) {
@@ -168,73 +174,103 @@ function shouldRenderJobReadable(response) {
 }
 
 function progressTextForTrace(step) {
+  return agentActionTextForTrace(step);
+}
+
+function detailText(detail, keys = []) {
+  if (!detail || typeof detail !== "object") return "";
+  for (const key of keys) {
+    const value = detail[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+
+function actionActorForTrace(step, detail = {}) {
+  const explicit = detail.actor || detail.agent || detail.from_agent || detail.to_agent || "";
+  if (explicit) return String(explicit);
+  if (step?.stage === "delegate" || detail.tool === "delegate_crawler") return "CrawlerAgent";
+  return state.agents.find((item) => item.id === state.activeAgent)?.name || (state.activeAgent === "crawler_agent" ? "CrawlerAgent" : "MCagent");
+}
+
+function agentActionTextForTrace(step) {
   const detail = step?.detail || {};
   const stage = `${step?.stage || ""}:${step?.status || ""}`;
-  const activeName = state.agents.find((item) => item.id === state.activeAgent)?.name || (state.activeAgent === "crawler_agent" ? "CrawlerAgent" : "MCagent");
+  const agentReport = detailText(detail, ["agent_report", "narration", "progress_report", "self_report", "agent_observation"]);
+  if (agentReport) return agentReport;
+  const activeName = actionActorForTrace(step, detail);
+  if (stage === "message:agent_message_preparing") {
+    return `我准备通过 AgentMessage 发给 ${detail.to_agent || "Agent"}：${String(detail.content || "").slice(0, 160)}`;
+  }
+  if (stage === "message:agent_message_relayed") {
+    return `我已发出 AgentMessage：${detail.from_agent || activeName} -> ${detail.to_agent || "Agent"}`;
+  }
+  if (stage === "message:agent_message_waiting_for_reply") {
+    return `我在等 ${detail.to_agent || "对方 Agent"} 回答。`;
+  }
+  if (stage === "message:agent_message_reply_received") {
+    return `我收到 ${detail.from_agent || "对方 Agent"} 的回复，准备转达给你。`;
+  }
+  if (stage === "message:agent_message_summary_ready") {
+    return "我已整理好这轮跨 Agent 沟通结果。";
+  }
   if (stage === "message:received") {
     const tuple = detail.tuple || [detail.from_agent || "User", detail.content || "", detail.to_agent || activeName];
-    return `消息通道：${tuple[0]} -> ${tuple[2]}。${tuple[2]} 正在理解消息。`;
+    return `我收到 AgentMessage：${tuple[0]} -> ${tuple[2]}：${String(tuple[1] || "").slice(0, 160)}`;
   }
-  if (stage === "observe:received") return `${activeName} 正在读取你的目标和当前上下文。`;
-  if (stage === "observe:contextualized") return `${activeName} 正在把这轮问题和最近会话上下文合并理解。`;
+  if (stage === "observe:received") return `我收到你的问题：${String(detail.content || detail.question || "").slice(0, 160) || "开始处理这轮请求。"}`;
+  if (stage === "observe:contextualized") return `我把当前问题和会话上下文合并后继续处理。${detail.rewritten ? `改写焦点：${detail.rewritten}` : ""}`;
   if (stage === "decide:tool_selected") {
-    if (detail.tool === "direct_answer") return `${activeName} 认为这轮可以直接回答。`;
-    if (detail.tool === "status") return `${activeName} 正在读取运行状态。`;
-    if (detail.tool === "temporary_extract") return `${activeName} 会临时读取公开网页并直接总结，不写入本地。`;
-    if (detail.tool === "delegate_crawler") return `${activeName} 已决定启动采集任务，并生成明确交接。`;
-    if (detail.tool === "planned_workflow") return `${activeName} 已列出多步工作流。`;
-    if (detail.tool === "local_corpus_inventory") return `${activeName} 正在盘点本地资料库覆盖范围。`;
-    return `${activeName} 已选择下一步工具：${detail.tool || "local_rag_search"}。`;
+    const reason = detailText(detail.decision || detail, ["reason", "goal", "collection_target", "rag_focus"]);
+    return `我选择下一步：${detail.tool || "local_rag_search"}${reason ? `。理由/目标：${reason}` : ""}`;
   }
-  if (stage === "decide:side_effect_boundary_corrected") return `已按副作用边界调整：这轮改为临时读取，不启动后台保存任务。`;
-  if (stage === "decide:inter_agent_workflow_corrected") return `已切换为跨 Agent 工作流：先查 MCagent/RAG 上下文，再交给 Crawler 补资料。`;
-  if (stage === "decide:mcagent_context_selected") return `Crawler 正在读取 MCagent/RAG 本地上下文。`;
-  if (stage === "retrieve:planning") return `${activeName} 正在规划本地资料检索问题。`;
-  if (stage === "retrieve:planned") return `检索方向已确定，开始查找可用证据。`;
-  if (stage === "retrieve:searching") return `正在检索本地资料库、全文索引和 raw HTML 线索。`;
-  if (stage === "retrieve:inventory_scanning") return `正在读取本地入库文档并按资料类型归类。`;
-  if (stage === "retrieve:inventory_done") return `本地资料盘点完成，正在整理可读摘要。`;
+  if (stage === "plan:created") return `我列出了行动计划：${(detail.steps || []).map((item) => item.goal || item.tool).filter(Boolean).join("；")}`;
+  if (stage === "plan:rag_focus") return `我把检索焦点定为：${detail.question || detail.focus || ""}`;
+  if (stage === "decide:side_effect_boundary_corrected") return `我根据副作用边界修正了下一步：${detail.reason || "这一步不应产生持久化副作用。"}`;
+  if (stage === "decide:inter_agent_workflow_corrected") return `我把这轮改成跨 Agent 工作流：${detail.reason || detail.goal || ""}`;
+  if (stage === "decide:mcagent_context_selected") return `我先读取 MCagent/RAG 的本地上下文：${detail.rag_focus || detail.goal || ""}`;
+  if (stage === "retrieve:planning") return `我在规划本地资料检索。${detail.question ? `焦点：${detail.question}` : ""}`;
+  if (stage === "retrieve:planned") return `我已确定检索方向。${detail.query ? `查询：${detail.query}` : ""}`;
+  if (stage === "retrieve:searching") return `我开始检索本地资料库。${detail.query ? `查询：${detail.query}` : ""}`;
+  if (stage === "retrieve:inventory_scanning") return `我开始扫描本地入库文档。${detail.db_path ? `数据库：${detail.db_path}` : ""}`;
+  if (stage === "retrieve:inventory_done") return `我完成了本地资料盘点。${detail.documents ? `扫描 ${detail.documents} 篇文档。` : ""}`;
   if (stage === "retrieve:done") {
     const count = Number(detail.results || 0);
-    return count ? `找到 ${count} 条候选资料，正在筛选可用证据。` : `本地暂时没有找到候选资料，正在确认下一步。`;
+    return count ? `我找到 ${count} 条候选资料，继续筛选证据。` : `我这轮没有找到候选资料，继续判断下一步。`;
   }
-  if (stage === "decide:selecting_evidence") return `正在判断哪些证据真正能回答这轮问题。`;
+  if (stage === "decide:next_step_confirmed") return `我确认下一步：${detail.tool || detail.suggested_tool || detail.goal || detail.reason || step.status}`;
+  if (stage === "decide:selecting_evidence") return `我开始判断哪些证据能回答这轮问题。`;
   if (stage === "decide:evidence_step_started") {
-    const label = {
-      prefer_parent_topic: "主题父级证据",
-      modpack_manifest: "整合包 manifest",
-      local_modpack_manifest: "本地整合包 manifest",
-      project_keyword_supplement: "项目关键词补充",
-      raw_html_supplement: "raw HTML 补充",
-      modpack_mod_list_context: "整合包模组清单上下文",
-      theme_fallback: "主题兜底证据",
-    }[detail.step] || detail.step || "证据补充";
-    return `正在检查${label}。`;
+    return `我检查证据步骤：${detail.step || "evidence_step"}`;
   }
   if (stage === "decide:evidence_step_done") {
     const count = Number(detail.results || 0);
-    return `证据子步骤完成，得到 ${count} 条候选。`;
+    return `我完成一个证据步骤，得到 ${count} 条候选。`;
   }
-  if (stage === "decide:evidence_step_failed") return `证据子步骤失败，正在把错误交给后端处理。`;
+  if (stage === "decide:evidence_step_failed") return `证据步骤失败：${detail.error || "未知错误"}`;
   if (stage === "decide:evidence_selected") {
-    if (detail.verdict && detail.verdict !== "ok") return `现有资料仍不足，正在确认是否需要补充采集。`;
-    return `证据已经筛好，准备组织回答。`;
+    if (detail.verdict && detail.verdict !== "ok") return `我判断现有证据还不足：${detail.verdict}`;
+    return `我筛好了证据，准备组织回答。`;
   }
-  if (stage === "extract:next_step_confirmed") return `已确认临时网页读取步骤。`;
-  if (stage === "extract:temporary_url_extracted") return `网页已读取完成，正在总结内容。`;
-  if (stage === "extract:temporary_url_failed") return `临时读取失败，正在整理失败原因。`;
-  if (stage === "delegate:handoff_brief") return `采集任务交接说明已生成。`;
-  if (stage === "delegate:next_step_confirmed") return `已确认采集委托步骤。`;
-  if (stage === "answer:generating" && String(detail.mode || "").startsWith("direct")) return `模型正在直接组织回复。`;
-  if (stage === "answer:generating") return `模型正在基于当前证据组织回答。`;
+  if (stage === "extract:next_step_confirmed") return `我确认临时读取步骤：${detail.url || detail.goal || detail.reason || ""}`;
+  if (stage === "extract:temporary_url_extracted") return `我读完网页，准备总结：${detail.url || ""}`;
+  if (stage === "extract:temporary_url_failed") return `我读取网页失败：${detail.error || detail.url || ""}`;
+  if (stage === "delegate:handoff_brief") return `我整理了给 CrawlerAgent 的原始说明：${detail.brief || detail.collection_target || detail.task || ""}`;
+  if (stage === "delegate:next_step_confirmed") return `我确认 CrawlerAgent 的下一步：${detail.collection_target || detail.goal || detail.reason || ""}`;
+  if (stage === "delegate:planned_workflow") return `CrawlerAgent 已创建后续采集工作：${detail.task || detail.job_id || ""}`;
+  if (stage === "answer:generating" && String(detail.mode || "").startsWith("direct")) return `我开始组织直接回复。`;
+  if (stage === "answer:generating") return `我开始基于当前证据组织回答。`;
   if (stage === "answer:thinking") {
     const count = Number(detail.reasoning_events || 0);
     const dots = ".".repeat((Math.floor(count / 8) % 3) + 1);
-    return `模型还在整理答案${dots}`;
+    return `我还在整理答案${dots}`;
   }
-  if (stage === "delegate:answer_marked_missing") return `回答中仍有缺口，已进入补充采集流程。`;
-  if (stage === "done:response_ready") return `完成。`;
-  return `${activeName} 正在处理这轮请求。`;
+  if (stage === "answer:local_fact_answer") return `我用本地事实证据生成回答。`;
+  if (stage === "delegate:answer_marked_missing") return `我发现回答仍有缺口：${detail.reason || ""}`;
+  if (stage === "done:response_ready") return `我完成了这轮处理。${detail.sources != null ? `来源数：${detail.sources}` : ""}`;
+  if (stage === "done:insufficient_evidence") return `我判断证据不足：${detail.reason || ""}`;
+  if (stage === "done:router_error") return `我无法执行这一步：${detail.error || ""}`;
+  return `我记录到事件 ${stage || "update"}。${detailText(detail, ["reason", "goal", "summary", "error"])}`;
 }
 
 function updateComposerState() {
@@ -257,6 +293,72 @@ function setActivity(text, kind = "idle") {
   if (!activity) return;
   activity.textContent = text;
   activity.className = `agent-activity ${kind}`;
+}
+
+function renderAgentActions() {
+  const container = $("agentActionTimeline");
+  if (!container) return;
+  const items = (state.actionTimeline || []).slice(-80);
+  if ($("actionCount")) $("actionCount").textContent = String(items.length);
+  if (!items.length) {
+    container.innerHTML = `<div class="empty-state source-meta">还没有动作记录。发出问题后，我会把 MCagent 和 CrawlerAgent 的动作按时间累积在这里。</div>`;
+    return;
+  }
+  container.innerHTML = items.map((item, index) => `
+    <div class="agent-action-row ${escapeHtml(item.kind || "")}">
+      <div class="agent-action-index">${index + 1}</div>
+      <div class="agent-action-body">
+        <div class="agent-action-head">
+          <strong>${escapeHtml(item.actor || "Agent")}</strong>
+          <span>${fmtTime(item.time)}</span>
+        </div>
+        <div class="agent-action-text">${escapeHtml(item.text || "")}</div>
+        ${item.meta ? `<div class="agent-action-meta">${escapeHtml(item.meta)}</div>` : ""}
+      </div>
+    </div>
+  `).join("");
+  container.scrollTop = container.scrollHeight;
+}
+
+function recordAgentAction({ actor = "", text = "", kind = "", meta = "", messageKey = "" } = {}) {
+  const value = String(text || "").trim();
+  if (!value) return;
+  const current = state.actionTimeline || [];
+  const last = current[current.length - 1];
+  if (last && last.text === value && last.actor === actor && last.messageKey === messageKey) return;
+  state.actionTimeline = [...current, {
+    actor: actor || "Agent",
+    text: value,
+    kind,
+    meta,
+    messageKey,
+    time: Date.now(),
+  }].slice(-120);
+  renderAgentActions();
+}
+
+function resetAgentActionsForSession(force = false) {
+  const session = activeSession();
+  const sessionId = session?.id || "";
+  if (!force && state.actionTimelineSessionId === sessionId) {
+    renderAgentActions();
+    return;
+  }
+  state.actionTimeline = [];
+  state.actionTimelineSessionId = sessionId;
+  for (const [index, message] of (session?.messages || []).entries()) {
+    if (message.role !== "assistant") continue;
+    const key = messageActionId(session.id, index);
+    for (const text of message.processLog || []) {
+      recordAgentAction({
+        actor: message.agent || "MCagent",
+        text,
+        kind: "history",
+        messageKey: key,
+      });
+    }
+  }
+  renderAgentActions();
 }
 
 function idleActivityText() {
@@ -509,6 +611,7 @@ function renderMessages(forceScroll = false) {
   `).join("");
   bindExpandableSections();
   if (shouldFollow) box.scrollTop = box.scrollHeight;
+  resetAgentActionsForSession();
 }
 
 function sectionKey(sessionId, index, panel) {
@@ -537,9 +640,62 @@ function renderAssistantContent(message, sessionId, index) {
   const parts = splitAssistantText(message.text || "");
   return `
     <div class="message-body">${escapeHtml(parts.answer)}</div>
+    ${renderProcessLog(message.processLog, sectionKey(sessionId, index, "process"), shouldOpenProcessLog(message))}
     ${renderJobReadable(message.jobReadable, sectionKey(sessionId, index, "job"))}
     ${renderEvidencePanel(message.sources, parts.evidenceText, sectionKey(sessionId, index, "evidence"))}
-    ${renderCollaboration(message.collaboration, sectionKey(sessionId, index, "collaboration"))}
+    ${renderCollaboration(mergedCollaboration(message), sectionKey(sessionId, index, "collaboration"))}
+  `;
+}
+
+function mergedCollaboration(message) {
+  const items = Array.isArray(message.collaboration) ? [...message.collaboration] : [];
+  for (const item of agentMessagesFromTrace(message.trace || [])) {
+    const exists = items.some((existing) => existing.text === item.text && existing.speaker === item.speaker && existing.state === item.state);
+    if (!exists) items.push(item);
+  }
+  return items;
+}
+
+function agentMessagesFromTrace(trace) {
+  const rows = [];
+  for (const step of trace || []) {
+    const detail = step?.detail || {};
+    if (step?.stage !== "message" || !detail || typeof detail !== "object") continue;
+    const content = String(detail.content || "");
+    if (!content.trim()) continue;
+    rows.push({
+      speaker: detail.from_agent || "Agent",
+      state: `${detail.from_agent || "Agent"} -> ${detail.to_agent || "Agent"}`,
+      text: content,
+    });
+  }
+  return rows;
+}
+
+function shouldOpenProcessLog(message) {
+  const steps = Array.isArray(message.processLog) ? message.processLog.filter(Boolean) : [];
+  if (!steps.length) return false;
+  return true;
+}
+
+function renderProcessLog(items, key = "", defaultOpen = false) {
+  const steps = Array.isArray(items) ? items.filter(Boolean) : [];
+  if (!steps.length) return "";
+  return `
+    <details class="message-section trace-panel process-panel" ${detailsAttrs(key || "process", defaultOpen)}>
+      <summary>
+        <span>\u6267\u884c\u8fc7\u7a0b</span>
+        <span>${steps.length} \u6b65</span>
+      </summary>
+      <div class="trace-list">
+        ${steps.map((text, index) => `
+          <div class="trace-row">
+            <strong>${index + 1}</strong>
+            <span>${escapeHtml(text)}</span>
+          </div>
+        `).join("")}
+      </div>
+    </details>
   `;
 }
 
@@ -934,6 +1090,7 @@ function rememberJobMessage(job, sessionId, messageIndex) {
     sessionId,
     messageIndex,
     lastStatus: job.status || "",
+    lastReadableKey: "",
   };
 }
 
@@ -970,8 +1127,18 @@ function applyJobUpdatesToMessages(jobs) {
       message.jobReadable = job.readable;
       message.jobId = job.id;
       message.jobStatus = job.status || "";
-      if (!message.isStreamingAnswer && !result.mcagent_recheck) {
-        message.text = crawlerProgressText(job);
+      const readableKey = jobReadableActionKey(job);
+      if (readableKey && readableKey !== link.lastReadableKey) {
+        appendProcessStep(message, crawlerProgressText(job), {
+          actor: "CrawlerAgent",
+          kind: "crawler",
+          meta: job.id,
+          messageKey: messageActionId(session.id, link.messageIndex),
+        });
+        link.lastReadableKey = readableKey;
+        if (!message.hasFinalAnswer && !message.finalAnswerText && !message.isStreamingAnswer && !result.mcagent_recheck) {
+          updateAssistantDisplayText(message, "", "progress");
+        }
       }
       changed = true;
     }
@@ -993,33 +1160,106 @@ function applyJobUpdatesToMessages(jobs) {
   }
 }
 
+function jobReadableActionKey(job) {
+  const readable = job?.readable || {};
+  return [
+    job?.status || "",
+    readable.status || "",
+    readable.current_index || "",
+    readable.total_tasks || "",
+    readable.progress_text || "",
+    readable.current_source || "",
+    readable.current_query || "",
+    readable.next_action || "",
+    readable.plain_summary || "",
+    readable.latest_observation?.status || "",
+    readable.latest_observation?.summary || "",
+    readable.agent_reflection?.reason || "",
+  ].join("|");
+}
+
 function crawlerProgressText(job) {
   const readable = job.readable || {};
   const status = readable.status || job.status || "";
   const statusText = status === "running" ? "正在采集"
     : status === "queued" ? "正在排队"
-    : status === "succeeded" ? "采集完成"
+    : status === "succeeded" ? "完成采集"
     : status === "failed" ? "采集失败"
-    : status === "stopped" ? "采集已停止"
-    : "采集任务更新";
+    : status === "stopped" ? "停止采集"
+    : "更新采集任务";
   const total = Number(readable.total_tasks || 0);
   const current = Number(readable.current_index || 0);
   const progress = total ? `第 ${current || 0}/${total} 步` : "正在规划";
   const summary = readable.plain_summary || readable.health_text || readable.summary || "";
   const target = readable.headline || readable.target || job.title || "采集任务";
-  const lines = [`CrawlerAgent ${statusText}：${target}`];
+  const lines = [`我${statusText}：${target}`];
   lines.push(summary || `当前进度：${progress}。`);
-  if (status === "running" || status === "queued") lines.push(`当前进度：${progress}。`);
+  if ((status === "running" || status === "queued") && (readable.current_source || readable.current_query)) {
+    lines.push(`当前动作：${[readable.current_source, readable.current_query].filter(Boolean).join("：")}`);
+  }
+  if (readable.latest_observation?.summary) {
+    lines.push(`最近工具结果：${readable.latest_observation.summary}`);
+  }
+  if (readable.agent_reflection?.reason) {
+    lines.push(`我的判断：${readable.agent_reflection.reason}`);
+  }
   const useful = readable.useful_outputs || [];
   const blocked = readable.blocked_outputs || [];
   if (status === "succeeded" && useful.length) {
     const sources = useful.map((item) => item.source).filter(Boolean).slice(0, 3).join("、");
-    lines.push(`本轮补到或复用了 ${useful.length} 类资料${sources ? `：${sources}` : ""}。`);
+    lines.push(`我这轮补到或复用了 ${useful.length} 类资料${sources ? `：${sources}` : ""}。`);
   }
   if (blocked.length) {
-    lines.push(`${blocked.length} 条受限或低价值结果已放进“采集详情”。`);
+    lines.push(`我把 ${blocked.length} 条受限或低价值结果放进采集详情。`);
   }
   return lines.join("\n");
+}
+
+function appendProcessStep(message, text, options = {}) {
+  const value = String(text || "").trim();
+  if (!value) return;
+  const current = Array.isArray(message.processLog) ? message.processLog : [];
+  if (current.includes(value)) return;
+  message.processLog = [...current, value];
+  recordAgentAction({
+    actor: options.actor || message.agent || "Agent",
+    text: value,
+    kind: options.kind || "process",
+    meta: options.meta || "",
+    messageKey: options.messageKey || "",
+  });
+}
+
+function setInitialProcessStep(message, text, options = {}) {
+  appendProcessStep(message, text, options);
+  message.hasFinalAnswer = false;
+  message.isStreamingAnswer = false;
+  updateAssistantDisplayText(message);
+}
+
+function processBlockText(message) {
+  const steps = Array.isArray(message.processLog) ? message.processLog.filter(Boolean) : [];
+  if (!steps.length) return "";
+  return `\u6267\u884c\u8fc7\u7a0b\uff1a\n${steps.map((text, index) => `${index + 1}. ${text}`).join("\n")}`;
+}
+
+function composeAssistantDisplayText(message, answerText = "", mode = "final") {
+  const answer = String(answerText || "").trim();
+  if (answer) return answer;
+  return mode === "progress" ? "处理中..." : (message.text || "");
+}
+
+function updateAssistantDisplayText(message, answerText = "", mode = "progress") {
+  if (mode === "progress") {
+    message.text = composeAssistantDisplayText(message, message.finalAnswerText || "");
+    return;
+  }
+  if (mode === "final") {
+    message.finalAnswerText = String(answerText || "").trim();
+    message.text = composeAssistantDisplayText(message, message.finalAnswerText, mode);
+    return;
+  }
+  message.text = composeAssistantDisplayText(message, answerText, mode);
 }
 
 function renderCollaboration(dialog, key = "") {
@@ -1220,9 +1460,9 @@ function renderJobs(jobs) {
   if (!state.currentChat) {
     if (activeCrawler) {
       if (activeCrawler.stop_requested) {
-        setActivity("已请求提前结束：Crawler 正在完成当前轮，完成后就会停止。", "crawler");
+        setActivity("已请求提前结束：CrawlerAgent 会完成当前动作后停止。", "crawler");
       } else {
-        setActivity("Crawler 正在联网检索，整理 Markdown，完成后会自动清洗入库。", "crawler");
+        setActivity(crawlerProgressText(activeCrawler).split("\n")[0], "crawler");
       }
     } else if (activeIngest) {
       setActivity("正在把采集资料清洗并写入本地向量库。", "ingest");
@@ -1329,8 +1569,8 @@ function renderStatus(status) {
   const jobs = status.jobs || [];
   const activeCrawler = jobs.find((job) => job.kind === "crawler" && (job.status === "queued" || job.status === "running"));
   $("crawlerState").textContent = activeCrawler
-    ? `当前任务：${jobStatusLabel(activeCrawler.status)}`
-    : `当前无任务 · ${status.sources.files} 个采集文件`;
+    ? `CrawlerAgent：${jobStatusLabel(activeCrawler.status)}`
+    : `无运行中动作 · ${status.sources.files} 个采集文件`;
   const latest = status.sources.latest_files || [];
   const runs = status.agenttest_runs || [];
   $("crawlerInfo").innerHTML = [
@@ -1399,16 +1639,17 @@ function addMessage(role, text, agent = "") {
   saveSessions();
   renderSessions();
   renderMessages(true);
+  return session.messages.length - 1;
 }
 
 function requestHistoryForAgent(session, pendingIndex, limit = 24) {
   const messages = (session.messages || [])
-    .slice(0, Math.max(0, pendingIndex - 1))
+    .slice(0, Math.max(0, pendingIndex))
     .filter((message) => message.role === "user" || message.role === "assistant")
     .filter((message) => String(message.text || "").trim() && String(message.text || "").trim() !== "处理中...");
   return messages.slice(-limit).map((message) => ({
     role: message.role,
-    text: message.text,
+    text: message.finalAnswerText || message.text,
     time: message.time,
     agent: message.agent || "",
     sources: message.sources || [],
@@ -1417,29 +1658,9 @@ function requestHistoryForAgent(session, pendingIndex, limit = 24) {
 
 function sourcePreview(sources) {
   const items = (sources || []).slice(0, 4);
-  if (!items.length) return "本地资料库暂时没有命中，正在判断是否需要交给爬虫agent补库...";
+  if (!items.length) return "本地资料库暂时没有命中，我正在判断是否需要通过 AgentMessage 询问 CrawlerAgent。";
   const lines = items.map((source) => `- [S${source.rank}] ${source.title} (${Number(source.score).toFixed(3)})`);
-  return `已命中本地资料 ${sources.length} 条，正在调用模型生成回答...\n\n优先来源：\n${lines.join("\n")}`;
-}
-
-function delegationPreviewDialog(question) {
-  return [
-    {
-      speaker: "MCagent",
-      state: "检索",
-      text: `本地库暂时没有找到可用资料：${question}`,
-    },
-    {
-      speaker: "MCagent",
-      state: "准备派单",
-      text: "正在判断数据源与查询词，准备把补库任务交给 Crawler。",
-    },
-    {
-      speaker: "Crawler",
-      state: "等待接单",
-      text: "等待 MCagent 给出 source、query、保存格式和成功标准。",
-    },
-  ];
+  return `我已命中本地资料 ${sources.length} 条，正在组织回答。\n\n优先来源：\n${lines.join("\n")}`;
 }
 
 async function sendQuestion(event) {
@@ -1488,18 +1709,22 @@ async function sendQuestion(event) {
   };
 
   try {
+    const pendingMessage = session.messages[pendingIndex];
+    const messageKey = messageActionId(session.id, pendingIndex);
     if (payload.agent === "mcagent_rag") {
-      const initialText = "MCagent 正在读取你的问题。";
+      const initialText = `我收到你的问题：${question}`;
       setActivity(initialText, "thinking");
-      session.messages[pendingIndex].text = initialText;
+      setInitialProcessStep(pendingMessage, initialText, { actor: "MCagent", kind: "start", messageKey });
       saveSessions();
       renderMessages();
     } else if (payload.agent === "retriever_only") {
-      setActivity("仅检索：正在读取本地向量库...", "working");
+      const initialText = `我收到你的检索请求：${question}`;
+      setActivity(initialText, "working");
+      setInitialProcessStep(pendingMessage, initialText, { actor: "MCagent", kind: "start", messageKey });
     } else if (payload.agent === "crawler_agent") {
-      const initialText = "CrawlerAgent 正在读取你的任务。";
+      const initialText = `我收到你的 Crawler 请求：${question}`;
       setActivity(initialText, "crawler");
-      session.messages[pendingIndex].text = initialText;
+      setInitialProcessStep(pendingMessage, initialText, { actor: "CrawlerAgent", kind: "start", messageKey });
       saveSessions();
       renderMessages();
     }
@@ -1510,7 +1735,13 @@ async function sendQuestion(event) {
         const message = session.messages[pendingIndex];
         message.trace = [...(message.trace || []), step].slice(-20);
         const progressText = progressTextForTrace(step);
-        if (!message.hasFinalAnswer && !message.isStreamingAnswer) message.text = progressText;
+        appendProcessStep(message, progressText, {
+          actor: actionActorForTrace(step, step?.detail || {}),
+          kind: step.stage || "trace",
+          meta: step.status || "",
+          messageKey,
+        });
+        if (!message.hasFinalAnswer && !message.isStreamingAnswer) updateAssistantDisplayText(message);
         setActivity(progressText, step.stage === "answer" ? "thinking" : "working");
         saveSessions();
         renderMessages();
@@ -1521,26 +1752,34 @@ async function sendQuestion(event) {
         if (!chunk) return;
         streamedAnswer += chunk;
         const message = session.messages[pendingIndex];
-        message.text = streamedAnswer;
+        updateAssistantDisplayText(message, streamedAnswer, "streaming");
         message.isStreamingAnswer = true;
-        setActivity("模型正在组织回答，内容会实时出现在这条消息里。", "thinking");
+        setActivity("我正在组织回答，内容会实时出现在这条消息里。", "thinking");
         saveSessions();
         renderMessages();
       },
       onResponse(partial) {
         if (state.currentChat !== currentChat || !partial) return;
         const replyText = agentReplyContent(partial);
-        session.messages[pendingIndex].text = replyText || session.messages[pendingIndex].text || "";
-        session.messages[pendingIndex].hasFinalAnswer = Boolean(replyText);
-        session.messages[pendingIndex].isStreamingAnswer = false;
-        session.messages[pendingIndex].agentMessage = partial.agent_message || null;
-        session.messages[pendingIndex].trace = partial.trace || session.messages[pendingIndex].trace || [];
-        session.messages[pendingIndex].collaboration = partial.collaboration || [];
-        session.messages[pendingIndex].sources = partial.sources || [];
-        session.messages[pendingIndex].jobReadable = shouldRenderJobReadable(partial) ? partial.job.readable : session.messages[pendingIndex].jobReadable;
+        const message = session.messages[pendingIndex];
+        if (replyText) message.finalAnswerText = replyText;
+        message.hasFinalAnswer = Boolean(replyText);
+        message.isStreamingAnswer = false;
+        message.agentMessage = partial.agent_message || null;
+        message.trace = partial.trace || message.trace || [];
+        for (const step of message.trace || []) appendProcessStep(message, progressTextForTrace(step), {
+          actor: actionActorForTrace(step, step?.detail || {}),
+          kind: step.stage || "trace",
+          meta: step.status || "",
+          messageKey,
+        });
+        updateAssistantDisplayText(message, replyText || message.finalAnswerText || streamedAnswer || "", "final");
+        message.collaboration = partial.collaboration || [];
+        message.sources = partial.sources || [];
+        message.jobReadable = shouldRenderJobReadable(partial) ? partial.job.readable : message.jobReadable;
         if (shouldTrackJobResponse(partial)) {
-          session.messages[pendingIndex].jobId = partial.job.id;
-          session.messages[pendingIndex].jobStatus = partial.job.status || "";
+          message.jobId = partial.job.id;
+          message.jobStatus = partial.job.status || "";
           rememberJobMessage(partial.job, session.id, pendingIndex);
         }
         saveSessions();
@@ -1548,26 +1787,36 @@ async function sendQuestion(event) {
       },
     });
     if (state.currentChat !== currentChat) return;
-    const finalText = agentReplyContent(data) || streamedAnswer || session.messages[pendingIndex].text || "";
-    session.messages[pendingIndex].text = finalText;
-    session.messages[pendingIndex].hasFinalAnswer = true;
-    session.messages[pendingIndex].isStreamingAnswer = false;
-    session.messages[pendingIndex].agent = state.agents.find((item) => item.id === state.activeAgent)?.name || state.activeAgent;
-    session.messages[pendingIndex].agentMessage = data.agent_message || null;
-    session.messages[pendingIndex].trace = data.trace || [];
-    session.messages[pendingIndex].collaboration = data.collaboration || [];
-    session.messages[pendingIndex].sources = data.sources || [];
-    session.messages[pendingIndex].jobReadable = shouldRenderJobReadable(data) ? data.job.readable : session.messages[pendingIndex].jobReadable;
+    const message = session.messages[pendingIndex];
+    const finalText = agentReplyContent(data) || streamedAnswer || message.finalAnswerText || "";
+    message.finalAnswerText = finalText;
+    message.hasFinalAnswer = true;
+    message.isStreamingAnswer = false;
+    message.agent = state.agents.find((item) => item.id === state.activeAgent)?.name || state.activeAgent;
+    message.agentMessage = data.agent_message || null;
+    message.trace = data.trace || [];
+    for (const step of message.trace || []) appendProcessStep(message, progressTextForTrace(step), {
+      actor: actionActorForTrace(step, step?.detail || {}),
+      kind: step.stage || "trace",
+      meta: step.status || "",
+      messageKey,
+    });
+    updateAssistantDisplayText(message, finalText, "final");
+    message.collaboration = data.collaboration || [];
+    message.sources = data.sources || [];
+    message.jobReadable = shouldRenderJobReadable(data) ? data.job.readable : message.jobReadable;
     if (shouldTrackJobResponse(data)) {
-      session.messages[pendingIndex].jobId = data.job.id;
-      session.messages[pendingIndex].jobStatus = data.job.status || "";
+      message.jobId = data.job.id;
+      message.jobStatus = data.job.status || "";
     }
     renderSources(data.sources || []);
     if (shouldTrackJobResponse(data) && data.job && (data.job.status === "queued" || data.job.status === "running")) {
       rememberJobMessage(data.job, session.id, pendingIndex);
-      setActivity("Crawler 已接单，正在联网检索、生成 Markdown 并准备入库。", "crawler");
+      const crawlerText = crawlerProgressText(data.job);
+      appendProcessStep(message, crawlerText, { actor: "CrawlerAgent", kind: "crawler", meta: data.job.id, messageKey });
+      setActivity(crawlerText.split("\n")[0], "crawler");
     } else {
-      setActivity("完成：已根据当前本地资料返回结果。", "done");
+      setActivity("我完成了这轮处理。", "done");
       setTimeout(() => {
         if (!state.currentChat) setActivity(idleActivityText(), "idle");
       }, 2500);
@@ -1582,7 +1831,8 @@ async function sendQuestion(event) {
       message.isStreamingAnswer = false;
       setActivity("已暂停本次回复。", "paused");
     } else if (hasUsableAnswer) {
-      message.text = streamedAnswer || message.text || "";
+      message.finalAnswerText = streamedAnswer || message.finalAnswerText || "";
+      updateAssistantDisplayText(message, message.finalAnswerText, "final");
       message.hasFinalAnswer = Boolean(message.text);
       message.isStreamingAnswer = false;
       setActivity("连接中断，已保留已收到的回答。", "done");
@@ -1623,6 +1873,21 @@ async function runCrawler() {
   $("runCrawler").textContent = "启动中";
   try {
     const question = $("crawlerQuery") ? $("crawlerQuery").value.trim() : "";
+    if (!question) {
+      addMessage("assistant", "请先写清楚希望 CrawlerAgent 采集什么。", "系统");
+      return;
+    }
+    addMessage("user", question);
+    const pendingIndex = addMessage("assistant", "处理中...", "CrawlerAgent");
+    const session = activeSession();
+    const message = session.messages[pendingIndex];
+    const messageKey = messageActionId(session.id, pendingIndex);
+    setInitialProcessStep(message, `我收到你的采集请求：${question}`, {
+      actor: "CrawlerAgent",
+      kind: "start",
+      messageKey,
+    });
+    setActivity("CrawlerAgent 正在理解这条采集消息。", "crawler");
     const payload = {
       from_agent: "User",
       to_agent: "CrawlerAgent",
@@ -1636,19 +1901,44 @@ async function runCrawler() {
       rounds: Number($("crawlerRounds").value || 1),
       interval_seconds: Number($("crawlerInterval").value || 0),
       metadata: {
-        tool: "delegate_crawler",
         source: $("crawlerSource").value,
         requested_by: "user",
         ui_entry: "crawler_panel",
+        rounds: Number($("crawlerRounds").value || 1),
+        interval_seconds: Number($("crawlerInterval").value || 0),
       },
     };
     const data = await api("/api/agent-message", { method: "POST", body: JSON.stringify(payload) });
+    const replyText = agentReplyContent(data) || "我是 CrawlerAgent。我已收到这条 AgentMessage。";
+    message.finalAnswerText = replyText;
+    message.hasFinalAnswer = true;
+    message.isStreamingAnswer = false;
+    message.agentMessage = data.agent_message || null;
+    message.trace = data.trace || [];
+    message.collaboration = data.collaboration || [];
+    message.sources = data.sources || [];
+    for (const step of message.trace || []) appendProcessStep(message, progressTextForTrace(step), {
+      actor: actionActorForTrace(step, step?.detail || {}),
+      kind: step.stage || "trace",
+      meta: step.status || "",
+      messageKey,
+    });
     if (data.job) {
+      message.jobId = data.job.id;
+      message.jobStatus = data.job.status || "";
+      message.jobReadable = data.job.readable || null;
+      rememberJobMessage(data.job, session.id, pendingIndex);
+      appendProcessStep(message, crawlerProgressText(data.job), {
+        actor: "CrawlerAgent",
+        kind: "crawler",
+        meta: data.job.id,
+        messageKey,
+      });
       renderJobs([data.job, ...state.jobs.filter((job) => job.id !== data.job.id)]);
-      addMessage("assistant", `CrawlerAgent 采集任务已启动：${data.job.id}（${payload.rounds}轮）`, "系统");
-    } else {
-      addMessage("assistant", agentReplyContent(data) || "CrawlerAgent 已收到采集消息。", "系统");
     }
+    updateAssistantDisplayText(message, replyText, "final");
+    saveSessions();
+    renderMessages(true);
   } catch (error) {
     addMessage("assistant", `启动采集失败：${error.message}`, "系统");
   } finally {

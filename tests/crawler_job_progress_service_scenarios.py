@@ -17,7 +17,7 @@ def assert_equal(name: str, actual, expected) -> None:
 
 def test_planned_payload_contains_plan_and_running_act() -> None:
     payload = CrawlerJobProgressService().planned(topic="落幕曲", task_count=3, plan={"topic": "落幕曲"}, tasks=[{}, {}, {}])
-    assert "Crawler planned 落幕曲" in payload["summary"]
+    assert "我已经围绕 落幕曲 规划了 3 个采集动作" in payload["summary"]
     assert_equal("planned_tasks", len(payload["result"]["planned_tasks"]), 3)
     assert_equal("act_status", payload["result"]["loop"][2]["status"], "running")
 
@@ -35,7 +35,7 @@ def test_reflecting_payload_uses_reflection_reason() -> None:
 
 def test_empty_query_payload_marks_act_blocked() -> None:
     payload = CrawlerJobProgressService().empty_query_blocked(source_label="Local URL Fetch/Extract", task_results=[{}], tasks=[{}], plan={})
-    assert "空查询" in payload["summary"]
+    assert "查询为空" in payload["summary"]
     assert_equal("act_status", payload["result"]["loop"][2]["status"], "blocked")
 
 
@@ -51,7 +51,7 @@ def test_executing_payload_mentions_query() -> None:
         plan={},
     )
     assert "乌托邦探险之旅" in payload["summary"]
-    assert_equal("act_note", payload["result"]["loop"][2]["note"], "Executing 2/5: 乌托邦探险之旅")
+    assert_equal("act_note", payload["result"]["loop"][2]["note"], "正在执行 2/5: 乌托邦探险之旅")
 
 
 def test_reviewing_and_replanning_payloads_are_running() -> None:
@@ -69,4 +69,3 @@ if __name__ == "__main__":
     test_executing_payload_mentions_query()
     test_reviewing_and_replanning_payloads_are_running()
     print("crawler_job_progress_service_scenarios passed")
-

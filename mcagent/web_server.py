@@ -55,6 +55,7 @@ from .crawler_planner_wait_service import CrawlerPlannerWaitService
 from .evidence_service import EvidenceWorkflowService
 from .graphs import dispatch_agent_message_graph
 from .graphs.crawler_job import run_crawler_job_graph
+from .graphs.graph_route_execution import graph_route_decision_has_action_tool
 from .ingest import IngestStats, ingest_exports
 from .job_view_service import JobReadableViewService
 from .llm import OllamaOpenAIClient, OpenAICompatibleClient
@@ -4223,7 +4224,7 @@ def _search(config: AppConfig, query: str, top_k: int | None = None) -> list[dic
 def _corpus_source_bucket(source_path: str, title: str = "") -> str:
     path = str(source_path or "").lower().replace("\\", "/")
     title_lower = str(title or "").lower()
-    if "manual_research" in path or "pack_internal" in path or "pack_internals" in path:
+    if "pack_internal" in path or "pack_internals" in path or "pack internal" in title_lower:
         return "整合包内部资料"
     if "resourcepack" in path or "resourcepacks" in path:
         return "资源包"
@@ -4243,15 +4244,315 @@ def _corpus_source_bucket(source_path: str, title: str = "") -> str:
 
 
 def _corpus_topic_key(title: str, source_path: str = "") -> str:
+    def clean_topic(value: str) -> str:
+        value = re.sub(r"^\d{8}[_\s]+\d{6}[_\s]+", "", str(value or "")).strip()
+        value = re.sub(r"(?:-20)+", " ", value)
+        value = urllib.parse.unquote(value)
+        value = re.sub(r"\s+", " ", value.replace("_", " ")).strip()
+        return value[:120]
+
     path = str(source_path or "").replace("\\", "/")
-    pack_match = re.search(r"/manual_research/[^/]*?([^/]+?_pack_internals)(?:/|$)", path, flags=re.I)
-    if pack_match:
-        value = re.sub(r"_pack_internals$", " pack internals", pack_match.group(1), flags=re.I)
-        return value.replace("_", " ")[:120]
+    segments = [segment for segment in path.split("/") if segment]
+    for index, segment in enumerate(segments):
+        if re.search(r"_pack_internals$", segment, flags=re.I):
+            value = re.sub(r"_pack_internals$", " pack internals", segment, flags=re.I)
+            return clean_topic(value)
+        if segment.lower() in {"pack_internal", "pack_internals"} and index > 0:
+            value = f"{segments[index - 1]} pack internals"
+            return clean_topic(value)
+    filename = Path(path).name
+    if re.search(r"_pack_internal_inventory\.(md|txt|html)$", filename, flags=re.I):
+        value = re.sub(r"_pack_internal_inventory\.(md|txt|html)$", " pack internals", filename, flags=re.I)
+        return clean_topic(value)
     value = re.sub(r"\s*-\s*MC百科.*$", "", str(title or ""), flags=re.I)
     value = re.sub(r"\s*\|\s*最大的Minecraft中文MOD百科.*$", "", value, flags=re.I)
+    value = re.sub(r"\s+pack internal inventory\s*$", " pack internals", value, flags=re.I)
     value = re.sub(r"\s+", " ", value).strip()
     return value[:120] or "未命名资料"
+
+
+def _clean_corpus_entity_name(value: str) -> str:
+    text = urllib.parse.unquote(str(value or "")).strip()
+    text = re.sub(r"^\s*#+\s*", "", text)
+    text = re.sub(r"^\d{8}[_\s]+\d{6}[_\s]+", "", text).strip()
+    text = re.sub(r"(?:-20)+", " ", text)
+    text = text.replace("_", " ")
+    text = re.sub(r"\.(?:md|html|json|txt|zip|mrpack)$", "", text, flags=re.I)
+    text = re.sub(r"\s+pack internal inventory\s*$", " pack internals", text, flags=re.I)
+    text = re.sub(r"\s+pack internals\s*$", " pack internals", text, flags=re.I)
+    text = re.sub(r"\s+route evidence draft\s*$", "", text, flags=re.I)
+    text = re.sub(r"\s+manifest\s*(?:结构化事实|structured facts?)?\s*$", "", text, flags=re.I)
+    text = re.sub(r"^Downloaded modpack archive evidence:\s*", "", text, flags=re.I)
+    text = re.sub(r"^Modpack archive discovery for\s+", "", text, flags=re.I)
+    text = re.sub(r"^Topic discovery seeds for\s+", "", text, flags=re.I)
+    text = re.sub(r"\s*-\s*(?:Minecraft )?Modpack\s*$", "", text, flags=re.I)
+    text = re.sub(r"\s*-\s*我的世界整合包.*$", "", text, flags=re.I)
+    text = re.sub(r"\s*-\s*MC百科.*$", "", text, flags=re.I)
+    text = re.sub(r"\s*\|\s*.*$", "", text)
+    text = re.sub(r"\s+", " ", text).strip(" -:：|")
+    return text[:120]
+
+
+def _valid_corpus_entity_name(value: str) -> bool:
+    text = str(value or "").strip()
+    if len(text) < 3:
+        return False
+    lowered = text.lower()
+    generic = {
+        "minecraft",
+        "minecraft modpack",
+        "modpack",
+        "modpacks",
+        "整合包",
+        "模组包",
+        "模组包/整合包",
+        "未命名资料",
+    }
+    if lowered in generic or text in generic:
+        return False
+    if lowered.startswith(("http://", "https://")):
+        return False
+    if re.fullmatch(r"[});\]}.\s]*", text):
+        return False
+    if re.fullmatch(r"(?:web|page|index|readme|manifest|summary|report)[\w\s.-]*", lowered):
+        return False
+    if lowered.startswith(".minecraft ") or re.search(r"\b(?:config|overrides|raw text|raw_text|scripts?)\b", lowered):
+        return False
+    if len(text) > 90 and not re.search(r"[\u4e00-\u9fff].{0,24}(整合包|落幕曲|乌托邦|香草纪元)", text):
+        return False
+    if any(token in text for token in ("[h1=", "[icon:", "{", "}", "=>", "Platform.", "modpackName")):
+        return False
+    return True
+
+
+def _corpus_entity_key(value: str) -> str:
+    text = str(value or "").lower()
+    text = re.sub(r"[\s_：:|/\\（）()\\[\\]{}'\"“”‘’™®.-]+", "", text)
+    return text[:100]
+
+
+def _corpus_source_group_key(source_path: str) -> str:
+    path = str(source_path or "").replace("\\", "/")
+    if not path:
+        return ""
+    lowered = path.lower()
+    high_signal = (
+        "vefc_" in lowered
+        or "modpack_download/" in lowered
+        or "_pack_internals" in lowered
+        or "/pack_internal/" in lowered
+    )
+    if not high_signal:
+        return ""
+    if "/raw_text/" in lowered:
+        return lowered.split("/raw_text/", 1)[0]
+    if "/accepted_by_crawler/" in lowered:
+        return lowered.split("/accepted_by_crawler/", 1)[0]
+    return str(Path(path).parent).replace("\\", "/").lower()
+
+
+def _entity_name_quality(value: str) -> int:
+    text = str(value or "")
+    score = 0
+    if re.search(r"[\u4e00-\u9fff]", text):
+        score += 60
+    if "/" in text:
+        score += 40
+    if ":" in text or "：" in text:
+        score += 10
+    score += min(len(text), 80)
+    if re.search(r"\bpack internals\b", text, flags=re.I):
+        score -= 25
+    return score
+
+
+def _corpus_pack_internal_entity_from_path(source_path: str) -> str:
+    path = str(source_path or "").replace("\\", "/")
+    segments = [segment for segment in path.split("/") if segment]
+    for index, segment in enumerate(segments):
+        if re.search(r"_pack_internals$", segment, flags=re.I):
+            return _clean_corpus_entity_name(re.sub(r"_pack_internals$", "", segment, flags=re.I))
+        if segment.lower() in {"pack_internal", "pack_internals"} and index > 0:
+            return _clean_corpus_entity_name(segments[index - 1])
+    filename = Path(path).name
+    if re.search(r"_pack_internal_inventory\.(?:md|txt|html)$", filename, flags=re.I):
+        return _clean_corpus_entity_name(re.sub(r"_pack_internal_inventory\.(?:md|txt|html)$", "", filename, flags=re.I))
+    return ""
+
+
+def _extract_labeled_value(text: str, labels: tuple[str, ...]) -> str:
+    for label in labels:
+        match = re.search(rf"{re.escape(label)}\s*[:：]\s*([^\n\r；;`]+)", str(text or ""), flags=re.I)
+        if match:
+            return _clean_corpus_entity_name(match.group(1))
+    return ""
+
+
+def _corpus_entity_candidates(title: str, source_path: str, preview_text: str, bucket: str) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+
+    def add(name: str, *, reason: str, score: int, aliases: list[str] | None = None) -> None:
+        cleaned = _clean_corpus_entity_name(name)
+        if not _valid_corpus_entity_name(cleaned):
+            return
+        clean_aliases = []
+        for alias in aliases or []:
+            alias_cleaned = _clean_corpus_entity_name(alias)
+            if _valid_corpus_entity_name(alias_cleaned) and alias_cleaned != cleaned:
+                clean_aliases.append(alias_cleaned)
+        candidates.append({"name": cleaned, "reason": reason, "score": score, "aliases": clean_aliases})
+
+    internal_name = _corpus_pack_internal_entity_from_path(source_path)
+    if internal_name:
+        add(internal_name, reason="pack_internal_path", score=170)
+
+    text = str(preview_text or "")
+    raw_text_path = "/raw_text/" in str(source_path or "").lower().replace("\\", "/")
+    manifest_name = _extract_labeled_value(text, ("整合包名称", "name"))
+    manifest_alias = _extract_labeled_value(text, ("整合包别名/同目录证据标题",))
+    path_lower = str(source_path or "").lower().replace("\\", "/")
+    title_lower = str(title or "").lower()
+    route_evidence_like = (
+        "route_evidence" in path_lower
+        or "route evidence" in title_lower
+        or "route evidence" in text.lower()
+        or "route evidence draft" in title_lower
+    )
+    if route_evidence_like:
+        manifest_alias = manifest_alias or _extract_labeled_value(text, ("entity",))
+    if manifest_name and ("minecraftModpack" in text or "curseforge_manifest" in text or "整合包名称" in text):
+        aliases = [manifest_alias] if manifest_alias else []
+        display_name = manifest_name
+        if manifest_alias and _entity_name_quality(manifest_alias) > _entity_name_quality(manifest_name):
+            display_name = f"{manifest_alias} / {manifest_name}"
+            aliases.append(manifest_name)
+        add(display_name, reason="manifest_fact", score=180, aliases=aliases)
+    elif manifest_alias:
+        add(manifest_alias, reason="entity_fact", score=130)
+
+    title_text = str(title or "")
+    explicit_modpack_title = (
+        not raw_text_path
+        and (
+            "整合包" in title_text
+            or "minecraft modpack" in title_lower
+            or "pack internal inventory" in title_lower
+            or "route evidence" in title_lower
+            or title_lower.startswith("modpack archive discovery for ")
+            or title_lower.startswith("downloaded modpack archive evidence:")
+        )
+        and not re.search(r"\b(?:disabled|enable|config|setting|field of view|mechanisms?)\b", title_lower)
+    )
+    if explicit_modpack_title:
+        add(title_text, reason="title", score=120 if bucket in {"整合包", "整合包内部资料"} else 90)
+
+    return candidates
+
+
+def _build_corpus_entity_inventory(rows: list[Any]) -> list[dict[str, Any]]:
+    entities: dict[str, dict[str, Any]] = {}
+    alias_to_key: dict[str, str] = {}
+    group_to_key: dict[str, str] = {}
+    for row in rows:
+        title = str(row["title"] or "")
+        source_path = str(row["source_path"] or "")
+        preview_text = str(row["preview_text"] or "") if "preview_text" in row.keys() else ""
+        bucket = _corpus_source_bucket(source_path, title)
+        for candidate in _corpus_entity_candidates(title, source_path, preview_text, bucket):
+            aliases = [candidate["name"], *list(candidate.get("aliases") or [])]
+            alias_keys = [_corpus_entity_key(alias) for alias in aliases if _corpus_entity_key(alias)]
+            key = next((alias_to_key[alias_key] for alias_key in alias_keys if alias_key in alias_to_key), "")
+            if not key:
+                path_key = _corpus_entity_key(source_path)
+                key = next(
+                    (
+                        existing_key
+                        for existing_key, state in entities.items()
+                        if any(_corpus_entity_key(str((raw or {}).get("raw_source_path") or "")) == path_key for raw in state.get("raw_evidence") or [])
+                    ),
+                    "",
+                )
+            group_key = _corpus_source_group_key(source_path)
+            if not key and group_key and group_key in group_to_key:
+                key = group_to_key[group_key]
+            if not key:
+                key = alias_keys[0] if alias_keys else ""
+            if not key:
+                continue
+            for alias_key in alias_keys:
+                alias_to_key.setdefault(alias_key, key)
+            if group_key:
+                group_to_key.setdefault(group_key, key)
+            state = entities.setdefault(
+                key,
+                {
+                    "name": candidate["name"],
+                    "name_quality": _entity_name_quality(candidate["name"]),
+                    "aliases": set(),
+                    "count": 0,
+                    "buckets": {},
+                    "score": 0,
+                    "max_score": 0,
+                    "reasons": set(),
+                    "document_id": int(row["document_id"] or 0),
+                    "source_path": source_path,
+                    "url": str(row["url"] or "") or None,
+                    "title": title,
+                    "raw_evidence": [],
+                },
+            )
+            quality = _entity_name_quality(str(candidate["name"]))
+            if quality > int(state.get("name_quality") or 0):
+                state["name"] = candidate["name"]
+                state["name_quality"] = quality
+            for alias in aliases:
+                if alias != state["name"]:
+                    state["aliases"].add(alias)
+            state["count"] += 1
+            state["score"] += int(candidate.get("score") or 0)
+            state["max_score"] = max(int(state.get("max_score") or 0), int(candidate.get("score") or 0))
+            state["reasons"].add(str(candidate.get("reason") or ""))
+            state["buckets"][bucket] = int(state["buckets"].get(bucket) or 0) + 1
+            if int(candidate.get("score") or 0) >= 140:
+                state["document_id"] = int(row["document_id"] or 0)
+                state["source_path"] = source_path
+                state["url"] = str(row["url"] or "") or None
+                state["title"] = title
+            raw_evidence = state.setdefault("raw_evidence", [])
+            if isinstance(raw_evidence, list) and len(raw_evidence) < 4:
+                raw_evidence.append(
+                    {
+                        "candidate": candidate["name"],
+                        "reason": str(candidate.get("reason") or ""),
+                        "raw_title": title,
+                        "raw_source_path": source_path,
+                        "raw_preview": str(preview_text or "")[:360],
+                    }
+                )
+    normalized: list[dict[str, Any]] = []
+    for state in entities.values():
+        buckets = dict(state.get("buckets") or {})
+        if not buckets:
+            continue
+        normalized.append(
+            {
+                **state,
+                "aliases": sorted(str(alias) for alias in state.get("aliases") or [] if str(alias) != str(state.get("name") or ""))[:4],
+                "buckets": buckets,
+                "raw_evidence": list(state.get("raw_evidence") or [])[:4],
+                "reasons": sorted(str(reason) for reason in state.get("reasons") or [] if str(reason)),
+                "rank_score": int(state.get("max_score") or 0) * 10000
+                + min(int(state.get("count") or 0), 80) * 8
+                + (80 if "整合包内部资料" in buckets else 0),
+            }
+        )
+    return sorted(normalized, key=lambda item: int(item.get("rank_score") or 0), reverse=True)
+
+
+def _corpus_entity_shape_label(buckets: dict[str, int]) -> str:
+    ordered = ["整合包内部资料", "整合包", "模组", "资源包", "光影", "原版/通用资料", "其他资料"]
+    labels = [name for name in ordered if int(buckets.get(name) or 0) > 0]
+    return "、".join(labels[:3]) if labels else "资料"
 
 
 def _corpus_inventory_item_score(title: str, source_path: str) -> int:
@@ -4300,16 +4601,18 @@ def _local_corpus_inventory_answer(config: AppConfig, question: str) -> dict[str
         rows = conn.execute(
             """
             SELECT
-                id AS document_id,
-                title,
-                source_path,
-                url,
-                metadata_json,
-                imported_at
-            FROM documents
-            WHERE source_path LIKE '%crawler_exports%'
-            ORDER BY imported_at DESC, id DESC
-            LIMIT 3000
+                d.id AS document_id,
+                d.title,
+                d.source_path,
+                d.url,
+                d.metadata_json,
+                d.imported_at,
+                SUBSTR(c.text, 1, 1200) AS preview_text
+            FROM documents d
+            LEFT JOIN chunks c
+              ON c.document_id = d.id
+             AND c.chunk_index = 0
+            ORDER BY d.imported_at DESC, d.id DESC
             """
         ).fetchall()
         total_docs = int(conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0])
@@ -4339,6 +4642,7 @@ def _local_corpus_inventory_answer(config: AppConfig, question: str) -> dict[str
                 "text": "",
             }
 
+    entity_items = _build_corpus_entity_inventory(rows)
     preferred_order = ["整合包", "整合包内部资料", "模组", "资源包", "光影", "原版/通用资料", "其他资料"]
     display_items: list[dict[str, Any]] = []
     for bucket in preferred_order:
@@ -4384,11 +4688,49 @@ def _local_corpus_inventory_answer(config: AppConfig, question: str) -> dict[str
             item["intro"] = _corpus_intro_from_text(str(item.get("text") or ""))
 
     lines = [
-        f"本地资料库目前有 {total_docs} 篇已入库文档。按资料类型粗略盘点如下：",
+        f"local_corpus_inventory 工具观察：数据库目前有 {total_docs} 篇已入库文档。",
+        f"本轮已全量扫描数据库中的 {len(rows)} 篇文档；下面是机械索引摘要，原始证据保留在每个候选下方。",
         "",
     ]
     source_results: list[SearchResult] = []
     rank = 1
+    if entity_items:
+        lines.append(f"工具从原始标题、路径和首段文本中机械归并出 {len(entity_items)} 个整合包/项目候选；候选名不是最终事实，只是给 Agent 继续判断的索引。代表项如下：")
+        for entity in entity_items[:12]:
+            entity_buckets = entity.get("buckets") if isinstance(entity.get("buckets"), dict) else {}
+            aliases = list(entity.get("aliases") or [])
+            alias_text = f"；别名/相关名：{'、'.join(aliases[:3])}" if aliases else ""
+            lines.append(
+                f"- {entity['name']}：约 {entity['count']} 篇相关文档，覆盖 {_corpus_entity_shape_label(entity_buckets)}{alias_text}。"
+            )
+            raw_evidence = list(entity.get("raw_evidence") or [])
+            if raw_evidence:
+                first_raw = raw_evidence[0]
+                raw_title = str(first_raw.get("raw_title") or "").strip()
+                raw_path = str(first_raw.get("raw_source_path") or "").strip()
+                reason = str(first_raw.get("reason") or "").strip()
+                lines.append(f"  原始证据：title={raw_title[:120]}；path={raw_path[:220]}；mechanical_reason={reason}")
+            if len(source_results) < MAX_FINAL_CONTEXT_K and int(entity.get("document_id") or 0) > 0:
+                source_results.append(
+                    SearchResult(
+                        rank=rank,
+                        score=1.0,
+                        chunk_id=0,
+                        document_id=int(entity["document_id"]),
+                        chunk_index=0,
+                        title=str(entity["name"]),
+                        source_path=str(entity.get("source_path") or ""),
+                        url=entity.get("url"),
+                        text=str(entity.get("title") or ""),
+                        metadata={"source": "local_corpus_inventory", "bucket": "entity_inventory"},
+                    )
+                )
+                rank += 1
+        if len(entity_items) > 12:
+            lines.append(f"- 还有 {len(entity_items) - 12} 个实体未在这轮展开。")
+        lines.append("")
+
+    lines.append("按资料类型粗略盘点如下：")
     for bucket in preferred_order:
         state = buckets.get(bucket)
         if not state:
@@ -4416,16 +4758,144 @@ def _local_corpus_inventory_answer(config: AppConfig, question: str) -> dict[str
         if len(items) > 6:
             lines.append(f"- 还有 {len(items) - 6} 个标题未在这轮展开。")
         lines.append("")
-    if len(rows) >= 3000:
-        lines.append("说明：本轮为了保持响应稳定，只读取最近 3000 篇 crawler_exports 文档做盘点。")
-    lines.append("这是一轮本地资料覆盖范围盘点，不代表每个条目都有足够资料回答完整玩法攻略；具体问题仍需要 MCagent 再按证据筛选回答。")
+    lines.append("这是工具观察摘要，不代表 Agent 已完成最终判断；具体回答需要 Agent 基于上面的原始证据组织。")
     sources = [_result_to_dict(item) for item in source_results]
     return {
         "answer": "\n".join(lines).strip(),
         "sources": sources,
         "context": format_context(source_results),
         "agent": "mcagent_rag",
+        "metadata": {
+            "inventory_observation": {
+                "document_count": total_docs,
+                "scanned_documents": len(rows),
+                "entity_candidates": [
+                    {
+                        "name": str(item.get("name") or ""),
+                        "aliases": list(item.get("aliases") or []),
+                        "related_documents": int(item.get("count") or 0),
+                        "buckets": dict(item.get("buckets") or {}),
+                        "mechanical_reasons": list(item.get("reasons") or []),
+                        "raw_evidence": list(item.get("raw_evidence") or [])[:4],
+                    }
+                    for item in entity_items[:24]
+                ],
+                "bucket_summary": [
+                    {
+                        "bucket": bucket,
+                        "documents": int((buckets.get(bucket) or {}).get("count") or 0),
+                        "distinct_titles": len((buckets.get(bucket) or {}).get("items") or {}),
+                    }
+                    for bucket in preferred_order
+                    if buckets.get(bucket)
+                ],
+                "tool_boundary": (
+                    "The inventory tool exposes raw titles, paths, snippets, and mechanical candidate reasons. "
+                    "Entity names are index candidates, not final Agent judgments."
+                ),
+            }
+        },
     }
+
+
+def _inventory_observation_for_prompt(inventory: dict[str, Any]) -> str:
+    metadata = inventory.get("metadata") if isinstance(inventory.get("metadata"), dict) else {}
+    observation = metadata.get("inventory_observation") if isinstance(metadata.get("inventory_observation"), dict) else {}
+    if not observation:
+        return str(inventory.get("answer") or "")
+    compact = {
+        "document_count": observation.get("document_count"),
+        "scanned_documents": observation.get("scanned_documents"),
+        "tool_boundary": observation.get("tool_boundary"),
+        "entity_candidates": list(observation.get("entity_candidates") or [])[:18],
+        "bucket_summary": list(observation.get("bucket_summary") or []),
+    }
+    return json.dumps(compact, ensure_ascii=False, indent=2)
+
+
+def _generate_inventory_agent_answer(
+    config: AppConfig,
+    *,
+    original_question: str,
+    question: str,
+    inventory: dict[str, Any],
+    model: str,
+    temperature: float,
+    max_tokens: int | None,
+    agent: str,
+) -> tuple[str, str]:
+    observation_text = _inventory_observation_for_prompt(inventory)
+    if not observation_text:
+        return str(inventory.get("answer") or ""), ""
+    role_name = "CrawlerAgent" if agent == "crawler_agent" else "MCagent"
+    prompt = (
+        f"用户原话：{original_question}\n"
+        f"当前问题：{question}\n\n"
+        "下面是 local_corpus_inventory 工具给出的客观观察包。"
+        "工具只暴露原始标题、原始路径、原始片段和机械候选理由；机械候选不是最终事实。"
+        f"请以 {role_name} 的身份基于这些原始证据回答用户，不要只复述清洗后的候选名，"
+        "也不要编造未出现的资料。回答使用第一人称。可以说明候选是机械归并的，"
+        "并列出能从原始证据看出的主要整合包/项目资料。\n\n"
+        f"local_corpus_inventory_observation:\n{observation_text}"
+    )
+    client, model_label = _selected_llm_client(config, model, temperature, agent=agent)
+    answer = client.chat(
+        [
+            {
+                "role": "system",
+                "content": (
+                    f"你是 {role_name}。工具不能替你判断事实，只能提供客观观察。"
+                    "你必须基于工具暴露的原始 title/path/preview/reason 组织回答。"
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        temperature=temperature,
+        max_tokens=min(max(max_tokens or DEFAULT_ANSWER_MAX_TOKENS, 1800), 5000),
+    ).strip()
+    return (f"{answer}\n\n模型：{model_label}" if answer else str(inventory.get("answer") or "")), observation_text
+
+
+def _with_agent_inventory_answer(
+    config: AppConfig,
+    inventory: dict[str, Any],
+    *,
+    original_question: str,
+    question: str,
+    model: str,
+    temperature: float,
+    max_tokens: int | None,
+    agent: str,
+    add_trace: Any | None = None,
+) -> dict[str, Any]:
+    metadata = dict(inventory.get("metadata") if isinstance(inventory.get("metadata"), dict) else {})
+    if not isinstance(metadata.get("inventory_observation"), dict):
+        return inventory
+    if add_trace is not None:
+        add_trace("answer", "inventory_agent_generating", {"model": model, "uses_raw_observation": True})
+    objective_answer = str(inventory.get("answer") or "")
+    try:
+        answer, observation_text = _generate_inventory_agent_answer(
+            config,
+            original_question=original_question,
+            question=question,
+            inventory=inventory,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            agent=agent,
+        )
+    except Exception as exc:  # noqa: BLE001 - keep objective tool observation visible if the final model fails.
+        metadata["inventory_agent_answer_error"] = f"{type(exc).__name__}: {exc}"
+        return {
+            **inventory,
+            "metadata": metadata,
+            "answer": objective_answer + f"\n\n模型组织这份盘点时失败：{type(exc).__name__}: {exc}\n上面保留的是工具暴露的原始观察摘要。",
+        }
+    metadata["inventory_tool_observation_answer"] = objective_answer
+    metadata["inventory_observation_prompt"] = observation_text
+    metadata["inventory_answer_owner"] = agent
+    return {**inventory, "answer": answer, "metadata": metadata}
 
 
 def _final_context_k(config: AppConfig) -> int:
@@ -4556,12 +5026,12 @@ def _build_answer_prompt(question: str, context: str, retrieval_note: str = "") 
 MCagent 可用工具与能力：
 - local_rag_search：检索本地资料库，适合回答 Minecraft、模组、整合包、教程、物品、Boss、配方等问题。
 - crawler_status：查看 Crawler 采集/入库/任务进度。用户问“状态、进度、监控、入库怎么样”等，应使用这个能力。
-- delegate_crawler：把资料缺口交给 CrawlerAgent。只有本轮工具选择或 planned workflow 已明确委托时才会启动；最终回答阶段不能因为资料不足自行启动 Crawler。
+- agent_message：MCagent 暴露给模型的唯一跨 Agent 对话通道，形状是 AgentMessage(from_agent, content, to_agent)。MCagent 要找 CrawlerAgent 时发送 agent_message；CrawlerAgent 收到消息后，再由 CrawlerAgent 自己选择它的采集、保存或后台工作能力。
 - answer_from_evidence：根据检索证据组织最终回答，并标注 [S1]、[S2] 来源。
 
 工具使用原则：
 - 先理解用户原始话，再结合会话上下文；不要让改写后的检索词覆盖用户第一手意图。
-- 工具函数只负责检索、状态、派单和客观抽取；是否足够回答、如何组织答案，由 MCagent 基于证据判断。
+- 工具函数只负责检索、状态、AgentMessage 投递和客观抽取；是否足够回答、如何组织答案，由 MCagent 基于证据判断。
 - 如果用户是在下达 Crawler 任务，不要把这句话当普通 RAG 关键词检索。
 
 本地检索资料：
@@ -5208,7 +5678,11 @@ def _build_direct_answer_messages(
     role_desc = (
         "你是 CrawlerAgent，一个专注网页读取、资料采集、保存/不保存交付约束和失败原因说明的爬虫 Agent。"
         if agent == "crawler_agent"
-        else "你是 MCagent，一个可以自然对话、也可以在需要时使用工具的资料助手。"
+        else (
+            "你是 MCagent，一个可以自然对话、也可以在需要时使用工具的资料助手。"
+            "架构事实：跨 Agent 对话只有 AgentMessage(from_agent, content, to_agent) 这一条消息通道。"
+            "MCagent 的跨 Agent 能力表只包含 agent_message；CrawlerAgent 收到消息后，再由它自己选择是否采集、保存或启动后台工作。"
+        )
     )
     user_text = (
         f"用户原话：{original_question}\n"
@@ -7273,35 +7747,9 @@ def _crawler_delegation_note(job: Job, question: str, created: bool, plan: dict[
 
 
 def _crawler_delegation_note_for(job: Job, question: str, created: bool, *, requested_by: str, delivery_target: str = "") -> str:
-    target_text = delivery_target or "\u7531\u4efb\u52a1\u76ee\u6807\u5224\u65ad"
-    if created:
-        if requested_by == "user":
-            return (
-                "\n\n\u91c7\u96c6\u4efb\u52a1\uff1a\u4f60\u5df2\u76f4\u63a5\u59d4\u6258 CrawlerAgent \u91c7\u96c6\u8d44\u6599\u3002\n"
-                f"- \u4efb\u52a1ID\uff1a{job.id}\n"
-                f"- \u91c7\u96c6\u76ee\u6807\uff1a{question}\n"
-                f"- \u4ea4\u4ed8\u5bf9\u8c61\uff1a{target_text}\n"
-                "- Crawler \u4f1a\u81ea\u884c\u7406\u89e3\u76ee\u6807\u3001\u89c4\u5212\u641c\u7d22\u8bcd\u3001\u9009\u62e9\u6570\u636e\u6e90\u3001\u4fdd\u5b58 Markdown/manifest/raw HTML\uff0c\u5e76\u6309\u4ea4\u4ed8\u5bf9\u8c61\u51b3\u5b9a\u6e05\u6d17\u65b9\u5f0f\u3002\n"
-                "- \u8fdb\u5ea6\u3001\u5f53\u524d\u52a8\u4f5c\u3001\u6210\u679c\u3001\u81ea\u5ba1\u548c\u53d7\u9650\u6765\u6e90\u4f1a\u76f4\u63a5\u663e\u793a\u5728\u8fd9\u6761\u6d88\u606f\u7684\u4efb\u52a1\u5361\u7247\u91cc\u3002"
-            )
-        if requested_by == "user_via_mcagent":
-            return (
-                "\n\n\u91c7\u96c6\u4efb\u52a1\uff1a\u6211\u5df2\u628a\u4f60\u7684\u8bf7\u6c42\u8f6c\u8fbe\u7ed9 CrawlerAgent\u3002\n"
-                f"- \u4efb\u52a1ID\uff1a{job.id}\n"
-                f"- \u8f6c\u8fbe\u76ee\u6807\uff1a{question}\n"
-                f"- \u4ea4\u4ed8\u5bf9\u8c61\uff1a{target_text}\n"
-                "- Crawler \u4f1a\u81ea\u5df1\u89c4\u5212\u5173\u952e\u8bcd\u548c\u6765\u6e90\uff0c\u91c7\u96c6\u540e\u6309 MCagent/RAG \u53ef\u8bfb\u683c\u5f0f\u6e05\u6d17\u5165\u5e93\u3002\n"
-                "- \u8fdb\u5ea6\u3001\u5f53\u524d\u52a8\u4f5c\u3001\u6210\u679c\u3001\u81ea\u5ba1\u548c\u53d7\u9650\u6765\u6e90\u4f1a\u76f4\u63a5\u663e\u793a\u5728\u8fd9\u6761\u6d88\u606f\u7684\u4efb\u52a1\u5361\u7247\u91cc\u3002"
-            )
-        return (
-            "\n\n\u8865\u5e93\u52a8\u4f5c\uff1aMCagent \u5224\u65ad\u5f53\u524d\u8d44\u6599\u4e0d\u8db3\uff0c\u5df2\u628a\u8d44\u6599\u7f3a\u53e3\u4ea4\u7ed9 CrawlerAgent\u3002\n"
-            f"- \u4efb\u52a1ID\uff1a{job.id}\n"
-            f"- \u7f3a\u53e3\u4e3b\u9898\uff1a{question}\n"
-            "- Crawler \u4f1a\u81ea\u884c\u89c4\u5212\u641c\u7d22\u8bcd\u3001\u9009\u62e9\u6570\u636e\u6e90\u3001\u6293\u53d6 Markdown/manifest/raw HTML\uff0c\u5e76\u5728\u5b8c\u6210\u540e\u81ea\u52a8\u5165\u5e93\u3002\n"
-            "- \u8fdb\u5ea6\u3001\u5f53\u524d\u52a8\u4f5c\u3001\u6210\u679c\u3001\u81ea\u5ba1\u548c\u53d7\u9650\u6765\u6e90\u4f1a\u76f4\u63a5\u663e\u793a\u5728\u8fd9\u6761\u6d88\u606f\u7684\u4efb\u52a1\u5361\u7247\u91cc\u3002"
-        )
-    prefix = "\u5df2\u6709 Crawler \u4efb\u52a1\u5728\u8fd0\u884c\uff0c\u672c\u6b21\u4e0d\u91cd\u590d\u521b\u5efa\u3002" if requested_by == "user" else "\u5df2\u6709 Crawler \u4efb\u52a1\u5728\u8fd0\u884c\uff0c\u672c\u6b21\u4e0d\u91cd\u590d\u6d3e\u5355\u3002"
-    return f"\n\n\u91c7\u96c6\u4efb\u52a1\uff1a{prefix}\n- \u5f53\u524d\u4efb\u52a1ID\uff1a{job.id}\n- \u72b6\u6001\uff1a{job.status}"
+    # Job id, status, target, readable progress, and audit details are returned
+    # through the structured `job` payload. Keep the final chat answer natural.
+    return ""
 
 
 def _crawler_agent_context_delegation_answer(local_summary: str, delegation_note: str) -> str:
@@ -7316,8 +7764,6 @@ def _crawler_agent_context_delegation_answer(local_summary: str, delegation_note
     if summary:
         lines.extend(["", "本地上下文初步结论：", summary])
     lines.extend(["", "接下来我会基于这些缺口继续执行网上采集，并把结果交付给 MCagent/RAG。"])
-    if delegation_note.strip():
-        lines.append(delegation_note.strip())
     return "\n".join(lines)
 
 
@@ -7584,14 +8030,24 @@ def _prepare_and_start_crawler_delegation(
     augmented_summary.setdefault("source_question", current_question or original_question)
     if action_plan:
         augmented_summary["selected_action_plan"] = [dict(step) for step in action_plan if isinstance(step, dict)]
+    delegation_payload = dict(payload)
+    if active_agent == "mcagent_rag":
+        delegation_payload.setdefault("requested_by", "user_via_mcagent")
+        delegation_payload.setdefault("handoff_from", "MCagent")
+    elif active_agent == "crawler_agent":
+        delegation_payload.setdefault("requested_by", str(payload.get("requested_by") or "user"))
     prepare_started = time.time()
+    explicit_gap_message = ""
+    gap_context = augmented_summary.get("mcagent_gap_context") if isinstance(augmented_summary.get("mcagent_gap_context"), dict) else {}
+    if isinstance(gap_context, dict) and gap_context.get("required"):
+        explicit_gap_message = str(collection_question or "").strip()
     delegation_plan = CrawlerDelegationService(
         delegation_handoff=_delegation_handoff,
         infer_delivery_target=_infer_delivery_target,
         build_handoff_brief=_build_delegate_handoff_brief,
     ).prepare(
         config,
-        payload,
+        delegation_payload,
         model=model,
         original_question=original_question,
         current_question=current_question,
@@ -7622,9 +8078,10 @@ def _prepare_and_start_crawler_delegation(
         response = None
     else:
         from_agent = "MCagent" if delegation_plan.requested_by in {"mcagent", "user_via_mcagent"} else "User"
+        message_content = explicit_gap_message or delegation_plan.collection_question
         message = make_agent_message(
             from_agent,
-            delegation_plan.collection_question,
+            message_content,
             "CrawlerAgent",
             intent="collection_request",
             conversation_id=str(payload.get("session_id") or ""),
@@ -7634,6 +8091,7 @@ def _prepare_and_start_crawler_delegation(
                 "delivery_target": delegation_plan.delivery_target,
                 "handoff_brief": delegation_plan.handoff_brief,
                 "selected_action_plan": delegation_plan.planner_summary.get("selected_action_plan") or [],
+                "mcagent_gap_context": gap_context,
             },
         )
         add_trace("message", "sending", message.to_dict())
@@ -7707,14 +8165,14 @@ def _crawler_delegation_no_job_note(question: str, response: dict[str, Any] | No
     selected_tool = _selected_tool_from_response(response)
     answer = str((response or {}).get("answer") or "").strip()
     parts = [
-        "\n\n采集任务：MCagent 已通过 From-Content-To 消息把请求交给 CrawlerAgent，但 CrawlerAgent 本轮没有返回后台采集任务。",
-        f"- 转达目标：{question}",
+        "\n\n我已通过 From-Content-To 消息询问 CrawlerAgent，但它本轮没有返回可跟踪的采集工作。",
+        f"- 我发出的内容：{question}",
     ]
     if selected_tool:
-        parts.append(f"- CrawlerAgent 本轮选择的工具：{selected_tool}")
+        parts.append(f"- CrawlerAgent 本轮选择：{selected_tool}")
     if answer:
         parts.append("- CrawlerAgent 回复：" + answer[:700])
-    parts.append("- 运行时没有伪造任务；请查看本轮 Agent trace 判断为什么未进入 delegate_crawler。")
+    parts.append("- 我不会伪造任务；后续动作以 Agent 动作流和 CrawlerAgent 自己的回复为准。")
     return "\n".join(parts)
 
 
@@ -7748,8 +8206,6 @@ def _delegation_handoff(payload: dict[str, Any], original_question: str, cleaned
         requested_by = explicit
     elif agent == "crawler_agent":
         requested_by = "user"
-    elif _user_requested_mcagent_crawler_handoff(original_question):
-        requested_by = "user_via_mcagent"
     else:
         requested_by = "mcagent"
     handoff_from = "MCagent" if requested_by in {"mcagent", "user_via_mcagent"} else "user"
@@ -7761,6 +8217,7 @@ def _delegation_handoff(payload: dict[str, Any], original_question: str, cleaned
 
 
 def _user_explicitly_asked_mcagent_to_tell_crawler(question: str) -> bool:
+    raise RuntimeError("Legacy script handoff classifier is disabled; the LLM must choose agent_message or delegate_crawler.")
     if not _user_requested_mcagent_crawler_handoff(question):
         return False
     text = str(question or "")
@@ -7776,6 +8233,7 @@ def _user_explicitly_asked_mcagent_to_tell_crawler(question: str) -> bool:
 
 
 def _user_requested_mcagent_crawler_handoff(question: str) -> bool:
+    raise RuntimeError("Legacy script handoff classifier is disabled; the LLM must choose agent_message or delegate_crawler.")
     text = str(question or "")
     if not re.search(r"Crawler|爬虫", text, flags=re.I):
         return False
@@ -7934,12 +8392,14 @@ def _asks_for_collection_or_handoff(text: str) -> bool:
 
 
 def _mentions_crawler_agent(text: str) -> bool:
+    raise RuntimeError("Legacy Crawler mention classifier is disabled; Agent identity is decided by the LLM route decision.")
     value = str(text or "")
     lowered = value.lower()
     return bool(re.search(r"crawler|crawleragent|爬虫|采集器", lowered, flags=re.I))
 
 
 def _forbids_crawler_handoff(text: str) -> bool:
+    raise RuntimeError("Legacy Crawler handoff veto classifier is disabled; side-effect boundaries are enforced by tool choice and confirmation.")
     value = str(text or "").lower()
     value = re.sub(r"(不要|不用|别|不必|无需)强制.{0,12}(包体|下载|\.mrpack|\.zip|整合包)", " ", value, flags=re.I)
     value = re.sub(r"不强制.{0,12}(包体|下载|\.mrpack|\.zip|整合包)", " ", value, flags=re.I)
@@ -8510,9 +8970,31 @@ def _session_history(payload: dict[str, Any], limit: int = 10) -> list[dict[str,
 def _session_summary(payload: dict[str, Any]) -> dict[str, Any]:
     explicit = payload.get("session_summary") if isinstance(payload.get("session_summary"), dict) else {}
     session_id = normalize_session_id(payload.get("session_id"))
+    recent_history = _session_history(payload, limit=12)
     summary = SESSION_STORE.summary(session_id)
     if not summary:
-        summary = _summary_from_history(payload_history(payload, limit=20))
+        summary = _summary_from_history(recent_history)
+    elif recent_history:
+        history_summary = _summary_from_history(recent_history)
+        summary = dict(summary)
+        for key in ("topics", "entities", "names", "gaps"):
+            if isinstance(history_summary.get(key), list):
+                summary[key] = merge_limited(summary.get(key) or [], [str(item) for item in history_summary.get(key) or []], limit=80)
+        summary["turn_count"] = max(int(summary.get("turn_count") or 0), int(history_summary.get("turn_count") or 0))
+    if recent_history:
+        compact_turns = []
+        for item in recent_history[-8:]:
+            compact_turns.append(
+                {
+                    "question": _tail_text(str(item.get("question") or ""), 600),
+                    "answer": _tail_text(_strip_answer_metadata(str(item.get("answer") or "")), 900),
+                }
+            )
+        summary = dict(summary)
+        summary["recent_turns"] = compact_turns
+        summary["last_turn"] = compact_turns[-1]
+        summary["last_user_question"] = compact_turns[-1].get("question", "")
+        summary["last_assistant_answer"] = compact_turns[-1].get("answer", "")
     summary = _session_summary_with_events(session_id, summary)
     if explicit:
         merged = dict(summary)
@@ -9281,7 +9763,37 @@ def _route_agent_decision_for_graph(
             run.question = question
             run.add_trace("observe", "contextualized", {"original": original_question, "rewritten": question})
     if context_only_agent_message:
-        return {**base, "routed": False, "route_intent": "", "legacy_fallback_required": True, "reason": "legacy_context_only_message_reply"}
+        return {
+            **base,
+            "routed": True,
+            "legacy_fallback_required": False,
+            "route_intent": "mcagent_context_reply",
+            "selected_tool": "mcagent_context_reply",
+            "tool_decision": {"tool": "mcagent_context_reply", "delivery_target": "CrawlerAgent"},
+            "route_confirmation": {
+                "proceed": True,
+                "tool": "mcagent_context_reply",
+                "reason": "CrawlerAgent asked MCagent for local context over AgentMessage; MCagent replies locally without starting a Crawler job.",
+            },
+            "action_plan": [],
+            "rag_focus": _mcagent_context_focus(question, str(incoming_message.metadata.get("collection_target") or "")),
+            "planned_workflow": False,
+            "planned_delegate": False,
+            "original_question": original_question,
+            "question": question,
+            "model": run.model,
+            "temperature": run.temperature,
+            "max_tokens": run.max_tokens,
+            "session_summary": session_summary,
+            "retrieval_note": retrieval_note,
+            "flags": {
+                "context_only_agent_message": context_only_agent_message,
+                "collection_request_agent_message": collection_request_agent_message,
+            },
+            "incoming_message": incoming_message.to_dict(),
+            "trace": [dict(step) for step in run.trace.steps],
+            "reason": "graph_mcagent_context_reply",
+        }
     if collection_request_agent_message:
         run.add_trace(
             "message",
@@ -9303,17 +9815,63 @@ def _route_agent_decision_for_graph(
     tool_decision = dict(route.tool_decision)
     route_confirmation = dict(route.route_confirmation)
     action_plan = [dict(item) for item in route.action_plan if isinstance(item, dict)]
+    if (
+        agent == "mcagent_rag"
+        and route.route_intent in {"answer", "local_rag_search"}
+        and not route.planned_delegate
+        and not _action_plan_has_tool(action_plan, "delegate_crawler")
+        and not bool(route_confirmation.get("proceed", True))
+        and str(route_confirmation.get("suggested_tool") or route_confirmation.get("tool") or "").strip() == "local_rag_search"
+    ):
+        route_confirmation = {
+            **route_confirmation,
+            "proceed": True,
+            "tool": "local_rag_search",
+            "reason": (
+                str(route_confirmation.get("reason") or "").strip()
+                or "The confirmation selected the side-effect-free local_rag_search route."
+            ),
+            "normalized_for_graph_rag_route": True,
+        }
     confirmation_allows = bool(route_confirmation.get("proceed", True))
     graph_migrated_route = (
         route.route_intent in {"status", "crawler_audit"} and confirmation_allows
+    ) or (
+        route.route_intent == "agent_message" and confirmation_allows
+    ) or (
+        agent == "mcagent_rag"
+        and route.route_intent == "local_corpus_inventory"
+        and confirmation_allows
+        and _action_plan_has_tool(action_plan, "local_corpus_inventory")
+        and (_action_plan_has_tool(action_plan, "agent_message") or _action_plan_has_tool(action_plan, "delegate_crawler"))
     ) or (
         route.route_intent == "local_corpus_inventory"
         and confirmation_allows
         and not _action_plan_has_tool(action_plan, "delegate_crawler")
     ) or (
+        agent == "crawler_agent"
+        and confirmation_allows
+        and route.route_intent == "mcagent_context"
+        and not _action_plan_has_tool(action_plan, "delegate_crawler")
+    ) or (
+        agent == "crawler_agent"
+        and confirmation_allows
+        and (
+            route.route_intent == "planned_workflow"
+            or route.route_intent == "delegate_crawler"
+            or route.planned_delegate
+            or _action_plan_has_tool(action_plan, "delegate_crawler")
+        )
+    ) or (
         route.route_intent == "router_error"
     ) or (
         route.route_intent == "direct_answer" and confirmation_allows
+    ) or (
+        agent == "mcagent_rag"
+        and route.route_intent in {"answer", "local_rag_search"}
+        and confirmation_allows
+        and not route.planned_delegate
+        and not _action_plan_has_tool(action_plan, "delegate_crawler")
     ) or (
         route.route_intent == "temporary_extract" and confirmation_allows
     )
@@ -9474,6 +10032,9 @@ def _execute_graph_local_corpus_inventory_route(
     if not bool(route_confirmation.get("proceed", True)):
         raise RuntimeError("Graph local corpus inventory execution requires Agent confirmation to proceed.")
     trace = [dict(step) for step in route_decision.get("trace") or [] if isinstance(step, dict)]
+    if emit is not None:
+        for existing_step in trace:
+            emit("trace", existing_step)
     tool_decision = route_decision.get("tool_decision") if isinstance(route_decision.get("tool_decision"), dict) else {}
     inventory_confirmation = _reuse_route_confirmation(
         route_confirmation,
@@ -9490,6 +10051,26 @@ def _execute_graph_local_corpus_inventory_route(
     question = str(route_decision.get("question") or payload.get("question") or payload.get("query") or "")
     original_question = str(route_decision.get("original_question") or question)
     inventory = dict(_local_corpus_inventory_answer(config, question))
+    graph_payload = dict(payload)
+    graph_payload["agent"] = agent_id
+    run = build_agent_execution_context(config, graph_payload, token_resolver=_answer_max_tokens, emit=emit)
+    def add_inventory_trace(stage: str, status: str, detail: Any | None = None) -> None:
+        step = _trace_step(stage, status, detail)
+        trace.append(step)
+        if emit is not None:
+            emit("trace", step)
+
+    inventory = _with_agent_inventory_answer(
+        config,
+        inventory,
+        original_question=original_question,
+        question=question,
+        model=run.model,
+        temperature=run.temperature,
+        max_tokens=run.max_tokens,
+        agent=agent_id,
+        add_trace=add_inventory_trace,
+    )
     done_step = _trace_step(
         "retrieve",
         "inventory_done",
@@ -9547,6 +10128,222 @@ def _execute_graph_local_corpus_inventory_route(
         },
     }
     return _with_trace(inventory, trace)
+
+
+def _execute_graph_mcagent_inventory_planned_workflow_route(
+    config: AppConfig,
+    payload: dict[str, Any],
+    *,
+    emit: Any | None = None,
+    agent_id: str,
+    graph_name: str,  # noqa: ARG001 - recorded by graph adapter metadata.
+    node_name: str,  # noqa: ARG001 - recorded by graph adapter metadata.
+    runtime_request: dict[str, Any],
+    route_decision: dict[str, Any],
+) -> dict[str, Any]:
+    if agent_id != "mcagent_rag":
+        raise RuntimeError("Graph MCagent inventory planned workflow requires MCagent.")
+    if str(route_decision.get("route_intent") or "") != "local_corpus_inventory":
+        raise RuntimeError("Graph MCagent inventory planned workflow requires an Agent-selected local_corpus_inventory first step.")
+    action_plan = [dict(item) for item in route_decision.get("action_plan") or [] if isinstance(item, dict)]
+    if not _action_plan_has_tool(action_plan, "local_corpus_inventory") or not (
+        _action_plan_has_tool(action_plan, "agent_message") or _action_plan_has_tool(action_plan, "delegate_crawler")
+    ):
+        raise RuntimeError("Graph MCagent inventory planned workflow requires local_corpus_inventory plus a selected AgentMessage/Crawler handoff step.")
+    route_confirmation = dict(route_decision.get("route_confirmation") if isinstance(route_decision.get("route_confirmation"), dict) else {})
+    if not bool(route_confirmation.get("proceed", True)):
+        raise RuntimeError("Graph MCagent inventory planned workflow requires Agent confirmation to proceed.")
+    graph_payload = dict(payload)
+    graph_payload["agent"] = agent_id
+    graph_payload["question"] = str(route_decision.get("question") or payload.get("question") or payload.get("query") or "")
+    if "session_id" not in graph_payload:
+        graph_payload["session_id"] = str(runtime_request.get("session_id") or route_decision.get("session_id") or "")
+    trace = [dict(step) for step in route_decision.get("trace") or [] if isinstance(step, dict)]
+    if emit is not None:
+        for existing_step in trace:
+            emit("trace", existing_step)
+
+    def add_trace(stage: str, status: str, detail: Any | None = None) -> None:
+        step = _trace_step(stage, status, detail)
+        trace.append(step)
+        if emit is not None:
+            emit("trace", step)
+
+    question = str(route_decision.get("question") or graph_payload.get("question") or "")
+    original_question = str(route_decision.get("original_question") or question)
+    session_summary = route_decision.get("session_summary") if isinstance(route_decision.get("session_summary"), dict) else _session_summary(graph_payload)
+    tool_decision = route_decision.get("tool_decision") if isinstance(route_decision.get("tool_decision"), dict) else {}
+    response = _handle_mcagent_inventory_planned_workflow_route(
+        config=config,
+        payload=graph_payload,
+        agent=agent_id,
+        model=str(route_decision.get("model") or graph_payload.get("model") or ""),
+        original_question=original_question,
+        question=question,
+        tool_decision=dict(tool_decision),
+        action_plan=action_plan,
+        session_summary=dict(session_summary),
+        trace=trace,
+        add_trace=add_trace,
+    )
+    response.setdefault("agent", agent_id)
+    response.setdefault("session_id", str(graph_payload.get("session_id") or runtime_request.get("session_id") or route_decision.get("session_id") or ""))
+    response["metadata"] = {
+        **(response.get("metadata") if isinstance(response.get("metadata"), dict) else {}),
+        "graph_route_decision": {
+            "routed": True,
+            "route_decision_id": route_decision.get("route_decision_id") or "",
+            "route_intent": route_decision.get("route_intent") or "",
+            "decision_owner": route_decision.get("decision_owner") or "",
+            "mcagent_inventory_planned_workflow": True,
+        },
+    }
+    return response
+
+
+def _execute_graph_crawler_planned_workflow_route(
+    config: AppConfig,
+    payload: dict[str, Any],
+    *,
+    emit: Any | None = None,
+    agent_id: str,
+    graph_name: str,  # noqa: ARG001 - recorded by graph adapter metadata.
+    node_name: str,  # noqa: ARG001 - recorded by graph adapter metadata.
+    runtime_request: dict[str, Any],
+    route_decision: dict[str, Any],
+) -> dict[str, Any]:
+    if agent_id != "crawler_agent":
+        raise RuntimeError("Graph Crawler planned workflow requires CrawlerAgent.")
+    action_plan = [dict(item) for item in route_decision.get("action_plan") or [] if isinstance(item, dict)]
+    if not _action_plan_has_tool(action_plan, "delegate_crawler"):
+        raise RuntimeError("Graph Crawler planned workflow requires CrawlerAgent-selected delegate_crawler in action_plan.")
+    route_confirmation = dict(route_decision.get("route_confirmation") if isinstance(route_decision.get("route_confirmation"), dict) else {})
+    if not bool(route_confirmation.get("proceed", True)):
+        raise RuntimeError("Graph Crawler planned workflow requires Agent confirmation to proceed.")
+    graph_payload = dict(payload)
+    graph_payload["agent"] = agent_id
+    graph_payload["question"] = str(route_decision.get("question") or payload.get("question") or payload.get("query") or "")
+    if "session_id" not in graph_payload:
+        graph_payload["session_id"] = str(runtime_request.get("session_id") or route_decision.get("session_id") or "")
+    trace = [dict(step) for step in route_decision.get("trace") or [] if isinstance(step, dict)]
+    if emit is not None:
+        for existing_step in trace:
+            emit("trace", existing_step)
+
+    def add_trace(stage: str, status: str, detail: Any | None = None) -> None:
+        step = _trace_step(stage, status, detail)
+        trace.append(step)
+        if emit is not None:
+            emit("trace", step)
+
+    question = str(route_decision.get("question") or graph_payload.get("question") or "")
+    original_question = str(route_decision.get("original_question") or question)
+    session_summary = route_decision.get("session_summary") if isinstance(route_decision.get("session_summary"), dict) else _session_summary(graph_payload)
+    tool_decision = route_decision.get("tool_decision") if isinstance(route_decision.get("tool_decision"), dict) else {}
+    response = _handle_crawler_action_plan_delegate_route(
+        config=config,
+        payload=graph_payload,
+        agent=agent_id,
+        model=str(route_decision.get("model") or graph_payload.get("model") or ""),
+        original_question=original_question,
+        question=question,
+        tool_decision=dict(tool_decision),
+        action_plan=action_plan,
+        session_summary=dict(session_summary),
+        trace=trace,
+        add_trace=add_trace,
+    )
+    response.setdefault("agent", agent_id)
+    response.setdefault("session_id", str(graph_payload.get("session_id") or runtime_request.get("session_id") or route_decision.get("session_id") or ""))
+    response["metadata"] = {
+        **(response.get("metadata") if isinstance(response.get("metadata"), dict) else {}),
+        "graph_route_decision": {
+            "routed": True,
+            "route_decision_id": route_decision.get("route_decision_id") or "",
+            "route_intent": route_decision.get("route_intent") or "",
+            "decision_owner": route_decision.get("decision_owner") or "",
+            "crawler_planned_workflow": True,
+        },
+    }
+    return response
+
+
+def _execute_graph_crawler_delegate_route(
+    config: AppConfig,
+    payload: dict[str, Any],
+    *,
+    emit: Any | None = None,
+    agent_id: str,
+    graph_name: str,  # noqa: ARG001 - recorded by graph adapter metadata.
+    node_name: str,  # noqa: ARG001 - recorded by graph adapter metadata.
+    runtime_request: dict[str, Any],
+    route_decision: dict[str, Any],
+) -> dict[str, Any]:
+    if agent_id != "crawler_agent":
+        raise RuntimeError("Graph Crawler delegate route requires CrawlerAgent.")
+    if str(route_decision.get("route_intent") or "") != "delegate_crawler":
+        raise RuntimeError("Graph Crawler delegate execution requires an Agent-selected delegate_crawler route.")
+    route_confirmation = dict(route_decision.get("route_confirmation") if isinstance(route_decision.get("route_confirmation"), dict) else {})
+    if not bool(route_confirmation.get("proceed", True)):
+        raise RuntimeError("Graph Crawler delegate execution requires Agent confirmation to proceed.")
+    graph_payload = dict(payload)
+    graph_payload["agent"] = agent_id
+    graph_payload["question"] = str(route_decision.get("question") or payload.get("question") or payload.get("query") or "")
+    if "session_id" not in graph_payload:
+        graph_payload["session_id"] = str(runtime_request.get("session_id") or route_decision.get("session_id") or "")
+    trace = [dict(step) for step in route_decision.get("trace") or [] if isinstance(step, dict)]
+    if emit is not None:
+        for existing_step in trace:
+            emit("trace", existing_step)
+
+    def add_trace(stage: str, status: str, detail: Any | None = None) -> None:
+        step = _trace_step(stage, status, detail)
+        trace.append(step)
+        if emit is not None:
+            emit("trace", step)
+
+    question = str(route_decision.get("question") or graph_payload.get("question") or "")
+    original_question = str(route_decision.get("original_question") or question)
+    session_summary = route_decision.get("session_summary") if isinstance(route_decision.get("session_summary"), dict) else _session_summary(graph_payload)
+    tool_decision = route_decision.get("tool_decision") if isinstance(route_decision.get("tool_decision"), dict) else {}
+    response = _handle_delegate_crawler_route(
+        config=config,
+        payload=graph_payload,
+        agent=agent_id,
+        model=str(route_decision.get("model") or graph_payload.get("model") or ""),
+        original_question=original_question,
+        question=question,
+        tool_decision=dict(tool_decision),
+        route_confirmation=route_confirmation,
+        action_plan=[dict(item) for item in route_decision.get("action_plan") or [] if isinstance(item, dict)],
+        collection_request_agent_message=bool(((route_decision.get("flags") if isinstance(route_decision.get("flags"), dict) else {}) or {}).get("collection_request_agent_message")),
+        router=LlmAgentToolRouterService(select_client=_selected_llm_client, action_plan_has_tool=_action_plan_has_tool),
+        executor=AgentToolExecutor(
+            generate_direct_answer=_generate_direct_answer,
+            generate_direct_answer_stream=_generate_direct_answer_stream,
+            generate_grounded_answer=_generate_grounded_answer,
+            generate_grounded_answer_stream=_generate_grounded_answer_stream,
+            repair_answer=_repair_list_answer,
+            status_answer=_crawler_monitor_answer,
+        ),
+        run=build_agent_execution_context(config, graph_payload, token_resolver=_answer_max_tokens, emit=emit),
+        session_summary=dict(session_summary),
+        trace=trace,
+        add_trace=add_trace,
+    )
+    response.setdefault("agent", agent_id)
+    response.setdefault("session_id", str(graph_payload.get("session_id") or runtime_request.get("session_id") or route_decision.get("session_id") or ""))
+    response["metadata"] = {
+        **(response.get("metadata") if isinstance(response.get("metadata"), dict) else {}),
+        "graph_route_decision": {
+            "routed": True,
+            "route_decision_id": route_decision.get("route_decision_id") or "",
+            "route_intent": route_decision.get("route_intent") or "",
+            "decision_owner": route_decision.get("decision_owner") or "",
+            "crawler_delegate_route": True,
+        },
+    }
+    return response
 
 
 def _execute_graph_router_error_route(
@@ -9660,6 +10457,189 @@ def _execute_graph_direct_answer_node(
     return response
 
 
+def _execute_graph_rag_answer_route(
+    config: AppConfig,
+    payload: dict[str, Any],
+    *,
+    emit: Any | None = None,
+    agent_id: str,
+    graph_name: str,  # noqa: ARG001 - recorded by graph adapter metadata.
+    node_name: str,  # noqa: ARG001 - recorded by graph adapter metadata.
+    runtime_request: dict[str, Any],
+    route_decision: dict[str, Any],
+) -> dict[str, Any]:
+    if agent_id not in {"mcagent_rag", "retriever_only"}:
+        raise RuntimeError("Graph RAG answer execution requires MCagent.")
+    route_intent_value = str(route_decision.get("route_intent") or "")
+    if route_intent_value not in {"answer", "local_rag_search"}:
+        raise RuntimeError("Graph RAG answer execution requires an Agent-selected answer/local_rag_search route.")
+    route_confirmation = dict(route_decision.get("route_confirmation") if isinstance(route_decision.get("route_confirmation"), dict) else {})
+    if not bool(route_confirmation.get("proceed", True)):
+        raise RuntimeError("Graph RAG answer execution requires Agent confirmation to proceed.")
+    action_plan = [dict(item) for item in route_decision.get("action_plan") or [] if isinstance(item, dict)]
+    if bool(route_decision.get("planned_delegate")) or _action_plan_has_tool(action_plan, "delegate_crawler"):
+        raise RuntimeError("Graph RAG answer execution does not execute delegate_crawler side effects.")
+    graph_payload = dict(payload)
+    graph_payload["agent"] = agent_id
+    graph_payload["question"] = str(route_decision.get("question") or payload.get("question") or payload.get("query") or "")
+    if "session_id" not in graph_payload:
+        graph_payload["session_id"] = str(runtime_request.get("session_id") or route_decision.get("session_id") or "")
+    run = build_agent_execution_context(config, graph_payload, token_resolver=_answer_max_tokens, emit=emit)
+    original_question = str(route_decision.get("original_question") or run.original_question)
+    question = str(route_decision.get("question") or run.question)
+    run.original_question = original_question
+    run.question = question
+    trace = run.trace.steps
+    for step in route_decision.get("trace") or []:
+        if isinstance(step, dict):
+            trace.append(dict(step))
+    session_summary = route_decision.get("session_summary") if isinstance(route_decision.get("session_summary"), dict) else _session_summary(graph_payload)
+    tool_decision = route_decision.get("tool_decision") if isinstance(route_decision.get("tool_decision"), dict) else {}
+    retrieval_note = str(route_decision.get("retrieval_note") or "")
+    rag_focus = str(route_decision.get("rag_focus") or "")
+    executor = AgentToolExecutor(
+        generate_direct_answer=_generate_direct_answer,
+        generate_direct_answer_stream=_generate_direct_answer_stream,
+        generate_grounded_answer=_generate_grounded_answer,
+        generate_grounded_answer_stream=_generate_grounded_answer_stream,
+        repair_answer=_repair_list_answer,
+        status_answer=_crawler_monitor_answer,
+    )
+    rag_retrieval = RagRetrievalService(
+        adaptive_rough_k=_adaptive_rough_k,
+        adaptive_final_k=_adaptive_final_context_k,
+        planning_summary=_retrieval_planning_summary,
+        combined_question=_combined_retrieval_question,
+        supplement_results=lambda cfg, query, results, limit: _supplement_raw_html_results(cfg, query, results, limit=limit),
+        dedupe_results=_dedupe_results,
+    )
+    retrieval_preparation = rag_retrieval.prepare(config, agent=agent_id, question=question, rag_focus=rag_focus)
+    evidence_question = retrieval_preparation.evidence_question
+    run.add_trace(
+        "retrieve",
+        "next_step_confirmed",
+        {
+            "proceed": True,
+            "tool": "local_rag_search",
+            "goal": f"Search local evidence to answer: {evidence_question}",
+            "reason": "Executing the Agent-selected answer/RAG route inside MCagentGraph without a duplicate LLM confirmation call.",
+            "planner": "mcagent_graph_rag_route",
+        },
+    )
+    retrieval_result = rag_retrieval.retrieve(
+        config,
+        agent=agent_id,
+        original_question=original_question,
+        question=question,
+        session_summary=dict(session_summary),
+        preparation=retrieval_preparation,
+        use_planner=not bool(rag_focus),
+        add_trace=run.add_trace,
+    )
+    rough_results = retrieval_result.rough_results
+    selected = retrieval_result.selected
+    if not rough_results:
+        response = _handle_no_retrieval_results(
+            config=config,
+            payload=graph_payload,
+            agent=agent_id,
+            model=run.model,
+            original_question=original_question,
+            question=question,
+            tool_decision=dict(tool_decision),
+            action_plan=action_plan,
+            planned_delegate=False,
+            evidence_question=evidence_question,
+            session_summary=dict(session_summary),
+            trace=trace,
+            add_trace=run.add_trace,
+        )
+    else:
+        evidence_report = None
+        if agent_id == "mcagent_rag":
+            evidence_route = _select_mcagent_rag_evidence_or_respond(
+                config=config,
+                payload=graph_payload,
+                agent=agent_id,
+                model=run.model,
+                original_question=original_question,
+                question=question,
+                tool_decision=dict(tool_decision),
+                action_plan=action_plan,
+                planned_delegate=False,
+                evidence_question=evidence_question,
+                rough_results=rough_results,
+                retrieval_plan=retrieval_result.retrieval_plan,
+                final_k=retrieval_preparation.final_k,
+                session_summary=dict(session_summary),
+                trace=trace,
+                add_trace=run.add_trace,
+            )
+            selected = evidence_route.selected
+            evidence_report = evidence_route.evidence_report
+            if evidence_route.response is not None:
+                response = evidence_route.response
+            else:
+                response = _handle_rag_answer_generation_route(
+                    config=config,
+                    payload=graph_payload,
+                    agent=agent_id,
+                    model=run.model,
+                    original_question=original_question,
+                    question=question,
+                    retrieval_note=retrieval_note,
+                    evidence_question=evidence_question,
+                    selected=selected,
+                    tool_decision=dict(tool_decision),
+                    route_confirmation=route_confirmation,
+                    action_plan=action_plan,
+                    route_intent=route_intent_value or "answer",
+                    planned_workflow=bool(route_decision.get("planned_workflow")),
+                    planned_delegate=False,
+                    executor=executor,
+                    run=run,
+                    session_summary=dict(session_summary),
+                    trace=trace,
+                    add_trace=run.add_trace,
+                )
+        else:
+            response = _handle_rag_answer_generation_route(
+                config=config,
+                payload=graph_payload,
+                agent=agent_id,
+                model=run.model,
+                original_question=original_question,
+                question=question,
+                retrieval_note=retrieval_note,
+                evidence_question=evidence_question,
+                selected=selected,
+                tool_decision=dict(tool_decision),
+                route_confirmation=route_confirmation,
+                action_plan=action_plan,
+                route_intent=route_intent_value or "answer",
+                planned_workflow=bool(route_decision.get("planned_workflow")),
+                planned_delegate=False,
+                executor=executor,
+                run=run,
+                session_summary=dict(session_summary),
+                trace=trace,
+                add_trace=run.add_trace,
+            )
+    response.setdefault("agent", agent_id)
+    response.setdefault("session_id", str(graph_payload.get("session_id") or runtime_request.get("session_id") or route_decision.get("session_id") or ""))
+    response["metadata"] = {
+        **(response.get("metadata") if isinstance(response.get("metadata"), dict) else {}),
+        "graph_route_decision": {
+            "routed": True,
+            "route_decision_id": route_decision.get("route_decision_id") or "",
+            "route_intent": route_decision.get("route_intent") or "",
+            "decision_owner": route_decision.get("decision_owner") or "",
+            "rag_answer_route": True,
+        },
+    }
+    return response
+
+
 def _execute_graph_temporary_extract_node(
     config: AppConfig,
     payload: dict[str, Any],
@@ -9733,6 +10713,236 @@ def _execute_graph_temporary_extract_node(
     return response
 
 
+def _execute_graph_agent_message_route(
+    config: AppConfig,
+    payload: dict[str, Any],
+    *,
+    emit: Any | None = None,
+    agent_id: str,
+    graph_name: str,  # noqa: ARG001 - recorded by graph adapter metadata.
+    node_name: str,  # noqa: ARG001 - recorded by graph adapter metadata.
+    runtime_request: dict[str, Any],
+    route_decision: dict[str, Any],
+) -> dict[str, Any]:
+    if str(route_decision.get("route_intent") or "") != "agent_message":
+        raise RuntimeError("Graph agent_message execution requires an Agent-selected agent_message route.")
+    route_confirmation = dict(route_decision.get("route_confirmation") if isinstance(route_decision.get("route_confirmation"), dict) else {})
+    if not bool(route_confirmation.get("proceed", True)):
+        raise RuntimeError("Graph agent_message execution requires Agent confirmation to proceed.")
+    graph_payload = dict(payload)
+    graph_payload["agent"] = agent_id
+    graph_payload["question"] = str(route_decision.get("question") or payload.get("question") or payload.get("query") or "")
+    if "session_id" not in graph_payload:
+        graph_payload["session_id"] = str(runtime_request.get("session_id") or route_decision.get("session_id") or "")
+    run = build_agent_execution_context(config, graph_payload, token_resolver=_answer_max_tokens, emit=emit)
+    original_question = str(route_decision.get("original_question") or run.original_question)
+    question = str(route_decision.get("question") or run.question)
+    run.original_question = original_question
+    run.question = question
+    trace = run.trace.steps
+    for step in route_decision.get("trace") or []:
+        if isinstance(step, dict):
+            trace.append(dict(step))
+    session_summary = route_decision.get("session_summary") if isinstance(route_decision.get("session_summary"), dict) else _session_summary(graph_payload)
+    tool_decision = route_decision.get("tool_decision") if isinstance(route_decision.get("tool_decision"), dict) else {}
+    executor = AgentToolExecutor(
+        generate_direct_answer=_generate_direct_answer,
+        generate_direct_answer_stream=_generate_direct_answer_stream,
+        generate_grounded_answer=_generate_grounded_answer,
+        generate_grounded_answer_stream=_generate_grounded_answer_stream,
+        repair_answer=_repair_list_answer,
+        status_answer=_crawler_monitor_answer,
+    )
+    response = _handle_agent_message_route(
+        config=config,
+        payload=graph_payload,
+        agent=agent_id,
+        model=run.model,
+        original_question=original_question,
+        question=question,
+        tool_decision=tool_decision,
+        route_confirmation=route_confirmation,
+        executor=executor,
+        run=run,
+        session_summary=dict(session_summary),
+        trace=trace,
+        add_trace=run.add_trace,
+    )
+    response.setdefault("agent", agent_id)
+    response.setdefault("session_id", str(graph_payload.get("session_id") or runtime_request.get("session_id") or route_decision.get("session_id") or ""))
+    response["metadata"] = {
+        **(response.get("metadata") if isinstance(response.get("metadata"), dict) else {}),
+        "graph_route_decision": {
+            "routed": True,
+            "route_decision_id": route_decision.get("route_decision_id") or "",
+            "route_intent": route_decision.get("route_intent") or "",
+            "decision_owner": route_decision.get("decision_owner") or "",
+            "agent_message": True,
+        },
+    }
+    return response
+
+
+def _execute_graph_mcagent_context_reply_route(
+    config: AppConfig,
+    payload: dict[str, Any],
+    *,
+    emit: Any | None = None,
+    agent_id: str,
+    graph_name: str,  # noqa: ARG001 - recorded by graph adapter metadata.
+    node_name: str,  # noqa: ARG001 - recorded by graph adapter metadata.
+    runtime_request: dict[str, Any],
+    route_decision: dict[str, Any],
+) -> dict[str, Any]:
+    if agent_id != "mcagent_rag":
+        raise RuntimeError("Graph mcagent_context_reply execution is only valid for MCagent.")
+    if str(route_decision.get("route_intent") or "") != "mcagent_context_reply":
+        raise RuntimeError("Graph mcagent_context_reply execution requires a context-only AgentMessage route.")
+    route_confirmation = dict(route_decision.get("route_confirmation") if isinstance(route_decision.get("route_confirmation"), dict) else {})
+    if not bool(route_confirmation.get("proceed", True)):
+        raise RuntimeError("Graph mcagent_context_reply execution requires Agent confirmation to proceed.")
+    graph_payload = dict(payload)
+    graph_payload["agent"] = agent_id
+    graph_payload["question"] = str(route_decision.get("question") or payload.get("question") or payload.get("query") or "")
+    if "session_id" not in graph_payload:
+        graph_payload["session_id"] = str(runtime_request.get("session_id") or route_decision.get("session_id") or "")
+    run = build_agent_execution_context(config, graph_payload, token_resolver=_answer_max_tokens, emit=emit)
+    question = str(route_decision.get("question") or run.question)
+    run.question = question
+    incoming_message = _incoming_agent_message(graph_payload, agent=agent_id, question=question)
+    if incoming_message.from_agent != "CrawlerAgent" or not _is_context_only_agent_message(incoming_message):
+        raise RuntimeError("Graph mcagent_context_reply execution requires CrawlerAgent's context-only AgentMessage.")
+    trace = run.trace.steps
+    for step in route_decision.get("trace") or []:
+        if isinstance(step, dict):
+            trace.append(dict(step))
+    _trace_agent_message(run.add_trace, incoming_message)
+    response = _mcagent_context_message_reply(config, graph_payload, incoming_message, question, trace, run.add_trace)
+    response.setdefault("agent", agent_id)
+    response.setdefault("session_id", str(graph_payload.get("session_id") or runtime_request.get("session_id") or route_decision.get("session_id") or ""))
+    response["metadata"] = {
+        **(response.get("metadata") if isinstance(response.get("metadata"), dict) else {}),
+        "graph_route_decision": {
+            "routed": True,
+            "route_decision_id": route_decision.get("route_decision_id") or "",
+            "route_intent": route_decision.get("route_intent") or "",
+            "decision_owner": route_decision.get("decision_owner") or "",
+            "mcagent_context_reply": True,
+            "agent_message": True,
+            "no_persistence": True,
+        },
+    }
+    return response
+
+
+def _execute_graph_crawler_mcagent_context_route(
+    config: AppConfig,
+    payload: dict[str, Any],
+    *,
+    emit: Any | None = None,
+    agent_id: str,
+    graph_name: str,  # noqa: ARG001 - recorded by graph adapter metadata.
+    node_name: str,  # noqa: ARG001 - recorded by graph adapter metadata.
+    runtime_request: dict[str, Any],
+    route_decision: dict[str, Any],
+) -> dict[str, Any]:
+    if agent_id != "crawler_agent":
+        raise RuntimeError("Graph crawler mcagent_context execution is only valid for CrawlerAgent.")
+    if str(route_decision.get("route_intent") or "") != "mcagent_context":
+        raise RuntimeError("Graph crawler mcagent_context execution requires an Agent-selected mcagent_context route.")
+    route_confirmation = dict(route_decision.get("route_confirmation") if isinstance(route_decision.get("route_confirmation"), dict) else {})
+    if not bool(route_confirmation.get("proceed", True)):
+        raise RuntimeError("Graph crawler mcagent_context execution requires Agent confirmation to proceed.")
+    if graph_route_decision_has_action_tool(route_decision, "delegate_crawler"):
+        raise RuntimeError("Graph crawler mcagent_context execution is only for the no-persistence context step; delegate workflows use the planned workflow route.")
+    graph_payload = dict(payload)
+    graph_payload["agent"] = agent_id
+    graph_payload["question"] = str(route_decision.get("question") or payload.get("question") or payload.get("query") or "")
+    if "session_id" not in graph_payload:
+        graph_payload["session_id"] = str(runtime_request.get("session_id") or route_decision.get("session_id") or "")
+    run = build_agent_execution_context(config, graph_payload, token_resolver=_answer_max_tokens, emit=emit)
+    original_question = str(route_decision.get("original_question") or run.original_question)
+    question = str(route_decision.get("question") or run.question)
+    run.original_question = original_question
+    run.question = question
+    trace = run.trace.steps
+    for step in route_decision.get("trace") or []:
+        if isinstance(step, dict):
+            trace.append(dict(step))
+    session_summary = route_decision.get("session_summary") if isinstance(route_decision.get("session_summary"), dict) else _session_summary(graph_payload)
+    tool_decision = dict(route_decision.get("tool_decision") if isinstance(route_decision.get("tool_decision"), dict) else {})
+    focus = str(route_decision.get("rag_focus") or tool_decision.get("rag_focus") or _mcagent_context_focus(original_question, str(tool_decision.get("collection_target") or "")))
+    context_message = str(tool_decision.get("content") or tool_decision.get("message") or "").strip()
+    if not context_message:
+        context_message = (
+            "我需要了解 MCagent 本地已有资料和缺口，方便我决定是否还需要公开来源采集。\n"
+            f"主题：{focus}"
+        )
+    metadata = dict(tool_decision.get("metadata") if isinstance(tool_decision.get("metadata"), dict) else {})
+    metadata.update(
+        {
+            "tool": "mcagent_context",
+            "collection_target": str(tool_decision.get("collection_target") or focus),
+            "transport": "From-Content-To",
+            "no_persistence": True,
+        }
+    )
+    tool_decision.update(
+        {
+            "tool": "agent_message",
+            "to_agent": "MCagent",
+            "content": context_message,
+            "intent": "mcagent_context_request",
+            "metadata": metadata,
+            "delivery_target": "CrawlerAgent",
+        }
+    )
+    add_trace = run.add_trace
+    add_trace(
+        "decide",
+        "mcagent_context_selected",
+        {"rag_focus": focus, "planned_delegate": False, "action_plan": route_decision.get("action_plan") or []},
+    )
+    executor = AgentToolExecutor(
+        generate_direct_answer=_generate_direct_answer,
+        generate_direct_answer_stream=_generate_direct_answer_stream,
+        generate_grounded_answer=_generate_grounded_answer,
+        generate_grounded_answer_stream=_generate_grounded_answer_stream,
+        repair_answer=_repair_list_answer,
+        status_answer=_crawler_monitor_answer,
+    )
+    response = _handle_agent_message_route(
+        config=config,
+        payload=graph_payload,
+        agent=agent_id,
+        model=run.model,
+        original_question=original_question,
+        question=question,
+        tool_decision=tool_decision,
+        route_confirmation=route_confirmation,
+        executor=executor,
+        run=run,
+        session_summary=dict(session_summary),
+        trace=trace,
+        add_trace=add_trace,
+    )
+    response.setdefault("agent", agent_id)
+    response.setdefault("session_id", str(graph_payload.get("session_id") or runtime_request.get("session_id") or route_decision.get("session_id") or ""))
+    response["metadata"] = {
+        **(response.get("metadata") if isinstance(response.get("metadata"), dict) else {}),
+        "graph_route_decision": {
+            "routed": True,
+            "route_decision_id": route_decision.get("route_decision_id") or "",
+            "route_intent": route_decision.get("route_intent") or "",
+            "decision_owner": route_decision.get("decision_owner") or "",
+            "mcagent_context": True,
+            "agent_message": True,
+            "no_persistence": True,
+        },
+    }
+    return response
+
+
 def _agent_message_response_trace(request: AgentMessage, reply: AgentMessage) -> dict[str, Any]:
     return {
         "request": request.to_dict(),
@@ -9794,9 +11004,16 @@ def _send_agent_message(
         status_executor=_execute_graph_status_route,
         crawler_audit_executor=_execute_graph_crawler_audit_route,
         local_corpus_inventory_executor=_execute_graph_local_corpus_inventory_route,
+        mcagent_inventory_planned_workflow_executor=_execute_graph_mcagent_inventory_planned_workflow_route,
+        rag_answer_route_executor=_execute_graph_rag_answer_route,
+        crawler_planned_workflow_executor=_execute_graph_crawler_planned_workflow_route,
+        crawler_delegate_route_executor=_execute_graph_crawler_delegate_route,
         router_error_executor=_execute_graph_router_error_route,
         direct_answer_executor=_execute_graph_direct_answer_node,
         temporary_extract_executor=_execute_graph_temporary_extract_node,
+        agent_message_executor=_execute_graph_agent_message_route,
+        mcagent_context_reply_executor=_execute_graph_mcagent_context_reply_route,
+        crawler_mcagent_context_executor=_execute_graph_crawler_mcagent_context_route,
     )
     _record_agent_response_event(normalize_session_id(message.conversation_id or payload.get("session_id")), result)
     return result
@@ -9859,7 +11076,7 @@ def _mcagent_context_message_reply(
             else:
                 evidence_lines.append(f"- {item.title}: {item.source_path}")
         answer = (
-            "MCagent 已通过 From-Content-To 消息收到 CrawlerAgent 的本地上下文请求。\n\n"
+            "我收到 CrawlerAgent 的本地上下文请求，并检查了本地资料。\n\n"
             f"检索主题：{focus}\n\n"
             "本地已有证据候选：\n"
             + "\n".join(evidence_lines)
@@ -9868,10 +11085,35 @@ def _mcagent_context_message_reply(
     else:
         blocker = f"\n本地检索阻塞：{retrieval_error}\n" if retrieval_error else ""
         answer = (
-            "MCagent 已通过 From-Content-To 消息收到 CrawlerAgent 的本地上下文请求。\n\n"
+            "我收到 CrawlerAgent 的本地上下文请求，并检查了本地资料。\n\n"
             f"检索主题：{focus}\n\n"
             f"{blocker}"
             "本地资料库没有找到可直接交付的证据候选。CrawlerAgent 应自行去公开来源补充项目页、版本/下载页、模组列表、玩法路线和配置说明。"
+        )
+    if selected:
+        normalized_evidence_lines: list[str] = []
+        for item in selected[:6]:
+            lines = _evidence_lines_from_text(item.text, focus_terms, limit=3) or [item.text[:220]]
+            clean_lines = [_clean_evidence_line(line) for line in lines]
+            clean_lines = [line for line in clean_lines if line][:2]
+            if clean_lines:
+                normalized_evidence_lines.append(f"- {item.title}: {'；'.join(clean_lines)[:420]}")
+            else:
+                normalized_evidence_lines.append(f"- {item.title}: {item.source_path}")
+        answer = (
+            "我收到 CrawlerAgent 的本地上下文请求，并检查了本地资料。\n\n"
+            f"检索主题：{focus}\n\n"
+            "本地已有证据候选（我已检查到）：\n"
+            + "\n".join(normalized_evidence_lines)
+            + "\n\n我认为仍可能需要 CrawlerAgent 自己核查或补充：公开项目页、版本/下载页、完整模组列表、任务线/玩法路线、更新日志或配置说明。"
+        )
+    else:
+        blocker = f"\n本地检索阻塞：{retrieval_error}\n" if retrieval_error else ""
+        answer = (
+            "我收到 CrawlerAgent 的本地上下文请求，并检查了本地资料。\n\n"
+            f"检索主题：{focus}\n\n"
+            f"{blocker}"
+            "我没有在本地资料库里找到可直接交付的证据候选。CrawlerAgent 应该自行去公开来源补充项目页、版本/下载页、模组列表、玩法路线和配置说明。"
         )
     add_trace(
         "retrieve",
@@ -9898,8 +11140,194 @@ def _mcagent_context_message_reply(
 def _is_collection_request_agent_message(message: AgentMessage) -> bool:
     metadata = message.metadata if isinstance(message.metadata, dict) else {}
     return message.to_agent_id == "crawler_agent" and (
-        message.intent == "collection_request" or str(metadata.get("tool") or "") in {"collection_request", "delegate_crawler"}
+        _agent_message_intent_is_collection_request(message.intent)
+        or str(metadata.get("tool") or "") in {"collection_request", "delegate_crawler"}
     )
+
+
+def _agent_message_intent_is_collection_request(intent: str) -> bool:
+    normalized = str(intent or "").strip().lower()
+    if normalized == "collection_request":
+        return True
+    return bool(normalized and any(token in normalized for token in ("collection", "collect", "crawl", "crawler", "delegate", "采集", "抓取", "爬取", "补库")))
+
+
+def _mcagent_gap_message_from_inventory(
+    config: AppConfig,
+    *,
+    model: str,
+    original_question: str,
+    current_message: str,
+    inventory_answer: str,
+    inventory_metadata: dict[str, Any],
+    add_trace: Any,
+) -> tuple[str, dict[str, Any]]:
+    try:
+        client, label = _selected_llm_client(config, model, 0.0, agent="mcagent_rag", timeout_seconds=RUNTIME_REVIEW_LLM_TIMEOUT_SECONDS)
+        handoff_prompt = (
+            "You are MCagent writing the exact natural-language AgentMessage content to CrawlerAgent.\n"
+            "Use first person as MCagent. Do not choose CrawlerAgent's tools. Do not create a task ticket. Do not claim CrawlerAgent has already collected anything.\n"
+            "Base the message on the objective local inventory observation and the user's request. Mention concrete known entities and concrete gaps when the observation supports them.\n"
+            "Return JSON only.\n"
+            f"original_user_message: {original_question}\n"
+            f"initial_outgoing_message: {current_message}\n"
+            f"local_inventory_observation:\n{str(inventory_answer or '')[:7000]}\n"
+            'JSON schema: {"content":"message from MCagent to CrawlerAgent", "gap_summary":"brief MCagent local gap summary", "reason":"brief reason"}'
+        )
+        raw_handoff = client.chat(
+            [
+                {"role": "system", "content": "Return valid JSON only."},
+                {"role": "user", "content": handoff_prompt},
+            ],
+            temperature=0.0,
+            max_tokens=1000,
+        )
+        handoff = json_object_from_llm_text(raw_handoff)
+        prepared_content = str(handoff.get("content") or "").strip() or current_message
+        gap_summary = str(handoff.get("gap_summary") or str(inventory_answer or "")[:1200]).strip()
+        metadata = {
+            "required": True,
+            "reason": str(handoff.get("reason") or "").strip()[:500],
+            "planner": label,
+            "gap_summary": gap_summary[:1600],
+            "inventory_metadata": inventory_metadata,
+        }
+        add_trace(
+            "message",
+            "mcagent_gap_handoff_prepared",
+            {
+                "to_agent": "CrawlerAgent",
+                "content": prepared_content[:1200],
+                "gap_summary": gap_summary[:1200],
+            },
+        )
+        return prepared_content, metadata
+    except Exception as exc:  # noqa: BLE001
+        observation = inventory_metadata.get("inventory_observation") if isinstance(inventory_metadata.get("inventory_observation"), dict) else {}
+        candidates = list(observation.get("entity_candidates") or []) if isinstance(observation, dict) else []
+        names = [str(item.get("name") or "").strip() for item in candidates if isinstance(item, dict) and str(item.get("name") or "").strip()]
+        names = names[:8]
+        document_count = observation.get("document_count") if isinstance(observation, dict) else None
+        entity_line = "、".join(names) if names else "若干 Minecraft 项目候选"
+        count_line = f"我刚才先检查了本地资料库，目前能看到约 {document_count} 篇已入库文档。" if document_count else "我刚才先检查了本地资料库。"
+        fallback = (
+            f"我是 MCagent。{count_line}\n"
+            f"我在本地索引里看到了这些整合包/项目候选：{entity_line}。\n"
+            "这些只是本地标题、路径和片段形成的客观观察，不是最终攻略判断。"
+            "请你作为 CrawlerAgent 自己判断还需要补哪些公开来源，优先核查项目页、版本/下载页、完整模组列表、任务线/玩法路线、更新日志、配置说明和新手攻略；"
+            "如果来源低价值、重复、受限或跑偏，请在你的过程里说明原因。\n"
+            f"用户原始目标：{original_question or current_message}"
+        ).strip()
+        metadata = {
+            "required": True,
+            "error": f"{type(exc).__name__}: {exc}"[:500],
+            "gap_summary": str(inventory_answer or "")[:1200],
+            "inventory_metadata": inventory_metadata,
+        }
+        add_trace(
+            "message",
+            "mcagent_gap_handoff_prepare_failed",
+            {"error": f"{type(exc).__name__}: {exc}"[:500]},
+        )
+        return fallback, metadata
+
+
+def _maybe_prepare_mcagent_gap_context_agent_message(
+    config: AppConfig,
+    *,
+    agent: str,
+    model: str,
+    original_question: str,
+    current_message: str,
+    to_agent: str,
+    intent: str,
+    decision_metadata: dict[str, Any],
+    session_summary: dict[str, Any],
+    add_trace: Any,
+) -> tuple[str, dict[str, Any]]:
+    """Let MCagent add its own local gap judgment before asking CrawlerAgent.
+
+    This does not pick CrawlerAgent's tools. It only turns objective MCagent-side
+    local inventory into the natural-language AgentMessage content that MCagent
+    sends over the message bus.
+    """
+
+    if agent != "mcagent_rag":
+        return current_message, decision_metadata
+    target = str(to_agent or "").strip().lower()
+    if target not in {"crawleragent", "crawler_agent", "crawler"}:
+        return current_message, decision_metadata
+    try:
+        client, label = _selected_llm_client(config, model, 0.0, agent=agent, timeout_seconds=RUNTIME_REVIEW_LLM_TIMEOUT_SECONDS)
+        review_prompt = (
+            "You are MCagent deciding whether an outgoing AgentMessage to CrawlerAgent needs MCagent's local corpus gap context first.\n"
+            "Return JSON only. Do not answer the user.\n"
+            "Mark requires_gap_context=true only when the user is asking CrawlerAgent to collect what MCagent lacks, fill MCagent/RAG/local-corpus gaps, or continue from MCagent's current evidence state.\n"
+            "Mark false when the request gives an independent explicit crawl target that does not depend on MCagent's local inventory.\n"
+            f"original_user_message: {original_question}\n"
+            f"outgoing_message_candidate: {current_message}\n"
+            f"session_summary: {json.dumps(session_summary or {}, ensure_ascii=False)}\n"
+            'JSON schema: {"requires_gap_context":true, "focus":"short local inventory focus", "reason":"brief reason"}'
+        )
+        raw_review = client.chat(
+            [
+                {"role": "system", "content": "Return valid JSON only."},
+                {"role": "user", "content": review_prompt},
+            ],
+            temperature=0.0,
+            max_tokens=400,
+        )
+        review = json_object_from_llm_text(raw_review)
+        if not bool(review.get("requires_gap_context")):
+            next_metadata = dict(decision_metadata)
+            next_metadata["mcagent_gap_context"] = {
+                "required": False,
+                "reason": str(review.get("reason") or "").strip()[:300],
+                "planner": label,
+            }
+            return current_message, next_metadata
+
+        decision_metadata["tool"] = "collection_request"
+        focus = str(review.get("focus") or original_question or current_message).strip()
+        add_trace("retrieve", "inventory_scanning", {"reason": "MCagent is preparing its own local gap context before sending AgentMessage.", "focus": focus})
+        inventory = _local_corpus_inventory_answer(config, focus)
+        inventory_answer = str(inventory.get("answer") or "").strip()
+        inventory_metadata = inventory.get("metadata") if isinstance(inventory.get("metadata"), dict) else {}
+        add_trace(
+            "retrieve",
+            "inventory_done",
+            {
+                "document_count": (inventory_metadata.get("inventory_observation") or {}).get("document_count") if isinstance(inventory_metadata.get("inventory_observation"), dict) else None,
+                "entity_count": len((inventory_metadata.get("inventory_observation") or {}).get("entity_candidates") or []) if isinstance(inventory_metadata.get("inventory_observation"), dict) else None,
+            },
+        )
+        prepared_content, gap_context = _mcagent_gap_message_from_inventory(
+            config,
+            model=model,
+            original_question=original_question,
+            current_message=current_message,
+            inventory_answer=inventory_answer,
+            inventory_metadata=inventory_metadata,
+            add_trace=add_trace,
+        )
+        next_metadata = dict(decision_metadata)
+        gap_context["focus"] = focus
+        if not gap_context.get("reason"):
+            gap_context["reason"] = str(review.get("reason") or "").strip()[:500]
+        next_metadata["mcagent_gap_context"] = gap_context
+        return prepared_content, next_metadata
+    except Exception as exc:  # noqa: BLE001
+        next_metadata = dict(decision_metadata)
+        next_metadata["mcagent_gap_context"] = {
+            "required": "unknown",
+            "error": f"{type(exc).__name__}: {exc}"[:500],
+        }
+        add_trace(
+            "message",
+            "mcagent_gap_handoff_prepare_failed",
+            {"error": f"{type(exc).__name__}: {exc}"[:500]},
+        )
+        return current_message, next_metadata
 
 
 def _handle_direct_answer_route(
@@ -10159,6 +11587,17 @@ def _handle_local_corpus_inventory_route(
 
     add_trace("retrieve", "inventory_scanning", {"db_path": str(config.paths.db_path)})
     inventory = _local_corpus_inventory_answer(config, question)
+    inventory = _with_agent_inventory_answer(
+        config,
+        inventory,
+        original_question=original_question,
+        question=question,
+        model=model,
+        temperature=run.temperature,
+        max_tokens=run.max_tokens,
+        agent=agent,
+        add_trace=add_trace,
+    )
     add_trace(
         "retrieve",
         "inventory_done",
@@ -10253,6 +11692,20 @@ def _handle_mcagent_inventory_planned_workflow_route(
         },
     )
     inventory = _local_corpus_inventory_answer(config, question)
+    graph_payload = dict(payload)
+    graph_payload["agent"] = agent
+    run = build_agent_execution_context(config, graph_payload, token_resolver=_answer_max_tokens, emit=None)
+    inventory = _with_agent_inventory_answer(
+        config,
+        inventory,
+        original_question=original_question,
+        question=question,
+        model=model,
+        temperature=run.temperature,
+        max_tokens=run.max_tokens,
+        agent=agent,
+        add_trace=add_trace,
+    )
     add_trace(
         "retrieve",
         "inventory_done",
@@ -10288,16 +11741,37 @@ def _handle_mcagent_inventory_planned_workflow_route(
     delegated_delivery_target = ""
     delegated_task = ""
     delegated_handoff_brief = ""
-    if _action_plan_has_tool(action_plan, "delegate_crawler"):
-        collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
+    if _action_plan_has_tool(action_plan, "delegate_crawler") or _action_plan_has_tool(action_plan, "agent_message"):
+        collection_question = str(
+            tool_decision.get("collection_target")
+            or tool_decision.get("content")
+            or tool_decision.get("message")
+            or original_question
+            or question
+        ).strip()
         add_trace(
             "plan",
             "executing_agent_selected_step",
             {
-                "tool": "delegate_crawler",
-                "reason": "planned_workflow action_plan selected by the Agent after local corpus inventory.",
+                "tool": "agent_message",
+                "reason": "planned_workflow action_plan selected by the Agent after local corpus inventory; MCagent continues by sending one From-Content-To message to CrawlerAgent.",
             },
         )
+        inventory_metadata = inventory.get("metadata") if isinstance(inventory.get("metadata"), dict) else {}
+        prepared_message, gap_context = _mcagent_gap_message_from_inventory(
+            config,
+            model=model,
+            original_question=original_question,
+            current_message=collection_question,
+            inventory_answer=answer[:7000],
+            inventory_metadata=inventory_metadata,
+            add_trace=add_trace,
+        )
+        collection_question = prepared_message
+        workflow_session_summary = {
+            **dict(session_summary or {}),
+            "mcagent_gap_context": gap_context,
+        }
         delegation = _prepare_and_start_crawler_delegation(
             config,
             payload,
@@ -10306,8 +11780,8 @@ def _handle_mcagent_inventory_planned_workflow_route(
             original_question=original_question,
             current_question=question,
             collection_question=collection_question,
-            session_summary=session_summary,
-            gap_summary=answer[:4000],
+            session_summary=workflow_session_summary,
+            gap_summary=str(gap_context.get("gap_summary") or answer)[:4000],
             planning_instruction=(
                 "MCagent first inspected local corpus coverage because its Agent-selected planned_workflow requested local_corpus_inventory. "
                 "CrawlerAgent should read the inventory summary, decide which gaps are real, collect citeable public/local evidence, self-audit sources, and deliver usable artifacts to MCagent/RAG."
@@ -10425,10 +11899,21 @@ def _handle_delegate_crawler_route(
     )
     if delegation.job is None:
         answer = ""
-    elif agent == "crawler_agent" and delegation.plan.requested_by == "user":
-        answer = "我是 CrawlerAgent。采集任务已启动。" if delegation.created else "我是 CrawlerAgent。已有采集任务在运行。"
+    elif agent == "crawler_agent":
+        target = delegation.plan.collection_question or collection_question
+        if delegation.created:
+            answer = (
+                "我是 CrawlerAgent。我已经收到这条 AgentMessage，并由我自己选择进入采集流程。\n\n"
+                f"我接下来会围绕这个目标行动：{target}\n"
+                "后续搜索、网页观察、保存、入库和来源自审会继续出现在右侧 Agent 动作流里。"
+            )
+        else:
+            answer = (
+                "我是 CrawlerAgent。我已经收到这条 AgentMessage，但当前已有同类采集在运行。\n\n"
+                "我会继续沿用正在运行的采集流程，新的进度仍然会出现在右侧 Agent 动作流里。"
+            )
     else:
-        answer = "Crawler 多源采集任务已启动。" if delegation.created else "Crawler 已有任务在运行。"
+        answer = ""
     answer += delegation.note
     return _with_trace(
         {
@@ -10438,6 +11923,62 @@ def _handle_delegate_crawler_route(
             **_optional_delegation_payload(delegation),
         },
         trace,
+    )
+
+
+def _mcagent_delegate_route_as_agent_message(
+    *,
+    config: AppConfig,
+    payload: dict[str, Any],
+    agent: str,
+    model: str,
+    original_question: str,
+    question: str,
+    tool_decision: dict[str, Any],
+    route_confirmation: dict[str, Any],
+    executor: AgentToolExecutor,
+    run: Any,
+    session_summary: dict[str, Any],
+    trace: list[dict[str, Any]],
+    add_trace: Any,
+) -> dict[str, Any]:
+    collection_question = str(tool_decision.get("collection_target") or original_question or question).strip()
+    message_decision = dict(tool_decision)
+    message_decision["tool"] = "agent_message"
+    message_decision["to_agent"] = "CrawlerAgent"
+    message_decision["content"] = collection_question
+    message_decision["intent"] = "collection_request"
+    metadata = dict(message_decision.get("metadata") if isinstance(message_decision.get("metadata"), dict) else {})
+    metadata["tool"] = "collection_request"
+    metadata["requested_by"] = "user_via_mcagent"
+    if message_decision.get("delivery_target"):
+        metadata["delivery_target"] = message_decision.get("delivery_target")
+    message_decision["metadata"] = metadata
+    add_trace(
+        "message",
+        "delegate_route_reframed_as_agent_message",
+        {
+            "reason": "MCagent cannot execute CrawlerAgent collection tools; it sends one AgentMessage and lets CrawlerAgent choose its own tools.",
+            "from_agent": "MCagent",
+            "to_agent": "CrawlerAgent",
+            "content": collection_question,
+            "intent": "collection_request",
+        },
+    )
+    return _handle_agent_message_route(
+        config=config,
+        payload=payload,
+        agent=agent,
+        model=model,
+        original_question=original_question,
+        question=question,
+        tool_decision=message_decision,
+        route_confirmation=route_confirmation,
+        executor=executor,
+        run=run,
+        session_summary=session_summary,
+        trace=trace,
+        add_trace=add_trace,
     )
 
 
@@ -10536,11 +12077,13 @@ def _handle_crawler_action_plan_delegate_route(
     answer_parts: list[str] = []
     if context_gap_summary:
         answer_parts.append(
-            "我是 CrawlerAgent。已先通过 From-Content-To 向 MCagent 询问本地资料缺口。\n\n"
-            "MCagent 返回的本地上下文/缺口：\n"
-            + _tail_text(context_answer or context_gap_summary, 1400)
+            "我是 CrawlerAgent。我已按自己的计划先通过 AgentMessage 读取 MCagent 的本地上下文，"
+            "现在会基于这些缺口继续采集。\n\n"
+            "我拿到的缺口摘要：\n"
+            + _tail_text(context_answer or context_gap_summary, 900)
         )
-    answer_parts.append("已按本轮计划启动后台采集任务。" if delegation.job is not None else "")
+    if delegation.job is not None:
+        answer_parts.append("我已经进入采集流程；后续动作、来源取舍和保存结果会持续出现在右侧 Agent 动作流里。")
     answer = "\n\n".join(part for part in answer_parts if part).strip()
     answer += delegation.note
     return _with_trace(
@@ -11525,7 +13068,7 @@ def _chat_timeout_result(config: AppConfig, payload: dict[str, Any], fields: dic
     }
 
 
-def _relay_user_crawler_request_via_message_bus(
+def _disabled_legacy_relay_user_crawler_request_via_message_bus(
     config: AppConfig,
     payload: dict[str, Any],
     *,
@@ -11536,6 +13079,7 @@ def _relay_user_crawler_request_via_message_bus(
     add_trace: Any,
     session_summary: dict[str, Any],
 ) -> dict[str, Any]:
+    raise RuntimeError("Legacy explicit Crawler relay is disabled. Agents must use LLM-selected agent_message or delegate_crawler routes.")
     collection_question = _clean_crawler_task_question(original_question or question)
     delivery_target = str(payload.get("delivery_target") or _infer_delivery_target(original_question, session_summary) or "MCagent/RAG")
     message_payload = dict(payload)
@@ -11572,7 +13116,7 @@ def _relay_user_crawler_request_via_message_bus(
     response = _send_agent_message(
         config,
         message_payload,
-        from_agent="MCagent",
+        from_agent=message.from_agent,
         content=collection_question,
         to_agent="CrawlerAgent",
         intent="collection_request",
@@ -11581,7 +13125,7 @@ def _relay_user_crawler_request_via_message_bus(
     )
     answer = str(response.get("answer") or "").strip()
     if answer and "转达" not in answer[:80]:
-        answer = "MCagent 已通过 From-Content-To 消息把你的请求转达给 CrawlerAgent。\n\n" + answer
+        answer = "我已通过 From-Content-To 消息询问 CrawlerAgent。\n\n" + answer
         response["answer"] = answer
     response.setdefault("agent", "mcagent_rag")
     response["delegation"] = {
@@ -11604,7 +13148,7 @@ def _relay_user_crawler_request_via_message_bus(
     return response
 
 
-def _handle_ask_crawler_agent_route(
+def _handle_agent_message_route(
     *,
     config: AppConfig,
     payload: dict[str, Any],
@@ -11622,88 +13166,194 @@ def _handle_ask_crawler_agent_route(
 ) -> dict[str, Any]:
     ask_confirmation = _reuse_route_confirmation(
         route_confirmation,
-        proposed_tool="ask_crawler_agent",
-        proposed_goal=str(tool_decision.get("reason") or "Send a no-persistence AgentMessage to CrawlerAgent and return its reply."),
+        proposed_tool="agent_message",
+        proposed_goal=str(tool_decision.get("reason") or "Send one no-persistence From-Content-To AgentMessage and return the receiver's reply."),
     )
-    add_trace("message", "ask_crawler_next_step_confirmed", ask_confirmation)
+    add_trace("message", "agent_message_next_step_confirmed", ask_confirmation)
     if not bool(ask_confirmation.get("proceed", True)):
-        return executor.direct_answer(run, session_summary=session_summary, mode="direct_after_ask_crawler_cancelled")
+        return executor.direct_answer(run, session_summary=session_summary, mode="direct_after_agent_message_cancelled")
 
+    to_agent = str(tool_decision.get("to_agent") or tool_decision.get("to") or "").strip()
     crawler_question = str(
-        tool_decision.get("message")
+        tool_decision.get("content")
+        or tool_decision.get("message")
         or tool_decision.get("collection_target")
         or original_question
         or question
     ).strip()
+    if not to_agent:
+        add_trace(
+            "message",
+            "agent_message_missing_target",
+            {
+                "reason": "The LLM selected agent_message but did not provide to_agent. Runtime will not infer a target from keywords.",
+                "tool_decision": tool_decision,
+            },
+        )
+        return executor.direct_answer(run, session_summary=session_summary, mode="direct_after_agent_message_missing_target")
     if not crawler_question:
         crawler_question = original_question or question
-    message_payload = dict(payload)
-    message_payload["agent"] = "crawler_agent"
-    message_payload["model"] = model
-    message_payload["requested_by"] = "user_via_mcagent"
-    message_payload["preserve_crawler_request"] = True
-    message_payload["session_summary"] = {
-        **dict(session_summary or {}),
-        "requested_by": "user_via_mcagent",
-        "handoff_from": "MCagent",
-        "original_user_request": original_question,
-        "task_goal": crawler_question,
-        "delivery_target": "human",
-        "message_transport": "From-Content-To",
-        "no_persistence": True,
-    }
-    metadata = {
-        "tool": "ask_crawler_agent",
-        "requested_by": "user_via_mcagent",
-        "delivery_target": "human",
-        "no_persistence": True,
-    }
+    decision_metadata = dict(tool_decision.get("metadata") if isinstance(tool_decision.get("metadata"), dict) else {})
+    message_intent = str(tool_decision.get("intent") or "agent_message")
+    collection_message_intent = _agent_message_intent_is_collection_request(message_intent)
+    if not decision_metadata.get("tool") and collection_message_intent:
+        decision_metadata["tool"] = "collection_request"
+    decision_metadata["transport"] = "From-Content-To"
+    decision_metadata["requested_by"] = decision_metadata.get("requested_by") or f"user_via_{agent}"
+    decision_metadata["delivery_target"] = str(tool_decision.get("delivery_target") or decision_metadata.get("delivery_target") or "human")
+    decision_metadata["no_persistence"] = True
+    crawler_question, decision_metadata = _maybe_prepare_mcagent_gap_context_agent_message(
+        config,
+        agent=agent,
+        model=model,
+        original_question=original_question,
+        current_message=crawler_question,
+        to_agent=to_agent,
+        intent=message_intent,
+        decision_metadata=decision_metadata,
+        session_summary=session_summary,
+        add_trace=add_trace,
+    )
+    message_probe = make_agent_message(
+        _agent_display_name(agent),
+        crawler_question,
+        to_agent,
+        intent=message_intent,
+        conversation_id=str(payload.get("session_id") or ""),
+        metadata=decision_metadata,
+    )
     add_trace(
         "message",
-        "ask_crawler_agent_relayed",
+        "agent_message_preparing",
         {
-            "reason": "MCagent selected the no-persistence CrawlerAgent message tool; CrawlerAgent still owns the reply route.",
-            "to_agent": "CrawlerAgent",
+            "from_agent": message_probe.from_agent,
+            "to_agent": message_probe.to_agent,
+            "content": crawler_question,
+            "intent": message_probe.intent,
+        },
+    )
+    if message_probe.to_agent_id == agent or message_probe.to_agent == "User":
+        add_trace(
+            "message",
+            "agent_message_returned_to_conversation",
+            {
+                "reason": "The LLM selected agent_message to the current conversation participant; runtime returns the selected content without choosing another Agent tool.",
+                "message": message_probe.to_dict(),
+            },
+        )
+        response = {
+            "answer": crawler_question,
+            "sources": [],
+            "context": "",
+            "agent": agent,
+            "agent_message": message_probe.to_dict(),
+            "metadata": {"agent_message": {"transport": "From-Content-To", "intent": message_probe.intent, "no_persistence": True, "to_agent": message_probe.to_agent}},
+        }
+        add_trace("done", "response_ready", {"sources": 0, "agent_message": True, "delegated": False})
+        response["trace"] = trace
+        return response
+    message_payload = dict(payload)
+    message_payload["agent"] = message_probe.to_agent_id
+    message_payload["model"] = model
+    message_payload["requested_by"] = f"user_via_{agent}"
+    message_payload["preserve_agent_message_request"] = True
+    message_payload["session_summary"] = {
+        **dict(session_summary or {}),
+        "requested_by": f"user_via_{agent}",
+        "handoff_from": _agent_display_name(agent),
+        "original_user_request": original_question,
+        "task_goal": crawler_question,
+        "delivery_target": str(tool_decision.get("delivery_target") or "human"),
+        "message_transport": "From-Content-To",
+        "no_persistence": True,
+        "mcagent_gap_context": decision_metadata.get("mcagent_gap_context") if isinstance(decision_metadata.get("mcagent_gap_context"), dict) else {},
+    }
+    metadata = dict(decision_metadata)
+    add_trace(
+        "message",
+        "agent_message_relayed",
+        {
+            "reason": "The active Agent selected the no-persistence message tool; the receiver still owns its own tool route.",
+            "from_agent": message_probe.from_agent,
+            "to_agent": message_probe.to_agent,
             "message": crawler_question,
+        },
+    )
+    add_trace(
+        "message",
+        "agent_message_waiting_for_reply",
+        {
+            "from_agent": message_probe.from_agent,
+            "to_agent": message_probe.to_agent,
+            "content": crawler_question,
         },
     )
     crawler_response = _send_agent_message(
         config,
         message_payload,
-        from_agent="MCagent",
+        from_agent=message_probe.from_agent,
         content=crawler_question,
-        to_agent="CrawlerAgent",
-        intent="agent_question",
+        to_agent=message_probe.to_agent,
+        intent=message_probe.intent,
         conversation_id=str(payload.get("session_id") or ""),
         metadata=metadata,
     )
     crawler_answer = str(crawler_response.get("answer") or "").strip()
+    add_trace(
+        "message",
+        "agent_message_reply_received",
+        {
+            "from_agent": message_probe.to_agent,
+            "to_agent": message_probe.from_agent,
+            "answer": crawler_answer[:1200],
+            "receiver_agent": str(crawler_response.get("agent") or message_probe.to_agent_id),
+        },
+    )
     answer = crawler_answer
-    if crawler_answer and not crawler_answer.lstrip().lower().startswith("crawleragent"):
+    if crawler_answer:
+        answer = (
+            f"我已通过 From-Content-To 消息询问 {message_probe.to_agent}。\n"
+            f"{message_probe.to_agent} 回复我：\n\n{crawler_answer}"
+        )
+    if False and crawler_answer and not crawler_answer.lstrip().lower().startswith(message_probe.to_agent.lower()):
         answer = "CrawlerAgent 回复：\n\n" + crawler_answer
     response = {
         "answer": answer or "CrawlerAgent 没有返回可显示的回复。",
         "sources": list(crawler_response.get("sources") or []),
         "context": str(crawler_response.get("context") or ""),
         "agent": agent,
-        "crawler_response": crawler_response,
+        "receiver_response": crawler_response,
         "trace": [*trace, *list(crawler_response.get("trace") or [])] if isinstance(crawler_response.get("trace"), list) else list(trace),
         "metadata": {
-            "ask_crawler_agent": {
+            "agent_message": {
                 "transport": "From-Content-To",
-                "intent": "agent_question",
+                "intent": message_probe.intent,
                 "no_persistence": True,
-                "crawler_agent": str(crawler_response.get("agent") or "crawler_agent"),
+                "to_agent": message_probe.to_agent,
+                "receiver_agent": str(crawler_response.get("agent") or message_probe.to_agent_id),
             }
         },
     }
+    for key in ("job", "delegation", "collaboration"):
+        if key in crawler_response:
+            response[key] = crawler_response[key]
     if isinstance(crawler_response.get("agent_message"), dict):
         response["agent_message"] = agent_reply_message_from_payload(
             {**payload, "agent": agent},
             from_agent_id=agent,
             content=response["answer"],
         ).to_dict()
-    add_trace("done", "response_ready", {"sources": len(response["sources"]), "asked_crawler_agent": True, "delegated": False})
+    add_trace(
+        "message",
+        "agent_message_summary_ready",
+        {
+            "from_agent": message_probe.from_agent,
+            "to_agent": "User",
+            "via_agent": message_probe.to_agent,
+            "summary": response["answer"][:1200],
+        },
+    )
+    add_trace("done", "response_ready", {"sources": len(response["sources"]), "agent_message": True, "delegated": False})
     response["trace"] = trace if not isinstance(crawler_response.get("trace"), list) else [*trace, *list(crawler_response.get("trace") or [])]
     return response
 
@@ -11789,6 +13439,22 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
         repair_answer=_repair_list_answer,
         status_answer=_crawler_monitor_answer,
     )
+    if (
+        agent == "mcagent_rag"
+        and route_intent == "local_corpus_inventory"
+        and _action_plan_has_tool(action_plan, "local_corpus_inventory")
+        and (_action_plan_has_tool(action_plan, "agent_message") or _action_plan_has_tool(action_plan, "delegate_crawler"))
+    ):
+        planned_workflow = True
+        planned_delegate = _action_plan_has_tool(action_plan, "delegate_crawler")
+        add_trace(
+            "plan",
+            "local_inventory_plan_promoted_to_workflow",
+            {
+                "reason": "The Agent selected local_corpus_inventory as the first step of an explicit multi-step plan that also contacts CrawlerAgent; runtime must continue the selected plan instead of stopping after inventory.",
+                "action_plan": action_plan,
+            },
+        )
     if context_only_agent_message and planned_delegate:
         planned_delegate = False
         action_plan = [step for step in action_plan if str(step.get("tool") or "") != "delegate_crawler"]
@@ -11863,8 +13529,8 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
             session_summary=session_summary,
             add_trace=add_trace,
         )
-    if route_intent == "ask_crawler_agent":
-        return _handle_ask_crawler_agent_route(
+    if route_intent == "agent_message":
+        return _handle_agent_message_route(
             config=config,
             payload=payload,
             agent=agent,
@@ -11891,6 +13557,25 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
             trace=trace,
             add_trace=add_trace,
         )
+    if (
+        agent == "mcagent_rag"
+        and planned_workflow
+        and _action_plan_has_tool(action_plan, "local_corpus_inventory")
+        and (_action_plan_has_tool(action_plan, "agent_message") or _action_plan_has_tool(action_plan, "delegate_crawler"))
+    ):
+        return _handle_mcagent_inventory_planned_workflow_route(
+            config=config,
+            payload=payload,
+            agent=agent,
+            model=model,
+            original_question=original_question,
+            question=question,
+            tool_decision=tool_decision,
+            action_plan=action_plan,
+            session_summary=session_summary,
+            trace=trace,
+            add_trace=add_trace,
+        )
     if route_intent == "local_corpus_inventory":
         return _handle_local_corpus_inventory_route(
             config=config,
@@ -11904,24 +13589,6 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
             action_plan=action_plan,
             executor=executor,
             run=run,
-            session_summary=session_summary,
-            trace=trace,
-            add_trace=add_trace,
-        )
-    if (
-        agent == "mcagent_rag"
-        and planned_workflow
-        and _action_plan_has_tool(action_plan, "local_corpus_inventory")
-    ):
-        return _handle_mcagent_inventory_planned_workflow_route(
-            config=config,
-            payload=payload,
-            agent=agent,
-            model=model,
-            original_question=original_question,
-            question=question,
-            tool_decision=tool_decision,
-            action_plan=action_plan,
             session_summary=session_summary,
             trace=trace,
             add_trace=add_trace,
@@ -11944,6 +13611,22 @@ def _chat_impl(config: AppConfig, payload: dict[str, Any], emit: Any | None = No
             add_trace=add_trace,
         )
     if route_intent == "delegate_crawler":
+        if agent == "mcagent_rag":
+            return _mcagent_delegate_route_as_agent_message(
+                config=config,
+                payload=payload,
+                agent=agent,
+                model=model,
+                original_question=original_question,
+                question=question,
+                tool_decision=tool_decision,
+                route_confirmation=route_confirmation,
+                executor=executor,
+                run=run,
+                session_summary=session_summary,
+                trace=trace,
+                add_trace=add_trace,
+            )
         return _handle_delegate_crawler_route(
             config=config,
             payload=payload,

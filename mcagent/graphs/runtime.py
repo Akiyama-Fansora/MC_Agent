@@ -19,11 +19,18 @@ AgentRouteDeciderFn = Callable[..., dict[str, Any]]
 StatusExecutorFn = Callable[..., dict[str, Any]]
 CrawlerAuditExecutorFn = Callable[..., dict[str, Any]]
 LocalCorpusInventoryExecutorFn = Callable[..., dict[str, Any]]
+McagentInventoryPlannedWorkflowExecutorFn = Callable[..., dict[str, Any]]
+RagAnswerRouteExecutorFn = Callable[..., dict[str, Any]]
+CrawlerPlannedWorkflowExecutorFn = Callable[..., dict[str, Any]]
+CrawlerDelegateRouteExecutorFn = Callable[..., dict[str, Any]]
 RouterErrorExecutorFn = Callable[..., dict[str, Any]]
 DirectAnswerExecutorFn = Callable[..., dict[str, Any]]
 TemporaryExtractExecutorFn = Callable[..., dict[str, Any]]
+AgentMessageExecutorFn = Callable[..., dict[str, Any]]
+McagentContextReplyExecutorFn = Callable[..., dict[str, Any]]
+CrawlerMcagentContextExecutorFn = Callable[..., dict[str, Any]]
 _GRAPH_CACHE_LOCK = threading.Lock()
-_GRAPH_CACHE: dict[tuple[int, int, int, int, int, int, int, int, int, int], Any] = {}
+_GRAPH_CACHE: dict[tuple[int, ...], Any] = {}
 
 
 def _agent_id_for_route(message: AgentMessage) -> str:
@@ -68,6 +75,20 @@ def _agent_runtime_node(prefix: str, adapter_name: str) -> str:
         return f"{prefix}.graph_direct_answer_node"
     if adapter_name == "graph_temporary_extract_node_executor":
         return f"{prefix}.graph_temporary_extract_node"
+    if adapter_name == "graph_agent_message_route_executor":
+        return f"{prefix}.graph_agent_message_route"
+    if adapter_name == "graph_mcagent_context_reply_executor":
+        return f"{prefix}.graph_mcagent_context_reply"
+    if adapter_name == "graph_mcagent_inventory_planned_workflow_executor":
+        return f"{prefix}.graph_mcagent_inventory_planned_workflow"
+    if adapter_name == "graph_rag_answer_route_executor":
+        return f"{prefix}.graph_rag_answer_route"
+    if adapter_name == "graph_crawler_planned_workflow_executor":
+        return f"{prefix}.graph_crawler_planned_workflow"
+    if adapter_name == "graph_crawler_mcagent_context_route_executor":
+        return f"{prefix}.graph_crawler_mcagent_context_route"
+    if adapter_name == "graph_crawler_delegate_route_executor":
+        return f"{prefix}.graph_crawler_delegate_route"
     return f"{prefix}.legacy_adapter"
 
 
@@ -80,9 +101,16 @@ def build_conversation_graph(
     status_executor: StatusExecutorFn | None = None,
     crawler_audit_executor: CrawlerAuditExecutorFn | None = None,
     local_corpus_inventory_executor: LocalCorpusInventoryExecutorFn | None = None,
+    mcagent_inventory_planned_workflow_executor: McagentInventoryPlannedWorkflowExecutorFn | None = None,
+    rag_answer_route_executor: RagAnswerRouteExecutorFn | None = None,
+    crawler_planned_workflow_executor: CrawlerPlannedWorkflowExecutorFn | None = None,
+    crawler_delegate_route_executor: CrawlerDelegateRouteExecutorFn | None = None,
     router_error_executor: RouterErrorExecutorFn | None = None,
     direct_answer_executor: DirectAnswerExecutorFn | None = None,
     temporary_extract_executor: TemporaryExtractExecutorFn | None = None,
+    agent_message_executor: AgentMessageExecutorFn | None = None,
+    mcagent_context_reply_executor: McagentContextReplyExecutorFn | None = None,
+    crawler_mcagent_context_executor: CrawlerMcagentContextExecutorFn | None = None,
 ):
     builder = StateGraph(ConversationGraphState)
 
@@ -132,9 +160,13 @@ def build_conversation_graph(
             status_executor=status_executor,
             crawler_audit_executor=crawler_audit_executor,
             local_corpus_inventory_executor=local_corpus_inventory_executor,
+            mcagent_inventory_planned_workflow_executor=mcagent_inventory_planned_workflow_executor,
+            rag_answer_route_executor=rag_answer_route_executor,
             router_error_executor=router_error_executor,
             direct_answer_executor=direct_answer_executor,
             temporary_extract_executor=temporary_extract_executor,
+            agent_message_executor=agent_message_executor,
+            mcagent_context_reply_executor=mcagent_context_reply_executor,
         )
         agent_runtime = result.get("agent_graph_runtime") if isinstance(result.get("agent_graph_runtime"), dict) else {}
         adapter = agent_runtime.get("runtime_adapter") if isinstance(agent_runtime.get("runtime_adapter"), dict) else {}
@@ -163,9 +195,13 @@ def build_conversation_graph(
             status_executor=status_executor,
             crawler_audit_executor=crawler_audit_executor,
             local_corpus_inventory_executor=local_corpus_inventory_executor,
+            crawler_planned_workflow_executor=crawler_planned_workflow_executor,
+            crawler_delegate_route_executor=crawler_delegate_route_executor,
             router_error_executor=router_error_executor,
             direct_answer_executor=direct_answer_executor,
             temporary_extract_executor=temporary_extract_executor,
+            agent_message_executor=agent_message_executor,
+            crawler_mcagent_context_executor=crawler_mcagent_context_executor,
         )
         agent_runtime = result.get("agent_graph_runtime") if isinstance(result.get("agent_graph_runtime"), dict) else {}
         adapter = agent_runtime.get("runtime_adapter") if isinstance(agent_runtime.get("runtime_adapter"), dict) else {}
@@ -252,9 +288,16 @@ def dispatch_agent_message_graph(
     status_executor: StatusExecutorFn | None = None,
     crawler_audit_executor: CrawlerAuditExecutorFn | None = None,
     local_corpus_inventory_executor: LocalCorpusInventoryExecutorFn | None = None,
+    mcagent_inventory_planned_workflow_executor: McagentInventoryPlannedWorkflowExecutorFn | None = None,
+    rag_answer_route_executor: RagAnswerRouteExecutorFn | None = None,
+    crawler_planned_workflow_executor: CrawlerPlannedWorkflowExecutorFn | None = None,
+    crawler_delegate_route_executor: CrawlerDelegateRouteExecutorFn | None = None,
     router_error_executor: RouterErrorExecutorFn | None = None,
     direct_answer_executor: DirectAnswerExecutorFn | None = None,
     temporary_extract_executor: TemporaryExtractExecutorFn | None = None,
+    agent_message_executor: AgentMessageExecutorFn | None = None,
+    mcagent_context_reply_executor: McagentContextReplyExecutorFn | None = None,
+    crawler_mcagent_context_executor: CrawlerMcagentContextExecutorFn | None = None,
 ) -> dict[str, Any]:
     """Deliver a From-Content-To message through the LangGraph conversation runtime.
 
@@ -271,9 +314,16 @@ def dispatch_agent_message_graph(
             id(status_executor),
             id(crawler_audit_executor),
             id(local_corpus_inventory_executor),
+            id(mcagent_inventory_planned_workflow_executor),
+            id(rag_answer_route_executor),
+            id(crawler_planned_workflow_executor),
+            id(crawler_delegate_route_executor),
             id(router_error_executor),
             id(direct_answer_executor),
             id(temporary_extract_executor),
+            id(agent_message_executor),
+            id(mcagent_context_reply_executor),
+            id(crawler_mcagent_context_executor),
             0,
         )
         with _GRAPH_CACHE_LOCK:
@@ -287,9 +337,16 @@ def dispatch_agent_message_graph(
                     status_executor=status_executor,
                     crawler_audit_executor=crawler_audit_executor,
                     local_corpus_inventory_executor=local_corpus_inventory_executor,
+                    mcagent_inventory_planned_workflow_executor=mcagent_inventory_planned_workflow_executor,
+                    rag_answer_route_executor=rag_answer_route_executor,
+                    crawler_planned_workflow_executor=crawler_planned_workflow_executor,
+                    crawler_delegate_route_executor=crawler_delegate_route_executor,
                     router_error_executor=router_error_executor,
                     direct_answer_executor=direct_answer_executor,
                     temporary_extract_executor=temporary_extract_executor,
+                    agent_message_executor=agent_message_executor,
+                    mcagent_context_reply_executor=mcagent_context_reply_executor,
+                    crawler_mcagent_context_executor=crawler_mcagent_context_executor,
                 )
                 _GRAPH_CACHE[cache_key] = graph
     else:
@@ -301,9 +358,16 @@ def dispatch_agent_message_graph(
             status_executor=status_executor,
             crawler_audit_executor=crawler_audit_executor,
             local_corpus_inventory_executor=local_corpus_inventory_executor,
+            mcagent_inventory_planned_workflow_executor=mcagent_inventory_planned_workflow_executor,
+            rag_answer_route_executor=rag_answer_route_executor,
+            crawler_planned_workflow_executor=crawler_planned_workflow_executor,
+            crawler_delegate_route_executor=crawler_delegate_route_executor,
             router_error_executor=router_error_executor,
             direct_answer_executor=direct_answer_executor,
             temporary_extract_executor=temporary_extract_executor,
+            agent_message_executor=agent_message_executor,
+            mcagent_context_reply_executor=mcagent_context_reply_executor,
+            crawler_mcagent_context_executor=crawler_mcagent_context_executor,
         )
     initial_state: ConversationGraphState = {
         "thread_id": thread_id,

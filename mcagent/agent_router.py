@@ -54,6 +54,16 @@ class AgentToolRouterService:
         self._confirm_next_step = confirm_next_step
         self._action_plan_has_tool = action_plan_has_tool
 
+    def _review_cross_agent_message_miss(
+        self,
+        run: TraceCapableRun,
+        *,
+        session_summary: dict[str, Any],
+        tool_decision: dict[str, Any],
+        route_intent: str,
+    ) -> dict[str, Any] | None:
+        return None
+
     def route(self, run: TraceCapableRun, *, session_summary: dict[str, Any]) -> AgentRouteDecision:
         decision_started = time.time()
         tool_decision = self._decide_tool(
@@ -83,6 +93,27 @@ class AgentToolRouterService:
         if rag_focus:
             run.add_trace("plan", "rag_focus", {"question": rag_focus})
 
+        review_decision = self._review_cross_agent_message_miss(
+            run,
+            session_summary=session_summary,
+            tool_decision=tool_decision,
+            route_intent=route_intent,
+        )
+        if review_decision:
+            route_intent = str(review_decision.get("tool") or "agent_message")
+            tool_decision = review_decision
+            action_plan = tool_decision.get("action_plan") if isinstance(tool_decision.get("action_plan"), list) else []
+            rag_focus = str(tool_decision.get("rag_focus") or "").strip()
+            run.add_trace(
+                "decide",
+                "cross_agent_message_route_corrected",
+                {
+                    "tool": route_intent,
+                    "original_question": run.original_question,
+                    "decision": tool_decision,
+                },
+            )
+
         if route_intent == "router_error":
             route_confirmation = {
                 "proceed": False,
@@ -102,7 +133,7 @@ class AgentToolRouterService:
                 planned_delegate=False,
             )
 
-        if route_intent in {"temporary_extract", "status", "ask_crawler_agent"}:
+        if route_intent in {"temporary_extract", "status", "agent_message"}:
             route_confirmation = {
                 "proceed": True,
                 "tool": route_intent,
@@ -290,6 +321,93 @@ class LlmAgentToolRouterService(AgentToolRouterService):
         except TypeError:
             return self._select_client(config, model, temperature)
 
+    def _review_cross_agent_message_miss(
+        self,
+        run: TraceCapableRun,
+        *,
+        session_summary: dict[str, Any],
+        tool_decision: dict[str, Any],
+        route_intent: str,
+    ) -> dict[str, Any] | None:
+        if route_intent in {"agent_message", "router_error", "status", "temporary_extract"}:
+            return None
+        if "agent_message" not in tool_names_for_agent(run.agent):
+            return None
+        current_text = f"{run.original_question}\n{run.question}"
+        summary_text = json.dumps(session_summary or {}, ensure_ascii=False)
+        text = f"{current_text}\n{summary_text}"
+        mentions_agent = re.search(r"\b(?:crawler|crawleragent|mcagent|mc agent)\b|CrawlerAgent|MCagent|爬虫|另一个\s*Agent|对方\s*Agent", text, flags=re.I)
+        asks_to_message = re.search(
+            r"(问|问下|问问|询问|请教|告诉|通知|转达|发给|发送给|让.*(?:回答|说|看|处理)|叫.*(?:回答|看|处理)|ask|tell|message|send to)",
+            current_text,
+            flags=re.I,
+        )
+        asks_about_protocol = re.search(
+            r"(什么(?:意思|区别)|解释|介绍|协议|机制|函数|工具|能力|是谁|是什么|是不是|怎么实现|怎么做到|how|what is)",
+            current_text,
+            flags=re.I,
+        )
+        correction_context = re.search(r"(我就是|不是让你|需要你|去问|问它|问他|问那个)", current_text) and re.search(
+            r"\b(?:crawler|crawleragent|mcagent|mc agent)\b|CrawlerAgent|MCagent|爬虫|Agent",
+            text,
+            flags=re.I,
+        )
+        if asks_about_protocol and not correction_context:
+            return None
+        if not (mentions_agent and (asks_to_message or correction_context)):
+            return None
+        try:
+            client, label = self._client_for_agent(run.config, run.model, 0.0, run.agent)
+            prompt = (
+                "你是跨 Agent 消息漏判复核器，只判断当前 Agent 是否应该把用户消息通过 AgentMessage 发给另一个已知 Agent。\n"
+                "参与者只有 User、MCagent、CrawlerAgent。AgentMessage 只投递自然语言消息，不启动采集、不保存、不替接收方选择工具。\n"
+                "如果用户只是把 MCagent/Crawler 当普通词、网页内容、标题、代码名、或问一个当前 Agent 可以自己回答的问题，should_send=false。\n"
+                "如果用户是在要求当前 Agent 去问、通知、转达、请教另一个 Agent，或在纠正上一轮说“我就是要你去问它/那个 Agent”，should_send=true。\n"
+                "content 必须是给接收方的自然语言原始消息，保留用户目标和必要上下文，不拆成搜索词。\n"
+                "只输出 JSON。\n"
+                f"active_agent: {run.agent}\n"
+                f"initial_tool_decision: {json.dumps(tool_decision, ensure_ascii=False)}\n"
+                f"original_user_message: {run.original_question}\n"
+                f"contextualized_message: {run.question}\n"
+                f"session_summary: {json.dumps(session_summary or {}, ensure_ascii=False)}\n"
+                'JSON schema: {"should_send":true, "to_agent":"MCagent|CrawlerAgent|User", "content":"message body", "intent":"agent_message|collection_request|context_request", "reason":"short reason"}'
+            )
+            raw_text = client.chat(
+                [
+                    {"role": "system", "content": "只输出合法 JSON。"},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.0,
+                max_tokens=700,
+            )
+            value = json_object_from_llm_text(raw_text)
+        except Exception:
+            return None
+        if not bool(value.get("should_send")):
+            return None
+        to_agent = str(value.get("to_agent") or "").strip()
+        if to_agent not in {"MCagent", "CrawlerAgent", "User"}:
+            return None
+        if (run.agent == "mcagent_rag" and to_agent == "MCagent") or (run.agent == "crawler_agent" and to_agent == "CrawlerAgent"):
+            return None
+        content = str(value.get("content") or run.original_question or run.question).strip()
+        if not content:
+            return None
+        normalized = normalize_agent_tool_decision(
+            {
+                "tool": "agent_message",
+                "reason": str(value.get("reason") or "Cross-Agent message review corrected a missed AgentMessage route."),
+                "to_agent": to_agent,
+                "content": content,
+                "intent": str(value.get("intent") or "agent_message"),
+            },
+            agent_id=run.agent,
+            original_question=run.original_question,
+            planner=f"{label}:cross_agent_message_review",
+        ).to_dict()
+        normalized["reviewed_from_tool"] = route_intent
+        return normalized
+
     def decide_tool(
         self,
         config: AppConfig,
@@ -318,7 +436,7 @@ class LlmAgentToolRouterService(AgentToolRouterService):
                     "\nMCagent self-check before choosing a tool:\n"
                     "1. Interpret the message as a Minecraft knowledge assistant first.\n"
                     "2. Decide whether the user is asking about Minecraft content, modpacks, mods, items, Bosses, gameplay, servers, versions, guides, or the local Minecraft knowledge base.\n"
-                    "3. If yes, consider local_rag_search/evidence workflow before Crawler delegation. Delegate only when evidence is missing or the user explicitly asks for collection.\n"
+                    "3. If yes, consider local_rag_search/evidence workflow. If the user explicitly asks CrawlerAgent to collect/fill/check something, MCagent can only send an agent_message to CrawlerAgent; CrawlerAgent then decides its own tools.\n"
                     "4. If no, use direct_answer or explain the boundary. This is semantic role reasoning, not keyword matching.\n"
                 )
             prompt = (
@@ -327,17 +445,19 @@ class LlmAgentToolRouterService(AgentToolRouterService):
                 "下面是本项目统一 Agent Runtime 暴露给当前 Agent 的工具目录。工具目录是能力说明，不是关键词触发规则。\n"
                 f"{catalog}\n"
                 "角色与工具关系：active_agent 只能从自己的工具目录中选择下一步；工具目录描述能力与副作用，不提供关键词触发规则。\n"
-                "交付对象判断：delivery_target 是任务语义的一部分。根据用户目标、会话上下文和工具副作用判断交付给 human、MCagent/RAG 或两者，而不是按固定句式判断。若用户让当前 Agent 先询问某个 Agent，再“补给他/交给他/给它用”，代词通常指向刚被询问或被委托的 Agent；例如先问 MCagent 再补给他，应交付给 MCagent/RAG。\n"
-                "如果 active_agent 是 MCagent：你不是通用关键词路由器，而是 Minecraft 资料 Agent。第一步先按语义判断用户是否在问 Minecraft 相关内容，包括整合包、模组、物品、Boss、玩法、服务器、版本、教程、MC百科/Modrinth/CurseForge、或本地 Minecraft 资料库。若是 MC 相关，优先考虑本地 RAG 证据是否能回答；若资料不足再规划委托 Crawler。若明确不是 MC 相关，可 direct_answer 或说明能力边界。不要把这个领域判断写成关键词触发规则，要结合会话上下文和用户真实意图。\n"
+                "交付对象判断：delivery_target 是任务语义的一部分。根据用户目标、会话上下文和工具副作用判断交付给 human、MCagent/RAG 或两者，而不是按固定句式判断。若用户让当前 Agent 先询问某个 Agent，再“补给他/交给他/给它用”，代词通常指向刚被询问或被转达的 Agent；例如先问 MCagent 再补给他，应交付给 MCagent/RAG。\n"
+                "多轮上下文原则：必须阅读 session_summary.recent_turns、last_user_question、last_assistant_answer 和 recent_agent_events。若用户本轮是在纠正上一轮（例如“我就是需要你去问他/它/ crawler/那个 Agent”），应把本轮要求和上一轮用户问题合并理解；不要把当前短句孤立回答，也不要因为上一轮已经直接回答过就忽略用户纠正。\n"
+                "如果 active_agent 是 MCagent：你不是通用关键词路由器，而是 Minecraft 资料 Agent。第一步先按语义判断用户是否在问 Minecraft 相关内容，包括整合包、模组、物品、Boss、玩法、服务器、版本、教程、MC百科/Modrinth/CurseForge、或本地 Minecraft 资料库。若是 MC 相关，优先考虑本地 RAG 证据是否能回答；若用户明确要 CrawlerAgent 采集/补资料，只能选择 agent_message 把自然语言请求发给 CrawlerAgent，由 CrawlerAgent 自己决定是否采集。若明确不是 MC 相关，可 direct_answer 或说明能力边界。不要把这个领域判断写成关键词触发规则，要结合会话上下文和用户真实意图。\n"
+                "MCagent 本地资料库问题的工具边界：如果用户在问“本地资料库/本地库/资料覆盖/有哪些资料/有哪些整合包或项目/完整盘点/库存范围”这类关于语料库自身覆盖范围的问题，应优先选择 local_corpus_inventory，因为普通 local_rag_search 只返回相关片段，不能代表全库。只有用户在问某个具体事实、玩法、物品、Boss、配方、版本、攻略或已知主题的证据时，才选择 local_rag_search。这个判断必须基于语义，不要写成固定关键词触发。\n"
                 "重要原则：不要用关键词触发。必须按语义判断。不要把游戏内“获取某物/如何获得”误判成 Crawler 采集任务。\n"
                 "MCagent 的本地 RAG 当前主要服务 Minecraft 资料库；CrawlerAgent 不限于 Minecraft，应按用户给定目标采集合法、可访问的公开资料或本地资料。\n"
-                "CrawlerAgent 工具边界：temporary_extract 是即时读取、抽取、总结且不保存；delegate_crawler 会启动后台采集循环，通常会产生本地导出或补库。若用户目标明确是只读/只总结且不保存，应选择没有持久化副作用的工具。\n"
-                "CrawlerAgent 复合沟通边界：如果用户要求先问 MCagent、查看 MCagent 本地缺口或获取 MCagent 上下文，并且同一目标还要求再补充、采集、入库或交付资料，这不是单独的 mcagent_context，也不是本地 RAG 回答；必须选择 planned_workflow，并在 action_plan 中依次包含 mcagent_context 与 delegate_crawler。只有用户只要求问 MCagent、没有后续采集副作用时，才选择 mcagent_context 单步。\n"
+                "CrawlerAgent 工具边界：temporary_extract 是即时读取、抽取、总结且不保存；delegate_crawler 是 CrawlerAgent 自己的后台采集循环入口，通常会产生本地导出或补库。MCagent 看不到也不能直接调用这个入口；MCagent 只能用 agent_message 和 CrawlerAgent 对话。若用户目标明确是只读/只总结且不保存，CrawlerAgent 应选择没有持久化副作用的工具。\n"
+                "CrawlerAgent 复合沟通边界：如果 CrawlerAgent 收到用户要求先问 MCagent、查看 MCagent 本地缺口或获取 MCagent 上下文，并且同一目标还要求再补充、采集、入库或交付资料，这不是单独的 mcagent_context，也不是本地 RAG 回答；CrawlerAgent 可选择 planned_workflow，并在 action_plan 中依次包含 mcagent_context 与 delegate_crawler。只有用户只要求问 MCagent、没有后续采集副作用时，才选择 mcagent_context 单步。\n"
                 "跨 Agent 沟通原则：消息通道只负责把内容送给目标 Agent，收到消息的 Agent 再根据自己的工具目录判断下一步。若当前 Agent 需要对方能力，选择能完成这次消息投递的工具，例如向 MCagent 询问本地上下文或向 CrawlerAgent 交付采集目标。\n"
-                "MCagent 向 CrawlerAgent 沟通的能力分两类：ask_crawler_agent 是普通无持久化转问，只发送 AgentMessage 并返回 CrawlerAgent 的回复；delegate_crawler 是采集/保存/补库/后台任务委托，会产生持久化或 job 副作用。用户只是要求“问/咨询/转给 CrawlerAgent 回答”时不要由 MCagent 自己抢答，也不要启动 delegate_crawler；只有用户目标包含采集、爬取、保存、入库、补库、后台任务或持续收集时才选择 delegate_crawler。\n"
-                "委托交接原则：collection_target 不是搜索词，也不是给工具的死规则，而是给 CrawlerAgent 的自然语言任务目标。若任务目标依赖上下文，要把相关背景自然写进目标；不要拆成关键词，也不要丢掉用户原话。\n"
+                "Cross-Agent communication rule: agent_message is the only From-Content-To communication tool exposed to route a message to another participant. The LLM must semantically decide whether to_agent is User, MCagent, or CrawlerAgent; names such as MCagent/Crawler may also be ordinary words or names. agent_message has no persistence and does not choose the receiver's next tool. MCagent must never describe a separate delegation API/function/scheduler for talking to CrawlerAgent.\n"
+                "CrawlerAgent 请求原则：给 CrawlerAgent 的 content 不是搜索词，也不是给工具的死规则，而是给 CrawlerAgent 的自然语言消息。若任务目标依赖上下文，要把相关背景自然写进消息；不要拆成关键词，也不要丢掉用户原话。\n"
                 "复合任务可以选择 planned_workflow，并给出 action_plan；简单、可直接回答的内容可以选择 direct_answer。\n"
-                "planned_workflow 完整性原则：action_plan 必须覆盖用户请求中的所有可执行副作用。若用户目标要求采集、补充资料、保存、入库、交付给另一个 Agent 或启动后台工作，计划不能只停在 local_rag_search/local_corpus_inventory/final_answer_llm；必须包含能产生该副作用的真实工具，例如 delegate_crawler。若用户只要求解释或总结，则不要加入有持久化副作用的工具。\n"
+                "planned_workflow 完整性原则：action_plan 必须覆盖用户请求中的所有可执行动作。若 MCagent 的用户目标要求 CrawlerAgent 采集、补充资料、保存、入库或启动后台工作，MCagent 的计划不能伪造采集工具，只能包含 agent_message to CrawlerAgent；后续采集动作由 CrawlerAgent 收到消息后自己选择。若用户只要求解释或总结，则不要加入跨 Agent 消息。\n"
                 "如果需要本地 RAG 检索，rag_focus 要写成真正要查的主题问题，去掉“本地资料、缺什么、让 Crawler 去找、状态”等元指令。\n"
                 "只输出 JSON，不要 Markdown，不要解释隐藏思考。\n"
                 "额外工具 direct_answer：当用户只是问候、闲聊、询问系统能力、要求解释当前行为，或任何不需要本地资料/状态/Crawler 的问题时选择 direct_answer；选择它就不要触发 local_rag_search。\n"
@@ -349,8 +469,11 @@ class LlmAgentToolRouterService(AgentToolRouterService):
                 f"JSON schema: {{\"tool\":\"{allowed_tools}\", "
                 "\"reason\":\"一句面向开发日志的理由\", "
                 "\"rag_focus\":\"需要本地检索时的主题化检索问题\", "
-                "\"collection_target\":\"若选择 delegate_crawler，写成完整自然语言采集目标；不要拆搜索词，也不要丢掉用户原话和必要上下文\", "
+                "\"collection_target\":\"若当前 Agent 是 CrawlerAgent 且选择自己的采集工具，写成完整自然语言采集目标；若当前 Agent 是 MCagent，优先用 agent_message.content 给 CrawlerAgent\", "
                 "\"delivery_target\":\"human|MCagent/RAG|\", "
+                "\"to_agent\":\"User|MCagent|CrawlerAgent; only when tool=agent_message\", "
+                "\"content\":\"From-Content-To message body; only when tool=agent_message\", "
+                "\"intent\":\"optional semantic intent for agent_message\", "
                 f"\"action_plan\":[{{\"step\":1,\"tool\":\"{allowed_step_tools}\",\"goal\":\"这一步要完成什么\"}}]}}"
             )
             raw_text = client.chat(
@@ -361,7 +484,7 @@ class LlmAgentToolRouterService(AgentToolRouterService):
                 temperature=0.0,
                 max_tokens=1400,
             )
-            schema_hint = '{"tool":"allowed tool name","reason":"why","rag_focus":"","collection_target":"","delivery_target":"human|MCagent/RAG|","action_plan":[]}'
+            schema_hint = '{"tool":"allowed tool name","reason":"why","rag_focus":"","collection_target":"","delivery_target":"human|MCagent/RAG|","to_agent":"User|MCagent|CrawlerAgent","content":"message body","intent":"","action_plan":[]}'
             try:
                 value = json_object_from_llm_text(raw_text)
             except Exception as parse_exc:

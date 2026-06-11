@@ -327,9 +327,8 @@ def test_non_crawler_handoff_message_is_collection_request_not_tool_selection() 
     tmp = tempfile.TemporaryDirectory()
     fake = SequencedClient(
         [
-            '{"tool":"delegate_crawler","reason":"MCagent selected a Crawler handoff","collection_target":"采集公开资料","delivery_target":"MCagent/RAG"}',
-            '{"proceed":true,"tool":"delegate_crawler","reason":"confirmed"}',
-            '{"handoff_brief":"MCagent relays a collection request to CrawlerAgent.","reason":"handoff"}',
+            '{"tool":"agent_message","reason":"MCagent asks CrawlerAgent through the message bus","to_agent":"CrawlerAgent","content":"采集公开资料并交给 MCagent/RAG","intent":"collection_request","delivery_target":"MCagent/RAG","metadata":{"tool":"collection_request","delivery_target":"MCagent/RAG"}}',
+            '{"proceed":true,"tool":"agent_message","reason":"confirmed"}',
             '{"tool":"answer","reason":"CrawlerAgent declines collection for this fake test"}',
             '{"proceed":true,"tool":"answer","reason":"confirmed"}',
             '{"missing_side_effect":false,"action":"allow","reason":"fake decline"}',
@@ -368,6 +367,7 @@ def test_non_crawler_handoff_message_is_collection_request_not_tool_selection() 
     assert_true("message_sent", bool(captured))
     assert_equal("handoff_to", captured[0]["to_agent"], "CrawlerAgent")
     assert_equal("metadata_tool_is_request", captured[0]["metadata"].get("tool"), "collection_request")
+    assert_true("metadata_not_crawler_tool_selection", captured[0]["metadata"].get("tool") != "delegate_crawler")
 
 
 def test_crawler_running_job_reuse_requires_matching_task_goal() -> None:

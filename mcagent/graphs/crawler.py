@@ -10,13 +10,21 @@ from ..session_state import DEFAULT_SESSION_STORE
 from .agent_state import AgentGraphState
 from .graph_route_execution import (
     GRAPH_CRAWLER_AUDIT_ROUTE_EXECUTOR,
+    GRAPH_CRAWLER_DELEGATE_ROUTE_EXECUTOR,
+    GRAPH_CRAWLER_MCAGENT_CONTEXT_ROUTE_EXECUTOR,
     GRAPH_DIRECT_ANSWER_NODE_EXECUTOR,
+    GRAPH_AGENT_MESSAGE_ROUTE_EXECUTOR,
+    GRAPH_CRAWLER_PLANNED_WORKFLOW_EXECUTOR,
     GRAPH_LOCAL_CORPUS_INVENTORY_ROUTE_EXECUTOR,
     GRAPH_ROUTER_ERROR_ROUTE_EXECUTOR,
     GRAPH_STATUS_ROUTE_EXECUTOR,
     GRAPH_TEMPORARY_EXTRACT_NODE_EXECUTOR,
     graph_crawler_audit_route_executor_metadata,
+    graph_crawler_delegate_route_executor_metadata,
+    graph_crawler_mcagent_context_route_executor_metadata,
+    graph_crawler_planned_workflow_executor_metadata,
     graph_direct_answer_node_executor_metadata,
+    graph_agent_message_route_executor_metadata,
     graph_local_corpus_inventory_route_executor_metadata,
     graph_route_decision_allows_execution,
     graph_route_decision_has_action_tool,
@@ -38,9 +46,13 @@ AgentRouteDeciderFn = Callable[..., dict[str, Any]]
 StatusExecutorFn = Callable[..., dict[str, Any]]
 CrawlerAuditExecutorFn = Callable[..., dict[str, Any]]
 LocalCorpusInventoryExecutorFn = Callable[..., dict[str, Any]]
+CrawlerPlannedWorkflowExecutorFn = Callable[..., dict[str, Any]]
+CrawlerDelegateRouteExecutorFn = Callable[..., dict[str, Any]]
 RouterErrorExecutorFn = Callable[..., dict[str, Any]]
 DirectAnswerExecutorFn = Callable[..., dict[str, Any]]
 TemporaryExtractExecutorFn = Callable[..., dict[str, Any]]
+AgentMessageExecutorFn = Callable[..., dict[str, Any]]
+CrawlerMcagentContextExecutorFn = Callable[..., dict[str, Any]]
 
 
 def _event(node: str, status: str, detail: dict[str, Any] | None = None) -> GraphEvent:
@@ -63,9 +75,13 @@ def build_crawler_graph(
     status_executor: StatusExecutorFn | None = None,
     crawler_audit_executor: CrawlerAuditExecutorFn | None = None,
     local_corpus_inventory_executor: LocalCorpusInventoryExecutorFn | None = None,
+    crawler_planned_workflow_executor: CrawlerPlannedWorkflowExecutorFn | None = None,
+    crawler_delegate_route_executor: CrawlerDelegateRouteExecutorFn | None = None,
     router_error_executor: RouterErrorExecutorFn | None = None,
     direct_answer_executor: DirectAnswerExecutorFn | None = None,
     temporary_extract_executor: TemporaryExtractExecutorFn | None = None,
+    agent_message_executor: AgentMessageExecutorFn | None = None,
+    crawler_mcagent_context_executor: CrawlerMcagentContextExecutorFn | None = None,
 ):
     builder = StateGraph(AgentGraphState)
 
@@ -805,6 +821,86 @@ def build_crawler_graph(
             ),
         }
 
+    def run_graph_agent_message_route(state: AgentGraphState) -> dict[str, Any]:
+        runtime_request = state.get("runtime_request") if isinstance(state.get("runtime_request"), dict) else {}
+        route_decision = state.get("route_decision") if isinstance(state.get("route_decision"), dict) else {}
+        result = dict(
+            agent_message_executor(
+                config,
+                dict(state.get("payload") or {}),
+                emit=emit,
+                agent_id="crawler_agent",
+                graph_name="CrawlerAgentGraph",
+                node_name="crawler.graph_agent_message_route",
+                runtime_request=runtime_request,
+                route_decision=route_decision,
+            )
+        )
+        adapter = graph_agent_message_route_executor_metadata(
+            agent_id="crawler_agent",
+            graph_name="CrawlerAgentGraph",
+            node_name="crawler.graph_agent_message_route",
+            runtime_request=runtime_request,
+            route_decision=route_decision,
+        )
+        metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+        result["metadata"] = {**metadata, "graph_route_executor": adapter}
+        result["graph_route_executor"] = adapter
+        return {
+            "result": result,
+            "runtime_adapter": adapter,
+            **_append(
+                state,
+                "crawler.graph_agent_message_route",
+                "executed_agent_selected_agent_message",
+                {
+                    "agent": "crawler_agent",
+                    "adapter": GRAPH_AGENT_MESSAGE_ROUTE_EXECUTOR,
+                    "route_decision_id": route_decision.get("route_decision_id") or "",
+                },
+            ),
+        }
+
+    def run_graph_crawler_mcagent_context_route(state: AgentGraphState) -> dict[str, Any]:
+        runtime_request = state.get("runtime_request") if isinstance(state.get("runtime_request"), dict) else {}
+        route_decision = state.get("route_decision") if isinstance(state.get("route_decision"), dict) else {}
+        result = dict(
+            crawler_mcagent_context_executor(
+                config,
+                dict(state.get("payload") or {}),
+                emit=emit,
+                agent_id="crawler_agent",
+                graph_name="CrawlerAgentGraph",
+                node_name="crawler.graph_crawler_mcagent_context_route",
+                runtime_request=runtime_request,
+                route_decision=route_decision,
+            )
+        )
+        adapter = graph_crawler_mcagent_context_route_executor_metadata(
+            agent_id="crawler_agent",
+            graph_name="CrawlerAgentGraph",
+            node_name="crawler.graph_crawler_mcagent_context_route",
+            runtime_request=runtime_request,
+            route_decision=route_decision,
+        )
+        metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+        result["metadata"] = {**metadata, "graph_route_executor": adapter}
+        result["graph_route_executor"] = adapter
+        return {
+            "result": result,
+            "runtime_adapter": adapter,
+            **_append(
+                state,
+                "crawler.graph_crawler_mcagent_context_route",
+                "executed_agent_selected_mcagent_context",
+                {
+                    "agent": "crawler_agent",
+                    "adapter": GRAPH_CRAWLER_MCAGENT_CONTEXT_ROUTE_EXECUTOR,
+                    "route_decision_id": route_decision.get("route_decision_id") or "",
+                },
+            ),
+        }
+
     def prepare_route_result_contract(state: AgentGraphState) -> dict[str, Any]:
         result = dict(state.get("result") or {})
         runtime_request = state.get("runtime_request") if isinstance(state.get("runtime_request"), dict) else {}
@@ -930,6 +1026,86 @@ def build_crawler_graph(
             ),
         }
 
+    def run_graph_crawler_planned_workflow(state: AgentGraphState) -> dict[str, Any]:
+        runtime_request = state.get("runtime_request") if isinstance(state.get("runtime_request"), dict) else {}
+        route_decision = state.get("route_decision") if isinstance(state.get("route_decision"), dict) else {}
+        result = dict(
+            crawler_planned_workflow_executor(
+                config,
+                dict(state.get("payload") or {}),
+                emit=emit,
+                agent_id="crawler_agent",
+                graph_name="CrawlerAgentGraph",
+                node_name="crawler.graph_crawler_planned_workflow",
+                runtime_request=runtime_request,
+                route_decision=route_decision,
+            )
+        )
+        adapter = graph_crawler_planned_workflow_executor_metadata(
+            agent_id="crawler_agent",
+            graph_name="CrawlerAgentGraph",
+            node_name="crawler.graph_crawler_planned_workflow",
+            runtime_request=runtime_request,
+            route_decision=route_decision,
+        )
+        metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+        result["metadata"] = {**metadata, "graph_route_executor": adapter}
+        result["graph_route_executor"] = adapter
+        return {
+            "result": result,
+            "runtime_adapter": adapter,
+            **_append(
+                state,
+                "crawler.graph_crawler_planned_workflow",
+                "executed_agent_selected_crawler_planned_workflow",
+                {
+                    "agent": "crawler_agent",
+                    "adapter": GRAPH_CRAWLER_PLANNED_WORKFLOW_EXECUTOR,
+                    "route_decision_id": route_decision.get("route_decision_id") or "",
+                },
+            ),
+        }
+
+    def run_graph_crawler_delegate_route(state: AgentGraphState) -> dict[str, Any]:
+        runtime_request = state.get("runtime_request") if isinstance(state.get("runtime_request"), dict) else {}
+        route_decision = state.get("route_decision") if isinstance(state.get("route_decision"), dict) else {}
+        result = dict(
+            crawler_delegate_route_executor(
+                config,
+                dict(state.get("payload") or {}),
+                emit=emit,
+                agent_id="crawler_agent",
+                graph_name="CrawlerAgentGraph",
+                node_name="crawler.graph_crawler_delegate_route",
+                runtime_request=runtime_request,
+                route_decision=route_decision,
+            )
+        )
+        adapter = graph_crawler_delegate_route_executor_metadata(
+            agent_id="crawler_agent",
+            graph_name="CrawlerAgentGraph",
+            node_name="crawler.graph_crawler_delegate_route",
+            runtime_request=runtime_request,
+            route_decision=route_decision,
+        )
+        metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+        result["metadata"] = {**metadata, "graph_route_executor": adapter}
+        result["graph_route_executor"] = adapter
+        return {
+            "result": result,
+            "runtime_adapter": adapter,
+            **_append(
+                state,
+                "crawler.graph_crawler_delegate_route",
+                "executed_agent_selected_crawler_delegate_route",
+                {
+                    "agent": "crawler_agent",
+                    "adapter": GRAPH_CRAWLER_DELEGATE_ROUTE_EXECUTOR,
+                    "route_decision_id": route_decision.get("route_decision_id") or "",
+                },
+            ),
+        }
+
     def prepare_route_decision_output_contract(state: AgentGraphState) -> dict[str, Any]:
         result = dict(state.get("result") or {})
         runtime_request = state.get("runtime_request") if isinstance(state.get("runtime_request"), dict) else {}
@@ -1021,6 +1197,10 @@ def build_crawler_graph(
     builder.add_node("graph_router_error_route", run_graph_router_error_route)
     builder.add_node("graph_direct_answer_node", run_graph_direct_answer_node)
     builder.add_node("graph_temporary_extract_node", run_graph_temporary_extract_node)
+    builder.add_node("graph_agent_message_route", run_graph_agent_message_route)
+    builder.add_node("graph_crawler_mcagent_context_route", run_graph_crawler_mcagent_context_route)
+    builder.add_node("graph_crawler_planned_workflow", run_graph_crawler_planned_workflow)
+    builder.add_node("graph_crawler_delegate_route", run_graph_crawler_delegate_route)
     builder.add_node("prepare_route_decision_output_contract", prepare_route_decision_output_contract)
     builder.add_node("prepare_route_execution_contract", prepare_route_execution_contract)
     builder.add_node("prepare_legacy_handler_surface_contract", prepare_legacy_handler_surface_contract)
@@ -1050,6 +1230,34 @@ def build_crawler_graph(
             return "direct_answer"
         if temporary_extract_executor is not None and decision.get("routed") and decision.get("route_intent") == "temporary_extract" and allows_execution:
             return "temporary_extract"
+        if agent_message_executor is not None and decision.get("routed") and decision.get("route_intent") == "agent_message" and allows_execution:
+            return "agent_message"
+        if (
+            crawler_mcagent_context_executor is not None
+            and decision.get("routed")
+            and decision.get("route_intent") == "mcagent_context"
+            and allows_execution
+            and not graph_route_decision_has_action_tool(decision, "delegate_crawler")
+        ):
+            return "crawler_mcagent_context"
+        if (
+            crawler_delegate_route_executor is not None
+            and decision.get("routed")
+            and decision.get("route_intent") == "delegate_crawler"
+            and allows_execution
+        ):
+            return "crawler_delegate_route"
+        if (
+            crawler_planned_workflow_executor is not None
+            and decision.get("routed")
+            and allows_execution
+            and (
+                decision.get("route_intent") == "planned_workflow"
+                or bool(decision.get("planned_delegate"))
+                or graph_route_decision_has_action_tool(decision, "delegate_crawler")
+            )
+        ):
+            return "crawler_planned_workflow"
         if (
             local_corpus_inventory_executor is not None
             and decision.get("routed")
@@ -1070,6 +1278,10 @@ def build_crawler_graph(
             "router_error": "graph_router_error_route",
             "direct_answer": "graph_direct_answer_node",
             "temporary_extract": "graph_temporary_extract_node",
+            "agent_message": "graph_agent_message_route",
+            "crawler_mcagent_context": "graph_crawler_mcagent_context_route",
+            "crawler_planned_workflow": "graph_crawler_planned_workflow",
+            "crawler_delegate_route": "graph_crawler_delegate_route",
             "legacy": "legacy_adapter",
         },
     )
@@ -1079,6 +1291,10 @@ def build_crawler_graph(
     builder.add_edge("graph_router_error_route", "prepare_route_decision_output_contract")
     builder.add_edge("graph_direct_answer_node", "prepare_route_decision_output_contract")
     builder.add_edge("graph_temporary_extract_node", "prepare_route_decision_output_contract")
+    builder.add_edge("graph_agent_message_route", "prepare_route_decision_output_contract")
+    builder.add_edge("graph_crawler_mcagent_context_route", "prepare_route_decision_output_contract")
+    builder.add_edge("graph_crawler_planned_workflow", "prepare_route_decision_output_contract")
+    builder.add_edge("graph_crawler_delegate_route", "prepare_route_decision_output_contract")
     builder.add_edge("legacy_adapter", "prepare_route_decision_output_contract")
     builder.add_edge("prepare_route_decision_output_contract", "prepare_route_execution_contract")
     builder.add_edge("prepare_route_execution_contract", "prepare_legacy_handler_surface_contract")
@@ -1099,9 +1315,13 @@ def run_crawler_graph(
     status_executor: StatusExecutorFn | None = None,
     crawler_audit_executor: CrawlerAuditExecutorFn | None = None,
     local_corpus_inventory_executor: LocalCorpusInventoryExecutorFn | None = None,
+    crawler_planned_workflow_executor: CrawlerPlannedWorkflowExecutorFn | None = None,
+    crawler_delegate_route_executor: CrawlerDelegateRouteExecutorFn | None = None,
     router_error_executor: RouterErrorExecutorFn | None = None,
     direct_answer_executor: DirectAnswerExecutorFn | None = None,
     temporary_extract_executor: TemporaryExtractExecutorFn | None = None,
+    agent_message_executor: AgentMessageExecutorFn | None = None,
+    crawler_mcagent_context_executor: CrawlerMcagentContextExecutorFn | None = None,
 ) -> dict[str, Any]:
     graph = build_crawler_graph(
         config,
@@ -1111,9 +1331,13 @@ def run_crawler_graph(
         status_executor=status_executor,
         crawler_audit_executor=crawler_audit_executor,
         local_corpus_inventory_executor=local_corpus_inventory_executor,
+        crawler_planned_workflow_executor=crawler_planned_workflow_executor,
+        crawler_delegate_route_executor=crawler_delegate_route_executor,
         router_error_executor=router_error_executor,
         direct_answer_executor=direct_answer_executor,
         temporary_extract_executor=temporary_extract_executor,
+        agent_message_executor=agent_message_executor,
+        crawler_mcagent_context_executor=crawler_mcagent_context_executor,
     )
     final_state = graph.invoke(
         {

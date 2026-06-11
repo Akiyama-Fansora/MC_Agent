@@ -176,13 +176,13 @@ class JobReadableViewService:
         next_action = "等待 Crawler 规划任务。"
         if status in {"queued", "running"} and current_task:
             query_label = current_query or "等待 CrawlerAgent 给出可执行查询"
-            next_action = f"正在执行第 {current_index}/{total_tasks} 个采集任务：{self.source_label(str(current_task.get('source') or ''))} · {query_label}"
+            next_action = f"我正在执行第 {current_index}/{total_tasks} 个采集动作：{self.source_label(str(current_task.get('source') or ''))} · {query_label}"
         elif status == "succeeded":
-            next_action = "采集已完成；如果有新资料，后台会继续入库或已经完成入库。"
+            next_action = "我已完成采集；如果有新资料，会继续入库或已经完成入库。"
         elif status == "failed":
-            next_action = "本轮采集失败或没有找到可入库资料，需要 Crawler 重新规划更短、更准的查询词。"
+            next_action = "我本轮没有拿到可入库资料，需要重新规划更短、更准的查询词。"
         elif status == "stopped":
-            next_action = "任务已停止。"
+            next_action = "我已停止这轮采集。"
         if result.get("ingest_background"):
             next_action += " 后台入库正在处理。"
         if result.get("ingest"):

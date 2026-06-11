@@ -36,9 +36,10 @@ def test_frontend_does_not_show_fixed_three_way_prompt() -> None:
     ]
     for phrase in forbidden:
         assert_true(f"forbidden_frontend_phrase_{phrase}", phrase not in app)
-    assert_true("neutral_mcagent_status", "MCagent 正在读取你的问题。" in app)
-    assert_true("neutral_crawler_status", "CrawlerAgent 正在读取你的任务。" in app)
-    assert_true("neutral_trace_status", "正在读取你的目标和当前上下文" in app)
+    assert_true("no_fixed_mcagent_status", "MCagent 正在读取你的问题。" not in app)
+    assert_true("no_fixed_crawler_status", "CrawlerAgent 正在读取你的任务。" not in app)
+    assert_true("first_person_initial_status", "我收到你的问题" in app and "我收到你的 Crawler 请求" in app)
+    assert_true("right_action_timeline", "agentActionTimeline" in app and "recordAgentAction" in app)
 
 
 def test_frontend_uses_compact_job_card_instead_of_default_trace_noise() -> None:
@@ -53,6 +54,10 @@ def test_frontend_uses_compact_job_card_instead_of_default_trace_noise() -> None
     assert_true("right_panel_folds_agent_judgement", "<summary>展开技术细节</summary>" in app)
     assert_true("job_actor_panel_visible", "function renderJobActorPanel" in app and "job-actor-panel" in app)
     assert_true("job_actor_panel_names_subject", "CrawlerAgent" in app and "当前动作" in app and "成果" in app)
+    assert_true("crawler_polling_appends_process", "appendProcessStep(message, crawlerProgressText(job)" in app)
+    assert_true("crawler_polling_does_not_replace_answer", "message.text = crawlerProgressText(job)" not in app)
+    html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    assert_true("right_panel_primary_agent_actions", "Agent 动作" in html and "agentActionTimeline" in html)
 
 
 def test_frontend_keeps_streamed_answer_when_connection_ends_badly() -> None:
@@ -62,7 +67,12 @@ def test_frontend_keeps_streamed_answer_when_connection_ends_badly() -> None:
     assert_true("tail_response_calls_handler", "handlers.onResponse?.(event.data);" in tail_buffer_block)
     assert_true("stream_fallback_final_text", "agentReplyContent(data) || streamedAnswer" in app)
     assert_true("usable_answer_guard", "hasUsableAnswer" in guarded_error_block)
-    assert_true("partial_answer_not_replaced_by_error", "message.text = streamedAnswer || message.text ||" in guarded_error_block)
+    assert_true("partial_answer_not_replaced_by_error", "message.finalAnswerText = streamedAnswer || message.finalAnswerText ||" in guarded_error_block)
+    assert_true("final_answer_not_polluted_by_process_block", 'return `${processText}' not in app and '最终回答：' not in app)
+    assert_true("process_log_kept_after_final", "function shouldOpenProcessLog" in app and "renderProcessLog(message.processLog" in app)
+    assert_true("process_log_opens_after_final", "return true;" in app[app.index("function shouldOpenProcessLog") : app.index("function renderProcessLog")])
+    assert_true("initial_step_enters_process_log", "function setInitialProcessStep" in app and "setInitialProcessStep(pendingMessage, initialText" in app)
+    assert_true("process_log_not_truncated", "message.processLog = [...current, value];" in app)
     assert_true("sources_cleared_only_without_usable_answer", "renderSources([]);" in guarded_error_block.split("} else {", 1)[1])
 
 
@@ -76,6 +86,34 @@ def test_frontend_crawler_panel_uses_agent_message_endpoint() -> None:
     assert_true("crawler_panel_to_agent", 'to_agent: "CrawlerAgent"' in body)
     assert_true("crawler_panel_content", "content: question" in body)
     assert_true("crawler_panel_no_legacy_start_endpoint", "/api/jobs/start-crawler" not in app)
+    assert_true("crawler_panel_does_not_preselect_delegate_tool", 'tool: "delegate_crawler"' not in body)
+    assert_true("crawler_panel_adds_chat_message", 'addMessage("user", question)' in body and 'addMessage("assistant", "处理中...", "CrawlerAgent")' in body)
+    assert_true("crawler_panel_tracks_job_on_message", "rememberJobMessage(data.job, session.id, pendingIndex)" in body)
+    assert_true("crawler_panel_appends_process_log", "appendProcessStep(message, crawlerProgressText(data.job)" in body)
+    assert_true("crawler_panel_no_system_task_ticket", "CrawlerAgent 采集任务已启动：" not in body)
+
+
+def test_backend_answer_templates_are_not_task_tickets() -> None:
+    web_server = (ROOT / "mcagent" / "web_server.py").read_text(encoding="utf-8")
+    note_start = web_server.index("def _crawler_delegation_note_for")
+    note_end = web_server.index("\ndef _crawler_agent_context_delegation_answer", note_start)
+    note_body = web_server[note_start:note_end]
+    forbidden = [
+        "补库动作：",
+        "任务ID：",
+        "进度、当前动作、成果、自审",
+        "任务卡片",
+    ]
+    for phrase in forbidden:
+        assert_true(f"no_task_ticket_phrase_{phrase}", phrase not in note_body)
+    delegate_start = web_server.index("def _handle_delegate_crawler_route")
+    delegate_end = web_server.index("\ndef _mcagent_delegate_route_as_agent_message", delegate_start)
+    delegate_body = web_server[delegate_start:delegate_end]
+    assert_true("agent_message_summary_first_person_source", "我已通过 From-Content-To 消息询问" in web_server)
+    assert_true("no_agent_message_third_person_summary_source", "CrawlerAgent 的回答如下" not in web_server)
+    assert_true("crawler_delegate_first_person_source", "我是 CrawlerAgent。我已经收到这条 AgentMessage" in delegate_body)
+    assert_true("crawler_delegate_no_third_person_job_source", "Crawler 多源采集任务已启动" not in delegate_body)
+    assert_true("crawler_delegate_no_task_id_answer_source", "任务ID：" not in delegate_body and "任务卡片" not in delegate_body)
 
 
 def test_crawler_tool_catalog_exposes_temporary_and_persistent_paths() -> None:
@@ -105,6 +143,7 @@ def main() -> int:
     test_frontend_uses_compact_job_card_instead_of_default_trace_noise()
     test_frontend_keeps_streamed_answer_when_connection_ends_badly()
     test_frontend_crawler_panel_uses_agent_message_endpoint()
+    test_backend_answer_templates_are_not_task_tickets()
     test_crawler_tool_catalog_exposes_temporary_and_persistent_paths()
     test_router_prompt_does_not_hardcode_url_no_save_rule()
     print("agent_five_direction_matrix_scenarios passed")

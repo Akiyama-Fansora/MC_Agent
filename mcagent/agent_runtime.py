@@ -105,6 +105,9 @@ class AgentToolDecision:
     rag_focus: str = ""
     collection_target: str = ""
     delivery_target: str = ""
+    to_agent: str = ""
+    content: str = ""
+    intent: str = ""
     action_plan: list[dict[str, Any]] = field(default_factory=list)
     planner: str = ""
 
@@ -115,6 +118,9 @@ class AgentToolDecision:
             "rag_focus": self.rag_focus,
             "collection_target": self.collection_target,
             "delivery_target": self.delivery_target,
+            "to_agent": self.to_agent,
+            "content": self.content,
+            "intent": self.intent,
             "action_plan": self.action_plan,
             "planner": self.planner,
         }
@@ -148,7 +154,7 @@ def normalize_agent_tool_decision(
 ) -> AgentToolDecision:
     raw_tool = str(value.get("tool") or "").strip().lower()
     tool = TOOL_DECISION_ALIASES.get(raw_tool, raw_tool)
-    allowed_routes = {"answer", "direct_answer", "planned_workflow", "status", "delegate_crawler"}
+    allowed_routes = {"answer", "direct_answer", "planned_workflow", "status"}
     allowed_routes.update(tool_names_for_agent(agent_id))
     if agent_id == "crawler_agent" and tool == "answer":
         tool = "direct_answer"
@@ -189,6 +195,9 @@ def normalize_agent_tool_decision(
         rag_focus=str(value.get("rag_focus") or "").strip()[:500],
         collection_target=str(value.get("collection_target") or original_question).strip(),
         delivery_target=str(value.get("delivery_target") or "").strip(),
+        to_agent=str(value.get("to_agent") or value.get("to") or "").strip(),
+        content=str(value.get("content") or value.get("message") or "").strip(),
+        intent=str(value.get("intent") or "").strip(),
         action_plan=action_plan,
         planner=planner,
     )
@@ -449,7 +458,8 @@ AGENT_ROLES = {
             "delegation tools when useful and writes final answers."
         ),
         relationship=(
-            "May ask CrawlerAgent for missing Minecraft evidence; must not turn every message into retrieval. "
+            "Knows the participants User, MCagent, and CrawlerAgent. May message CrawlerAgent through "
+            "the shared From-Content-To AgentMessage bus; must not turn every message into retrieval. "
             "If the message is not Minecraft-related, it can still answer as a normal assistant or explain its boundary."
         ),
     ),
@@ -482,20 +492,32 @@ MCAGENT_TOOLS = [
     ),
     ToolSpec(
         name="local_rag_search",
-        description="Search the local Minecraft knowledge base documents, chunks, raw HTML, and manifests for evidence.",
-        input_schema={"question": "topic-focused search question"},
+        description=(
+            "Search the local Minecraft knowledge base documents, chunks, raw HTML, and manifests for citeable evidence "
+            "about a specific gameplay/mod/modpack fact, guide, item, recipe, Boss, version, or known topic. "
+            "This is not a whole-corpus inventory tool; it only returns relevant snippets and must not be used to claim what the entire local library contains."
+        ),
+        input_schema={"question": "specific topic-focused evidence question"},
         result_schema={"sources": "ranked citeable evidence", "context": "formatted evidence"},
         side_effects="read_local_index",
         llm_final_answer_required=True,
     ),
     ToolSpec(
         name="local_corpus_inventory",
-        description="Objectively inspect which local Minecraft/mod/modpack documents are already indexed, grouping by source/type and listing representative topics. Use when the Agent judges the user is asking about local knowledge-base coverage rather than asking a specific gameplay fact.",
+        description=(
+            "Objectively inspect the entire indexed local Minecraft knowledge base, grouping by source/type and exposing raw title, path, snippet, "
+            "and mechanical candidate evidence for the Agent to judge. Use when the Agent judges the user is asking what the local library contains, "
+            "which modpacks/projects are present, corpus coverage, inventory, or broad local-data scope rather than a specific gameplay fact."
+        ),
         input_schema={"question": "coverage or inventory question"},
-        result_schema={"answer": "objective local corpus inventory", "sources": "representative indexed documents"},
+        result_schema={
+            "answer": "objective local corpus inventory observation",
+            "metadata.inventory_observation": "raw titles, paths, snippets, bucket counts, and mechanical entity candidates for LLM judgment",
+            "sources": "representative indexed documents",
+        },
         side_effects="read_local_index",
         terminal=True,
-        llm_final_answer_required=False,
+        llm_final_answer_required=True,
     ),
     ToolSpec(
         name="evidence_select",
@@ -531,30 +553,25 @@ MCAGENT_TOOLS = [
         llm_final_answer_required=False,
     ),
     ToolSpec(
-        name="ask_crawler_agent",
+        name="agent_message",
         description=(
-            "Send a normal no-persistence AgentMessage to CrawlerAgent and return CrawlerAgent's reply. "
-            "Use when the user asks MCagent to ask, consult, or route a question to CrawlerAgent, but does not request "
-            "background collection, saving, ingest, or a persistent crawler job."
+            "Send one no-persistence From-Content-To AgentMessage to another participant. The current "
+            "Agent must semantically decide whether the requested target is User, MCagent, or CrawlerAgent; "
+            "a mentioned name can also be an ordinary word/name. This is MCagent's only cross-agent communication path; "
+            "message delivery never chooses the receiver's next tool, and CrawlerAgent must decide any later collection action itself."
         ),
-        input_schema={"message": "natural-language question or instruction for CrawlerAgent"},
-        result_schema={"answer": "CrawlerAgent reply delivered over AgentMessage", "agent_message": "message bus reply"},
+        input_schema={"to_agent": "User|MCagent|CrawlerAgent", "content": "message body", "intent": "optional semantic intent"},
+        result_schema={"answer": "receiver reply delivered over AgentMessage", "agent_message": "message bus reply"},
         side_effects="agent_message_no_persistence",
         terminal=True,
         llm_final_answer_required=False,
     ),
     ToolSpec(
-        name="delegate_crawler",
-        description="Send a natural-language Minecraft data collection task or evidence gap to CrawlerAgent with context and delivery target; this starts or reuses a background collection job.",
-        input_schema={"handoff_contract": "caller, goal, context, acceptance criteria"},
-        result_schema={"job_id": "crawler job", "handoff": "agent-to-agent message"},
-        side_effects="start_background_job",
-        terminal=True,
-        llm_final_answer_required=False,
-    ),
-    ToolSpec(
         name="planned_workflow",
-        description="Create a short tool plan for compound requests, then execute steps with LLM checkpoints.",
+        description=(
+            "Create a short MCagent-owned plan for compound requests, then execute steps with LLM checkpoints. "
+            "If the plan needs CrawlerAgent, the step must use agent_message to CrawlerAgent; MCagent has no separate crawler delegation tool."
+        ),
         input_schema={"goal": "compound user goal", "steps": "candidate tool steps"},
         result_schema={"plan": "observable action plan"},
         side_effects="depends_on_steps",
@@ -597,6 +614,19 @@ CRAWLER_ROUTE_TOOLS = [
         side_effects="read_local_index",
         terminal=False,
         llm_final_answer_required=True,
+    ),
+    ToolSpec(
+        name="agent_message",
+        description=(
+            "Send one no-persistence From-Content-To AgentMessage to another participant. The current "
+            "Agent must semantically decide whether the requested target is User, MCagent, or CrawlerAgent; "
+            "a mentioned name can also be an ordinary word/name. Message delivery never chooses the receiver's next tool."
+        ),
+        input_schema={"to_agent": "User|MCagent|CrawlerAgent", "content": "message body", "intent": "optional semantic intent"},
+        result_schema={"answer": "receiver reply delivered over AgentMessage", "agent_message": "message bus reply"},
+        side_effects="agent_message_no_persistence",
+        terminal=True,
+        llm_final_answer_required=False,
     ),
     ToolSpec(
         name="delegate_crawler",

@@ -11,6 +11,13 @@ GRAPH_ROUTE_EXECUTORS = {
     "graph_router_error_route_executor",
     "graph_direct_answer_node_executor",
     "graph_temporary_extract_node_executor",
+    "graph_agent_message_route_executor",
+    "graph_mcagent_context_reply_executor",
+    "graph_crawler_mcagent_context_route_executor",
+    "graph_mcagent_inventory_planned_workflow_executor",
+    "graph_crawler_planned_workflow_executor",
+    "graph_crawler_delegate_route_executor",
+    "graph_rag_answer_route_executor",
 }
 
 
@@ -127,8 +134,9 @@ def build_route_execution_contract(
         "legacy_trace_observation_only": not graph_route_executed,
         "objective_contract": (
             "The graph records Agent route execution facts. For migrated status, crawler_audit, router_error, safe "
-            "local_corpus_inventory, direct_answer, and temporary_extract routes, the graph may execute only the already-selected handler. "
-            "The direct_answer and temporary_extract handlers are Agent-owned answer/extraction nodes; this contract does not start jobs, "
+            "local_corpus_inventory, direct_answer, temporary_extract, agent_message, mcagent_context_reply, and crawler mcagent_context routes, the graph may execute only the already-selected handler. "
+            "The direct_answer and temporary_extract handlers are Agent-owned answer/extraction nodes; agent_message delivers one no-persistence From-Content-To message, "
+            "mcagent_context_reply returns MCagent's local context over that same bus, and crawler mcagent_context sends CrawlerAgent's selected local-context question to MCagent. This contract does not start jobs, "
             "persist evidence, judge evidence, alter routing, or select a tool."
         ),
     }

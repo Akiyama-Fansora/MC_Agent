@@ -195,7 +195,8 @@ def test_conversation_graph_routes_only_by_message_target() -> None:
     local_tools = set(selected_groups.get("default_tools") or [])
     assert_true("mcagent_default_local_group", selected_groups.get("default_groups") == ["local"], str(selected_groups))
     assert_true("mcagent_local_tools_include_rag", "local_rag_search" in local_tools, str(selected_groups))
-    assert_true("mcagent_local_tools_include_message_handoff", "delegate_crawler" in local_tools, str(selected_groups))
+    assert_true("mcagent_local_tools_include_agent_message", "agent_message" in local_tools, str(selected_groups))
+    assert_true("mcagent_local_tools_exclude_delegate_crawler", "delegate_crawler" not in local_tools, str(selected_groups))
     assert_true("mcagent_local_tools_exclude_crawler_web", not {"web_discovery", "fetch_url", "playwright", "browser_collect", "modpack_download"} & local_tools, str(selected_groups))
     retrieval_contract = agent_runtime.get("retrieval_contract") or {}
     assert_true("mcagent_retrieval_local_sources", "local_rag" in retrieval_contract.get("allowed_evidence_sources", []), str(retrieval_contract))
@@ -815,11 +816,20 @@ def test_crawler_background_job_enters_langgraph_runtime() -> None:
     runtime = (job.result or {}).get("crawler_job_graph_runtime") or {}
     assert_true("job_graph_runtime", runtime.get("graph") == "CrawlerJobGraph", str(runtime))
     assert_true("job_graph_receive", "crawler_job.receive" in runtime.get("visited_nodes", []), str(runtime))
+    assert_true("job_graph_phase_contract", "crawler_job.phase_contract" in runtime.get("visited_nodes", []), str(runtime))
     assert_true("job_graph_agent_loop", "crawler_job.agent_loop" in runtime.get("visited_nodes", []), str(runtime))
+    assert_true("job_graph_observe_loop_result", "crawler_job.observe_loop_result" in runtime.get("visited_nodes", []), str(runtime))
     contract = runtime.get("job_contract") or {}
     assert_true("job_graph_contract_delivery", contract.get("delivery_target") == "MCagent/RAG", str(contract))
     assert_true("job_graph_contract_message", contract.get("has_agent_message") is True, str(contract))
     assert_true("job_graph_contract_owner", contract.get("decision_owner") == "CrawlerAgent LLM", str(contract))
+    phase_contract = runtime.get("job_phase_contract") or {}
+    assert_true("job_graph_phase_kind", phase_contract.get("contract_kind") == "crawler_job_phase_facts_contract", str(phase_contract))
+    assert_true("job_graph_phase_owner", phase_contract.get("decision_owner") == "CrawlerAgent LLM", str(phase_contract))
+    assert_true("job_graph_phase_message_boundary", phase_contract.get("message_boundary") == "AgentMessage(from_agent, content, to_agent)", str(phase_contract))
+    observations = runtime.get("objective_observations") or {}
+    assert_true("job_graph_observed_status", observations.get("job_status") == "", str(observations))
+    assert_true("job_graph_observed_counts", "observation_counts" in observations, str(observations))
 
 
 def test_crawler_job_plan_preparation_is_objective_and_reusable() -> None:

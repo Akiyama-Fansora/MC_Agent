@@ -30,6 +30,7 @@ def audit(root: Path = ROOT) -> dict[str, Any]:
         "route_decision_output_contract": graphs / "route_decision_output_contract.py",
         "route_execution_contract": graphs / "route_execution_contract.py",
         "route_result_contract": graphs / "route_result_contract.py",
+        "crawler_job_graph": graphs / "crawler_job.py",
         "agent_message": root / "mcagent" / "agent_message.py",
         "agent_runtime": root / "mcagent" / "agent_runtime.py",
         "crawler_capabilities": root / "mcagent" / "crawler_capabilities.py",
@@ -182,8 +183,11 @@ def audit(root: Path = ROOT) -> dict[str, Any]:
                 "graph_router_error_route_executor",
                 "graph_direct_answer_node_executor",
                 "graph_temporary_extract_node_executor",
+                "graph_agent_message_route_executor",
+                "graph_crawler_delegate_route_executor",
+                "graph_rag_answer_route_executor",
             )
-            and contains(files["graph_route_execution"], "GRAPH_STATUS_ROUTE_EXECUTOR", "GRAPH_CRAWLER_AUDIT_ROUTE_EXECUTOR", "GRAPH_LOCAL_CORPUS_INVENTORY_ROUTE_EXECUTOR", "GRAPH_ROUTER_ERROR_ROUTE_EXECUTOR", "GRAPH_DIRECT_ANSWER_NODE_EXECUTOR", "GRAPH_TEMPORARY_EXTRACT_NODE_EXECUTOR", "already Agent-selected", "legacy_runtime_adapter_bypassed")
+            and contains(files["graph_route_execution"], "GRAPH_STATUS_ROUTE_EXECUTOR", "GRAPH_CRAWLER_AUDIT_ROUTE_EXECUTOR", "GRAPH_LOCAL_CORPUS_INVENTORY_ROUTE_EXECUTOR", "GRAPH_ROUTER_ERROR_ROUTE_EXECUTOR", "GRAPH_DIRECT_ANSWER_NODE_EXECUTOR", "GRAPH_TEMPORARY_EXTRACT_NODE_EXECUTOR", "GRAPH_AGENT_MESSAGE_ROUTE_EXECUTOR", "GRAPH_CRAWLER_DELEGATE_ROUTE_EXECUTOR", "GRAPH_RAG_ANSWER_ROUTE_EXECUTOR", "already Agent-selected", "legacy_runtime_adapter_bypassed")
             and contains(files["mcagent_graph"], "prepare_route_execution_contract", "mcagent_route_execution_facts_contract")
             and contains(files["crawler_graph"], "prepare_route_execution_contract", "crawler_route_execution_facts_contract")
             and contains(files["route_result_contract"], "route_execution_contract_id")
@@ -207,6 +211,32 @@ def audit(root: Path = ROOT) -> dict[str, Any]:
             and contains(files["web_server"], "_execute_graph_local_corpus_inventory_route", "_route_agent_decision_for_graph", "Graph local corpus inventory execution requires an Agent-selected local_corpus_inventory route.", "Graph local corpus inventory execution requires a side-effect-free action_plan.")
             else "fail",
             "evidence": f"{files['mcagent_graph'].relative_to(root)}; {files['crawler_graph'].relative_to(root)}; {files['web_server'].relative_to(root)}",
+        },
+        {
+            "id": "graph_mcagent_inventory_planned_workflow_migrated",
+            "status": "pass"
+            if contains(files["mcagent_graph"], "graph_mcagent_inventory_planned_workflow", "mcagent_inventory_planned_workflow_executor", "agent_message", "delegate_crawler")
+            and contains(files["web_server"], "_execute_graph_mcagent_inventory_planned_workflow_route", "_handle_mcagent_inventory_planned_workflow_route", "mcagent_inventory_planned_workflow")
+            else "fail",
+            "evidence": f"{files['mcagent_graph'].relative_to(root)}; {files['web_server'].relative_to(root)}",
+        },
+        {
+            "id": "graph_crawler_planned_workflow_migrated",
+            "status": "pass"
+            if contains(files["crawler_graph"], "graph_crawler_planned_workflow", "crawler_planned_workflow_executor", "planned_delegate", "delegate_crawler")
+            and contains(files["conversation_graph"], "crawler_planned_workflow_executor", "graph_crawler_planned_workflow_executor", "graph_crawler_planned_workflow")
+            and contains(files["web_server"], "_execute_graph_crawler_planned_workflow_route", "_handle_crawler_action_plan_delegate_route", "crawler_planned_workflow")
+            else "fail",
+            "evidence": f"{files['crawler_graph'].relative_to(root)}; {files['conversation_graph'].relative_to(root)}; {files['web_server'].relative_to(root)}",
+        },
+        {
+            "id": "graph_crawler_delegate_route_migrated",
+            "status": "pass"
+            if contains(files["crawler_graph"], "graph_crawler_delegate_route", "crawler_delegate_route_executor", 'decision.get("route_intent") == "delegate_crawler"')
+            and contains(files["conversation_graph"], "crawler_delegate_route_executor", "graph_crawler_delegate_route_executor", "graph_crawler_delegate_route")
+            and contains(files["web_server"], "_execute_graph_crawler_delegate_route", "_handle_delegate_crawler_route", "crawler_delegate_route")
+            else "fail",
+            "evidence": f"{files['crawler_graph'].relative_to(root)}; {files['conversation_graph'].relative_to(root)}; {files['web_server'].relative_to(root)}",
         },
         {
             "id": "graph_crawler_audit_route_migrated",
@@ -236,6 +266,16 @@ def audit(root: Path = ROOT) -> dict[str, Any]:
             "evidence": f"{files['mcagent_graph'].relative_to(root)}; {files['crawler_graph'].relative_to(root)}; {files['web_server'].relative_to(root)}",
         },
         {
+            "id": "graph_rag_answer_route_migrated",
+            "status": "pass"
+            if contains(files["mcagent_graph"], "graph_rag_answer_route", "rag_answer_route_executor", '"local_rag_search"')
+            and contains(files["conversation_graph"], "rag_answer_route_executor", "graph_rag_answer_route_executor", "graph_rag_answer_route")
+            and contains(files["web_server"], "_execute_graph_rag_answer_route", "_handle_rag_answer_generation_route", "local_rag_search")
+            and contains(files["legacy_handler_surface_contract"], "no_retrieval_results", "MIGRATED_GRAPH_HANDLER_SURFACES")
+            else "fail",
+            "evidence": f"{files['mcagent_graph'].relative_to(root)}; {files['conversation_graph'].relative_to(root)}; {files['web_server'].relative_to(root)}; {files['legacy_handler_surface_contract'].relative_to(root)}",
+        },
+        {
             "id": "graph_temporary_extract_node_migrated",
             "status": "pass"
             if contains(files["mcagent_graph"], "graph_temporary_extract_node", 'decision.get("route_intent") == "temporary_extract"', "temporary_extract_executor")
@@ -243,6 +283,50 @@ def audit(root: Path = ROOT) -> dict[str, Any]:
             and contains(files["web_server"], "_execute_graph_temporary_extract_node", "_route_agent_decision_for_graph", "Graph temporary extract execution requires an Agent-selected temporary_extract route.", "saved_to_local")
             else "fail",
             "evidence": f"{files['mcagent_graph'].relative_to(root)}; {files['crawler_graph'].relative_to(root)}; {files['web_server'].relative_to(root)}",
+        },
+        {
+            "id": "graph_agent_message_route_migrated",
+            "status": "pass"
+            if contains(files["mcagent_graph"], "graph_agent_message_route", 'decision.get("route_intent") == "agent_message"', "agent_message_executor")
+            and contains(files["crawler_graph"], "graph_agent_message_route", 'decision.get("route_intent") == "agent_message"', "agent_message_executor")
+            and contains(files["web_server"], "_execute_graph_agent_message_route", "_route_agent_decision_for_graph", "Graph agent_message execution requires an Agent-selected agent_message route.")
+            else "fail",
+            "evidence": f"{files['mcagent_graph'].relative_to(root)}; {files['crawler_graph'].relative_to(root)}; {files['web_server'].relative_to(root)}",
+        },
+        {
+            "id": "graph_mcagent_context_reply_migrated",
+            "status": "pass"
+            if contains(files["mcagent_graph"], "graph_mcagent_context_reply", 'decision.get("route_intent") == "mcagent_context_reply"', "mcagent_context_reply_executor")
+            and contains(files["conversation_graph"], "mcagent_context_reply_executor", "graph_mcagent_context_reply_executor", "graph_mcagent_context_reply")
+            and contains(files["web_server"], "_execute_graph_mcagent_context_reply_route", "_mcagent_context_message_reply", "Graph mcagent_context_reply execution requires CrawlerAgent's context-only AgentMessage.")
+            and contains(files["legacy_handler_surface_contract"], "mcagent_context_reply", "MIGRATED_GRAPH_HANDLER_SURFACES")
+            else "fail",
+            "evidence": f"{files['mcagent_graph'].relative_to(root)}; {files['conversation_graph'].relative_to(root)}; {files['web_server'].relative_to(root)}; {files['legacy_handler_surface_contract'].relative_to(root)}",
+        },
+        {
+            "id": "graph_crawler_mcagent_context_route_migrated",
+            "status": "pass"
+            if contains(files["crawler_graph"], "graph_crawler_mcagent_context_route", 'decision.get("route_intent") == "mcagent_context"', "crawler_mcagent_context_executor")
+            and contains(files["conversation_graph"], "crawler_mcagent_context_executor", "graph_crawler_mcagent_context_route")
+            and contains(files["web_server"], "_execute_graph_crawler_mcagent_context_route", "Graph crawler mcagent_context execution requires an Agent-selected mcagent_context route.", "mcagent_context_request")
+            else "fail",
+            "evidence": f"{files['crawler_graph'].relative_to(root)}; {files['conversation_graph'].relative_to(root)}; {files['web_server'].relative_to(root)}",
+        },
+        {
+            "id": "crawler_job_internal_phase_contract_migrated",
+            "status": "pass"
+            if contains(
+                files["crawler_job_graph"],
+                "crawler_job.phase_contract",
+                "crawler_job.observe_loop_result",
+                "crawler_job_phase_facts_contract",
+                "accepted_sources_visible",
+                "rejected_or_blocked_sources_visible",
+                "CrawlerAgent remains the decision owner",
+            )
+            and contains(files["web_server"], "run_crawler_job_graph(config, job, payload, agent_loop=_run_crawler_job_agent_loop)")
+            else "fail",
+            "evidence": f"{files['crawler_job_graph'].relative_to(root)}; {files['web_server'].relative_to(root)}",
         },
         {
             "id": "explicit_legacy_handler_surface_contracts",
@@ -276,7 +360,7 @@ def audit(root: Path = ROOT) -> dict[str, Any]:
             if contains(files["legacy_adapter"], "legacy_web_server_runtime")
             and contains(files["web_server"], "def _chat_impl")
             else "pass",
-            "evidence": "Graph-selected status, crawler_audit, safe local_corpus_inventory, router_error, direct_answer, and temporary_extract can bypass web_server._chat_impl; non-migrated route handlers still execute through the explicit legacy adapter during migration.",
+            "evidence": "Graph-selected status, crawler_audit, safe local_corpus_inventory, MCagent inventory planned workflow, MCagent RAG answer generation including no-retrieval results, CrawlerAgent planned/delegate collection routes, CrawlerAgent mcagent_context AgentMessage routes, router_error, direct_answer, temporary_extract, agent_message, MCagent context-only AgentMessage replies, and Crawler job phase/observation contracts can bypass web_server._chat_impl; remaining generic fallback routes still execute through the explicit legacy adapter during migration.",
         },
     ]
     counts = {status: sum(1 for item in checks if item["status"] == status) for status in ("pass", "warn", "fail")}

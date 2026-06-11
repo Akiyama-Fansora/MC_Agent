@@ -11,13 +11,21 @@ from .agent_state import AgentGraphState
 from .graph_route_execution import (
     GRAPH_CRAWLER_AUDIT_ROUTE_EXECUTOR,
     GRAPH_DIRECT_ANSWER_NODE_EXECUTOR,
+    GRAPH_AGENT_MESSAGE_ROUTE_EXECUTOR,
     GRAPH_LOCAL_CORPUS_INVENTORY_ROUTE_EXECUTOR,
+    GRAPH_MCAGENT_CONTEXT_REPLY_EXECUTOR,
+    GRAPH_MCAGENT_INVENTORY_PLANNED_WORKFLOW_EXECUTOR,
+    GRAPH_RAG_ANSWER_ROUTE_EXECUTOR,
     GRAPH_ROUTER_ERROR_ROUTE_EXECUTOR,
     GRAPH_STATUS_ROUTE_EXECUTOR,
     GRAPH_TEMPORARY_EXTRACT_NODE_EXECUTOR,
     graph_crawler_audit_route_executor_metadata,
     graph_direct_answer_node_executor_metadata,
+    graph_agent_message_route_executor_metadata,
     graph_local_corpus_inventory_route_executor_metadata,
+    graph_mcagent_context_reply_executor_metadata,
+    graph_mcagent_inventory_planned_workflow_executor_metadata,
+    graph_rag_answer_route_executor_metadata,
     graph_route_decision_allows_execution,
     graph_route_decision_has_action_tool,
     graph_router_error_route_executor_metadata,
@@ -38,9 +46,13 @@ AgentRouteDeciderFn = Callable[..., dict[str, Any]]
 StatusExecutorFn = Callable[..., dict[str, Any]]
 CrawlerAuditExecutorFn = Callable[..., dict[str, Any]]
 LocalCorpusInventoryExecutorFn = Callable[..., dict[str, Any]]
+McagentInventoryPlannedWorkflowExecutorFn = Callable[..., dict[str, Any]]
+RagAnswerRouteExecutorFn = Callable[..., dict[str, Any]]
 RouterErrorExecutorFn = Callable[..., dict[str, Any]]
 DirectAnswerExecutorFn = Callable[..., dict[str, Any]]
 TemporaryExtractExecutorFn = Callable[..., dict[str, Any]]
+AgentMessageExecutorFn = Callable[..., dict[str, Any]]
+McagentContextReplyExecutorFn = Callable[..., dict[str, Any]]
 
 
 def _event(node: str, status: str, detail: dict[str, Any] | None = None) -> GraphEvent:
@@ -63,9 +75,13 @@ def build_mcagent_graph(
     status_executor: StatusExecutorFn | None = None,
     crawler_audit_executor: CrawlerAuditExecutorFn | None = None,
     local_corpus_inventory_executor: LocalCorpusInventoryExecutorFn | None = None,
+    mcagent_inventory_planned_workflow_executor: McagentInventoryPlannedWorkflowExecutorFn | None = None,
+    rag_answer_route_executor: RagAnswerRouteExecutorFn | None = None,
     router_error_executor: RouterErrorExecutorFn | None = None,
     direct_answer_executor: DirectAnswerExecutorFn | None = None,
     temporary_extract_executor: TemporaryExtractExecutorFn | None = None,
+    agent_message_executor: AgentMessageExecutorFn | None = None,
+    mcagent_context_reply_executor: McagentContextReplyExecutorFn | None = None,
 ):
     builder = StateGraph(AgentGraphState)
 
@@ -581,6 +597,46 @@ def build_mcagent_graph(
             ),
         }
 
+    def run_graph_mcagent_inventory_planned_workflow(state: AgentGraphState) -> dict[str, Any]:
+        runtime_request = state.get("runtime_request") if isinstance(state.get("runtime_request"), dict) else {}
+        route_decision = state.get("route_decision") if isinstance(state.get("route_decision"), dict) else {}
+        result = dict(
+            mcagent_inventory_planned_workflow_executor(
+                config,
+                dict(state.get("payload") or {}),
+                emit=emit,
+                agent_id="mcagent_rag",
+                graph_name="MCagentGraph",
+                node_name="mcagent.graph_mcagent_inventory_planned_workflow",
+                runtime_request=runtime_request,
+                route_decision=route_decision,
+            )
+        )
+        adapter = graph_mcagent_inventory_planned_workflow_executor_metadata(
+            agent_id="mcagent_rag",
+            graph_name="MCagentGraph",
+            node_name="mcagent.graph_mcagent_inventory_planned_workflow",
+            runtime_request=runtime_request,
+            route_decision=route_decision,
+        )
+        metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+        result["metadata"] = {**metadata, "graph_route_executor": adapter}
+        result["graph_route_executor"] = adapter
+        return {
+            "result": result,
+            "runtime_adapter": adapter,
+            **_append(
+                state,
+                "mcagent.graph_mcagent_inventory_planned_workflow",
+                "executed_agent_selected_inventory_planned_workflow",
+                {
+                    "agent": "mcagent_rag",
+                    "adapter": GRAPH_MCAGENT_INVENTORY_PLANNED_WORKFLOW_EXECUTOR,
+                    "route_decision_id": route_decision.get("route_decision_id") or "",
+                },
+            ),
+        }
+
     def run_graph_router_error_route(state: AgentGraphState) -> dict[str, Any]:
         runtime_request = state.get("runtime_request") if isinstance(state.get("runtime_request"), dict) else {}
         route_decision = state.get("route_decision") if isinstance(state.get("route_decision"), dict) else {}
@@ -661,6 +717,46 @@ def build_mcagent_graph(
             ),
         }
 
+    def run_graph_rag_answer_route(state: AgentGraphState) -> dict[str, Any]:
+        runtime_request = state.get("runtime_request") if isinstance(state.get("runtime_request"), dict) else {}
+        route_decision = state.get("route_decision") if isinstance(state.get("route_decision"), dict) else {}
+        result = dict(
+            rag_answer_route_executor(
+                config,
+                dict(state.get("payload") or {}),
+                emit=emit,
+                agent_id="mcagent_rag",
+                graph_name="MCagentGraph",
+                node_name="mcagent.graph_rag_answer_route",
+                runtime_request=runtime_request,
+                route_decision=route_decision,
+            )
+        )
+        adapter = graph_rag_answer_route_executor_metadata(
+            agent_id="mcagent_rag",
+            graph_name="MCagentGraph",
+            node_name="mcagent.graph_rag_answer_route",
+            runtime_request=runtime_request,
+            route_decision=route_decision,
+        )
+        metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+        result["metadata"] = {**metadata, "graph_route_executor": adapter}
+        result["graph_route_executor"] = adapter
+        return {
+            "result": result,
+            "runtime_adapter": adapter,
+            **_append(
+                state,
+                "mcagent.graph_rag_answer_route",
+                "executed_agent_selected_rag_answer",
+                {
+                    "agent": "mcagent_rag",
+                    "adapter": GRAPH_RAG_ANSWER_ROUTE_EXECUTOR,
+                    "route_decision_id": route_decision.get("route_decision_id") or "",
+                },
+            ),
+        }
+
     def run_graph_temporary_extract_node(state: AgentGraphState) -> dict[str, Any]:
         runtime_request = state.get("runtime_request") if isinstance(state.get("runtime_request"), dict) else {}
         route_decision = state.get("route_decision") if isinstance(state.get("route_decision"), dict) else {}
@@ -696,6 +792,86 @@ def build_mcagent_graph(
                 {
                     "agent": "mcagent_rag",
                     "adapter": GRAPH_TEMPORARY_EXTRACT_NODE_EXECUTOR,
+                    "route_decision_id": route_decision.get("route_decision_id") or "",
+                },
+            ),
+        }
+
+    def run_graph_agent_message_route(state: AgentGraphState) -> dict[str, Any]:
+        runtime_request = state.get("runtime_request") if isinstance(state.get("runtime_request"), dict) else {}
+        route_decision = state.get("route_decision") if isinstance(state.get("route_decision"), dict) else {}
+        result = dict(
+            agent_message_executor(
+                config,
+                dict(state.get("payload") or {}),
+                emit=emit,
+                agent_id="mcagent_rag",
+                graph_name="MCagentGraph",
+                node_name="mcagent.graph_agent_message_route",
+                runtime_request=runtime_request,
+                route_decision=route_decision,
+            )
+        )
+        adapter = graph_agent_message_route_executor_metadata(
+            agent_id="mcagent_rag",
+            graph_name="MCagentGraph",
+            node_name="mcagent.graph_agent_message_route",
+            runtime_request=runtime_request,
+            route_decision=route_decision,
+        )
+        metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+        result["metadata"] = {**metadata, "graph_route_executor": adapter}
+        result["graph_route_executor"] = adapter
+        return {
+            "result": result,
+            "runtime_adapter": adapter,
+            **_append(
+                state,
+                "mcagent.graph_agent_message_route",
+                "executed_agent_selected_agent_message",
+                {
+                    "agent": "mcagent_rag",
+                    "adapter": GRAPH_AGENT_MESSAGE_ROUTE_EXECUTOR,
+                    "route_decision_id": route_decision.get("route_decision_id") or "",
+                },
+            ),
+        }
+
+    def run_graph_mcagent_context_reply(state: AgentGraphState) -> dict[str, Any]:
+        runtime_request = state.get("runtime_request") if isinstance(state.get("runtime_request"), dict) else {}
+        route_decision = state.get("route_decision") if isinstance(state.get("route_decision"), dict) else {}
+        result = dict(
+            mcagent_context_reply_executor(
+                config,
+                dict(state.get("payload") or {}),
+                emit=emit,
+                agent_id="mcagent_rag",
+                graph_name="MCagentGraph",
+                node_name="mcagent.graph_mcagent_context_reply",
+                runtime_request=runtime_request,
+                route_decision=route_decision,
+            )
+        )
+        adapter = graph_mcagent_context_reply_executor_metadata(
+            agent_id="mcagent_rag",
+            graph_name="MCagentGraph",
+            node_name="mcagent.graph_mcagent_context_reply",
+            runtime_request=runtime_request,
+            route_decision=route_decision,
+        )
+        metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+        result["metadata"] = {**metadata, "graph_route_executor": adapter}
+        result["graph_route_executor"] = adapter
+        return {
+            "result": result,
+            "runtime_adapter": adapter,
+            **_append(
+                state,
+                "mcagent.graph_mcagent_context_reply",
+                "executed_agent_message_context_reply",
+                {
+                    "agent": "mcagent_rag",
+                    "adapter": GRAPH_MCAGENT_CONTEXT_REPLY_EXECUTOR,
                     "route_decision_id": route_decision.get("route_decision_id") or "",
                 },
             ),
@@ -904,9 +1080,13 @@ def build_mcagent_graph(
     builder.add_node("graph_status_route", run_graph_status_route)
     builder.add_node("graph_crawler_audit_route", run_graph_crawler_audit_route)
     builder.add_node("graph_local_corpus_inventory_route", run_graph_local_corpus_inventory_route)
+    builder.add_node("graph_mcagent_inventory_planned_workflow", run_graph_mcagent_inventory_planned_workflow)
     builder.add_node("graph_router_error_route", run_graph_router_error_route)
     builder.add_node("graph_direct_answer_node", run_graph_direct_answer_node)
+    builder.add_node("graph_rag_answer_route", run_graph_rag_answer_route)
     builder.add_node("graph_temporary_extract_node", run_graph_temporary_extract_node)
+    builder.add_node("graph_agent_message_route", run_graph_agent_message_route)
+    builder.add_node("graph_mcagent_context_reply", run_graph_mcagent_context_reply)
     builder.add_node("prepare_route_decision_output_contract", prepare_route_decision_output_contract)
     builder.add_node("prepare_route_execution_contract", prepare_route_execution_contract)
     builder.add_node("prepare_legacy_handler_surface_contract", prepare_legacy_handler_surface_contract)
@@ -933,8 +1113,33 @@ def build_mcagent_graph(
             return "router_error"
         if direct_answer_executor is not None and decision.get("routed") and decision.get("route_intent") == "direct_answer" and allows_execution:
             return "direct_answer"
+        if (
+            rag_answer_route_executor is not None
+            and decision.get("routed")
+            and decision.get("route_intent") in {"answer", "local_rag_search"}
+            and allows_execution
+            and not bool(decision.get("planned_delegate"))
+            and not graph_route_decision_has_action_tool(decision, "delegate_crawler")
+        ):
+            return "rag_answer"
         if temporary_extract_executor is not None and decision.get("routed") and decision.get("route_intent") == "temporary_extract" and allows_execution:
             return "temporary_extract"
+        if agent_message_executor is not None and decision.get("routed") and decision.get("route_intent") == "agent_message" and allows_execution:
+            return "agent_message"
+        if mcagent_context_reply_executor is not None and decision.get("routed") and decision.get("route_intent") == "mcagent_context_reply" and allows_execution:
+            return "mcagent_context_reply"
+        if (
+            mcagent_inventory_planned_workflow_executor is not None
+            and decision.get("routed")
+            and decision.get("route_intent") == "local_corpus_inventory"
+            and allows_execution
+            and graph_route_decision_has_action_tool(decision, "local_corpus_inventory")
+            and (
+                graph_route_decision_has_action_tool(decision, "agent_message")
+                or graph_route_decision_has_action_tool(decision, "delegate_crawler")
+            )
+        ):
+            return "mcagent_inventory_planned_workflow"
         if (
             local_corpus_inventory_executor is not None
             and decision.get("routed")
@@ -952,18 +1157,26 @@ def build_mcagent_graph(
             "status": "graph_status_route",
             "crawler_audit": "graph_crawler_audit_route",
             "local_corpus_inventory": "graph_local_corpus_inventory_route",
+            "mcagent_inventory_planned_workflow": "graph_mcagent_inventory_planned_workflow",
             "router_error": "graph_router_error_route",
             "direct_answer": "graph_direct_answer_node",
+            "rag_answer": "graph_rag_answer_route",
             "temporary_extract": "graph_temporary_extract_node",
+            "agent_message": "graph_agent_message_route",
+            "mcagent_context_reply": "graph_mcagent_context_reply",
             "legacy": "legacy_adapter",
         },
     )
     builder.add_edge("graph_status_route", "prepare_route_decision_output_contract")
     builder.add_edge("graph_crawler_audit_route", "prepare_route_decision_output_contract")
     builder.add_edge("graph_local_corpus_inventory_route", "prepare_route_decision_output_contract")
+    builder.add_edge("graph_mcagent_inventory_planned_workflow", "prepare_route_decision_output_contract")
     builder.add_edge("graph_router_error_route", "prepare_route_decision_output_contract")
     builder.add_edge("graph_direct_answer_node", "prepare_route_decision_output_contract")
+    builder.add_edge("graph_rag_answer_route", "prepare_route_decision_output_contract")
     builder.add_edge("graph_temporary_extract_node", "prepare_route_decision_output_contract")
+    builder.add_edge("graph_agent_message_route", "prepare_route_decision_output_contract")
+    builder.add_edge("graph_mcagent_context_reply", "prepare_route_decision_output_contract")
     builder.add_edge("legacy_adapter", "prepare_route_decision_output_contract")
     builder.add_edge("prepare_route_decision_output_contract", "prepare_route_execution_contract")
     builder.add_edge("prepare_route_execution_contract", "prepare_legacy_handler_surface_contract")
@@ -984,9 +1197,13 @@ def run_mcagent_graph(
     status_executor: StatusExecutorFn | None = None,
     crawler_audit_executor: CrawlerAuditExecutorFn | None = None,
     local_corpus_inventory_executor: LocalCorpusInventoryExecutorFn | None = None,
+    mcagent_inventory_planned_workflow_executor: McagentInventoryPlannedWorkflowExecutorFn | None = None,
+    rag_answer_route_executor: RagAnswerRouteExecutorFn | None = None,
     router_error_executor: RouterErrorExecutorFn | None = None,
     direct_answer_executor: DirectAnswerExecutorFn | None = None,
     temporary_extract_executor: TemporaryExtractExecutorFn | None = None,
+    agent_message_executor: AgentMessageExecutorFn | None = None,
+    mcagent_context_reply_executor: McagentContextReplyExecutorFn | None = None,
 ) -> dict[str, Any]:
     graph = build_mcagent_graph(
         config,
@@ -996,9 +1213,13 @@ def run_mcagent_graph(
         status_executor=status_executor,
         crawler_audit_executor=crawler_audit_executor,
         local_corpus_inventory_executor=local_corpus_inventory_executor,
+        mcagent_inventory_planned_workflow_executor=mcagent_inventory_planned_workflow_executor,
+        rag_answer_route_executor=rag_answer_route_executor,
         router_error_executor=router_error_executor,
         direct_answer_executor=direct_answer_executor,
         temporary_extract_executor=temporary_extract_executor,
+        agent_message_executor=agent_message_executor,
+        mcagent_context_reply_executor=mcagent_context_reply_executor,
     )
     final_state = graph.invoke(
         {

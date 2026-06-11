@@ -9,6 +9,13 @@ GRAPH_LOCAL_CORPUS_INVENTORY_ROUTE_EXECUTOR = "graph_local_corpus_inventory_rout
 GRAPH_ROUTER_ERROR_ROUTE_EXECUTOR = "graph_router_error_route_executor"
 GRAPH_DIRECT_ANSWER_NODE_EXECUTOR = "graph_direct_answer_node_executor"
 GRAPH_TEMPORARY_EXTRACT_NODE_EXECUTOR = "graph_temporary_extract_node_executor"
+GRAPH_AGENT_MESSAGE_ROUTE_EXECUTOR = "graph_agent_message_route_executor"
+GRAPH_MCAGENT_CONTEXT_REPLY_EXECUTOR = "graph_mcagent_context_reply_executor"
+GRAPH_CRAWLER_MCAGENT_CONTEXT_ROUTE_EXECUTOR = "graph_crawler_mcagent_context_route_executor"
+GRAPH_MCAGENT_INVENTORY_PLANNED_WORKFLOW_EXECUTOR = "graph_mcagent_inventory_planned_workflow_executor"
+GRAPH_CRAWLER_PLANNED_WORKFLOW_EXECUTOR = "graph_crawler_planned_workflow_executor"
+GRAPH_CRAWLER_DELEGATE_ROUTE_EXECUTOR = "graph_crawler_delegate_route_executor"
+GRAPH_RAG_ANSWER_ROUTE_EXECUTOR = "graph_rag_answer_route_executor"
 
 
 def _display_agent(agent_id: str) -> str:
@@ -176,6 +183,112 @@ def graph_local_corpus_inventory_route_executor_metadata(
     )
 
 
+def graph_mcagent_inventory_planned_workflow_executor_metadata(
+    *,
+    agent_id: str,
+    graph_name: str,
+    node_name: str,
+    runtime_request: dict[str, Any] | None = None,
+    route_decision: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    metadata = _base_route_executor_metadata(
+        adapter=GRAPH_MCAGENT_INVENTORY_PLANNED_WORKFLOW_EXECUTOR,
+        migration_status="graph_mcagent_inventory_planned_workflow_migrated",
+        route_label="mcagent_inventory_planned_workflow",
+        agent_id=agent_id,
+        graph_name=graph_name,
+        node_name=node_name,
+        runtime_request=runtime_request,
+        route_decision=route_decision,
+    )
+    metadata["side_effect_executed"] = True
+    metadata["objective_boundary"] = (
+        "The graph executed the already MCagent-selected planned workflow whose first step is local_corpus_inventory "
+        "and whose later step is one From-Content-To AgentMessage to CrawlerAgent. The graph does not choose CrawlerAgent's tools; "
+        "CrawlerAgent still owns any collection, save, or ingest decision after receiving the message."
+    )
+    return metadata
+
+
+def graph_crawler_planned_workflow_executor_metadata(
+    *,
+    agent_id: str,
+    graph_name: str,
+    node_name: str,
+    runtime_request: dict[str, Any] | None = None,
+    route_decision: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    metadata = _base_route_executor_metadata(
+        adapter=GRAPH_CRAWLER_PLANNED_WORKFLOW_EXECUTOR,
+        migration_status="graph_crawler_planned_workflow_migrated",
+        route_label="crawler_planned_workflow",
+        agent_id=agent_id,
+        graph_name=graph_name,
+        node_name=node_name,
+        runtime_request=runtime_request,
+        route_decision=route_decision,
+    )
+    metadata["side_effect_executed"] = True
+    metadata["objective_boundary"] = (
+        "The graph executed the already CrawlerAgent-selected planned workflow with delegate_crawler in its action_plan. "
+        "The graph does not choose sources, search terms, or acceptance decisions; CrawlerAgent's selected workflow and job runtime own those decisions."
+    )
+    return metadata
+
+
+def graph_crawler_delegate_route_executor_metadata(
+    *,
+    agent_id: str,
+    graph_name: str,
+    node_name: str,
+    runtime_request: dict[str, Any] | None = None,
+    route_decision: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    metadata = _base_route_executor_metadata(
+        adapter=GRAPH_CRAWLER_DELEGATE_ROUTE_EXECUTOR,
+        migration_status="graph_crawler_delegate_route_migrated",
+        route_label="crawler_delegate_crawler",
+        agent_id=agent_id,
+        graph_name=graph_name,
+        node_name=node_name,
+        runtime_request=runtime_request,
+        route_decision=route_decision,
+    )
+    metadata["side_effect_executed"] = True
+    metadata["objective_boundary"] = (
+        "The graph executed the already CrawlerAgent-selected delegate_crawler route. "
+        "The graph does not choose sources, search terms, acceptance decisions, or persistence policy; "
+        "CrawlerAgent and its job runtime own those decisions after receiving the AgentMessage."
+    )
+    return metadata
+
+
+def graph_rag_answer_route_executor_metadata(
+    *,
+    agent_id: str,
+    graph_name: str,
+    node_name: str,
+    runtime_request: dict[str, Any] | None = None,
+    route_decision: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    metadata = _base_route_executor_metadata(
+        adapter=GRAPH_RAG_ANSWER_ROUTE_EXECUTOR,
+        migration_status="graph_rag_answer_route_migrated",
+        route_label="rag_answer_generation",
+        agent_id=agent_id,
+        graph_name=graph_name,
+        node_name=node_name,
+        runtime_request=runtime_request,
+        route_decision=route_decision,
+    )
+    metadata["objective_boundary"] = (
+        "The graph executed the already Agent-selected local RAG/evidence answer route. "
+        "The graph does not choose public-web tools or CrawlerAgent tools; evidence selection, sufficiency review, "
+        "and any AgentMessage handoff remain explicit Agent-owned decisions recorded in the route trace."
+    )
+    return metadata
+
+
 def graph_router_error_route_executor_metadata(
     *,
     agent_id: str,
@@ -241,6 +354,106 @@ def graph_temporary_extract_node_executor_metadata(
                 "The graph executed only the already Agent-selected temporary_extract node. "
                 "This node may temporarily read a public URL and call the receiving Agent's summary/review model, "
                 "but it does not choose sources, start background jobs, persist evidence, or upgrade to delegate_crawler."
+            ),
+        }
+    )
+    return metadata
+
+
+def graph_agent_message_route_executor_metadata(
+    *,
+    agent_id: str,
+    graph_name: str,
+    node_name: str,
+    runtime_request: dict[str, Any] | None = None,
+    route_decision: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    metadata = _base_route_executor_metadata(
+        adapter=GRAPH_AGENT_MESSAGE_ROUTE_EXECUTOR,
+        migration_status="graph_agent_message_route_migrated",
+        route_label="agent_message",
+        agent_id=agent_id,
+        graph_name=graph_name,
+        node_name=node_name,
+        runtime_request=runtime_request,
+        route_decision=route_decision,
+    )
+    metadata.update(
+        {
+            "agent_message": True,
+            "side_effect_executed": False,
+            "objective_boundary": (
+                "The graph executed only the already Agent-selected no-persistence AgentMessage route. "
+                "It delivers one From-Content-To message and returns the receiver's reply. It does not infer "
+                "the target from keywords, start jobs, persist evidence, or choose the receiver's next tool."
+            ),
+        }
+    )
+    return metadata
+
+
+def graph_mcagent_context_reply_executor_metadata(
+    *,
+    agent_id: str,
+    graph_name: str,
+    node_name: str,
+    runtime_request: dict[str, Any] | None = None,
+    route_decision: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    metadata = _base_route_executor_metadata(
+        adapter=GRAPH_MCAGENT_CONTEXT_REPLY_EXECUTOR,
+        migration_status="graph_mcagent_context_reply_migrated",
+        route_label="mcagent_context_reply",
+        agent_id=agent_id,
+        graph_name=graph_name,
+        node_name=node_name,
+        runtime_request=runtime_request,
+        route_decision=route_decision,
+    )
+    metadata.update(
+        {
+            "agent_message": True,
+            "mcagent_context_reply": True,
+            "side_effect_executed": False,
+            "objective_boundary": (
+                "The graph executed only MCagent's no-persistence reply to a CrawlerAgent "
+                "AgentMessage asking for local context. It reads local evidence, returns objective "
+                "context/gaps over the same From-Content-To bus, and does not start Crawler jobs, "
+                "choose CrawlerAgent tools, persist evidence, or alter message routing."
+            ),
+        }
+    )
+    return metadata
+
+
+def graph_crawler_mcagent_context_route_executor_metadata(
+    *,
+    agent_id: str,
+    graph_name: str,
+    node_name: str,
+    runtime_request: dict[str, Any] | None = None,
+    route_decision: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    metadata = _base_route_executor_metadata(
+        adapter=GRAPH_CRAWLER_MCAGENT_CONTEXT_ROUTE_EXECUTOR,
+        migration_status="graph_crawler_mcagent_context_route_migrated",
+        route_label="crawler_mcagent_context",
+        agent_id=agent_id,
+        graph_name=graph_name,
+        node_name=node_name,
+        runtime_request=runtime_request,
+        route_decision=route_decision,
+    )
+    metadata.update(
+        {
+            "agent_message": True,
+            "mcagent_context": True,
+            "side_effect_executed": False,
+            "objective_boundary": (
+                "The graph executed only CrawlerAgent's already-selected no-persistence mcagent_context route. "
+                "It sends one From-Content-To AgentMessage to MCagent asking for local context/gaps and returns "
+                "MCagent's reply. It does not start collection jobs, choose public sources, persist evidence, "
+                "or decide whether the returned context is sufficient."
             ),
         }
     )

@@ -144,17 +144,17 @@ def test_no_persistence_routes_skip_second_llm_confirmation() -> None:
     calls = {"confirm": 0}
     try:
         service = AgentToolRouterService(
-            decide_tool=lambda *args, **kwargs: {"tool": "ask_crawler_agent", "reason": "route a normal question to CrawlerAgent"},
+            decide_tool=lambda *args, **kwargs: {"tool": "agent_message", "reason": "route a normal message", "to_agent": "CrawlerAgent", "content": "simple reply"},
             confirm_next_step=lambda *args, **kwargs: calls.__setitem__("confirm", calls["confirm"] + 1) or {"proceed": True},
             action_plan_has_tool=lambda _plan, _tool: False,
         )
-        ask_route = service.route(run2, session_summary={})
+        message_route = service.route(run2, session_summary={})
     finally:
         tmp2.cleanup()
 
-    assert_equal("ask_crawler_route", ask_route.route_intent, "ask_crawler_agent")
-    assert_equal("ask_crawler_confirm_not_called", calls["confirm"], 0)
-    assert_equal("ask_crawler_confirmation_planner", ask_route.route_confirmation["planner"], "runtime")
+    assert_equal("agent_message_route", message_route.route_intent, "agent_message")
+    assert_equal("agent_message_confirm_not_called", calls["confirm"], 0)
+    assert_equal("agent_message_confirmation_planner", message_route.route_confirmation["planner"], "runtime")
 
 
 def test_direct_answer_can_be_corrected_when_side_effect_is_required() -> None:
@@ -309,6 +309,82 @@ def test_llm_router_allows_local_corpus_inventory_tool() -> None:
     assert_true("inventory_in_catalog", "local_corpus_inventory" in fake.calls[0]["messages"][1]["content"])
 
 
+def test_llm_router_reviews_missed_cross_agent_message_route() -> None:
+    tmp, run = make_run("麻烦问一下 CrawlerAgent：1+1 等于几")
+    fake = SequencedFakeClient(
+        [
+            '{"tool":"direct_answer","reason":"simple arithmetic"}',
+            '{"should_send":true,"to_agent":"CrawlerAgent","content":"请回答用户的问题：1+1 等于几","intent":"agent_message","reason":"user asked MCagent to ask CrawlerAgent"}',
+        ]
+    )
+    try:
+        service = LlmAgentToolRouterService(
+            select_client=lambda _config, _model, _temperature: (fake, "fake-router"),
+            action_plan_has_tool=lambda _plan, _tool: False,
+        )
+        route = service.route(run, session_summary={})
+    finally:
+        tmp.cleanup()
+
+    assert_equal("corrected_route", route.route_intent, "agent_message")
+    assert_equal("corrected_to_agent", route.tool_decision["to_agent"], "CrawlerAgent")
+    assert_true("corrected_content", "1+1" in route.tool_decision["content"], str(route.tool_decision))
+    assert_equal("review_call_count", len(fake.calls), 2)
+    statuses = [(step["stage"], step["status"]) for step in run.trace.steps]
+    assert_true("correction_trace", ("decide", "cross_agent_message_route_corrected") in statuses, str(statuses))
+
+
+def test_llm_router_cross_agent_review_can_decline_ordinary_mentions() -> None:
+    tmp, run = make_run("解释一下 crawler 这个英文单词是什么意思")
+    fake = SequencedFakeClient(
+        [
+            '{"tool":"direct_answer","reason":"ordinary word explanation"}',
+            '{"proceed":true,"tool":"direct_answer","reason":"confirmed ordinary explanation"}',
+        ]
+    )
+    try:
+        service = LlmAgentToolRouterService(
+            select_client=lambda _config, _model, _temperature: (fake, "fake-router"),
+            action_plan_has_tool=lambda _plan, _tool: False,
+        )
+        route = service.route(run, session_summary={})
+    finally:
+        tmp.cleanup()
+
+    assert_equal("keeps_direct_answer", route.route_intent, "direct_answer")
+    assert_equal("ordinary_mention_only_uses_initial_and_confirmation_calls", len(fake.calls), 2)
+
+
+def test_mcagent_router_exposes_crawler_contact_only_as_agent_message() -> None:
+    tmp, run = make_run("让 Crawler 去采集落幕曲新手攻略")
+    fake = FakeClient(
+        '{"tool":"agent_message","reason":"send the request over the only cross-agent message bus",'
+        '"to_agent":"CrawlerAgent","content":"请根据用户请求采集落幕曲新手攻略资料，并由你自行决定是否启动采集。","intent":"collection_request"}'
+    )
+    try:
+        service = LlmAgentToolRouterService(
+            select_client=lambda _config, _model, _temperature: (fake, "fake-router"),
+            action_plan_has_tool=lambda _plan, _tool: False,
+        )
+        decision = service.decide_tool(
+            run.config,
+            run.payload,
+            agent=run.agent,
+            original_question=run.original_question,
+            contextual_question=run.question,
+            session_summary={},
+            model=run.model,
+        )
+    finally:
+        tmp.cleanup()
+
+    prompt = fake.calls[0]["messages"][1]["content"]
+    assert_equal("mcagent_crawler_contact_tool", decision["tool"], "agent_message")
+    assert_equal("mcagent_crawler_contact_to", decision["to_agent"], "CrawlerAgent")
+    assert_true("mcagent_prompt_no_delegate_tool", "delegate_crawler: Send a natural-language Minecraft data collection task" not in prompt, prompt)
+    assert_true("mcagent_prompt_only_agent_message", "MCagent has no separate crawler delegation tool" in prompt or "只能选择 agent_message" in prompt, prompt)
+
+
 def test_llm_router_repairs_malformed_json_before_router_error() -> None:
     tmp, run = make_run("hello")
     fake = SequencedFakeClient(
@@ -441,6 +517,9 @@ def main() -> int:
     test_crawler_collection_request_reuses_agent_decision_confirmation()
     test_llm_router_owns_prompt_and_json_parsing()
     test_llm_router_allows_local_corpus_inventory_tool()
+    test_llm_router_reviews_missed_cross_agent_message_route()
+    test_llm_router_cross_agent_review_can_decline_ordinary_mentions()
+    test_mcagent_router_exposes_crawler_contact_only_as_agent_message()
     test_llm_router_repairs_malformed_json_before_router_error()
     test_llm_router_retries_compact_decision_when_repair_fails()
     test_llm_router_selects_client_for_active_agent()

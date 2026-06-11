@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import sys
 import tempfile
 
@@ -19,6 +20,8 @@ from mcagent.config import (  # noqa: E402
     RetrievalConfig,
 )
 from mcagent.fastapi_app import create_app  # noqa: E402
+from mcagent.rag_service import RagRetrievalResult  # noqa: E402
+from mcagent.schema import SearchResult  # noqa: E402
 import mcagent.web_server as web_server  # noqa: E402
 
 
@@ -48,8 +51,10 @@ def assert_true(name: str, condition: bool, detail: str = "") -> None:
 class SequencedClient:
     def __init__(self, replies: list[str]) -> None:
         self.replies = list(replies)
+        self.calls: list[dict[str, object]] = []
 
     def chat(self, messages, *, temperature=None, max_tokens=None):  # noqa: ANN001, ANN201, ARG002
+        self.calls.append({"messages": messages, "temperature": temperature, "max_tokens": max_tokens})
         if not self.replies:
             raise AssertionError("fake LLM was called more times than expected")
         return self.replies.pop(0)
@@ -112,6 +117,139 @@ def test_fastapi_sse_chat_shape() -> None:
         assert_true("sse_status_command_status", response.status_code == 200)
         assert_true("sse_status_command_response", "event: response" in status_text, status_text[:500])
         assert_true("sse_status_command_done", "event: done" in status_text, status_text[:500])
+
+
+def _sse_events(text: str) -> list[tuple[str, object]]:
+    events: list[tuple[str, object]] = []
+    for block in text.split("\n\n"):
+        if not block.strip():
+            continue
+        event = "message"
+        data_lines: list[str] = []
+        for line in block.splitlines():
+            if line.startswith("event:"):
+                event = line.split(":", 1)[1].strip()
+            elif line.startswith("data:"):
+                data_lines.append(line.split(":", 1)[1].lstrip())
+        if not data_lines:
+            continue
+        raw = "\n".join(data_lines)
+        try:
+            events.append((event, json.loads(raw)))
+        except json.JSONDecodeError:
+            events.append((event, raw))
+    return events
+
+
+def test_fastapi_stream_local_inventory_question_uses_inventory_observation_not_rag() -> None:
+    router_reply = (
+        '{"tool":"local_corpus_inventory","reason":"the user asks what the local library contains, not a specific fact",'
+        '"collection_target":"","delivery_target":"human"}'
+    )
+    confirmation_reply = '{"proceed":true,"tool":"local_corpus_inventory","reason":"whole-corpus inventory is the selected read-only tool"}'
+    final_reply = (
+        "我完整看了本地资料库的客观观察包。除了乌托邦，我还能从原始 title/path/preview 里看到"
+        "香草纪元、落幕曲、Craftoria 和 Prominence II；这些判断来自工具暴露的 raw evidence。"
+    )
+    completeness_reply = '{"missing_side_effect":false,"action":"allow","reason":"inventory answer covers the request"}'
+    fake = SequencedClient([router_reply, confirmation_reply, final_reply, completeness_reply])
+    original_selector = web_server._selected_llm_client
+    original_inventory = web_server._local_corpus_inventory_answer
+
+    def fake_inventory(_config: AppConfig, _question: str) -> dict[str, object]:
+        return {
+            "answer": "local_corpus_inventory 工具观察：数据库目前有 5 篇已入库文档。",
+            "sources": [{"title": "香草纪元 / VanillaEra:FaresChron", "document_id": 1}],
+            "context": "inventory context",
+            "agent": "mcagent_rag",
+            "metadata": {
+                "inventory_observation": {
+                    "document_count": 5,
+                    "scanned_documents": 5,
+                    "tool_boundary": "raw evidence visible; candidates are not final judgments",
+                    "entity_candidates": [
+                        {
+                            "name": "香草纪元 / VanillaEra:FaresChron",
+                            "aliases": ["VanillaEra:FaresChron"],
+                            "related_documents": 1,
+                            "buckets": {"整合包": 1},
+                            "mechanical_reasons": ["manifest_fact"],
+                            "raw_evidence": [
+                                {
+                                    "raw_title": "VanillaEra:FaresChron manifest 结构化事实",
+                                    "raw_source_path": "D:/case/vefc/modpack_manifests.json",
+                                    "raw_preview": "整合包名称: VanillaEra:FaresChron",
+                                    "reason": "manifest_fact",
+                                }
+                            ],
+                        },
+                        {
+                            "name": "落幕曲 / Closing Song",
+                            "aliases": ["Closing Song"],
+                            "related_documents": 1,
+                            "buckets": {"整合包内部资料": 1},
+                            "mechanical_reasons": ["pack_internal_path"],
+                            "raw_evidence": [
+                                {
+                                    "raw_title": "closing song pack internals",
+                                    "raw_source_path": "D:/case/closing_song/pack_internal/quests.md",
+                                    "raw_preview": "Closing Song 1.5.1 pack internal inventory",
+                                    "reason": "pack_internal_path",
+                                }
+                            ],
+                        },
+                    ],
+                    "bucket_summary": [{"bucket": "整合包", "documents": 2, "distinct_titles": 2}],
+                }
+            },
+        }
+
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake, "fake")  # type: ignore[assignment]
+    web_server._local_corpus_inventory_answer = fake_inventory  # type: ignore[assignment]
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            client = TestClient(create_app(make_temp_config(Path(tmp))))
+            question = "你完整看一下本地资料库呢 我记得不止有乌托邦"
+            payload = {
+                "session_id": "fastapi-stream-inventory",
+                "agent": "mcagent_rag",
+                "question": question,
+                "agent_message": {
+                    "from_agent": "User",
+                    "to_agent": "MCagent",
+                    "content": question,
+                    "intent": "user_chat",
+                    "conversation_id": "fastapi-stream-inventory",
+                    "requires_reply": True,
+                },
+                "history": [],
+                "temperature": 0.0,
+                "max_tokens": "auto",
+                "no_llm": False,
+            }
+            with client.stream("POST", "/api/chat/stream", json=payload) as response:
+                text = "".join(response.iter_text())
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._local_corpus_inventory_answer = original_inventory  # type: ignore[assignment]
+
+    assert_true("inventory_stream_status", response.status_code == 200, text[:500])
+    events = _sse_events(text)
+    traces = [data for event, data in events if event == "trace" and isinstance(data, dict)]
+    response_events = [data for event, data in events if event == "response" and isinstance(data, dict)]
+    trace_pairs = [(item.get("stage"), item.get("status"), (item.get("detail") or {}).get("tool")) for item in traces]
+    assert_true("stream_tool_selected_inventory", ("decide", "tool_selected", "local_corpus_inventory") in trace_pairs, str(trace_pairs))
+    assert_true("stream_inventory_scanning", any(item.get("status") == "inventory_scanning" for item in traces), str(trace_pairs))
+    assert_true("stream_inventory_agent_generating", any(item.get("status") == "inventory_agent_generating" for item in traces), str(trace_pairs))
+    assert_true("stream_no_rag_search_trace", not any((item.get("detail") or {}).get("tool") == "local_rag_search" for item in traces), str(trace_pairs))
+    assert_true("stream_response_event", bool(response_events), text[:500])
+    body = response_events[-1]
+    answer = str((body.get("agent_message") or {}).get("content") or body.get("answer") or "")
+    assert_true("stream_inventory_first_person", answer.startswith("我完整看了"), answer)
+    assert_true("stream_inventory_mentions_other_packs", "香草纪元" in answer and "落幕曲" in answer, answer)
+    metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+    observation = metadata.get("inventory_observation") if isinstance(metadata.get("inventory_observation"), dict) else {}
+    assert_true("stream_raw_observation_preserved", "raw_evidence" in str(observation) and "raw_source_path" in str(observation), str(observation))
 
 
 def test_fastapi_agent_message_endpoint_dispatches() -> None:
@@ -351,10 +489,362 @@ def test_agent_selected_direct_answer_bypasses_legacy_delivery() -> None:
     assert_true("conversation_direct_answer_node", "mcagent_graph.graph_direct_answer_node" in graph_runtime.get("visited_nodes", []), str(graph_runtime))
 
 
-def test_mcagent_can_ask_crawler_agent_without_collection_side_effect() -> None:
+def test_mcagent_rag_answer_executes_in_graph_node() -> None:
     fake = SequencedClient(
         [
-            '{"tool":"ask_crawler_agent","reason":"user wants CrawlerAgent to answer","collection_target":"1+1 equals what?","delivery_target":"human"}',
+            '{"tool":"answer","reason":"answer from local evidence","collection_target":"","delivery_target":"human"}',
+            '{"proceed":true,"tool":"answer","reason":"confirmed local RAG answer"}',
+            "Craftoria is available in the local evidence. [S1]",
+            '{"violation":false,"reason":"answer did not claim unexecuted crawler work"}',
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    original_delivery = web_server._deliver_agent_message
+    original_retrieve = web_server.RagRetrievalService.retrieve
+
+    def forbidden_delivery(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AssertionError("legacy delivery should not run for graph-executed RAG answer")
+
+    def fake_retrieve(self, config, *, agent, original_question, question, session_summary, preparation, use_planner, add_trace):  # noqa: ANN001, ANN202, ARG001
+        result_1 = SearchResult(
+            rank=1,
+            score=0.98,
+            chunk_id=1,
+            document_id=10,
+            chunk_index=0,
+            title="Craftoria local guide",
+            source_path="D:/case/data/crawler_exports/modrinth_agent/craftoria.md",
+            url="https://example.test/craftoria",
+            text="Craftoria beginner guide evidence from local corpus. This page explains beginner progression and quests.",
+            metadata={"source": "modrinth_api", "project": "Craftoria"},
+        )
+        result_2 = SearchResult(
+            rank=2,
+            score=0.94,
+            chunk_id=2,
+            document_id=11,
+            chunk_index=0,
+            title="Craftoria wiki progression",
+            source_path="D:/case/data/crawler_exports/web_discovery/craftoria_wiki.md",
+            url="https://example.test/craftoria/wiki",
+            text="Craftoria wiki evidence with beginner route, early resources, and quest progression.",
+            metadata={"source": "wiki", "project": "Craftoria"},
+        )
+        add_trace("retrieve", "done", {"results": 2, "top": result_1.title})
+        return RagRetrievalResult(
+            evidence_question=preparation.evidence_question,
+            rough_k=preparation.rough_k,
+            final_k=preparation.final_k,
+            retrieval_plan=None,
+            search_question=preparation.evidence_question,
+            rough_results=[result_1, result_2],
+            selected=[result_1, result_2],
+        )
+
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake, "fake")  # type: ignore[assignment]
+    web_server._deliver_agent_message = forbidden_delivery  # type: ignore[assignment]
+    web_server.RagRetrievalService.retrieve = fake_retrieve  # type: ignore[assignment]
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = web_server._send_agent_message(
+                make_temp_config(Path(tmp)),
+                {"session_id": "fastapi-rag-answer-graph"},
+                from_agent="User",
+                content="What does local evidence say about Craftoria?",
+                to_agent="MCagent",
+                intent="user_chat",
+                conversation_id="fastapi-rag-answer-graph",
+            )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._deliver_agent_message = original_delivery  # type: ignore[assignment]
+        web_server.RagRetrievalService.retrieve = original_retrieve  # type: ignore[assignment]
+
+    answer = str(result.get("answer") or "")
+    assert_true("rag_answer_response", "Craftoria is available" in answer, answer)
+    assert_true("rag_answer_sources", bool(result.get("sources")), str(result))
+    assert_true("rag_answer_no_job", not result.get("job") and not result.get("delegation"), str(result))
+    agent_runtime = result.get("agent_graph_runtime") or {}
+    visited = agent_runtime.get("visited_nodes") or []
+    assert_true("graph_rag_answer_node", "mcagent.graph_rag_answer_route" in visited, str(visited))
+    assert_true("rag_legacy_not_visited", "mcagent.legacy_adapter" not in visited, str(visited))
+    adapter = agent_runtime.get("runtime_adapter") or {}
+    assert_true("graph_rag_answer_adapter", adapter.get("adapter") == "graph_rag_answer_route_executor", str(adapter))
+    route_execution = agent_runtime.get("route_execution_contract") or {}
+    assert_true("graph_rag_answer_execution_fact", route_execution.get("route_execution_executed_by_graph") is True, str(route_execution))
+    assert_true("graph_rag_answer_trace_fact", (route_execution.get("trace_facts") or {}).get("has_answer_generation_trace") is True, str(route_execution))
+    legacy_surface = agent_runtime.get("legacy_handler_surface_contract") or {}
+    assert_true("graph_rag_answer_surface_fact", legacy_surface.get("handler_executed_by_contract") is True, str(legacy_surface))
+    assert_true("graph_rag_answer_surface_not_legacy", legacy_surface.get("legacy_handlers_still_run_in_adapter") is False, str(legacy_surface))
+    graph_runtime = result.get("graph_runtime") or {}
+    assert_true("conversation_rag_answer_node", "mcagent_graph.graph_rag_answer_route" in graph_runtime.get("visited_nodes", []), str(graph_runtime))
+
+
+def test_mcagent_local_rag_search_executes_in_graph_node() -> None:
+    fake = SequencedClient(
+        [
+            '{"tool":"local_rag_search","reason":"search local evidence","collection_target":"","delivery_target":"human"}',
+            '{"proceed":false,"tool":"answer","suggested_tool":"local_rag_search","reason":"answer should be normalized to local_rag_search"}',
+            "Modern Industrialization tweaks are present in local Craftoria evidence. [S1]",
+            '{"violation":false,"reason":"answer did not claim unexecuted crawler work"}',
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    original_delivery = web_server._deliver_agent_message
+    original_retrieve = web_server.RagRetrievalService.retrieve
+
+    def forbidden_delivery(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AssertionError("legacy delivery should not run for graph-executed local_rag_search")
+
+    def fake_retrieve(self, config, *, agent, original_question, question, session_summary, preparation, use_planner, add_trace):  # noqa: ANN001, ANN202, ARG001
+        result_1 = SearchResult(
+            rank=1,
+            score=0.98,
+            chunk_id=1,
+            document_id=20,
+            chunk_index=0,
+            title="Craftoria Modern Industrialization tweaks",
+            source_path="D:/case/data/crawler_exports/modrinth_agent/craftoria_mi.md",
+            url="https://example.test/craftoria/mi",
+            text="Craftoria local evidence says Modern Industrialization tweaks include KubeJS recipe and machine changes.",
+            metadata={"source": "modrinth_api", "project": "Craftoria"},
+        )
+        result_2 = SearchResult(
+            rank=2,
+            score=0.93,
+            chunk_id=2,
+            document_id=21,
+            chunk_index=0,
+            title="Craftoria KubeJS MI scripts",
+            source_path="D:/case/data/crawler_exports/web_discovery/craftoria_kubejs.md",
+            url="https://example.test/craftoria/kubejs",
+            text="Craftoria evidence mentions KubeJS scripts changing Modern Industrialization progression.",
+            metadata={"source": "web_discovery", "project": "Craftoria"},
+        )
+        add_trace("retrieve", "done", {"results": 2, "top": result_1.title})
+        return RagRetrievalResult(
+            evidence_question=preparation.evidence_question,
+            rough_k=preparation.rough_k,
+            final_k=preparation.final_k,
+            retrieval_plan=None,
+            search_question=preparation.evidence_question,
+            rough_results=[result_1, result_2],
+            selected=[result_1, result_2],
+        )
+
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake, "fake")  # type: ignore[assignment]
+    web_server._deliver_agent_message = forbidden_delivery  # type: ignore[assignment]
+    web_server.RagRetrievalService.retrieve = fake_retrieve  # type: ignore[assignment]
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = web_server._send_agent_message(
+                make_temp_config(Path(tmp)),
+                {"session_id": "fastapi-local-rag-search-graph"},
+                from_agent="User",
+                content="What does local evidence say about Craftoria Modern Industrialization tweaks?",
+                to_agent="MCagent",
+                intent="user_chat",
+                conversation_id="fastapi-local-rag-search-graph",
+            )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._deliver_agent_message = original_delivery  # type: ignore[assignment]
+        web_server.RagRetrievalService.retrieve = original_retrieve  # type: ignore[assignment]
+
+    answer = str(result.get("answer") or "")
+    assert_true("local_rag_answer_response", "Modern Industrialization tweaks" in answer, answer)
+    agent_runtime = result.get("agent_graph_runtime") or {}
+    visited = agent_runtime.get("visited_nodes") or []
+    assert_true("graph_local_rag_answer_node", "mcagent.graph_rag_answer_route" in visited, str(visited))
+    assert_true("local_rag_legacy_not_visited", "mcagent.legacy_adapter" not in visited, str(visited))
+    adapter = agent_runtime.get("runtime_adapter") or {}
+    assert_true("graph_local_rag_adapter", adapter.get("adapter") == "graph_rag_answer_route_executor", str(adapter))
+    route_decision = agent_runtime.get("route_decision") or {}
+    confirmation = route_decision.get("route_confirmation") if isinstance(route_decision.get("route_confirmation"), dict) else {}
+    assert_true("local_rag_route_intent_is_rag_family", route_decision.get("route_intent") in {"answer", "local_rag_search"}, str(route_decision))
+    assert_true("local_rag_confirmation_normalized", confirmation.get("tool") == "local_rag_search" and confirmation.get("normalized_for_graph_rag_route") is True, str(route_decision))
+    graph_runtime = result.get("graph_runtime") or {}
+    assert_true("conversation_local_rag_node", "mcagent_graph.graph_rag_answer_route" in graph_runtime.get("visited_nodes", []), str(graph_runtime))
+
+
+def test_mcagent_local_rag_empty_result_executes_in_graph_node() -> None:
+    fake = SequencedClient(
+        [
+            '{"tool":"local_rag_search","reason":"search local evidence","collection_target":"","delivery_target":"human"}',
+            '{"proceed":true,"tool":"local_rag_search","reason":"confirmed local-only search"}',
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    original_delivery = web_server._deliver_agent_message
+    original_retrieve = web_server.RagRetrievalService.retrieve
+
+    def forbidden_delivery(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AssertionError("legacy delivery should not run for graph-executed empty local_rag_search")
+
+    def fake_retrieve(self, config, *, agent, original_question, question, session_summary, preparation, use_planner, add_trace):  # noqa: ANN001, ANN202, ARG001
+        add_trace("retrieve", "done", {"results": 0})
+        return RagRetrievalResult(
+            evidence_question=preparation.evidence_question,
+            rough_k=preparation.rough_k,
+            final_k=preparation.final_k,
+            retrieval_plan=None,
+            search_question=preparation.evidence_question,
+            rough_results=[],
+            selected=[],
+        )
+
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake, "fake")  # type: ignore[assignment]
+    web_server._deliver_agent_message = forbidden_delivery  # type: ignore[assignment]
+    web_server.RagRetrievalService.retrieve = fake_retrieve  # type: ignore[assignment]
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = web_server._send_agent_message(
+                make_temp_config(Path(tmp)),
+                {"session_id": "fastapi-local-rag-empty-graph"},
+                from_agent="User",
+                content="Use local evidence only for a nonexistent Craftoria subtopic.",
+                to_agent="MCagent",
+                intent="user_chat",
+                conversation_id="fastapi-local-rag-empty-graph",
+            )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._deliver_agent_message = original_delivery  # type: ignore[assignment]
+        web_server.RagRetrievalService.retrieve = original_retrieve  # type: ignore[assignment]
+
+    answer = str(result.get("answer") or "")
+    assert_true("empty_rag_answer_insufficient", "本地资料库没有检索到可用证据" in answer, answer)
+    assert_true("empty_rag_no_job", not result.get("job") and not result.get("delegation"), str(result))
+    agent_runtime = result.get("agent_graph_runtime") or {}
+    visited = agent_runtime.get("visited_nodes") or []
+    assert_true("empty_rag_graph_node", "mcagent.graph_rag_answer_route" in visited, str(visited))
+    assert_true("empty_rag_legacy_not_visited", "mcagent.legacy_adapter" not in visited, str(visited))
+    route_execution = agent_runtime.get("route_execution_contract") or {}
+    trace_facts = route_execution.get("trace_facts") or {}
+    assert_true("empty_rag_execution_graph", route_execution.get("route_execution_executed_by_graph") is True, str(route_execution))
+    assert_true("empty_rag_insufficient_trace", trace_facts.get("has_insufficient_evidence_trace") is True, str(route_execution))
+    legacy_surface = agent_runtime.get("legacy_handler_surface_contract") or {}
+    assert_true("empty_rag_surface_fact", legacy_surface.get("handler_executed_by_contract") is True, str(legacy_surface))
+    assert_true("empty_rag_surface_not_legacy", legacy_surface.get("legacy_handlers_still_run_in_adapter") is False, str(legacy_surface))
+    assert_true("empty_rag_surface_observed", "no_retrieval_results" in (legacy_surface.get("observed_surface_signals") or []), str(legacy_surface))
+    graph_runtime = result.get("graph_runtime") or {}
+    assert_true("conversation_empty_rag_node", "mcagent_graph.graph_rag_answer_route" in graph_runtime.get("visited_nodes", []), str(graph_runtime))
+
+
+def test_mcagent_context_request_executes_in_graph_node() -> None:
+    original_delivery = web_server._deliver_agent_message
+    original_retriever = web_server.Retriever
+
+    def forbidden_delivery(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AssertionError("legacy delivery should not run for graph-executed mcagent_context_reply")
+
+    class FakeRetriever:
+        def __init__(self, _config: AppConfig) -> None:
+            pass
+
+        def search(self, query: str, *, top_k: int, session_summary: dict[str, object] | None = None):  # noqa: ANN201, ARG002
+            return [
+                SearchResult(
+                    rank=1,
+                    score=0.97,
+                    chunk_id=101,
+                    document_id=501,
+                    chunk_index=0,
+                    title="Craftoria local context",
+                    source_path="D:/case/data/crawler_exports/mcagent_context/craftoria.md",
+                    url="https://example.test/craftoria",
+                    text=(
+                        "Craftoria local context says the local library has pack internals and version notes, "
+                        "but still lacks a public beginner guide, quest route, and reliable gameplay walkthrough."
+                    ),
+                    metadata={"source": "mcagent_context", "project": "Craftoria"},
+                )
+            ]
+
+    web_server._deliver_agent_message = forbidden_delivery  # type: ignore[assignment]
+    web_server.Retriever = FakeRetriever  # type: ignore[assignment]
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = web_server._send_agent_message(
+                make_temp_config(Path(tmp)),
+                {
+                    "session_id": "fastapi-mcagent-context-reply-graph",
+                    "mcagent_context_request": {
+                        "collection_target": "Craftoria 整合包",
+                        "focus": "Craftoria 整合包 新手攻略 缺口",
+                    },
+                },
+                from_agent="CrawlerAgent",
+                content="请告诉我 Craftoria 整合包本地已有资料和缺口。",
+                to_agent="MCagent",
+                intent="mcagent_context_request",
+                conversation_id="fastapi-mcagent-context-reply-graph",
+                metadata={"tool": "mcagent_context", "collection_target": "Craftoria 整合包"},
+            )
+    finally:
+        web_server._deliver_agent_message = original_delivery  # type: ignore[assignment]
+        web_server.Retriever = original_retriever  # type: ignore[assignment]
+
+    answer = str(result.get("answer") or "")
+    assert_true("mcagent_context_first_person", answer.startswith("我收到 CrawlerAgent 的本地上下文请求"), answer)
+    assert_true("mcagent_context_mentions_evidence", "Craftoria local context" in answer and "公开项目页" in answer, answer)
+    assert_true("mcagent_context_no_job", not result.get("job") and not result.get("delegation"), str(result))
+    traces = [(step.get("stage"), step.get("status")) for step in result.get("trace") or []]
+    assert_true("mcagent_context_light_done_trace", ("retrieve", "mcagent_context_light_done") in traces, str(traces))
+    agent_runtime = result.get("agent_graph_runtime") or {}
+    visited = agent_runtime.get("visited_nodes") or []
+    assert_true("mcagent_context_graph_node", "mcagent.graph_mcagent_context_reply" in visited, str(visited))
+    assert_true("mcagent_context_legacy_not_visited", "mcagent.legacy_adapter" not in visited, str(visited))
+    adapter = agent_runtime.get("runtime_adapter") or {}
+    assert_true("mcagent_context_adapter", adapter.get("adapter") == "graph_mcagent_context_reply_executor", str(adapter))
+    route_execution = agent_runtime.get("route_execution_contract") or {}
+    assert_true("mcagent_context_execution_graph", route_execution.get("route_execution_executed_by_graph") is True, str(route_execution))
+    legacy_surface = agent_runtime.get("legacy_handler_surface_contract") or {}
+    assert_true("mcagent_context_surface_observed", "mcagent_context_reply" in (legacy_surface.get("observed_surface_signals") or []), str(legacy_surface))
+    assert_true("mcagent_context_surface_not_legacy", legacy_surface.get("legacy_handlers_still_run_in_adapter") is False, str(legacy_surface))
+    graph_runtime = result.get("graph_runtime") or {}
+    assert_true("conversation_mcagent_context_node", "mcagent_graph.graph_mcagent_context_reply" in graph_runtime.get("visited_nodes", []), str(graph_runtime))
+
+
+def test_mcagent_direct_answer_protocol_explains_crawler_contact_as_agent_message() -> None:
+    fake = SequencedClient(
+        [
+            '{"tool":"direct_answer","reason":"user asks architecture/protocol question","collection_target":"","delivery_target":"human"}',
+            '{"proceed":true,"tool":"direct_answer","reason":"confirmed protocol explanation"}',
+            '{"missing_side_effect":false,"action":"allow","reason":"protocol explanation only"}',
+            "我会通过 AgentMessage(from_agent, content, to_agent) 联系 CrawlerAgent；MCagent 的跨 Agent 能力表只包含 agent_message，CrawlerAgent 收到后自己决定是否采集。",
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake, "fake")  # type: ignore[assignment]
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = web_server._send_agent_message(
+                make_temp_config(Path(tmp)),
+                {"session_id": "fastapi-mcagent-protocol-direct"},
+                from_agent="User",
+                content="你说的委托是谁，是通过 agent_message 与 crawler 对话，还是一个专门的委托函数？",
+                to_agent="MCagent",
+                intent="user_chat",
+                conversation_id="fastapi-mcagent-protocol-direct",
+            )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+
+    answer = str(result.get("answer") or "")
+    assert_true("protocol_answer_mentions_agent_message", "AgentMessage" in answer and "agent_message" in answer, answer)
+    direct_prompt = fake.calls[-1]["messages"][0]["content"] + "\n" + fake.calls[-1]["messages"][1]["content"]
+    assert_true("direct_prompt_only_agent_message", "跨 Agent 对话只有 AgentMessage" in direct_prompt, direct_prompt)
+    assert_true("direct_prompt_uses_capability_fact_not_keyword_ban", "跨 Agent 能力表只包含 agent_message" in direct_prompt, direct_prompt)
+    assert_true("direct_prompt_no_narrow_scheduler_ban", "没有另一个委托函数、调度模块" not in direct_prompt, direct_prompt)
+    assert_true("protocol_no_job", not result.get("job") and not result.get("delegation"), str(result))
+
+
+def test_mcagent_can_message_crawler_agent_without_collection_side_effect() -> None:
+    fake = SequencedClient(
+        [
+            '{"tool":"agent_message","reason":"user wants another Agent to answer","to_agent":"CrawlerAgent","content":"1+1 equals what?","intent":"agent_question","delivery_target":"human"}',
+            '{"requires_gap_context":false,"reason":"ordinary question does not depend on MCagent local corpus gaps"}',
             '{"tool":"direct_answer","reason":"simple arithmetic reply","collection_target":"","delivery_target":"human"}',
             '{"proceed":true,"tool":"direct_answer","reason":"confirmed direct reply"}',
             '{"missing_side_effect":false,"action":"allow","reason":"simple reply has no required side effect"}',
@@ -377,17 +867,437 @@ def test_mcagent_can_ask_crawler_agent_without_collection_side_effect() -> None:
     finally:
         web_server._selected_llm_client = original_selector  # type: ignore[assignment]
 
-    assert_true("ask_crawler_answer", "1+1=2" in str(result.get("answer") or ""), str(result))
-    assert_true("ask_crawler_no_job", not result.get("job") and not result.get("delegation"), str(result))
-    assert_true("ask_crawler_response_visible", (result.get("crawler_response") or {}).get("agent") == "crawler_agent", str(result))
+    assert_true("agent_message_answer", "1+1=2" in str(result.get("answer") or ""), str(result))
+    assert_true("agent_message_no_job", not result.get("job") and not result.get("delegation"), str(result))
+    assert_true("agent_message_response_visible", (result.get("receiver_response") or {}).get("agent") == "crawler_agent", str(result))
     traces = [(step.get("stage"), step.get("status")) for step in result.get("trace") or []]
-    assert_true("ask_crawler_relay_trace", ("message", "ask_crawler_agent_relayed") in traces, str(traces))
+    assert_true("agent_message_relay_trace", ("message", "agent_message_relayed") in traces, str(traces))
+    assert_true("agent_message_preparing_trace", ("message", "agent_message_preparing") in traces, str(traces))
+    assert_true("agent_message_waiting_trace", ("message", "agent_message_waiting_for_reply") in traces, str(traces))
+    assert_true("agent_message_reply_trace", ("message", "agent_message_reply_received") in traces, str(traces))
+    assert_true("agent_message_summary_trace", ("message", "agent_message_summary_ready") in traces, str(traces))
     assert_true("crawler_received_message", any(step.get("stage") == "message" and step.get("status") == "received" and (step.get("detail") or {}).get("to_agent") == "CrawlerAgent" for step in result.get("trace") or []), str(result.get("trace")))
-    crawler_runtime = (result.get("crawler_response") or {}).get("agent_graph_runtime") or {}
+    crawler_runtime = (result.get("receiver_response") or {}).get("agent_graph_runtime") or {}
     assert_true("crawler_graph_runtime", crawler_runtime.get("agent_graph") == "CrawlerAgentGraph", str(crawler_runtime))
     assert_true("crawler_direct_node", "crawler.graph_direct_answer_node" in crawler_runtime.get("visited_nodes", []), str(crawler_runtime))
+    agent_runtime = result.get("agent_graph_runtime") or {}
+    visited = agent_runtime.get("visited_nodes") or []
+    assert_true("agent_message_graph_node", "mcagent.graph_agent_message_route" in visited, str(visited))
+    assert_true("agent_message_legacy_not_visited", "mcagent.legacy_adapter" not in visited, str(visited))
+    adapter = agent_runtime.get("runtime_adapter") or {}
+    assert_true("agent_message_graph_adapter", adapter.get("adapter") == "graph_agent_message_route_executor", str(adapter))
+    route_execution = agent_runtime.get("route_execution_contract") or {}
+    assert_true("agent_message_graph_execution_fact", route_execution.get("route_execution_executed_by_graph") is True, str(route_execution))
+    graph_runtime = result.get("graph_runtime") or {}
+    assert_true("conversation_agent_message_node", "mcagent_graph.graph_agent_message_route" in graph_runtime.get("visited_nodes", []), str(graph_runtime))
     metadata = result.get("metadata") or {}
-    assert_true("ask_crawler_metadata", ((metadata.get("ask_crawler_agent") or {}).get("no_persistence") is True), str(metadata))
+    assert_true("agent_message_metadata", ((metadata.get("agent_message") or {}).get("no_persistence") is True), str(metadata))
+    assert_true("agent_message_final_summary", "From-Content-To" in str(result.get("answer") or "") and "1+1=2" in str(result.get("answer") or ""), str(result.get("answer") or ""))
+    answer = str(result.get("answer") or "")
+    assert_true("agent_message_summary_first_person", "我已通过 From-Content-To 消息询问 CrawlerAgent" in answer, answer)
+    assert_true("agent_message_no_third_person_template", "MCagent 已通过" not in answer and "CrawlerAgent 的回答如下" not in answer, answer)
+
+
+def test_mcagent_agent_message_response_passes_through_crawler_job_without_task_ticket_text() -> None:
+    fake = SequencedClient(
+        [
+            '{"tool":"agent_message","reason":"ask CrawlerAgent to collect","to_agent":"CrawlerAgent","content":"请补齐缺失资料","intent":"collection_request","delivery_target":"MCagent/RAG","metadata":{"tool":"collection_request","delivery_target":"MCagent/RAG"}}',
+            '{"requires_gap_context":false,"reason":"pass-through test does not exercise local gap preparation"}',
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    original_send = web_server._send_agent_message
+
+    def fake_send(config, payload, *, from_agent, content, to_agent, metadata=None, **kwargs):  # noqa: ANN001, ANN202, ARG001
+        job = web_server.Job(id="pass-through-job", kind="crawler", title=content, status="queued", summary="queued")
+        job.result = {"plan": {"topic": content, "delivery_target": "MCagent/RAG"}}
+        return {
+            "answer": "我是 CrawlerAgent。我会自己判断采集动作，并把过程持续报告出来。",
+            "agent": "crawler_agent",
+            "job": web_server._job_to_dict(job),
+            "delegation": {"requested_by": "user_via_mcagent", "delivery_target": "MCagent/RAG", "task": content},
+            "agent_message": web_server.make_agent_message("CrawlerAgent", "我会自己判断采集动作。", from_agent, requires_reply=False).to_dict(),
+        }
+
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake, "fake")  # type: ignore[assignment]
+    web_server._send_agent_message = fake_send  # type: ignore[assignment]
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = web_server._send_agent_message(
+                make_temp_config(Path(tmp)),
+                {"session_id": "fastapi-agent-message-job-passthrough"},
+                from_agent="User",
+                content="叫crawler去获取你缺的资料",
+                to_agent="MCagent",
+                intent="user_chat",
+                conversation_id="fastapi-agent-message-job-passthrough",
+            )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._send_agent_message = original_send  # type: ignore[assignment]
+
+    answer = str(result.get("answer") or "")
+    assert_true("job_passed_through", (result.get("job") or {}).get("id") == "pass-through-job", str(result))
+    assert_true("delegation_passed_through", (result.get("delegation") or {}).get("delivery_target") == "MCagent/RAG", str(result))
+    assert_true("answer_no_task_ticket", "补库动作：" not in answer and "任务ID：" not in answer and "任务卡片" not in answer, answer)
+
+
+def test_mcagent_gap_collection_message_includes_local_gap_context() -> None:
+    fake = SequencedClient(
+        [
+            json.dumps(
+                {
+                    "tool": "agent_message",
+                    "reason": "MCagent should ask CrawlerAgent over the message bus.",
+                    "to_agent": "CrawlerAgent",
+                    "content": "Please collect what MCagent is missing.",
+                    "intent": "delegate_collection",
+                    "delivery_target": "MCagent/RAG",
+                    "metadata": {"tool": "collection_request", "delivery_target": "MCagent/RAG"},
+                }
+            ),
+            json.dumps(
+                {
+                    "requires_gap_context": True,
+                    "focus": "local Minecraft modpack coverage gaps",
+                    "reason": "The outgoing request depends on MCagent's local corpus gaps.",
+                }
+            ),
+            json.dumps(
+                {
+                    "content": (
+                        "I have checked my local corpus. I can see Utopian Journey and Closing Song, "
+                        "but Craftoria and Prominence II still lack beginner route and quest guide evidence. "
+                        "Please look for public sources for those gaps and decide your own collection steps."
+                    ),
+                    "gap_summary": "Craftoria and Prominence II lack beginner route and quest guide evidence.",
+                    "reason": "MCagent converted objective local inventory into an AgentMessage.",
+                }
+            ),
+        ]
+    )
+    captured: list[dict[str, object]] = []
+    original_selector = web_server._selected_llm_client
+    original_inventory = web_server._local_corpus_inventory_answer
+    original_send = web_server._send_agent_message
+
+    def fake_inventory(config, question):  # noqa: ANN001, ANN202, ARG001
+        return {
+            "answer": (
+                "Inventory observation: local corpus has Utopian Journey and Closing Song internal evidence. "
+                "Craftoria and Prominence II are visible as modpack entities, but beginner route, quest guide, "
+                "version explanation, and reliable public source evidence are weak."
+            ),
+            "sources": [],
+            "context": "",
+            "agent": "mcagent_rag",
+            "metadata": {
+                "inventory_observation": {
+                    "document_count": 10776,
+                    "scanned_documents": 10776,
+                    "entity_candidates": [
+                        {"name": "Utopian Journey", "related_documents": 100},
+                        {"name": "Closing Song", "related_documents": 80},
+                        {"name": "Craftoria", "related_documents": 60},
+                        {"name": "Prominence II", "related_documents": 50},
+                    ],
+                    "bucket_summary": [{"bucket": "modpack", "documents": 681}],
+                }
+            },
+        }
+
+    def fake_send(config, payload, *, from_agent, content, to_agent, metadata=None, **kwargs):  # noqa: ANN001, ANN202, ARG001
+        captured.append({"payload": payload, "from_agent": from_agent, "content": content, "to_agent": to_agent, "metadata": metadata or {}})
+        job = web_server.Job(id="gap-context-job", kind="crawler", title=content, status="queued", summary="queued")
+        job.result = {"plan": {"topic": content, "delivery_target": "MCagent/RAG"}}
+        return {
+            "answer": "I am CrawlerAgent. I received MCagent's gap summary and will choose my own collection steps.",
+            "agent": "crawler_agent",
+            "job": web_server._job_to_dict(job),
+        }
+
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake, "fake")  # type: ignore[assignment]
+    web_server._local_corpus_inventory_answer = fake_inventory  # type: ignore[assignment]
+    web_server._send_agent_message = fake_send  # type: ignore[assignment]
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = web_server._chat_impl(
+                make_temp_config(Path(tmp)),
+                {
+                    "session_id": "fastapi-gap-context-agent-message",
+                    "agent": "mcagent_rag",
+                    "question": "Ask CrawlerAgent to collect whatever MCagent is missing for the local modpack corpus.",
+                },
+            )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._local_corpus_inventory_answer = original_inventory  # type: ignore[assignment]
+        web_server._send_agent_message = original_send  # type: ignore[assignment]
+
+    assert_true("crawler_message_sent", len(captured) == 1, str(captured))
+    sent = captured[0]
+    sent_content = str(sent.get("content") or "")
+    sent_metadata = sent.get("metadata") if isinstance(sent.get("metadata"), dict) else {}
+    assert_true("sent_to_crawler", sent.get("to_agent") == "CrawlerAgent", str(sent))
+    assert_true("sent_from_mcagent", sent.get("from_agent") == "MCagent", str(sent))
+    assert_true("content_has_local_gap_context", "Craftoria" in sent_content and "Prominence II" in sent_content and "beginner route" in sent_content, sent_content)
+    gap_context = sent_metadata.get("mcagent_gap_context") if isinstance(sent_metadata.get("mcagent_gap_context"), dict) else {}
+    assert_true("gap_context_required", gap_context.get("required") is True, str(sent_metadata))
+    assert_true("gap_context_inventory_metadata", ((gap_context.get("inventory_metadata") or {}).get("inventory_observation") or {}).get("document_count") == 10776, str(gap_context))
+    payload_summary = (sent.get("payload") or {}).get("session_summary") if isinstance(sent.get("payload"), dict) else {}
+    assert_true("payload_has_gap_context", isinstance(payload_summary, dict) and (payload_summary.get("mcagent_gap_context") or {}).get("required") is True, str(payload_summary))
+    statuses = [(step.get("stage"), step.get("status")) for step in result.get("trace") or []]
+    assert_true("inventory_scanning_trace", ("retrieve", "inventory_scanning") in statuses, str(statuses))
+    assert_true("inventory_done_trace", ("retrieve", "inventory_done") in statuses, str(statuses))
+    assert_true("handoff_prepared_trace", ("message", "mcagent_gap_handoff_prepared") in statuses, str(statuses))
+    assert_true("final_answer_mentions_crawler_reply", "CrawlerAgent" in str(result.get("answer") or ""), str(result.get("answer") or ""))
+
+
+def test_mcagent_inventory_agent_message_plan_continues_after_inventory() -> None:
+    fake = SequencedClient(
+        [
+            json.dumps(
+                {
+                    "tool": "local_corpus_inventory",
+                    "reason": "Inspect local corpus first, then tell CrawlerAgent the gaps.",
+                    "collection_target": "collect missing modpack beginner guides",
+                    "delivery_target": "MCagent/RAG",
+                    "action_plan": [
+                        {"step": 1, "tool": "local_corpus_inventory", "goal": "inspect local coverage"},
+                        {"step": 2, "tool": "agent_message", "goal": "send the gaps to CrawlerAgent"},
+                    ],
+                }
+            ),
+            json.dumps(
+                {
+                    "proceed": True,
+                    "tool": "local_corpus_inventory",
+                    "reason": "confirmed inventory read before message",
+                }
+            ),
+            "Inventory answer prepared by MCagent. Craftoria and Prominence II lack beginner guide evidence.",
+            json.dumps(
+                {
+                    "content": (
+                        "I checked my local corpus. Utopian Journey and Closing Song have some internal evidence, "
+                        "while Craftoria and Prominence II need public beginner guides. Please decide how to collect those sources."
+                    ),
+                    "gap_summary": "Craftoria and Prominence II need public beginner guides.",
+                    "reason": "prepared MCagent gap handoff from inventory",
+                }
+            ),
+            json.dumps({"handoff_brief": "MCagent sends the local gap summary to CrawlerAgent through AgentMessage.", "reason": "brief"}),
+        ]
+    )
+    captured: list[dict[str, object]] = []
+    original_selector = web_server._selected_llm_client
+    original_inventory = web_server._local_corpus_inventory_answer
+    original_send = web_server._send_agent_message
+
+    def fake_inventory(config, question):  # noqa: ANN001, ANN202, ARG001
+        return {
+            "answer": "Inventory: Utopian Journey, Closing Song, Craftoria, and Prominence II are visible. Craftoria and Prominence II lack beginner guide evidence.",
+            "sources": [],
+            "context": "",
+            "agent": "mcagent_rag",
+            "metadata": {"inventory_observation": {"document_count": 10776, "entity_candidates": [{"name": "Craftoria"}, {"name": "Prominence II"}]}},
+        }
+
+    def fake_send(config, payload, *, from_agent, content, to_agent, metadata=None, **kwargs):  # noqa: ANN001, ANN202, ARG001
+        captured.append({"payload": payload, "from_agent": from_agent, "content": content, "to_agent": to_agent, "metadata": metadata or {}})
+        job = web_server.Job(id="planned-agent-message-job", kind="crawler", title=content, status="queued", summary="queued")
+        job.result = {"plan": {"topic": content, "delivery_target": "MCagent/RAG"}}
+        return {
+            "answer": "I am CrawlerAgent. I received the gap message and will choose my own collection route.",
+            "agent": "crawler_agent",
+            "job": web_server._job_to_dict(job),
+        }
+
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake, "fake")  # type: ignore[assignment]
+    web_server._local_corpus_inventory_answer = fake_inventory  # type: ignore[assignment]
+    web_server._send_agent_message = fake_send  # type: ignore[assignment]
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = web_server._chat_impl(
+                make_temp_config(Path(tmp)),
+                {
+                    "session_id": "fastapi-inventory-agent-message-plan",
+                    "agent": "mcagent_rag",
+                    "question": "Inspect local modpack gaps and ask CrawlerAgent to collect what is missing.",
+                },
+            )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._local_corpus_inventory_answer = original_inventory  # type: ignore[assignment]
+        web_server._send_agent_message = original_send  # type: ignore[assignment]
+
+    assert_true("planned_message_sent", len(captured) == 1, str(captured))
+    sent = captured[0]
+    assert_true("planned_sent_content", "Craftoria" in str(sent.get("content") or "") and "Prominence II" in str(sent.get("content") or ""), str(sent))
+    assert_true("planned_sent_metadata_tool", (sent.get("metadata") or {}).get("tool") == "collection_request", str(sent))
+    assert_true("planned_job_returned", (result.get("job") or {}).get("id") == "planned-agent-message-job", str(result))
+    statuses = [(step.get("stage"), step.get("status")) for step in result.get("trace") or []]
+    assert_true("planned_inventory_done", ("retrieve", "inventory_done") in statuses, str(statuses))
+    assert_true("planned_handoff_prepared", ("message", "mcagent_gap_handoff_prepared") in statuses, str(statuses))
+    assert_true("planned_workflow_trace", ("delegate", "planned_workflow") in statuses, str(statuses))
+
+
+def test_mcagent_inventory_agent_message_plan_executes_in_graph_node() -> None:
+    fake = SequencedClient(
+        [
+            json.dumps(
+                {
+                    "tool": "local_corpus_inventory",
+                    "reason": "Inspect local corpus first, then tell CrawlerAgent the gaps.",
+                    "collection_target": "collect missing modpack beginner guides",
+                    "delivery_target": "MCagent/RAG",
+                    "action_plan": [
+                        {"step": 1, "tool": "local_corpus_inventory", "goal": "inspect local coverage"},
+                        {"step": 2, "tool": "agent_message", "goal": "send the gaps to CrawlerAgent"},
+                    ],
+                }
+            ),
+            json.dumps({"proceed": True, "tool": "local_corpus_inventory", "reason": "confirmed"}),
+            "Inventory answer prepared by MCagent. Craftoria and Prominence II lack beginner guide evidence.",
+            json.dumps(
+                {
+                    "content": "I checked my local corpus. Craftoria and Prominence II need public beginner guides. Please decide how to collect those sources.",
+                    "gap_summary": "Craftoria and Prominence II need public beginner guides.",
+                    "reason": "prepared MCagent gap handoff from inventory",
+                }
+            ),
+            json.dumps({"handoff_brief": "MCagent sends the local gap summary to CrawlerAgent through AgentMessage.", "reason": "brief"}),
+        ]
+    )
+    captured: list[dict[str, object]] = []
+    original_selector = web_server._selected_llm_client
+    original_inventory = web_server._local_corpus_inventory_answer
+    original_send = web_server._send_agent_message
+
+    def fake_inventory(config, question):  # noqa: ANN001, ANN202, ARG001
+        return {
+            "answer": "Inventory: Craftoria and Prominence II lack beginner guide evidence.",
+            "sources": [],
+            "context": "",
+            "agent": "mcagent_rag",
+            "metadata": {"inventory_observation": {"document_count": 10776, "entity_candidates": [{"name": "Craftoria"}, {"name": "Prominence II"}]}},
+        }
+
+    def fake_send(config, payload, *, from_agent, content, to_agent, metadata=None, **kwargs):  # noqa: ANN001, ANN202, ARG001
+        captured.append({"content": content, "to_agent": to_agent, "metadata": metadata or {}})
+        job = web_server.Job(id="graph-planned-agent-message-job", kind="crawler", title=content, status="queued", summary="queued")
+        job.result = {"plan": {"topic": content, "delivery_target": "MCagent/RAG"}}
+        return {
+            "answer": "I am CrawlerAgent. I received the gap message and will choose my own collection route.",
+            "agent": "crawler_agent",
+            "job": web_server._job_to_dict(job),
+        }
+
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake, "fake")  # type: ignore[assignment]
+    web_server._local_corpus_inventory_answer = fake_inventory  # type: ignore[assignment]
+    web_server._send_agent_message = fake_send  # type: ignore[assignment]
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = original_send(
+                make_temp_config(Path(tmp)),
+                {"session_id": "fastapi-inventory-agent-message-plan-graph"},
+                from_agent="User",
+                content="Inspect local modpack gaps and ask CrawlerAgent to collect what is missing.",
+                to_agent="MCagent",
+                intent="user_chat",
+                conversation_id="fastapi-inventory-agent-message-plan-graph",
+            )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._local_corpus_inventory_answer = original_inventory  # type: ignore[assignment]
+        web_server._send_agent_message = original_send  # type: ignore[assignment]
+
+    assert_true("graph_planned_message_sent", len(captured) == 1, str(captured))
+    agent_runtime = result.get("agent_graph_runtime") or {}
+    visited = agent_runtime.get("visited_nodes") or []
+    assert_true("graph_planned_node", "mcagent.graph_mcagent_inventory_planned_workflow" in visited, str(visited))
+    assert_true("graph_planned_legacy_not_visited", "mcagent.legacy_adapter" not in visited, str(visited))
+    adapter = agent_runtime.get("runtime_adapter") or {}
+    assert_true("graph_planned_adapter", adapter.get("adapter") == "graph_mcagent_inventory_planned_workflow_executor", str(adapter))
+    route_execution = agent_runtime.get("route_execution_contract") or {}
+    assert_true("graph_planned_executed", route_execution.get("route_execution_executed_by_graph") is True, str(route_execution))
+    assert_true("graph_planned_job", (result.get("job") or {}).get("id") == "graph-planned-agent-message-job", str(result))
+
+
+def test_mcagent_gap_context_timeout_fallback_is_readable_first_person() -> None:
+    class TimeoutClient(SequencedClient):
+        def chat(self, messages, *, temperature=None, max_tokens=None):  # noqa: ANN001, ANN201, ARG002
+            self.calls.append({"messages": messages, "temperature": temperature, "max_tokens": max_tokens})
+            if len(self.calls) == 1:
+                return json.dumps(
+                    {
+                        "tool": "agent_message",
+                        "reason": "MCagent should ask CrawlerAgent over the message bus.",
+                        "to_agent": "CrawlerAgent",
+                        "content": "Please collect what MCagent is missing.",
+                        "intent": "crawler_collection",
+                        "delivery_target": "MCagent/RAG",
+                    }
+                )
+            if len(self.calls) == 2:
+                return json.dumps({"requires_gap_context": True, "focus": "modpack gaps", "reason": "needs context"})
+            raise RuntimeError("handoff generation timed out")
+
+    fake = TimeoutClient([])
+    captured: list[dict[str, object]] = []
+    original_selector = web_server._selected_llm_client
+    original_inventory = web_server._local_corpus_inventory_answer
+    original_send = web_server._send_agent_message
+
+    def fake_inventory(config, question):  # noqa: ANN001, ANN202, ARG001
+        return {
+            "answer": "local_corpus_inventory raw observation with many details that should not be dumped wholesale",
+            "sources": [],
+            "context": "",
+            "agent": "mcagent_rag",
+            "metadata": {
+                "inventory_observation": {
+                    "document_count": 10776,
+                    "entity_candidates": [
+                        {"name": "VanillaEra:FaresChron"},
+                        {"name": "Craftoria"},
+                        {"name": "Prominence II"},
+                        {"name": "Utopian Journey"},
+                        {"name": "Closing Song"},
+                    ],
+                }
+            },
+        }
+
+    def fake_send(config, payload, *, from_agent, content, to_agent, metadata=None, **kwargs):  # noqa: ANN001, ANN202, ARG001
+        captured.append({"content": content, "metadata": metadata or {}, "to_agent": to_agent})
+        return {"answer": "I am CrawlerAgent. Received.", "agent": "crawler_agent"}
+
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake, "fake")  # type: ignore[assignment]
+    web_server._local_corpus_inventory_answer = fake_inventory  # type: ignore[assignment]
+    web_server._send_agent_message = fake_send  # type: ignore[assignment]
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = web_server._chat_impl(
+                make_temp_config(Path(tmp)),
+                {
+                    "session_id": "fastapi-gap-context-timeout-fallback",
+                    "agent": "mcagent_rag",
+                    "question": "Ask CrawlerAgent to collect what MCagent is missing.",
+                },
+            )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._local_corpus_inventory_answer = original_inventory  # type: ignore[assignment]
+        web_server._send_agent_message = original_send  # type: ignore[assignment]
+
+    assert_true("fallback_message_sent", len(captured) == 1, str(captured))
+    content = str(captured[0].get("content") or "")
+    assert_true("fallback_first_person", content.startswith("我是 MCagent。"), content)
+    assert_true("fallback_names", "Craftoria" in content and "Prominence II" in content and "Utopian Journey" in content, content)
+    assert_true("fallback_not_raw_dump", "raw observation with many details" not in content, content)
+    statuses = [(step.get("stage"), step.get("status")) for step in result.get("trace") or []]
+    assert_true("fallback_trace_failed", ("message", "mcagent_gap_handoff_prepare_failed") in statuses, str(statuses))
 
 
 def test_agent_selected_temporary_extract_bypasses_legacy_delivery() -> None:
@@ -642,15 +1552,252 @@ def test_agent_selected_router_error_bypasses_legacy_delivery() -> None:
     assert_true("conversation_router_error_node", "mcagent_graph.graph_router_error_route" in graph_runtime.get("visited_nodes", []), str(graph_runtime))
 
 
-def test_local_inventory_with_delegate_plan_stays_on_legacy_delivery() -> None:
+def test_crawler_planned_workflow_executes_in_graph_node() -> None:
     fake = SequencedClient(
         [
-            '{"tool":"local_corpus_inventory","reason":"inspect then delegate","action_plan":[{"step":1,"tool":"local_corpus_inventory","goal":"inspect local coverage"},{"step":2,"tool":"delegate_crawler","goal":"collect missing evidence"}],"collection_target":"collect missing evidence","delivery_target":"MCagent/RAG"}',
-            '{"proceed":true,"tool":"local_corpus_inventory","reason":"confirmed inventory read"}',
+            json.dumps(
+                {
+                    "tool": "planned_workflow",
+                    "reason": "I received an AgentMessage asking me to collect missing modpack guides, so I choose my own collection workflow.",
+                    "collection_target": "Find public beginner guides for Craftoria and Prominence II.",
+                    "delivery_target": "MCagent/RAG",
+                    "action_plan": [
+                        {"step": 1, "tool": "delegate_crawler", "goal": "start the CrawlerAgent-owned collection workflow"},
+                    ],
+                }
+            ),
+            json.dumps({"proceed": True, "tool": "planned_workflow", "reason": "confirmed CrawlerAgent-selected workflow"}),
+            json.dumps({"handoff_brief": "I will collect public beginner-guide evidence for MCagent/RAG.", "reason": "CrawlerAgent selected collection"}),
         ]
     )
     original_selector = web_server._selected_llm_client
     original_delivery = web_server._deliver_agent_message
+    original_start = web_server._start_crawler_job_from_crawler_tool
+    calls: list[dict[str, object]] = []
+
+    def forbidden_delivery(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AssertionError("legacy delivery should not run for graph-executed CrawlerAgent planned_workflow")
+
+    def fake_start(config: AppConfig, payload: dict[str, object], question: str, plan: dict[str, object] | None = None):  # noqa: ARG001
+        calls.append({"payload": payload, "question": question, "plan": plan})
+        job = web_server.Job(id="graph-crawler-planned-job", kind="crawler", title=question, status="queued", summary="queued")
+        job.result = {"plan": {"topic": question, "delivery_target": payload.get("delivery_target")}}
+        return job, True
+
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake, "fake")  # type: ignore[assignment]
+    web_server._deliver_agent_message = forbidden_delivery  # type: ignore[assignment]
+    web_server._start_crawler_job_from_crawler_tool = fake_start  # type: ignore[assignment]
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = web_server._send_agent_message(
+                make_temp_config(Path(tmp)),
+                {"session_id": "fastapi-crawler-planned-graph", "model": "fake-model", "delivery_target": "MCagent/RAG"},
+                from_agent="MCagent",
+                content="I found gaps in Craftoria and Prominence II beginner-guide evidence. Please decide how to collect public sources.",
+                to_agent="CrawlerAgent",
+                intent="collection_request",
+                conversation_id="fastapi-crawler-planned-graph",
+                metadata={"tool": "collection_request", "delivery_target": "MCagent/RAG", "requested_by": "mcagent"},
+            )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._deliver_agent_message = original_delivery  # type: ignore[assignment]
+        web_server._start_crawler_job_from_crawler_tool = original_start  # type: ignore[assignment]
+
+    assert_true("crawler_job_started_once", len(calls) == 1, str(calls))
+    call_payload = calls[0].get("payload") if isinstance(calls[0].get("payload"), dict) else {}
+    assert_true("crawler_agent_owns_job_start", call_payload.get("agent") == "crawler_agent", str(call_payload))
+    message = call_payload.get("agent_message") if isinstance(call_payload.get("agent_message"), dict) else {}
+    assert_true("crawler_job_requires_agent_message", message.get("to_agent") == "CrawlerAgent", str(message))
+    metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+    assert_true("crawler_job_selected_delegate_tool", metadata.get("tool") == "delegate_crawler", str(message))
+    assert_true("crawler_planned_job", (result.get("job") or {}).get("id") == "graph-crawler-planned-job", str(result))
+    traces = [(step.get("stage"), step.get("status")) for step in result.get("trace") or []]
+    assert_true("crawler_collection_request_observed", ("message", "collection_request_received_for_agent_decision") in traces, str(traces))
+    assert_true("crawler_selected_delegate_step", ("plan", "executing_agent_selected_step") in traces, str(traces))
+    agent_runtime = result.get("agent_graph_runtime") or {}
+    visited = agent_runtime.get("visited_nodes") or []
+    assert_true("graph_crawler_planned_node", "crawler.graph_crawler_planned_workflow" in visited, str(visited))
+    assert_true("crawler_legacy_not_visited", "crawler.legacy_adapter" not in visited, str(visited))
+    adapter = agent_runtime.get("runtime_adapter") or {}
+    assert_true("graph_crawler_planned_adapter", adapter.get("adapter") == "graph_crawler_planned_workflow_executor", str(adapter))
+    assert_true("graph_crawler_planned_boundary", "does not choose sources" in str(adapter.get("objective_boundary") or ""), str(adapter))
+    route_execution = agent_runtime.get("route_execution_contract") or {}
+    assert_true("graph_crawler_planned_execution_fact", route_execution.get("route_execution_executed_by_graph") is True, str(route_execution))
+    assert_true("graph_crawler_planned_job_fact", (route_execution.get("result_facts") or {}).get("job_present") is True, str(route_execution))
+    graph_runtime = result.get("graph_runtime") or {}
+    assert_true("conversation_crawler_planned_node", "crawler_graph.graph_crawler_planned_workflow" in graph_runtime.get("visited_nodes", []), str(graph_runtime))
+
+
+def test_crawler_mcagent_context_route_executes_in_graph_node() -> None:
+    fake = SequencedClient(
+        [
+            json.dumps(
+                {
+                    "tool": "mcagent_context",
+                    "reason": "I need MCagent local context before deciding whether external collection is needed.",
+                    "collection_target": "Craftoria 整合包",
+                    "delivery_target": "CrawlerAgent",
+                }
+            ),
+            json.dumps({"proceed": True, "tool": "mcagent_context", "reason": "confirmed CrawlerAgent-selected context request"}),
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    original_delivery = web_server._deliver_agent_message
+    original_retriever = web_server.Retriever
+    original_rag_retrieve = web_server.RagRetrievalService.retrieve
+
+    def forbidden_delivery(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AssertionError("legacy delivery should not run for graph-executed CrawlerAgent mcagent_context route")
+
+    class FakeRetriever:
+        def __init__(self, _config: AppConfig) -> None:
+            pass
+
+        def search(self, query: str, *, top_k: int, session_summary: dict[str, object] | None = None):  # noqa: ANN201, ARG002
+            return [
+                SearchResult(
+                    rank=1,
+                    score=0.91,
+                    chunk_id=201,
+                    document_id=601,
+                    chunk_index=0,
+                    title="Craftoria local gap note",
+                    source_path="D:/case/data/crawler_exports/mcagent_context/craftoria_gap.md",
+                    url=None,
+                    text="Craftoria local gap note: local internals exist, but public beginner guide evidence is missing.",
+                    metadata={"source": "mcagent_context", "project": "Craftoria"},
+                )
+            ]
+
+    def forbidden_rag(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AssertionError("CrawlerAgent mcagent_context route should send AgentMessage, not answer with chat-turn RAG")
+
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake, "fake")  # type: ignore[assignment]
+    web_server._deliver_agent_message = forbidden_delivery  # type: ignore[assignment]
+    web_server.Retriever = FakeRetriever  # type: ignore[assignment]
+    web_server.RagRetrievalService.retrieve = forbidden_rag  # type: ignore[assignment]
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = web_server._send_agent_message(
+                make_temp_config(Path(tmp)),
+                {"session_id": "fastapi-crawler-mcagent-context-graph", "model": "fake-model"},
+                from_agent="User",
+                content="Ask MCagent what Craftoria local evidence and gaps exist.",
+                to_agent="CrawlerAgent",
+                intent="user_chat",
+                conversation_id="fastapi-crawler-mcagent-context-graph",
+            )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._deliver_agent_message = original_delivery  # type: ignore[assignment]
+        web_server.Retriever = original_retriever  # type: ignore[assignment]
+        web_server.RagRetrievalService.retrieve = original_rag_retrieve  # type: ignore[assignment]
+
+    answer = str(result.get("answer") or "")
+    assert_true("crawler_mcagent_context_answer", "MCagent" in answer and "Craftoria local gap note" in answer, answer)
+    assert_true("crawler_mcagent_context_no_job", not result.get("job") and not result.get("delegation"), str(result))
+    traces = [(step.get("stage"), step.get("status")) for step in result.get("trace") or []]
+    assert_true("crawler_mcagent_context_selected_trace", ("decide", "mcagent_context_selected") in traces, str(traces))
+    assert_true("crawler_mcagent_context_message_trace", ("message", "agent_message_relayed") in traces, str(traces))
+    agent_runtime = result.get("agent_graph_runtime") or {}
+    visited = agent_runtime.get("visited_nodes") or []
+    assert_true("crawler_mcagent_context_graph_node", "crawler.graph_crawler_mcagent_context_route" in visited, str(visited))
+    assert_true("crawler_mcagent_context_legacy_not_visited", "crawler.legacy_adapter" not in visited, str(visited))
+    adapter = agent_runtime.get("runtime_adapter") or {}
+    assert_true("crawler_mcagent_context_adapter", adapter.get("adapter") == "graph_crawler_mcagent_context_route_executor", str(adapter))
+    route_execution = agent_runtime.get("route_execution_contract") or {}
+    assert_true("crawler_mcagent_context_execution_graph", route_execution.get("route_execution_executed_by_graph") is True, str(route_execution))
+    graph_runtime = result.get("graph_runtime") or {}
+    assert_true("conversation_crawler_mcagent_context_node", "crawler_graph.graph_crawler_mcagent_context_route" in graph_runtime.get("visited_nodes", []), str(graph_runtime))
+
+
+def test_crawler_delegate_route_executes_in_graph_node() -> None:
+    fake = SequencedClient(
+        [
+            json.dumps(
+                {
+                    "tool": "delegate_crawler",
+                    "reason": "I received an AgentMessage asking me to collect missing modpack evidence, so I choose my collection tool.",
+                    "collection_target": "Collect beginner guides for Craftoria and Prominence II.",
+                    "delivery_target": "MCagent/RAG",
+                }
+            ),
+            json.dumps({"proceed": True, "tool": "delegate_crawler", "reason": "confirmed CrawlerAgent-selected delegate"}),
+            json.dumps({"handoff_brief": "I will collect public beginner-guide evidence for MCagent/RAG.", "reason": "CrawlerAgent selected collection"}),
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    original_delivery = web_server._deliver_agent_message
+    original_start = web_server._start_crawler_job_from_crawler_tool
+    calls: list[dict[str, object]] = []
+
+    def forbidden_delivery(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AssertionError("legacy delivery should not run for graph-executed CrawlerAgent delegate_crawler route")
+
+    def fake_start(config: AppConfig, payload: dict[str, object], question: str, plan: dict[str, object] | None = None):  # noqa: ARG001
+        calls.append({"payload": payload, "question": question, "plan": plan})
+        job = web_server.Job(id="graph-crawler-delegate-job", kind="crawler", title=question, status="queued", summary="queued")
+        job.result = {"plan": {"topic": question, "delivery_target": payload.get("delivery_target")}}
+        return job, True
+
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake, "fake")  # type: ignore[assignment]
+    web_server._deliver_agent_message = forbidden_delivery  # type: ignore[assignment]
+    web_server._start_crawler_job_from_crawler_tool = fake_start  # type: ignore[assignment]
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = web_server._send_agent_message(
+                make_temp_config(Path(tmp)),
+                {"session_id": "fastapi-crawler-delegate-graph", "model": "fake-model", "delivery_target": "MCagent/RAG"},
+                from_agent="MCagent",
+                content="I found gaps in Craftoria and Prominence II beginner-guide evidence. Please decide how to collect public sources.",
+                to_agent="CrawlerAgent",
+                intent="collection_request",
+                conversation_id="fastapi-crawler-delegate-graph",
+                metadata={"tool": "collection_request", "delivery_target": "MCagent/RAG", "requested_by": "mcagent"},
+            )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._deliver_agent_message = original_delivery  # type: ignore[assignment]
+        web_server._start_crawler_job_from_crawler_tool = original_start  # type: ignore[assignment]
+
+    assert_true("crawler_delegate_job_started_once", len(calls) == 1, str(calls))
+    call_payload = calls[0].get("payload") if isinstance(calls[0].get("payload"), dict) else {}
+    assert_true("crawler_delegate_agent_owns_job_start", call_payload.get("agent") == "crawler_agent", str(call_payload))
+    message = call_payload.get("agent_message") if isinstance(call_payload.get("agent_message"), dict) else {}
+    assert_true("crawler_delegate_job_requires_agent_message", message.get("to_agent") == "CrawlerAgent", str(message))
+    metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+    assert_true("crawler_delegate_job_selected_tool", metadata.get("tool") == "delegate_crawler", str(message))
+    assert_true("crawler_delegate_job", (result.get("job") or {}).get("id") == "graph-crawler-delegate-job", str(result))
+    traces = [(step.get("stage"), step.get("status")) for step in result.get("trace") or []]
+    assert_true("crawler_delegate_collection_request_observed", ("message", "collection_request_received_for_agent_decision") in traces, str(traces))
+    assert_true("crawler_delegate_next_step_confirmed", ("delegate", "next_step_confirmed") in traces, str(traces))
+    agent_runtime = result.get("agent_graph_runtime") or {}
+    visited = agent_runtime.get("visited_nodes") or []
+    assert_true("graph_crawler_delegate_node", "crawler.graph_crawler_delegate_route" in visited, str(visited))
+    assert_true("crawler_delegate_legacy_not_visited", "crawler.legacy_adapter" not in visited, str(visited))
+    adapter = agent_runtime.get("runtime_adapter") or {}
+    assert_true("graph_crawler_delegate_adapter", adapter.get("adapter") == "graph_crawler_delegate_route_executor", str(adapter))
+    assert_true("graph_crawler_delegate_boundary", "does not choose sources" in str(adapter.get("objective_boundary") or ""), str(adapter))
+    route_execution = agent_runtime.get("route_execution_contract") or {}
+    assert_true("graph_crawler_delegate_execution_fact", route_execution.get("route_execution_executed_by_graph") is True, str(route_execution))
+    assert_true("graph_crawler_delegate_job_fact", (route_execution.get("result_facts") or {}).get("job_present") is True, str(route_execution))
+    graph_runtime = result.get("graph_runtime") or {}
+    assert_true("conversation_crawler_delegate_node", "crawler_graph.graph_crawler_delegate_route" in graph_runtime.get("visited_nodes", []), str(graph_runtime))
+
+
+def test_mcagent_inventory_plan_cannot_smuggle_delegate_tool() -> None:
+    fake = SequencedClient(
+        [
+            '{"tool":"local_corpus_inventory","reason":"inspect then delegate","action_plan":[{"step":1,"tool":"local_corpus_inventory","goal":"inspect local coverage"},{"step":2,"tool":"delegate_crawler","goal":"collect missing evidence"}],"collection_target":"collect missing evidence","delivery_target":"MCagent/RAG"}',
+            '{"proceed":true,"tool":"local_corpus_inventory","reason":"confirmed inventory read"}',
+            '{"missing_side_effect":false,"action":"allow","reason":"MCagent cannot execute delegate_crawler; inventory is a read-only answer."}',
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    original_delivery = web_server._deliver_agent_message
+    original_inventory = web_server._local_corpus_inventory_answer
     calls: list[dict[str, object]] = []
 
     def fake_delivery(_config: AppConfig, payload: dict[str, object], emit=None) -> dict[str, object]:  # noqa: ANN001, ARG001
@@ -658,8 +1805,17 @@ def test_local_inventory_with_delegate_plan_stays_on_legacy_delivery() -> None:
         calls.append({"route_intent": decision.get("route_intent"), "action_plan": decision.get("action_plan")})
         return {"answer": "legacy inventory path used", "sources": [], "context": "", "agent": "mcagent_rag"}
 
+    def fake_inventory(_config: AppConfig, _question: str) -> dict[str, object]:
+        return {
+            "answer": "Local inventory: delegate step was not exposed to MCagent tools.",
+            "sources": [{"title": "local inventory", "document_id": 1}],
+            "context": "inventory context",
+            "agent": "mcagent_rag",
+        }
+
     web_server._selected_llm_client = lambda *_args, **_kwargs: (fake, "fake")  # type: ignore[assignment]
     web_server._deliver_agent_message = fake_delivery  # type: ignore[assignment]
+    web_server._local_corpus_inventory_answer = fake_inventory  # type: ignore[assignment]
     try:
         with tempfile.TemporaryDirectory() as tmp:
             result = web_server._send_agent_message(
@@ -674,16 +1830,18 @@ def test_local_inventory_with_delegate_plan_stays_on_legacy_delivery() -> None:
     finally:
         web_server._selected_llm_client = original_selector  # type: ignore[assignment]
         web_server._deliver_agent_message = original_delivery  # type: ignore[assignment]
+        web_server._local_corpus_inventory_answer = original_inventory  # type: ignore[assignment]
 
-    assert_true("legacy_delivery_called", len(calls) == 1 and calls[0].get("route_intent") == "local_corpus_inventory", str(calls))
+    assert_true("legacy_delivery_not_called", calls == [], str(calls))
+    assert_true("inventory_answer", "delegate step was not exposed" in str(result.get("answer") or ""), str(result))
     agent_runtime = result.get("agent_graph_runtime") or {}
     visited = agent_runtime.get("visited_nodes") or []
-    assert_true("legacy_inventory_node", "mcagent.legacy_adapter" in visited, str(visited))
-    assert_true("graph_inventory_not_visited", "mcagent.graph_local_corpus_inventory_route" not in visited, str(visited))
+    assert_true("graph_inventory_node", "mcagent.graph_local_corpus_inventory_route" in visited, str(visited))
+    assert_true("legacy_inventory_not_visited", "mcagent.legacy_adapter" not in visited, str(visited))
     adapter = agent_runtime.get("runtime_adapter") or {}
-    assert_true("legacy_inventory_adapter", adapter.get("adapter") == "legacy_web_server_runtime", str(adapter))
+    assert_true("graph_inventory_adapter", adapter.get("adapter") == "graph_local_corpus_inventory_route_executor", str(adapter))
     graph_runtime = result.get("graph_runtime") or {}
-    assert_true("conversation_legacy_node", "mcagent_graph.legacy_adapter" in graph_runtime.get("visited_nodes", []), str(graph_runtime))
+    assert_true("conversation_graph_inventory_node", "mcagent_graph.graph_local_corpus_inventory_route" in graph_runtime.get("visited_nodes", []), str(graph_runtime))
 
 
 def main() -> int:
@@ -692,12 +1850,25 @@ def main() -> int:
     test_fastapi_agent_message_endpoint_dispatches()
     test_agent_selected_status_bypasses_legacy_delivery()
     test_agent_selected_direct_answer_bypasses_legacy_delivery()
-    test_mcagent_can_ask_crawler_agent_without_collection_side_effect()
+    test_mcagent_rag_answer_executes_in_graph_node()
+    test_mcagent_local_rag_search_executes_in_graph_node()
+    test_mcagent_local_rag_empty_result_executes_in_graph_node()
+    test_mcagent_context_request_executes_in_graph_node()
+    test_mcagent_direct_answer_protocol_explains_crawler_contact_as_agent_message()
+    test_mcagent_can_message_crawler_agent_without_collection_side_effect()
+    test_mcagent_agent_message_response_passes_through_crawler_job_without_task_ticket_text()
+    test_mcagent_gap_collection_message_includes_local_gap_context()
+    test_mcagent_inventory_agent_message_plan_continues_after_inventory()
+    test_mcagent_inventory_agent_message_plan_executes_in_graph_node()
+    test_mcagent_gap_context_timeout_fallback_is_readable_first_person()
     test_agent_selected_temporary_extract_bypasses_legacy_delivery()
     test_agent_selected_crawler_audit_bypasses_legacy_delivery()
     test_agent_selected_safe_local_inventory_bypasses_legacy_delivery()
     test_agent_selected_router_error_bypasses_legacy_delivery()
-    test_local_inventory_with_delegate_plan_stays_on_legacy_delivery()
+    test_crawler_planned_workflow_executes_in_graph_node()
+    test_crawler_mcagent_context_route_executes_in_graph_node()
+    test_crawler_delegate_route_executes_in_graph_node()
+    test_mcagent_inventory_plan_cannot_smuggle_delegate_tool()
     print("FASTAPI BACKEND SCENARIOS PASSED")
     return 0
 

@@ -106,13 +106,23 @@ def test_agent_tool_decision_normalization() -> None:
     )
     assert_equal("crawler_temporary_extract_tool", crawler_extract.tool, "temporary_extract")
 
-    ask_crawler = normalize_agent_tool_decision(
-        {"tool": "ask_crawler_agent", "collection_target": "please answer this directly"},
+    agent_message = normalize_agent_tool_decision(
+        {"tool": "agent_message", "to_agent": "CrawlerAgent", "content": "please answer this directly", "intent": "agent_question"},
         agent_id="mcagent_rag",
         original_question="ask CrawlerAgent to answer this directly",
         planner="test",
     )
-    assert_equal("mcagent_ask_crawler_tool", ask_crawler.tool, "ask_crawler_agent")
+    assert_equal("mcagent_agent_message_tool", agent_message.tool, "agent_message")
+    assert_equal("mcagent_agent_message_to", agent_message.to_agent, "CrawlerAgent")
+    assert_equal("mcagent_agent_message_content", agent_message.content, "please answer this directly")
+
+    mcagent_delegate = normalize_agent_tool_decision(
+        {"tool": "delegate_crawler", "collection_target": "采集落幕曲新手攻略", "delivery_target": "MCagent/RAG"},
+        agent_id="mcagent_rag",
+        original_question="让 Crawler 采集落幕曲新手攻略",
+        planner="test",
+    )
+    assert_equal("mcagent_delegate_not_exposed", mcagent_delegate.tool, "router_error")
 
     legacy_planned = normalize_agent_tool_decision(
         {"tool": "answer_then_crawler", "action_plan": [{"tool": "local_rag_search", "goal": "先查本地"}, {"tool": "delegate_crawler", "goal": "再补缺口"}]},
@@ -192,8 +202,13 @@ def test_tool_catalog_exposes_agent_capabilities() -> None:
     crawler_catalog = crawler_collection_catalog_prompt()
     assert_true("mcagent_direct_answer", "direct_answer" in mcagent_catalog)
     assert_true("mcagent_local_rag", "local_rag_search" in mcagent_catalog)
-    assert_true("mcagent_ask_crawler_agent", "ask_crawler_agent" in mcagent_catalog and "no-persistence AgentMessage" in mcagent_catalog)
+    assert_true("mcagent_agent_message", "agent_message" in mcagent_catalog and "no-persistence From-Content-To" in mcagent_catalog)
+    assert_true("mcagent_no_ask_crawler_agent", "ask_crawler_agent" not in mcagent_catalog)
+    assert_true("mcagent_no_delegate_crawler", "delegate_crawler" not in mcagent_catalog, mcagent_catalog)
+    assert_true("mcagent_only_message_to_crawler", "MCagent has no separate crawler delegation tool" in mcagent_catalog, mcagent_catalog)
     crawler_route_catalog = tool_catalog_prompt("crawler_agent")
+    assert_true("crawler_agent_message", "agent_message" in crawler_route_catalog and "no-persistence From-Content-To" in crawler_route_catalog)
+    assert_true("crawler_no_ask_crawler_agent", "ask_crawler_agent" not in crawler_route_catalog)
     assert_true("crawler_mcagent_context", "mcagent_context" in crawler_route_catalog)
     assert_true("crawler_planned_workflow", "planned_workflow" in crawler_route_catalog)
     assert_true("crawler_browser", "browser_collect" in crawler_catalog)
@@ -207,6 +222,42 @@ def test_tool_catalog_exposes_agent_capabilities() -> None:
     assert_true("llm_ownership", "LLM owns interpretation" in mcagent_catalog)
     assert_true("mcagent_identity", "Minecraft-focused knowledge agent" in mcagent_catalog)
     assert_true("mcagent_local_kb", "local Minecraft knowledge base" in mcagent_catalog)
+    assert_true("mcagent_inventory_boundary", "entire indexed local Minecraft knowledge base" in mcagent_catalog, mcagent_catalog)
+    assert_true("mcagent_rag_not_inventory", "must not be used to claim what the entire local library contains" in mcagent_catalog, mcagent_catalog)
+
+
+def test_session_summary_preserves_recent_turns_from_ui_history() -> None:
+    from mcagent import web_server
+
+    payload = {
+        "session_id": "ui-history-context",
+        "history": [
+            {"role": "user", "text": "问下crawler 1+1=几", "time": 1000},
+            {"role": "assistant", "text": "1+1=2，不用 crawler。", "time": 1001},
+        ],
+    }
+    summary = web_server._session_summary(payload)
+    turns = summary.get("recent_turns") or []
+    assert_true("recent_turns_present", bool(turns), str(summary))
+    assert_equal("last_user_question", summary.get("last_user_question"), "问下crawler 1+1=几")
+    assert_true("last_assistant_answer", "不用 crawler" in str(summary.get("last_assistant_answer") or ""), str(summary))
+
+
+def test_session_store_persists_history_summary_and_events() -> None:
+    import tempfile
+    from pathlib import Path
+    from mcagent.session_state import InMemorySessionStore
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = InMemorySessionStore(Path(tmp))
+        store.append_turn("persist-demo", {"question": "问下crawler 1+1=几", "answer": "不用 crawler"})
+        store.update_summary("persist-demo", lambda current: {**current, "last_user_question": "问下crawler 1+1=几"})
+        store.append_event("persist-demo", {"kind": "agent_message", "from_agent": "MCagent", "to_agent": "CrawlerAgent", "content": "1+1=几"})
+
+        reloaded = InMemorySessionStore(Path(tmp))
+        assert_equal("persisted_history", reloaded.history("persist-demo")[0]["question"], "问下crawler 1+1=几")
+        assert_equal("persisted_summary", reloaded.summary("persist-demo")["last_user_question"], "问下crawler 1+1=几")
+        assert_equal("persisted_event", reloaded.events("persist-demo")[0]["to_agent"], "CrawlerAgent")
 
 
 def test_crawler_collection_tools_are_grouped_by_general_and_domain() -> None:

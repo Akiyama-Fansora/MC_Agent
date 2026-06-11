@@ -41,13 +41,14 @@
         </div>
       </details>
 
-      <section class="control-block">
-        <h2>本地资料</h2>
+      <details class="control-block side-details" open>
+        <summary>本地资料</summary>
         <div id="indexStats" class="stats-list"></div>
-      </section>
+        <div id="ledgerStats" class="stats-list ledger-inline"></div>
+      </details>
 
       <details class="control-block side-details">
-        <summary>手动补库</summary>
+        <summary>高级：手动采集/导入</summary>
         <div class="crawler-plan-controls">
           <label>采集方式
             <select id="crawlerSource">
@@ -69,14 +70,9 @@
         </div>
       </details>
 
-      <section class="control-block">
-        <h2>后台任务</h2>
-        <div id="jobList" class="job-list"></div>
-      </section>
-
       <details class="control-block side-details">
-        <summary>资料账本</summary>
-        <div id="ledgerStats" class="stats-list"></div>
+        <summary>高级：后台任务</summary>
+        <div id="jobList" class="job-list"></div>
       </details>
     </aside>
 
@@ -102,19 +98,24 @@
     <aside class="details">
       <section>
         <div class="section-title">
-          <h2>本轮引用</h2>
-          <span id="sourceCount">0</span>
+          <h2>Agent 动作</h2>
+          <span id="actionCount">0</span>
         </div>
-        <div id="sources" class="source-list"></div>
+        <div id="agentActionTimeline" class="agent-action-timeline"></div>
       </section>
 
-      <section>
+      <details class="control-block side-details">
+        <summary>本轮引用 <span id="sourceCount">0</span></summary>
+        <div id="sources" class="source-list"></div>
+      </details>
+
+      <details class="control-block side-details">
+        <summary>Crawler 状态 <span id="crawlerState">待刷新</span></summary>
         <div class="section-title">
-          <h2>Crawler 采集</h2>
-          <span id="crawlerState">待刷新</span>
+          <h2>采集详情</h2>
         </div>
         <div id="crawlerInfo" class="crawler-info"></div>
-      </section>
+      </details>
 
       <details class="control-block side-details">
         <summary>测试记录</summary>
