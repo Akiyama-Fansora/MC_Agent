@@ -5265,3 +5265,26 @@ Current score:
 2. Legacy runtime migration: 9.35/10. This stage is a capability-boundary fix, not a graph migration.
 3. Tool-objectivity principle: 9.85/10. Ordinary inter-agent messaging is now separated from collection side effects.
 4. Regression coverage: 9.95/10.
+
+## 2026-06-21 Stage 79: Encoding-Safe Chunk Boundaries
+
+This maintenance pass focused on local data ingestion and RAG chunk quality.
+
+Implemented changes:
+
+1. `mcagent/chunking.py` now centralizes sentence boundary markers in `SENTENCE_BOUNDARIES`.
+2. Chinese boundary punctuation is represented with Unicode escapes, so future terminal or editor encoding issues are less likely to damage chunk splitting behavior.
+3. Long text splitting also recognizes full-width Chinese exclamation and question marks.
+4. Added `tests/chunking_scenarios.py` to prove long Chinese paragraphs split at real sentence boundaries and do not include known mojibake marker code points.
+
+Validation:
+
+1. `python tests\chunking_scenarios.py`
+2. `python -m py_compile mcagent\chunking.py tests\chunking_scenarios.py`
+3. `python tests\rag_service_scenarios.py`
+4. `python scripts\check_text_encoding.py mcagent\chunking.py tests\chunking_scenarios.py`
+5. `python tests\smoke_test.py`
+
+Residual note:
+
+Full encoding checks still report pre-existing issues in `tests/agent_message_bus_scenarios.py` and `tests/fastapi_backend_scenarios.py`; this pass did not modify those files.

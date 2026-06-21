@@ -5,6 +5,9 @@ import re
 from .schema import RawDocument, TextChunk
 
 
+SENTENCE_BOUNDARIES = ("\n", "\u3002", ".", "\uff1b", ";", "\uff01", "!", "\uff1f", "?")
+
+
 def estimate_tokens(text: str) -> int:
     ascii_words = re.findall(r"[A-Za-z0-9_]+", text)
     non_ascii = sum(1 for char in text if ord(char) > 127)
@@ -20,13 +23,7 @@ def _split_long_text(text: str, max_chars: int, overlap_chars: int) -> list[str]
     while start < len(text):
         end = min(len(text), start + max_chars)
         if end < len(text):
-            boundary = max(
-                text.rfind("\n", start, end),
-                text.rfind("。", start, end),
-                text.rfind(".", start, end),
-                text.rfind("；", start, end),
-                text.rfind(";", start, end),
-            )
+            boundary = max(text.rfind(marker, start, end) for marker in SENTENCE_BOUNDARIES)
             if boundary > start + max_chars // 2:
                 end = boundary + 1
         chunks.append(text[start:end].strip())
