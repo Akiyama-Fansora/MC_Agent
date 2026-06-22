@@ -168,8 +168,8 @@ class EvidenceWorkflowService:
             if report.verdict != "ok":
                 report.verdict = "ok"
                 report.reasons = []
-                report.selected_count = len(selected)
 
+        report.selected_count = len(selected)
         add_trace("decide", "evidence_selected", report.to_dict())
         return EvidenceWorkflowResult(selected=selected, report=report)
 

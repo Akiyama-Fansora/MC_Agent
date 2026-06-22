@@ -117,6 +117,8 @@ def test_evidence_service_runs_selector_and_supplements_in_order() -> None:
         call_log,
         ["prefer_parent", "modpack_manifest", "local_modpack_manifest", "project_keywords", "raw_html", "modpack_mod_list", "fallback_theme"],
     )
+    assert_equal("report_selected_count", result.report.selected_count, len(result.selected))
+    assert_equal("trace_selected_count", traces[-1]["detail"]["selected_count"], len(result.selected))
     statuses = [item["status"] for item in traces]
     assert_equal("first_trace", statuses[0], "selecting_evidence")
     assert_equal("last_trace", statuses[-1], "evidence_selected")
@@ -200,7 +202,39 @@ def test_fallback_theme_evidence_can_recover_sparse_selection() -> None:
 
     assert_equal("verdict", result.report.verdict, "ok")
     assert_equal("selected_count", len(result.selected), 1)
+    assert_equal("report_selected_count", result.report.selected_count, len(result.selected))
     assert_true("fallback_selected", result.selected[0].title.startswith("Theme"))
+
+
+def test_report_selected_count_tracks_supplemented_evidence_without_verdict_upgrade() -> None:
+    selector_calls: list[dict[str, Any]] = []
+    call_log: list[str] = []
+    traces: list[dict[str, Any]] = []
+
+    service = EvidenceWorkflowService(
+        selector_factory=lambda final_k: FakeSelector(final_k, [make_result(1)], base_report(verdict="ok", confidence=0.5, selected_count=1), selector_calls),
+        prefer_parent_topic_results=lambda question, selected, rough, final_k: call_log.append("prefer_parent") or selected,
+        modpack_manifest_results=lambda question, rough, final_k: call_log.append("modpack_manifest") or [],
+        supplement_local_modpack_manifest_results=lambda config, question, final_k: call_log.append("local_modpack_manifest") or [],
+        supplement_project_keyword_results=lambda config, question, selected, final_k: call_log.append("project_keywords") or [*selected, make_result(2)],
+        supplement_raw_html_results=lambda config, question, selected, final_k: call_log.append("raw_html") or selected,
+        ensure_modpack_mod_list_context=lambda config, question, selected, rough, final_k: call_log.append("modpack_mod_list") or selected,
+        fallback_theme_results=lambda question, rough, final_k: call_log.append("fallback_theme") or [],
+        dedupe_results=lambda results, limit: list(results)[:limit],
+    )
+
+    result = service.select(
+        object(),
+        evidence_question="supplemented topic",
+        rough_results=[make_result(1)],
+        retrieval_plan=None,
+        final_k=4,
+        add_trace=lambda stage, status, detail=None: traces.append({"stage": stage, "status": status, "detail": detail}) or traces[-1],
+    )
+
+    assert_equal("selected_count", len(result.selected), 2)
+    assert_equal("report_selected_count", result.report.selected_count, 2)
+    assert_equal("trace_selected_count", traces[-1]["detail"]["selected_count"], 2)
 
 
 def test_evidence_service_stops_synchronous_supplements_after_budget() -> None:
@@ -285,6 +319,7 @@ if __name__ == "__main__":
     test_evidence_service_skips_expensive_supplements_when_evidence_is_already_enough()
     test_modpack_manifest_evidence_can_upgrade_objective_report()
     test_fallback_theme_evidence_can_recover_sparse_selection()
+    test_report_selected_count_tracks_supplemented_evidence_without_verdict_upgrade()
     test_evidence_service_stops_synchronous_supplements_after_budget()
     test_create_accepted_project_pages_are_strong_sources()
     print("evidence_service_scenarios: ok")
