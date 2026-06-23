@@ -163,6 +163,25 @@ def test_fetch_url_archive_redirect_adds_modpack_download_followup() -> None:
     assert_equal("followup_source", accounting["followup_task"]["source"], "modpack_download")
 
 
+def test_non_numeric_manifest_counts_do_not_break_accounting() -> None:
+    result = {
+        "returncode": "0",
+        "manifest_stats": {
+            "records": "unknown",
+            "usable_records": "",
+            "empty_records": "n/a",
+            "downloads": "not-yet",
+            "candidates": "1",
+            "blockers": None,
+        },
+    }
+    accounting = apply(result, source="modpack_download")
+    assert_equal("candidate", accounting["candidate_delta"], 1)
+    assert_equal("failure", accounting["failure_delta"], 0)
+    assert_equal("archive_candidate_found", result["archive_candidate_found"], True)
+    assert_equal("archive_not_downloaded", result["archive_not_downloaded"], True)
+
+
 if __name__ == "__main__":
     test_matched_records_wait_for_crawler_review()
     test_crawler_accepted_records_are_success_and_need_ingest()
@@ -177,4 +196,5 @@ if __name__ == "__main__":
     test_topic_discovery_counts_candidate_only()
     test_mcagent_context_is_diagnostic_and_adds_external_followup()
     test_fetch_url_archive_redirect_adds_modpack_download_followup()
+    test_non_numeric_manifest_counts_do_not_break_accounting()
     print("crawler_result_accounting_service_scenarios passed")

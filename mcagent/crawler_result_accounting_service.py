@@ -3,6 +3,13 @@ from __future__ import annotations
 from typing import Any
 
 
+def _manifest_count(value: Any, *, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 class CrawlerResultAccountingService:
     """Classify objective crawler tool results into counters and follow-ups."""
 
@@ -15,10 +22,10 @@ class CrawlerResultAccountingService:
         followup_query: str,
     ) -> dict[str, Any]:
         manifest = result.get("manifest_stats") if isinstance(result.get("manifest_stats"), dict) else {}
-        records_loaded = int(manifest.get("records") or 0)
-        usable_records = int(manifest.get("usable_records")) if manifest.get("usable_records") is not None else records_loaded
-        empty_records = int(manifest.get("empty_records") or 0)
-        returncode = int(result.get("returncode") or 0)
+        records_loaded = _manifest_count(manifest.get("records"))
+        usable_records = _manifest_count(manifest.get("usable_records"), default=records_loaded) if manifest.get("usable_records") is not None else records_loaded
+        empty_records = _manifest_count(manifest.get("empty_records"))
+        returncode = _manifest_count(result.get("returncode"))
         accounting = {
             "success_delta": 0,
             "candidate_delta": 0,
@@ -28,9 +35,9 @@ class CrawlerResultAccountingService:
         }
 
         if task_source == "modpack_download" and returncode == 0:
-            downloads_loaded = int(manifest.get("downloads") or 0)
-            candidates_loaded = int(manifest.get("candidates") or 0)
-            blockers_loaded = int(manifest.get("blockers") or 0)
+            downloads_loaded = _manifest_count(manifest.get("downloads"))
+            candidates_loaded = _manifest_count(manifest.get("candidates"))
+            blockers_loaded = _manifest_count(manifest.get("blockers"))
             if downloads_loaded > 0:
                 accounting["success_delta"] = 1
                 if "rag" in delivery_target.lower() or "mcagent" in delivery_target.lower():

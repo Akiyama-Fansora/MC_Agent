@@ -5288,3 +5288,34 @@ Validation:
 Residual note:
 
 Full encoding checks still report pre-existing issues in `tests/agent_message_bus_scenarios.py` and `tests/fastapi_backend_scenarios.py`; this pass did not modify those files.
+
+## 2026-06-23 Stage 80: Robust Crawler Result Count Accounting
+
+This maintenance pass focused on CrawlerAgent data persistence/accounting after tool execution.
+
+Implemented changes:
+
+1. `mcagent/crawler_result_accounting_service.py` now parses crawler manifest counters through a tolerant helper instead of calling `int(...)` directly.
+2. Non-numeric tool output such as `unknown`, `n/a`, empty strings, or `None` no longer crashes Crawler result accounting.
+3. Numeric strings are still honored, so candidate/download/blocker counters from JSON manifests continue to drive follow-up tasks and ingest decisions.
+4. Added a regression scenario proving malformed counter fields do not interrupt modpack download accounting and still preserve candidate follow-up behavior.
+
+Validation:
+
+1. `python tests\crawler_result_accounting_service_scenarios.py`
+2. `python -m py_compile mcagent\crawler_result_accounting_service.py tests\crawler_result_accounting_service_scenarios.py`
+3. `python tests\crawler_task_materialization_service_scenarios.py`
+4. `python tests\crawler_runtime_step_service_scenarios.py`
+5. `python tests\crawler_job_finalization_service_scenarios.py`
+6. `python tests\agent_message_bus_scenarios.py`
+7. `python tests\rag_service_scenarios.py`
+8. `python tests\evidence_service_scenarios.py`
+9. `python tests\frontend_action_timeline_scenarios.py`
+10. `python tests\smoke_test.py`
+11. `python scripts\audit_dual_agent_architecture.py`
+12. `node --check frontend\static\app.js`
+13. `node --check frontend\static\settings.js`
+
+Residual note:
+
+`scripts\audit_dual_agent_architecture.py` still reports one legacy-runtime coupling warning for remaining fallback routes that intentionally pass through the explicit legacy adapter during migration.
