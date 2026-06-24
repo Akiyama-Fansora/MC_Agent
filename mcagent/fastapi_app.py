@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
+from .agent_message import coerce_message_bool
 from .agent_runtime import collection_tools_for_crawler, tool_catalog_prompt, tools_for_agent
 from .config import AppConfig, load_config
 from .crawler_llm_planner import plan_crawler_tasks_resilient
@@ -135,7 +136,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             intent=str(payload.get("intent") or ""),
             conversation_id=str(payload.get("session_id") or payload.get("conversation_id") or ""),
             reply_to=str(payload.get("reply_to") or ""),
-            requires_reply=bool(payload.get("requires_reply", True)),
+            requires_reply=coerce_message_bool(payload.get("requires_reply"), default=True),
             metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
         )
 

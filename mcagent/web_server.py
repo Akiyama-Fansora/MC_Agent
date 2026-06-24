@@ -24,7 +24,7 @@ import sqlite3
 import zipfile
 
 from .agent_memory import append_memory_event, memory_summary
-from .agent_message import AgentMessage, agent_reply_message_from_payload, make_agent_message, message_from_payload
+from .agent_message import AgentMessage, agent_reply_message_from_payload, coerce_message_bool, make_agent_message, message_from_payload
 from .agent_runtime import (
     build_handoff_contract,
     classify_crawler_tool_result,
@@ -13894,7 +13894,7 @@ class MCagentHandler(BaseHTTPRequestHandler):
                 intent=str(payload.get("intent") or ""),
                 conversation_id=str(payload.get("session_id") or payload.get("conversation_id") or ""),
                 reply_to=str(payload.get("reply_to") or ""),
-                requires_reply=bool(payload.get("requires_reply", True)),
+                requires_reply=coerce_message_bool(payload.get("requires_reply"), default=True),
                 metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
             ))
             return

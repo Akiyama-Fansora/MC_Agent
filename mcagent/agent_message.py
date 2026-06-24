@@ -28,6 +28,24 @@ AGENT_IDS = {
 AGENT_ID_NAMES = {value: key for key, value in AGENT_IDS.items()}
 
 
+def coerce_message_bool(value: Any, *, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value != 0
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"", "default"}:
+            return default
+        if text in {"1", "true", "t", "yes", "y", "on"}:
+            return True
+        if text in {"0", "false", "f", "no", "n", "off"}:
+            return False
+    return bool(value)
+
+
 def normalize_agent_name(value: str) -> str:
     text = str(value or "").strip()
     if not text:
@@ -140,7 +158,7 @@ def message_from_payload(payload: dict[str, Any], *, default_to_agent: str, defa
             intent=str(raw.get("intent") or payload.get("intent") or ""),
             conversation_id=str(raw.get("conversation_id") or payload.get("session_id") or ""),
             reply_to=str(raw.get("reply_to") or ""),
-            requires_reply=bool(raw.get("requires_reply", True)),
+            requires_reply=coerce_message_bool(raw.get("requires_reply"), default=True),
             metadata=raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {},
         )
     return make_agent_message(

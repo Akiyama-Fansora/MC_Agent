@@ -5319,3 +5319,28 @@ Validation:
 Residual note:
 
 `scripts\audit_dual_agent_architecture.py` still reports one legacy-runtime coupling warning for remaining fallback routes that intentionally pass through the explicit legacy adapter during migration.
+
+## 2026-06-24 Stage 81: AgentMessage Boolean Payload Normalization
+
+This maintenance pass focused on the AgentMessage boundary between HTTP payloads, FastAPI, the standard-library web server, and the LangGraph conversation runtime.
+
+Implemented changes:
+
+1. `mcagent/agent_message.py` now exposes `coerce_message_bool()` for tolerant AgentMessage boolean parsing.
+2. `message_from_payload()` treats string values such as `false`, `0`, `no`, and `off` as false instead of relying on Python string truthiness.
+3. FastAPI `/api/agent-message`, the standard-library `/api/agent-message`, and `dispatch_agent_message_graph()` now use the same boolean parser for `requires_reply`.
+4. Added regression coverage proving string, numeric, boolean, and omitted `requires_reply` payload values normalize consistently.
+
+Validation:
+
+1. `python tests\agent_message_bool_scenarios.py`
+2. `python tests\agent_message_bus_scenarios.py`
+3. `python -m py_compile mcagent\agent_message.py mcagent\fastapi_app.py mcagent\graphs\runtime.py mcagent\web_server.py tests\agent_message_bool_scenarios.py tests\agent_message_bus_scenarios.py`
+4. `python tests\fastapi_backend_scenarios.py`
+5. `python tests\agent_runtime_scenarios.py`
+6. `python tests\frontend_action_timeline_scenarios.py`
+7. `python tests\smoke_test.py`
+
+Residual note:
+
+`python tests\langgraph_runtime_scenarios.py` exceeded the local 124-second command timeout in this run before returning a failure assertion. Focused AgentMessage, FastAPI, runtime, frontend action timeline, and smoke checks passed.

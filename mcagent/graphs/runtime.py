@@ -6,7 +6,7 @@ import threading
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
-from ..agent_message import AgentMessage, make_agent_message
+from ..agent_message import AgentMessage, coerce_message_bool, make_agent_message
 from ..config import AppConfig
 from .crawler import run_crawler_graph
 from .mcagent import run_mcagent_graph
@@ -123,7 +123,7 @@ def build_conversation_graph(
             intent=str(incoming.get("intent") or ""),
             conversation_id=str(incoming.get("conversation_id") or state.get("thread_id") or ""),
             reply_to=str(incoming.get("reply_to") or ""),
-            requires_reply=bool(incoming.get("requires_reply", True)),
+            requires_reply=coerce_message_bool(incoming.get("requires_reply"), default=True),
             metadata=incoming.get("metadata") if isinstance(incoming.get("metadata"), dict) else {},
         )
         payload = _payload_with_message(state.get("payload", {}), message)
