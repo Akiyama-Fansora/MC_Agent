@@ -75,6 +75,39 @@ def test_resolve_latest_ref_into_payload_content() -> None:
     assert_equal("metadata_ref", payload["metadata"]["resolved_artifact_ref"]["id"], "r2.1")
 
 
+def test_relative_manifest_paths_resolve_from_manifest_directory() -> None:
+    reset_tmp()
+    raw_dir = TMP / "raw_html"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    doc = TMP / "relative.md"
+    raw = raw_dir / "relative.html"
+    doc.write_text("# Relative\n\nContent loaded from a relative manifest path.", encoding="utf-8")
+    raw.write_text("<html><body>Relative raw HTML.</body></html>", encoding="utf-8")
+    manifest = {
+        "records": [
+            {
+                "title": "Relative Page",
+                "url": "https://example.test/relative",
+                "path": "relative.md",
+                "raw_html_path": "raw_html/relative.html",
+            }
+        ]
+    }
+    (TMP / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    service = ArtifactReferenceService()
+    refs = service.collect_from_result(
+        result={"source": "fetch_url", "query": "relative", "manifest_stats": {"manifest_path": str(TMP / "manifest.json")}},
+        result_index=3,
+    )
+    payload = service.resolve_payload_refs({"content_ref": "latest:md"}, refs)
+
+    assert_equal("relative_refs_count", len(refs), 2)
+    assert_equal("relative_doc_path", refs[0]["path"], str(doc.resolve()))
+    assert_equal("relative_raw_path", refs[1]["path"], str(raw.resolve()))
+    assert_true("relative_content_loaded", "relative manifest path" in payload["content"])
+
+
 def test_missing_ref_sets_objective_error() -> None:
     write_manifest()
     payload = ArtifactReferenceService().resolve_payload_refs({"artifact_ref": "r9.9"}, [])
@@ -84,6 +117,7 @@ def test_missing_ref_sets_objective_error() -> None:
 def main() -> int:
     test_collect_refs_from_manifest()
     test_resolve_latest_ref_into_payload_content()
+    test_relative_manifest_paths_resolve_from_manifest_directory()
     test_missing_ref_sets_objective_error()
     print("artifact_reference_service_scenarios passed")
     return 0
@@ -91,4 +125,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

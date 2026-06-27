@@ -5344,3 +5344,36 @@ Validation:
 Residual note:
 
 `python tests\langgraph_runtime_scenarios.py` exceeded the local 124-second command timeout in this run before returning a failure assertion. Focused AgentMessage, FastAPI, runtime, frontend action timeline, and smoke checks passed.
+
+## 2026-06-27 Stage 82: Manifest-Relative Artifact References
+
+This maintenance pass focused on CrawlerAgent local persistence, artifact reuse, and the AgentMessage boundary for `content_ref` / `artifact_ref`.
+
+Implemented changes:
+
+1. `mcagent/artifact_reference_service.py` now resolves relative record paths from the manifest directory instead of the process working directory.
+2. Absolute manifest paths keep their existing behavior.
+3. Artifact references collected from crawler manifests can now point to portable relative paths such as `page.md` or `raw_html/page.html` and still be reused by later `save_artifact` or AgentMessage tasks.
+4. Added regression coverage proving `latest:md` can load content from a manifest that stores relative Markdown and raw HTML paths.
+
+Validation:
+
+1. `python tests\artifact_reference_service_scenarios.py`
+2. `python tests\artifact_save_service_scenarios.py`
+3. `python -m py_compile mcagent\artifact_reference_service.py tests\artifact_reference_service_scenarios.py`
+4. `python tests\crawler_task_preparation_service_scenarios.py`
+5. `python tests\crawler_task_materialization_service_scenarios.py`
+6. `python tests\agent_message_bus_scenarios.py`
+7. `python tests\rag_service_scenarios.py`
+8. `python tests\evidence_service_scenarios.py`
+9. `python tests\frontend_action_timeline_scenarios.py`
+10. `python tests\smoke_test.py`
+11. `python scripts\audit_dual_agent_architecture.py`
+12. `node --check frontend\static\app.js`
+13. `node --check frontend\static\settings.js`
+14. `python scripts\check_text_encoding.py mcagent\artifact_reference_service.py tests\artifact_reference_service_scenarios.py docs\agent_development_guide.md`
+15. `git diff --check`
+
+Residual note:
+
+`python scripts\audit_dual_agent_architecture.py` still reports one legacy-runtime coupling warning for remaining generic fallback routes that intentionally pass through the explicit legacy adapter during migration.
