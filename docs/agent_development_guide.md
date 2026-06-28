@@ -5377,3 +5377,30 @@ Validation:
 Residual note:
 
 `python scripts\audit_dual_agent_architecture.py` still reports one legacy-runtime coupling warning for remaining generic fallback routes that intentionally pass through the explicit legacy adapter during migration.
+
+## 2026-06-28 Stage 83: Artifact Reference Relative-Path Boundary
+
+This maintenance pass focused on CrawlerAgent local persistence, `content_ref` / `artifact_ref` reuse, and the boundary between crawler manifests and later `save_artifact` tasks.
+
+Implemented changes:
+
+1. `mcagent/artifact_reference_service.py` still resolves portable relative manifest paths from the manifest directory.
+2. Relative manifest record paths that escape the manifest directory with `..` are now ignored instead of being exposed as reusable artifact references.
+3. Absolute manifest paths keep their existing compatibility behavior.
+4. Added regression coverage proving an in-directory relative Markdown file is reusable while a sibling escape path is not loaded through `latest:md`.
+
+Validation:
+
+1. `python tests\artifact_reference_service_scenarios.py`
+2. `python tests\artifact_save_service_scenarios.py`
+3. `python tests\crawler_task_preparation_service_scenarios.py`
+4. `python -m py_compile mcagent\artifact_reference_service.py tests\artifact_reference_service_scenarios.py`
+5. `python scripts\public_readiness_check.py`
+6. `python tests\agent_runtime_scenarios.py`
+7. `python tests\langgraph_runtime_scenarios.py`
+8. `node --check frontend\static\app.js`
+9. `node --check frontend\static\settings.js`
+
+Residual note:
+
+`python scripts\check_text_encoding.py` still fails before this change set for the existing `tests\agent_message_bus_scenarios.py` Chinese AgentMessage sample and then hits a GBK console `UnicodeEncodeError` while printing a private-use marker. This is the same pre-existing encoding-check issue recorded in automation memory, not introduced by this stage.

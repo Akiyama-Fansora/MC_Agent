@@ -108,6 +108,37 @@ def test_relative_manifest_paths_resolve_from_manifest_directory() -> None:
     assert_true("relative_content_loaded", "relative manifest path" in payload["content"])
 
 
+def test_relative_manifest_paths_cannot_escape_manifest_directory() -> None:
+    reset_tmp()
+    inside = TMP / "inside.md"
+    escaped = TMP.parent / "escaped_artifact_ref.md"
+    inside.write_text("# Inside\n\nContent inside the export directory.", encoding="utf-8")
+    escaped.write_text("# Escaped\n\nContent outside the export directory.", encoding="utf-8")
+    manifest = {
+        "records": [
+            {
+                "title": "Inside Page",
+                "path": "inside.md",
+            },
+            {
+                "title": "Escaped Page",
+                "path": "../escaped_artifact_ref.md",
+            },
+        ]
+    }
+    (TMP / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    refs = ArtifactReferenceService().collect_from_result(
+        result={"source": "fetch_url", "query": "escape", "manifest_stats": {"manifest_path": str(TMP / "manifest.json")}},
+        result_index=4,
+    )
+    payload = ArtifactReferenceService().resolve_payload_refs({"content_ref": "latest:md"}, refs)
+
+    assert_equal("escape_refs_count", len(refs), 1)
+    assert_equal("escape_keeps_inside_path", refs[0]["path"], str(inside.resolve()))
+    assert_true("escape_outside_not_loaded", "outside the export directory" not in payload.get("content", ""))
+
+
 def test_missing_ref_sets_objective_error() -> None:
     write_manifest()
     payload = ArtifactReferenceService().resolve_payload_refs({"artifact_ref": "r9.9"}, [])
@@ -118,6 +149,7 @@ def main() -> int:
     test_collect_refs_from_manifest()
     test_resolve_latest_ref_into_payload_content()
     test_relative_manifest_paths_resolve_from_manifest_directory()
+    test_relative_manifest_paths_cannot_escape_manifest_directory()
     test_missing_ref_sets_objective_error()
     print("artifact_reference_service_scenarios passed")
     return 0

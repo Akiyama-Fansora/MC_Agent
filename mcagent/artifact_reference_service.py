@@ -34,6 +34,8 @@ class ArtifactReferenceService:
                 if not raw_path:
                     continue
                 path = self._resolve_manifest_record_path(raw_path, manifest_path)
+                if path is None:
+                    continue
                 if not path.exists() or not path.is_file():
                     continue
                 ref = {
@@ -135,8 +137,14 @@ class ArtifactReferenceService:
             return 0
 
     @staticmethod
-    def _resolve_manifest_record_path(raw_path: str, manifest_path: Path) -> Path:
+    def _resolve_manifest_record_path(raw_path: str, manifest_path: Path) -> Path | None:
         path = Path(raw_path).expanduser()
         if path.is_absolute():
             return path
-        return (manifest_path.parent / path).resolve()
+        base = manifest_path.parent.resolve()
+        resolved = (base / path).resolve()
+        try:
+            resolved.relative_to(base)
+        except ValueError:
+            return None
+        return resolved
