@@ -31,7 +31,6 @@ class ThreadedEventStream:
         except Exception as exc:  # noqa: BLE001 - stream errors must reach the UI.
             traceback.print_exc()
             error = {"error": f"{type(exc).__name__}: {exc}"}
-            self.emit("error", error)
             self.emit(
                 "response",
                 {
@@ -42,6 +41,7 @@ class ThreadedEventStream:
                     "runtime_error": error,
                 },
             )
+            self.emit("error", error)
         finally:
             self._events.put(None)
 

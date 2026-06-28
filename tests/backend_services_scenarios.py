@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import sys
 
 
@@ -19,6 +20,29 @@ def assert_equal(name: str, actual: object, expected: object) -> None:
 def assert_true(name: str, condition: bool, detail: str = "") -> None:
     if not condition:
         raise AssertionError(f"{name}: {detail}")
+
+
+def sse_events(text: str) -> list[tuple[str, object]]:
+    events: list[tuple[str, object]] = []
+    for block in text.split("\n\n"):
+        if not block.strip():
+            continue
+        event = "message"
+        data_lines: list[str] = []
+        for line in block.splitlines():
+            if line.startswith("event:"):
+                event = line.split(":", 1)[1].strip()
+            elif line.startswith("data:"):
+                data_lines.append(line.split(":", 1)[1].lstrip())
+        if not data_lines:
+            continue
+        raw = "\n".join(data_lines)
+        try:
+            payload: object = json.loads(raw)
+        except json.JSONDecodeError:
+            payload = raw
+        events.append((event, payload))
+    return events
 
 
 def test_session_store_context_roundtrip() -> None:
@@ -71,10 +95,24 @@ def test_threaded_event_stream_sse_shape() -> None:
     assert_true("json_payload", '"answer": "ok"' in text)
 
 
+def test_threaded_event_stream_emits_runtime_response_before_error() -> None:
+    def target(_emit):
+        raise RuntimeError("stream failure")
+
+    events = sse_events("".join(ThreadedEventStream(target).sse()))
+    names = [name for name, _payload in events]
+    assert_equal("event_order", names, ["response", "error"])
+    response = events[0][1]
+    assert_true("response_payload", isinstance(response, dict), str(response))
+    assert_true("runtime_error", bool(response.get("runtime_error")), str(response))
+    assert_true("answer_mentions_error", "RuntimeError: stream failure" in str(response.get("answer") or ""), str(response))
+
+
 def main() -> int:
     test_session_store_context_roundtrip()
     test_payload_history_and_merge_helpers()
     test_threaded_event_stream_sse_shape()
+    test_threaded_event_stream_emits_runtime_response_before_error()
     print("BACKEND SERVICES SCENARIOS PASSED")
     return 0
 

@@ -5404,3 +5404,29 @@ Validation:
 Residual note:
 
 `python scripts\check_text_encoding.py` still fails before this change set for the existing `tests\agent_message_bus_scenarios.py` Chinese AgentMessage sample and then hits a GBK console `UnicodeEncodeError` while printing a private-use marker. This is the same pre-existing encoding-check issue recorded in automation memory, not introduced by this stage.
+
+## 2026-06-29 Stage 84: Stream Runtime Error Response Ordering
+
+This maintenance pass focused on frontend-visible action flow and FastAPI SSE failure boundaries.
+
+Implemented changes:
+
+1. `mcagent/event_stream.py` now emits the structured `response` payload before the terminal `error` event when the worker raises an exception.
+2. This preserves the existing visible runtime-error answer for clients that stop reading the stream as soon as an `error` event arrives.
+3. Added regression coverage proving exception streams expose the `runtime_error` response before the `error` event.
+
+Validation:
+
+1. `python tests\backend_services_scenarios.py`
+2. `python -m py_compile mcagent\event_stream.py tests\backend_services_scenarios.py`
+3. `python tests\fastapi_backend_scenarios.py`
+4. `python tests\frontend_action_timeline_scenarios.py`
+5. `python tests\smoke_test.py`
+6. `node --check frontend\static\app.js`
+7. `python scripts\public_readiness_check.py`
+8. `python scripts\check_text_encoding.py mcagent\event_stream.py tests\backend_services_scenarios.py docs\agent_development_guide.md`
+9. `git diff --check`
+
+Residual note:
+
+The new exception-stream scenario intentionally exercises the existing worker exception path, so the test command prints the expected traceback while still passing.
