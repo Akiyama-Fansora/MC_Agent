@@ -78,7 +78,8 @@ class ArtifactReferenceService:
         return compact
 
     def resolve_payload_refs(self, payload: dict[str, Any], refs: list[dict[str, Any]], *, max_chars: int = 200_000) -> dict[str, Any]:
-        if payload.get("content") is not None:
+        existing_content = payload.get("content")
+        if existing_content is not None and not (isinstance(existing_content, str) and not existing_content.strip()):
             return payload
         ref_id = str(payload.get("content_ref") or payload.get("artifact_ref") or "").strip()
         if not ref_id:

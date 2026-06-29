@@ -75,6 +75,15 @@ def test_resolve_latest_ref_into_payload_content() -> None:
     assert_equal("metadata_ref", payload["metadata"]["resolved_artifact_ref"]["id"], "r2.1")
 
 
+def test_empty_content_uses_artifact_reference() -> None:
+    write_manifest()
+    service = ArtifactReferenceService()
+    refs = service.collect_from_result(result={"source": "fetch_url", "query": "example", "export_dir": str(TMP)}, result_index=5)
+    payload = service.resolve_payload_refs({"content": "  ", "content_ref": "latest:md"}, refs)
+    assert_true("empty_content_ref_loaded", "Useful text" in payload["content"])
+    assert_equal("empty_content_metadata_ref", payload["metadata"]["resolved_artifact_ref"]["id"], "r5.1")
+
+
 def test_relative_manifest_paths_resolve_from_manifest_directory() -> None:
     reset_tmp()
     raw_dir = TMP / "raw_html"
@@ -148,6 +157,7 @@ def test_missing_ref_sets_objective_error() -> None:
 def main() -> int:
     test_collect_refs_from_manifest()
     test_resolve_latest_ref_into_payload_content()
+    test_empty_content_uses_artifact_reference()
     test_relative_manifest_paths_resolve_from_manifest_directory()
     test_relative_manifest_paths_cannot_escape_manifest_directory()
     test_missing_ref_sets_objective_error()
