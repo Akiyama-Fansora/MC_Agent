@@ -5461,3 +5461,41 @@ Validation:
 Boundary:
 
 This change does not infer URLs, choose sources, relax `fetch_url` preflight, persist temporary no-save requests, ingest data, or decide evidence relevance. It only carries forward an exact URL already present in the user/session context so the selected objective tool can run.
+
+## 2026-07-01 Stage 86: Crawler Runtime Whitespace-Normalized Task Deduplication
+
+This maintenance pass focused on CrawlerAgent runtime routing and frontend-visible action flow during replan/add-task loops.
+
+Implemented changes:
+
+1. `mcagent/crawler_runtime_step_service.py` now normalizes internal whitespace when building runtime task identities.
+2. Replanned or added tasks whose source/query only differ by repeated spaces or newlines are no longer inserted as duplicate pending work.
+3. This keeps CrawlerAgent reflection free to choose new tasks while preventing objectively equivalent task reruns from cluttering job progress.
+4. Added regression coverage proving whitespace-only query variants are ignored by the runtime queue.
+
+Validation:
+
+1. `python tests\crawler_runtime_step_service_scenarios.py`
+2. `python -m py_compile mcagent\crawler_runtime_step_service.py tests\crawler_runtime_step_service_scenarios.py`
+3. `python tests\crawler_task_preparation_service_scenarios.py`
+4. `python tests\crawler_task_materialization_service_scenarios.py`
+5. `python tests\crawler_result_accounting_service_scenarios.py`
+6. `python tests\crawler_capabilities_scenarios.py`
+7. `python tests\agent_message_bus_scenarios.py`
+8. `python tests\agent_runtime_scenarios.py`
+9. `python tests\rag_service_scenarios.py`
+10. `python tests\evidence_service_scenarios.py`
+11. `python tests\frontend_action_timeline_scenarios.py`
+12. `python tests\backend_services_scenarios.py`
+13. `python tests\fastapi_backend_scenarios.py`
+14. `python tests\smoke_test.py`
+15. `python tests\langgraph_runtime_scenarios.py`
+16. `python scripts\public_readiness_check.py`
+17. `node --check frontend\static\app.js`
+18. `node --check frontend\static\settings.js`
+19. `python scripts\check_text_encoding.py mcagent\crawler_runtime_step_service.py tests\crawler_runtime_step_service_scenarios.py`
+20. `git diff --check`
+
+Residual note:
+
+`tests\backend_services_scenarios.py` intentionally prints the expected worker exception traceback while proving the stream error ordering path still returns exit code 0.

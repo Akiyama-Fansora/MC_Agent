@@ -64,6 +64,19 @@ def test_duplicate_new_tasks_are_not_inserted() -> None:
     assert_equal("task_count", len(tasks), 1)
 
 
+def test_whitespace_variant_new_tasks_are_not_inserted() -> None:
+    service = CrawlerRuntimeStepService()
+    tasks = [{"source": "web_discovery", "query": "Python Packaging User Guide dependency specifiers"}]
+    result = service.apply_action(
+        tasks=tasks,
+        index=0,
+        reflection={"action": "add_tasks", "tasks": [{"source": "web_discovery", "query": "Python   Packaging\nUser Guide dependency specifiers"}]},
+        max_total_tasks=4,
+    )
+    assert_equal("continue_loop", result["continue_loop"], False)
+    assert_equal("task_count", len(tasks), 1)
+
+
 def test_replan_can_replace_unexecuted_tail_when_task_budget_is_full() -> None:
     service = CrawlerRuntimeStepService()
     tasks = [
@@ -154,6 +167,7 @@ if __name__ == "__main__":
     test_reflection_entry_preserves_contract()
     test_replan_inserts_unique_tasks_before_current_index()
     test_duplicate_new_tasks_are_not_inserted()
+    test_whitespace_variant_new_tasks_are_not_inserted()
     test_replan_can_replace_unexecuted_tail_when_task_budget_is_full()
     test_selected_index_swaps_next_pending_task()
     test_finish_returns_finish_reason()

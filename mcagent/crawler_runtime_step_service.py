@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -98,7 +99,7 @@ class CrawlerRuntimeStepService:
     @staticmethod
     def task_identity(task: dict[str, Any]) -> tuple[str, str]:
         source = str(task.get("source") or "").strip().lower()
-        query = str(task.get("query") or task.get("start_url") or "").strip().lower()
+        query = re.sub(r"\s+", " ", str(task.get("query") or task.get("start_url") or "").strip()).lower()
         return source, query
 
     @staticmethod
