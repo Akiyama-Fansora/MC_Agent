@@ -5430,3 +5430,34 @@ Validation:
 Residual note:
 
 The new exception-stream scenario intentionally exercises the existing worker exception path, so the test command prints the expected traceback while still passing.
+
+## 2026-06-30 Stage 85: Preserve Exact Fetch URLs During Crawler Task Preparation
+
+This maintenance pass focused on direct CrawlerAgent data acquisition for exact public URLs.
+
+Implemented changes:
+
+1. `mcagent/crawler_task_preparation_service.py` now preserves a user-provided URL for `fetch_url` tasks when the CrawlerAgent-selected query describes the page but omits the literal URL.
+2. The executor still keeps the `fetch_url` preflight boundary: a real URL must be present before the objective fetch tool can run.
+3. The recovered URL is appended to the existing query instead of replacing the Agent's wording, so task reports retain the Agent's selected intent.
+4. Added regression coverage proving `fetch_url` can recover the exact URL from the original user request and pass objective capability preflight.
+
+Validation:
+
+1. `python tests\crawler_task_preparation_service_scenarios.py`
+2. `python -m py_compile mcagent\crawler_task_preparation_service.py tests\crawler_task_preparation_service_scenarios.py`
+3. `python tests\crawler_task_materialization_service_scenarios.py`
+4. `python tests\crawler_runtime_step_service_scenarios.py`
+5. `python tests\crawler_result_accounting_service_scenarios.py`
+6. `python tests\agent_message_bus_scenarios.py`
+7. `python tests\rag_service_scenarios.py`
+8. `python tests\evidence_service_scenarios.py`
+9. `python tests\crawler_full_stack_matrix_scenarios.py`
+10. `python tests\frontend_action_timeline_scenarios.py`
+11. `python tests\smoke_test.py`
+12. `node --check frontend\static\app.js`
+13. `node --check frontend\static\settings.js`
+
+Boundary:
+
+This change does not infer URLs, choose sources, relax `fetch_url` preflight, persist temporary no-save requests, ingest data, or decide evidence relevance. It only carries forward an exact URL already present in the user/session context so the selected objective tool can run.

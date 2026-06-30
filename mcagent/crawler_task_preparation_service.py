@@ -60,6 +60,8 @@ class CrawlerTaskPreparationService:
             if value is not None:
                 task_payload[key] = value
         self._preserve_output_dir(task_payload=task_payload, base_payload=base_payload, task_query=task_query, question=question)
+        if task_source == "fetch_url":
+            self._preserve_fetch_url_query(task_payload=task_payload, base_payload=base_payload, task_query=task_query, question=question)
         if task_source == "browser_collect":
             self._preserve_browser_collect_constraints(task_payload=task_payload, base_payload=base_payload, task_query=task_query, question=question)
         return task_payload
@@ -139,6 +141,39 @@ class CrawlerTaskPreparationService:
             max_items = self._extract_max_items(combined)
             if max_items:
                 task_payload["max_items"] = max_items
+
+    def _preserve_fetch_url_query(
+        self,
+        *,
+        task_payload: dict[str, Any],
+        base_payload: dict[str, Any],
+        task_query: str,
+        question: str,
+    ) -> None:
+        query = str(task_payload.get("query") or "").strip()
+        if self._extract_first_url(query):
+            return
+        session_summary = base_payload.get("session_summary") if isinstance(base_payload.get("session_summary"), dict) else {}
+        combined = "\n".join(
+            str(item or "")
+            for item in (
+                task_query,
+                question,
+                base_payload.get("original_user_request"),
+                base_payload.get("query"),
+                base_payload.get("source_question"),
+                session_summary.get("original_user_message"),
+                session_summary.get("original_question"),
+                session_summary.get("source_question"),
+                session_summary.get("collection_target"),
+                session_summary.get("task_goal"),
+            )
+        )
+        url = self._extract_first_url(combined)
+        if not url:
+            return
+        task_payload["query"] = f"{query} {url}".strip() if query else url
+
     def _preserve_output_dir(
         self,
         *,

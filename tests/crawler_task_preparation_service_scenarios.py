@@ -7,6 +7,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from mcagent.crawler_capabilities import task_preflight  # noqa: E402
 from mcagent.crawler_task_preparation_service import CrawlerTaskPreparationService  # noqa: E402
 
 
@@ -90,6 +91,22 @@ def test_browser_collect_recovers_url_path_and_count_from_original_question() ->
     assert_equal("max_items", built["max_items"], 5)
 
 
+def test_fetch_url_recovers_url_from_original_question_when_query_is_summary() -> None:
+    question = (
+        "\u7528 CrawlerAgent \u8bfb\u53d6 https://example.com/docs/page "
+        "\u7684\u6807\u9898\u548c\u6b63\u6587\u6458\u8981\uff0c\u4e0d\u8981\u5165\u5e93\u3002"
+    )
+    built = CrawlerTaskPreparationService().build_payload(
+        base_payload={"original_user_request": question},
+        task={"query": "\u603b\u7ed3\u7528\u6237\u7ed9\u7684\u90a3\u4e2a\u516c\u5f00\u6587\u6863\u9875\u9762"},
+        question=question,
+        task_source="fetch_url",
+    )
+    assert_equal("source", built["source"], "fetch_url")
+    assert "https://example.com/docs/page" in built["query"]
+    assert_equal("preflight_valid", task_preflight(built)["valid"], True)
+
+
 def test_generic_web_task_preserves_output_dir_from_original_question() -> None:
     question = (
         "Collect Python Packaging User Guide pip install and dependency specifiers, "
@@ -161,6 +178,7 @@ if __name__ == "__main__":
     test_build_payload_falls_back_to_question_when_query_missing()
     test_build_payload_preserves_generic_artifact_fields()
     test_browser_collect_recovers_url_path_and_count_from_original_question()
+    test_fetch_url_recovers_url_from_original_question_when_query_is_summary()
     test_generic_web_task_preserves_output_dir_from_original_question()
     test_output_dir_stops_before_following_english_instruction()
     test_empty_query_result_is_objective_failure_observation()
