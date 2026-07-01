@@ -91,6 +91,24 @@ def test_browser_collect_recovers_url_path_and_count_from_original_question() ->
     assert_equal("max_items", built["max_items"], 5)
 
 
+def test_browser_collect_recovers_chinese_punctuation_and_count_words() -> None:
+    question = (
+        "\u8bf7\u7528 CrawlerAgent \u6253\u5f00\uff08https://webscraper.io/test-sites/e-commerce/static/computers/laptops\uff09\uff0c"
+        "\u63d0\u53d6\u524d\u5341\u4e94\u4e2a\u5546\u54c1\u7684\u540d\u79f0\u3001\u4ef7\u683c\u548c\u94fe\u63a5\uff0c"
+        "\u4fdd\u5b58\u5230 D:\\magic\\MC_Agent\\runtime\\crawler_items\u3002"
+        "\u7136\u540e\u7ed9 MCagent \u7528\u6765\u6574\u5408\u56de\u7b54\u3002"
+    )
+    built = CrawlerTaskPreparationService().build_payload(
+        base_payload={"original_user_request": question},
+        task={"query": "\u6293\u53d6\u7528\u6237\u6307\u5b9a\u7684\u7535\u5546\u9875\u9762\u5546\u54c1\u5217\u8868"},
+        question=question,
+        task_source="browser_collect",
+    )
+    assert_equal("start_url", built["start_url"], "https://webscraper.io/test-sites/e-commerce/static/computers/laptops")
+    assert_equal("output_dir", built["output_dir"], r"D:\magic\MC_Agent\runtime\crawler_items")
+    assert_equal("max_items", built["max_items"], 15)
+
+
 def test_fetch_url_recovers_url_from_original_question_when_query_is_summary() -> None:
     question = (
         "\u7528 CrawlerAgent \u8bfb\u53d6 https://example.com/docs/page "
@@ -178,6 +196,7 @@ if __name__ == "__main__":
     test_build_payload_falls_back_to_question_when_query_missing()
     test_build_payload_preserves_generic_artifact_fields()
     test_browser_collect_recovers_url_path_and_count_from_original_question()
+    test_browser_collect_recovers_chinese_punctuation_and_count_words()
     test_fetch_url_recovers_url_from_original_question_when_query_is_summary()
     test_generic_web_task_preserves_output_dir_from_original_question()
     test_output_dir_stops_before_following_english_instruction()

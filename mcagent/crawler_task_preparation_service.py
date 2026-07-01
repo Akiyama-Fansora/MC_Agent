@@ -229,3 +229,62 @@ class CrawlerTaskPreparationService:
         if not match:
             return None
         return max(1, min(int(match.group(1)), 200))
+
+    # Override legacy mojibake regexes above with stable Unicode-escape based parsing.
+    @staticmethod
+    def _extract_first_url(text: str) -> str:
+        match = re.search("https?://[^\\s<>'\"\\u3000\\uff0c\\u3002\\uff1b\\u3001\\uff09\\uff3d\\u300b]+", str(text or ""), flags=re.I)
+        if not match:
+            return ""
+        return match.group(0).rstrip(".,:;!?)]}>\"'\\u3000\\uff0c\\u3002\\uff1b\\u3001\\uff09\\uff3d\\u300b")
+
+    @staticmethod
+    def _extract_windows_path(text: str) -> str:
+        matches = re.findall("[A-Za-z]:\\\\[^\\r\\n]+", str(text or ""))
+        if not matches:
+            return ""
+        value = matches[-1].strip().strip('"').strip("'")
+        value = re.split("[\\u3000\\uff0c\\u3002\\uff1b\\u3001;]+", value, maxsplit=1)[0].strip()
+        value = re.split(r"\s+(?:You|Then|After|Use|Do not|Do|If|CrawlerAgent|MCagent)\b", value, maxsplit=1)[0].strip()
+        value = value.rstrip(".,;")
+        value = re.sub(r"\s+(?:xlsx|csv|json|md|markdown|report|folder|directory).*$", "", value, flags=re.I)
+        return value.strip()
+
+    @staticmethod
+    def _extract_max_items(text: str) -> int | None:
+        value = str(text or "")
+        match = re.search("(?:first|top\\s*|\\u524d\\s*)\\s*(\\d{1,3})\\s*(?:\\u4e2a|\\u6761|\\u6b3e|items?|products?|records?|rows?)", value, flags=re.I)
+        if not match:
+            match = re.search("(\\d{1,3})\\s*(?:\\u4e2a|\\u6761|\\u6b3e)?\\s*(?:\\u5546\\u54c1|\\u4ea7\\u54c1|items?|records?)", value, flags=re.I)
+        if match:
+            return max(1, min(int(match.group(1)), 200))
+        chinese_match = re.search("(?:\\u524d\\s*)?([\\u4e00\\u4e8c\\u4e09\\u56db\\u4e94\\u516d\\u4e03\\u516b\\u4e5d\\u5341]{1,3})\\s*(?:\\u4e2a|\\u6761|\\u6b3e)?\\s*(?:\\u5546\\u54c1|\\u4ea7\\u54c1|items?|records?)", value, flags=re.I)
+        if not chinese_match:
+            return None
+        parsed = CrawlerTaskPreparationService._parse_small_chinese_count(chinese_match.group(1))
+        if parsed is None:
+            return None
+        return max(1, min(parsed, 200))
+
+    @staticmethod
+    def _parse_small_chinese_count(text: str) -> int | None:
+        digits = {
+            "\u4e00": 1,
+            "\u4e8c": 2,
+            "\u4e09": 3,
+            "\u56db": 4,
+            "\u4e94": 5,
+            "\u516d": 6,
+            "\u4e03": 7,
+            "\u516b": 8,
+            "\u4e5d": 9,
+        }
+        value = str(text or "").strip()
+        if not value:
+            return None
+        if "\u5341" not in value:
+            return digits.get(value)
+        left, _, right = value.partition("\u5341")
+        tens = digits.get(left, 1) if left else 1
+        ones = digits.get(right, 0) if right else 0
+        return tens * 10 + ones
