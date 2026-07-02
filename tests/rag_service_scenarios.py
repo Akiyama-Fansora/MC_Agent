@@ -90,6 +90,14 @@ def test_prepare_prefers_rag_focus_and_adaptive_limits() -> None:
     assert_equal("final_k", preparation.final_k, 8)
 
 
+def test_prepare_ignores_blank_rag_focus() -> None:
+    service = build_service(retriever_results=[], calls=[], plan_calls=[], supplement_calls=[])
+    preparation = service.prepare(object(), agent="mcagent_rag", question="raw user question", rag_focus="  \r\n\t  ")
+    assert_equal("evidence_question", preparation.evidence_question, "raw user question")
+    assert_equal("rough_k", preparation.rough_k, 42)
+    assert_equal("final_k", preparation.final_k, 8)
+
+
 def test_planned_retrieval_emits_planning_and_searches_combined_query() -> None:
     calls: list[dict[str, Any]] = []
     plan_calls: list[dict[str, Any]] = []
@@ -184,6 +192,7 @@ def test_non_mcagent_retrieval_does_not_plan_or_supplement() -> None:
 
 if __name__ == "__main__":
     test_prepare_prefers_rag_focus_and_adaptive_limits()
+    test_prepare_ignores_blank_rag_focus()
     test_planned_retrieval_emits_planning_and_searches_combined_query()
     test_sparse_mcagent_results_are_supplemented_without_deciding_final_answer()
     test_non_mcagent_retrieval_does_not_plan_or_supplement()

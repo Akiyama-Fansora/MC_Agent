@@ -5499,3 +5499,37 @@ Validation:
 Residual note:
 
 `tests\backend_services_scenarios.py` intentionally prints the expected worker exception traceback while proving the stream error ordering path still returns exit code 0.
+
+## 2026-07-03 Stage 87: Blank RAG Focus Fallback
+
+This maintenance pass focused on MCagent local RAG retrieval preparation and the boundary between Agent route decisions and objective retrieval.
+
+Implemented changes:
+
+1. `mcagent/rag_service.py` now trims `rag_focus` before deciding whether to use it as the evidence question.
+2. Blank or whitespace-only `rag_focus` values from an Agent route decision now fall back to the original user question instead of searching for blank text.
+3. Non-blank focused retrieval requests keep their existing behavior.
+4. Added regression coverage proving whitespace-only focus does not erase the user question.
+
+Validation:
+
+1. `python tests\rag_service_scenarios.py`
+2. `python -m py_compile mcagent\rag_service.py tests\rag_service_scenarios.py`
+3. `python tests\evidence_service_scenarios.py`
+4. `python tests\agent_message_bus_scenarios.py`
+5. `python tests\crawler_task_preparation_service_scenarios.py`
+6. `python tests\crawler_task_materialization_service_scenarios.py`
+7. `python tests\crawler_runtime_step_service_scenarios.py`
+8. `python tests\frontend_action_timeline_scenarios.py`
+9. `python tests\agent_runtime_scenarios.py`
+10. `python tests\fastapi_backend_scenarios.py`
+11. `python tests\smoke_test.py`
+12. `python scripts\public_readiness_check.py`
+13. `node --check frontend\static\app.js`
+14. `node --check frontend\static\settings.js`
+15. `python scripts\check_text_encoding.py mcagent\rag_service.py tests\rag_service_scenarios.py docs\agent_development_guide.md`
+16. `git diff --check`
+
+Boundary:
+
+This change does not alter retrieval ranking, evidence selection, final-answer generation, Crawler handoff, persistence, ingest, or graph routing. It only prevents an empty Agent-provided RAG focus from replacing the user's actual question.

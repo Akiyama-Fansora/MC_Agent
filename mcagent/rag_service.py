@@ -66,7 +66,7 @@ class RagRetrievalService:
         self._dedupe_results = dedupe_results
 
     def prepare(self, config: AppConfig, *, agent: str, question: str, rag_focus: str = "") -> RagRetrievalPreparation:
-        evidence_question = rag_focus or question
+        evidence_question = str(rag_focus or "").strip() or question
         return RagRetrievalPreparation(
             evidence_question=evidence_question,
             rough_k=self._adaptive_rough_k(evidence_question, agent),
