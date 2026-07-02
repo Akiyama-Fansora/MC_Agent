@@ -61,6 +61,24 @@ def test_materialize_replan_tasks_normalizes_and_deduplicates() -> None:
     assert "mid-job replan" in tasks[0]["reason"]
 
 
+def test_materialize_replan_tasks_deduplicates_after_source_aliasing() -> None:
+    service = CrawlerTaskMaterializationService()
+    tasks = service.materialize_replan_tasks(
+        new_plan={
+            "tasks": [
+                {"source": "web", "query": "Python packaging guide", "reason": "same task through alias"},
+                {"source": "playwright", "query": "Python packaging guide", "reason": "alternate rendered source"},
+            ]
+        },
+        existing_tasks=[{"source": "web_discovery", "query": "Python packaging guide"}],
+        identity_fn=identity,
+        source_alias_fn=source_alias,
+        max_new_tasks=3,
+    )
+    assert_equal("count", len(tasks), 1)
+    assert_equal("source", tasks[0]["source"], "playwright")
+
+
 def test_materialize_replan_tasks_blocks_modpack_internal_without_archive_input() -> None:
     service = CrawlerTaskMaterializationService()
     tasks = service.materialize_replan_tasks(
@@ -179,6 +197,7 @@ def test_fallback_topic_tasks_use_minecraft_sources_for_minecraft_context() -> N
 if __name__ == "__main__":
     test_replan_session_summary_keeps_goal_and_existing_tasks()
     test_materialize_replan_tasks_normalizes_and_deduplicates()
+    test_materialize_replan_tasks_deduplicates_after_source_aliasing()
     test_materialize_replan_tasks_blocks_modpack_internal_without_archive_input()
     test_reflection_task_filter_allows_modpack_internal_with_archive_path()
     test_displayable_planned_tasks_split_blocks_modpack_internal_without_archive_input()

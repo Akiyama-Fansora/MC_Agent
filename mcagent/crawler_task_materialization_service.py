@@ -66,12 +66,12 @@ class CrawlerTaskMaterializationService:
         for task in list(new_plan.get("tasks") or []):
             if not isinstance(task, dict):
                 continue
-            identity = identity_fn(task)
+            cloned = dict(task)
+            cloned["source"] = source_alias_fn(str(cloned.get("source") or "web_discovery"))
+            identity = identity_fn(cloned)
             if not identity[1] or identity in seen:
                 continue
             seen.add(identity)
-            cloned = dict(task)
-            cloned["source"] = source_alias_fn(str(cloned.get("source") or "web_discovery"))
             if not task_preflight(cloned, check_domain=False).get("valid"):
                 continue
             cloned["reason"] = f"mid-job replan after empty/off-topic results; {cloned.get('reason') or ''}".strip()
