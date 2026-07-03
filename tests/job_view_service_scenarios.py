@@ -165,10 +165,43 @@ def test_zero_byte_accepted_result_is_not_shown_as_useful_output() -> None:
     assert_equal("blocked_outputs", len(view["blocked_outputs"]), 1)
 
 
+def test_non_numeric_manifest_stats_do_not_break_job_view() -> None:
+    view = JobReadableViewService(source_label=label).build(
+        {
+            "title": "Crawler collection",
+            "status": "succeeded",
+            "result": {
+                "tasks": [
+                    {
+                        "source": "fetch_url",
+                        "query": "https://example.test/project",
+                        "returncode": 0,
+                        "manifest_stats": {
+                            "records": "unknown",
+                            "usable_records": "n/a",
+                            "empty_records": "",
+                            "record_bytes": "pending",
+                            "skipped": None,
+                            "errors": "not-yet",
+                        },
+                        "observation": {"status": "ok", "summary": "tool returned partial stats"},
+                        "topic_validation": {"matched": True, "crawler_review_action": "accept"},
+                    }
+                ],
+            },
+        }
+    )
+    assert_equal("useful_outputs", len(view["useful_outputs"]), 1)
+    assert_equal("audit_records", view["self_audit"]["accepted_sources"][0]["records"], 0)
+    assert_equal("audit_usable_records", view["self_audit"]["accepted_sources"][0]["usable_records"], 0)
+    assert_equal("objective_records", view["self_audit"]["accepted_sources"][0]["objective_evidence"]["records"], 0)
+
+
 if __name__ == "__main__":
     test_running_job_view_explains_current_action_and_counts()
     test_waiting_job_view_is_plain_language()
     test_job_view_surfaces_blocked_planned_tasks_separately()
     test_job_view_recomputes_self_audit_after_background_ingest_finishes()
     test_zero_byte_accepted_result_is_not_shown_as_useful_output()
+    test_non_numeric_manifest_stats_do_not_break_job_view()
     print("job_view_service_scenarios: ok")

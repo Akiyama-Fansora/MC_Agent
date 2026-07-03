@@ -11,6 +11,13 @@ from .crawler_self_audit_service import CrawlerSelfAuditService
 SourceLabelFn = Callable[[str], str]
 
 
+def _safe_count(value: Any, *, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass(slots=True)
 class JobReadableViewService:
     """Build a human-readable job view for API/UI payloads."""
@@ -285,8 +292,8 @@ class JobReadableViewService:
             if source == "mcagent_context" or status not in {"ok", "duplicate_reused"}:
                 continue
             stats = item.get("manifest_stats") if isinstance(item.get("manifest_stats"), dict) else {}
-            records = int(stats.get("records") or 0)
-            usable_records = int(stats.get("usable_records")) if stats.get("usable_records") is not None else records
+            records = _safe_count(stats.get("records"))
+            usable_records = _safe_count(stats.get("usable_records"), default=records) if stats.get("usable_records") is not None else records
             if records > 0 and usable_records <= 0:
                 continue
             outputs.append(

@@ -6,6 +6,13 @@ from typing import Any
 from .agent_runtime import classify_crawler_tool_result
 
 
+def _safe_count(value: Any, *, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass(slots=True)
 class CrawlerSelfAuditService:
     """Summarize CrawlerAgent's own evidence review decisions for humans/UI."""
@@ -81,12 +88,12 @@ class CrawlerSelfAuditService:
             "query": str(item.get("query") or ""),
             "status": str(observation.get("status") or ""),
             "summary": str(observation.get("summary") or ""),
-            "records": int(manifest.get("records") or 0),
-            "usable_records": int(manifest.get("usable_records") or 0),
-            "empty_records": int(manifest.get("empty_records") or 0),
-            "record_bytes": int(manifest.get("record_bytes") or 0),
-            "skipped": int(manifest.get("skipped") or 0),
-            "errors": int(manifest.get("errors") or 0),
+            "records": _safe_count(manifest.get("records")),
+            "usable_records": _safe_count(manifest.get("usable_records")),
+            "empty_records": _safe_count(manifest.get("empty_records")),
+            "record_bytes": _safe_count(manifest.get("record_bytes")),
+            "skipped": _safe_count(manifest.get("skipped")),
+            "errors": _safe_count(manifest.get("errors")),
             "export_dir": str(item.get("export_dir") or ""),
             "accepted_reason": accepted_reason,
             "rejected_reason": rejected_reason,
@@ -175,9 +182,9 @@ class CrawlerSelfAuditService:
         evidence.update(
             {
                 "observation_status": str(observation.get("status") or ""),
-                "records": int(manifest.get("records") or 0),
-                "usable_records": int(manifest.get("usable_records") or 0),
-                "record_bytes": int(manifest.get("record_bytes") or 0),
+                "records": _safe_count(manifest.get("records")),
+                "usable_records": _safe_count(manifest.get("usable_records")),
+                "record_bytes": _safe_count(manifest.get("record_bytes")),
             }
         )
         return evidence

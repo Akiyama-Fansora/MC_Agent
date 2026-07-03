@@ -5533,3 +5533,23 @@ Validation:
 Boundary:
 
 This change does not alter retrieval ranking, evidence selection, final-answer generation, Crawler handoff, persistence, ingest, or graph routing. It only prevents an empty Agent-provided RAG focus from replacing the user's actual question.
+
+## 2026-07-03 Stage 88: Tolerant Crawler Job View Counts
+
+This maintenance pass focused on CrawlerAgent frontend-visible action flow and job status readability.
+
+Implemented changes:
+
+1. `mcagent/job_view_service.py` now parses manifest record counters through a tolerant view-layer helper when building `useful_outputs`.
+2. `mcagent/crawler_self_audit_service.py` now uses the same tolerant count pattern for self-audit entries and objective evidence summaries.
+3. Non-numeric manifest values such as `unknown`, `n/a`, empty strings, or `None` no longer break `/api/jobs` readable payload construction.
+4. Added regression coverage proving a task with partial/non-numeric manifest stats still renders the job view and self-audit with safe zero counters.
+
+Validation:
+
+1. `python tests\job_view_service_scenarios.py`
+2. `python -m py_compile mcagent\job_view_service.py mcagent\crawler_self_audit_service.py tests\job_view_service_scenarios.py`
+
+Boundary:
+
+This change does not alter CrawlerAgent source selection, tool result classification, persistence, ingest, evidence acceptance, or final job success accounting. It only keeps the API/UI readable view stable when a tool reports malformed display counters.
