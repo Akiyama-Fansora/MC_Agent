@@ -253,6 +253,27 @@ def test_should_finish_after_gap_probe_satisfied() -> None:
         ),
         False,
     )
+    assert_equal(
+        "malformed_external_counts_do_not_crash_gap_probe",
+        service.should_finish_after_gap_probe_satisfied(
+            source="planner",
+            task_results=[
+                {
+                    "source": "mcagent_context",
+                    "returncode": 0,
+                    "mcagent_gap_summary": "- No explicit gap list was found; use coverage goals.",
+                },
+                {
+                    "source": "web_discovery",
+                    "returncode": 0,
+                    "manifest_stats": {"records": "n/a", "candidates": "unknown"},
+                },
+            ],
+            candidate_count=0,
+            success_count=0,
+        ),
+        False,
+    )
 
 
 def test_should_finish_after_context_plus_external_checkpoint() -> None:
@@ -295,6 +316,36 @@ def test_should_finish_after_context_plus_external_checkpoint() -> None:
             candidate_count=1,
             success_count=1,
             bad_streak=1,
+            executed_count=4,
+        ),
+        False,
+    )
+    assert_equal(
+        "malformed_context_returncode_is_not_success",
+        service.should_finish_after_context_plus_external_checkpoint(
+            source="planner",
+            task_results=[
+                {"source": "mcagent_context", "returncode": "unknown", "manifest_stats": {"records": 1}},
+                {"source": "web_discovery", "returncode": 0, "manifest_stats": {"records": 1}},
+            ],
+            candidate_count=1,
+            success_count=1,
+            bad_streak=2,
+            executed_count=4,
+        ),
+        False,
+    )
+    assert_equal(
+        "malformed_external_counts_do_not_crash_checkpoint",
+        service.should_finish_after_context_plus_external_checkpoint(
+            source="planner",
+            task_results=[
+                {"source": "mcagent_context", "returncode": 0, "manifest_stats": {"records": 1}},
+                {"source": "web_discovery", "returncode": 0, "manifest_stats": {"records": "n/a", "candidates": "unknown"}},
+            ],
+            candidate_count=1,
+            success_count=1,
+            bad_streak=2,
             executed_count=4,
         ),
         False,

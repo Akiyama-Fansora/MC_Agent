@@ -128,7 +128,7 @@ class CrawlerLoopControlService:
             for item in task_results
             if isinstance(item, dict)
             and str(item.get("source") or "") == "mcagent_context"
-            and int(item.get("returncode") or 0) == 0
+            and self._returncode_ok(item.get("returncode"))
         ]
         if not context_results:
             return False
@@ -144,8 +144,8 @@ class CrawlerLoopControlService:
         if not external_results:
             return False
         return candidate_count > 0 or success_count > 0 or any(
-            int((item.get("manifest_stats") or {}).get("records") or 0) > 0
-            or int((item.get("manifest_stats") or {}).get("candidates") or 0) > 0
+            self._safe_count((item.get("manifest_stats") or {}).get("records")) > 0
+            or self._safe_count((item.get("manifest_stats") or {}).get("candidates")) > 0
             for item in external_results
             if isinstance(item.get("manifest_stats"), dict)
         )
@@ -169,7 +169,7 @@ class CrawlerLoopControlService:
         has_context = any(
             isinstance(item, dict)
             and str(item.get("source") or "") == "mcagent_context"
-            and int(item.get("returncode") or 0) == 0
+            and self._returncode_ok(item.get("returncode"))
             for item in task_results
         )
         if not has_context:
@@ -228,7 +228,21 @@ class CrawlerLoopControlService:
         manifest = item.get("manifest_stats") if isinstance(item.get("manifest_stats"), dict) else {}
         reused = item.get("existing_evidence_reused") if isinstance(item.get("existing_evidence_reused"), dict) else {}
         return (
-            int(manifest.get("records") or 0) > 0
-            or int(manifest.get("candidates") or 0) > 0
+            self._safe_count(manifest.get("records")) > 0
+            or self._safe_count(manifest.get("candidates")) > 0
             or bool(reused.get("matched"))
         )
+
+    @staticmethod
+    def _safe_count(value: Any) -> int:
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _returncode_ok(value: Any) -> bool:
+        try:
+            return int(value) == 0
+        except (TypeError, ValueError):
+            return False

@@ -5553,3 +5553,24 @@ Validation:
 Boundary:
 
 This change does not alter CrawlerAgent source selection, tool result classification, persistence, ingest, evidence acceptance, or final job success accounting. It only keeps the API/UI readable view stable when a tool reports malformed display counters.
+
+## 2026-07-05 Stage 89: Safe Crawler Loop-Control Metadata Parsing
+
+This maintenance pass focused on CrawlerAgent runtime loop-control decisions after tool execution.
+
+Implemented changes:
+
+1. `mcagent/crawler_loop_control_service.py` now parses manifest `records` and `candidates` counters through a tolerant helper before deciding whether external results contain material.
+2. Crawler loop-control `returncode` success checks now use a separate strict helper: only a parseable zero is treated as successful context.
+3. Non-numeric manifest counters such as `unknown`, `n/a`, empty strings, or `None` no longer crash gap-probe or context-plus-external checkpoint decisions.
+4. Non-numeric `mcagent_context` return codes no longer count as successful local-context checkpoints.
+5. Added regression coverage for malformed external manifest counters and malformed context return codes.
+
+Validation:
+
+1. `python tests\crawler_loop_control_service_scenarios.py`
+2. `python -m py_compile mcagent\crawler_loop_control_service.py tests\crawler_loop_control_service_scenarios.py`
+
+Boundary:
+
+This change does not alter CrawlerAgent source selection, tool execution, result classification, persistence, ingest, evidence review, or final answers. It only keeps loop-control routing stable when external tool metadata is malformed.
