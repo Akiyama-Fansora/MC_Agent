@@ -49,15 +49,17 @@ class JobReadableViewService:
         if not isinstance(current_task, dict):
             current_task = {}
 
-        success_count = int(result.get("success_count") or sum(1 for item in tasks if isinstance(item, dict) and item.get("ingest_deferred")))
-        failure_count = int(
-            result.get("failure_count")
-            or sum(
-                1
-                for item in tasks
-                if isinstance(item, dict)
-                and (item.get("empty_result") or item.get("off_topic_result") or int(item.get("returncode") or 0) != 0)
-            )
+        inferred_success_count = sum(1 for item in tasks if isinstance(item, dict) and item.get("ingest_deferred"))
+        inferred_failure_count = sum(
+            1
+            for item in tasks
+            if isinstance(item, dict)
+            and (item.get("empty_result") or item.get("off_topic_result") or _safe_count(item.get("returncode")) != 0)
+        )
+        success_count = _safe_count(result.get("success_count"), default=inferred_success_count)
+        failure_count = _safe_count(
+            result.get("failure_count"),
+            default=inferred_failure_count,
         )
         off_topic = sum(1 for item in tasks if isinstance(item, dict) and item.get("off_topic_result"))
         empty = sum(1 for item in tasks if isinstance(item, dict) and item.get("empty_result"))
@@ -121,7 +123,7 @@ class JobReadableViewService:
             "observation_statuses": observation_statuses,
             "latest_observation": latest_observation,
             "latest_observation_label": str(latest_observation.get("status") or ""),
-            "replan_count": int(result.get("replan_count") or 0),
+            "replan_count": _safe_count(result.get("replan_count")),
             "summary": str(job.get("summary") or ""),
             "headline": self._headline(status, target, str(job.get("title") or "")),
             "health_text": health_text,
@@ -447,7 +449,7 @@ class JobReadableViewService:
                 }
             )
 
-        replan_count = int(result.get("replan_count") or 0)
+        replan_count = _safe_count(result.get("replan_count"))
         if replan_count:
             events.append(
                 {

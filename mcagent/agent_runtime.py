@@ -578,6 +578,13 @@ def _manifest_count(result: dict[str, Any], key: str) -> int:
         return 0
 
 
+def _result_count(result: dict[str, Any], key: str, *, default: int = 0) -> int:
+    try:
+        return int(result.get(key) or default)
+    except (TypeError, ValueError):
+        return default
+
+
 def _manifest_has_only_empty_records(result: dict[str, Any]) -> bool:
     manifest = result.get("manifest_stats") if isinstance(result.get("manifest_stats"), dict) else {}
     try:
@@ -602,7 +609,7 @@ def classify_crawler_tool_result(result: dict[str, Any]) -> ToolObservation:
     errors = _manifest_count(result, "errors")
     usable_records = _manifest_count(result, "usable_records")
     empty_records = _manifest_count(result, "empty_records")
-    returncode = int(result.get("returncode") or 0)
+    returncode = _result_count(result, "returncode")
     text = _result_text_for_classification(result)
     detail = {
         "source": source,

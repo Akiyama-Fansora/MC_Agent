@@ -197,6 +197,29 @@ def test_non_numeric_manifest_stats_do_not_break_job_view() -> None:
     assert_equal("objective_records", view["self_audit"]["accepted_sources"][0]["objective_evidence"]["records"], 0)
 
 
+def test_non_numeric_returncode_without_observation_does_not_break_job_view() -> None:
+    view = JobReadableViewService(source_label=label).build(
+        {
+            "title": "Crawler collection",
+            "status": "succeeded",
+            "result": {
+                "tasks": [
+                    {
+                        "source": "fetch_url",
+                        "query": "https://example.test/project",
+                        "returncode": "unknown",
+                        "manifest_stats": {"records": 1},
+                        "output": "partial tool metadata",
+                    }
+                ],
+            },
+        }
+    )
+    assert_equal("observation_pending", view["observation_statuses"].get("records_pending_review"), 1)
+    assert_equal("self_audit_pending", view["self_audit"]["counts"]["pending_review"], 1)
+    assert_equal("useful_outputs", view["useful_outputs"], [])
+
+
 if __name__ == "__main__":
     test_running_job_view_explains_current_action_and_counts()
     test_waiting_job_view_is_plain_language()
@@ -204,4 +227,5 @@ if __name__ == "__main__":
     test_job_view_recomputes_self_audit_after_background_ingest_finishes()
     test_zero_byte_accepted_result_is_not_shown_as_useful_output()
     test_non_numeric_manifest_stats_do_not_break_job_view()
+    test_non_numeric_returncode_without_observation_does_not_break_job_view()
     print("job_view_service_scenarios: ok")
