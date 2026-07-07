@@ -191,10 +191,33 @@ def test_non_numeric_manifest_stats_do_not_break_job_view() -> None:
             },
         }
     )
-    assert_equal("useful_outputs", len(view["useful_outputs"]), 1)
+    assert_equal("useful_outputs", view["useful_outputs"], [])
     assert_equal("audit_records", view["self_audit"]["accepted_sources"][0]["records"], 0)
     assert_equal("audit_usable_records", view["self_audit"]["accepted_sources"][0]["usable_records"], 0)
     assert_equal("objective_records", view["self_audit"]["accepted_sources"][0]["objective_evidence"]["records"], 0)
+
+
+def test_duplicate_reused_result_is_still_visible_without_new_records() -> None:
+    view = JobReadableViewService(source_label=label).build(
+        {
+            "title": "Crawler collection",
+            "status": "succeeded",
+            "result": {
+                "tasks": [
+                    {
+                        "source": "fetch_url",
+                        "query": "https://example.test/project",
+                        "returncode": 0,
+                        "manifest_stats": {"records": 0, "skipped": 1},
+                        "observation": {"status": "duplicate_reused", "summary": "reused previous evidence"},
+                        "existing_evidence_reused": {"matched": True},
+                    }
+                ],
+            },
+        }
+    )
+    assert_equal("useful_outputs", len(view["useful_outputs"]), 1)
+    assert_equal("useful_status", view["useful_outputs"][0]["status"], "duplicate_reused")
 
 
 def test_non_numeric_returncode_without_observation_does_not_break_job_view() -> None:
@@ -227,5 +250,6 @@ if __name__ == "__main__":
     test_job_view_recomputes_self_audit_after_background_ingest_finishes()
     test_zero_byte_accepted_result_is_not_shown_as_useful_output()
     test_non_numeric_manifest_stats_do_not_break_job_view()
+    test_duplicate_reused_result_is_still_visible_without_new_records()
     test_non_numeric_returncode_without_observation_does_not_break_job_view()
     print("job_view_service_scenarios: ok")

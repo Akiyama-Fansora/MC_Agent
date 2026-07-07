@@ -296,7 +296,7 @@ class JobReadableViewService:
             stats = item.get("manifest_stats") if isinstance(item.get("manifest_stats"), dict) else {}
             records = _safe_count(stats.get("records"))
             usable_records = _safe_count(stats.get("usable_records"), default=records) if stats.get("usable_records") is not None else records
-            if records > 0 and usable_records <= 0:
+            if not self._has_user_visible_output(item, status=status, records=records, usable_records=usable_records):
                 continue
             outputs.append(
                 {
@@ -309,6 +309,12 @@ class JobReadableViewService:
                 }
             )
         return outputs[:8]
+
+    def _has_user_visible_output(self, item: dict[str, Any], *, status: str, records: int, usable_records: int) -> bool:
+        if status == "duplicate_reused":
+            reused = item.get("existing_evidence_reused") if isinstance(item.get("existing_evidence_reused"), dict) else {}
+            return bool(reused.get("matched"))
+        return records > 0 and usable_records > 0
 
     def _blocked_outputs(self, tasks: list[Any]) -> list[dict[str, str]]:
         outputs: list[dict[str, str]] = []
