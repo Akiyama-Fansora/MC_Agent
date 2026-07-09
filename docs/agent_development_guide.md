@@ -5608,3 +5608,32 @@ Validation:
 Boundary:
 
 This change does not alter source selection, tool execution, persistence, ingest, RAG retrieval, evidence selection, final answers, or the Crawler loop-control service. It only keeps duplicate local-context task pruning stable when already-recorded task metadata is malformed.
+
+## 2026-07-10 Stage 91: Safe Crawler Planner Limit Parsing
+
+This maintenance pass focused on CrawlerAgent planning limits, API robustness, runtime routing, and frontend-visible action flow.
+
+Implemented changes:
+
+1. `mcagent/crawler_job_setup_service.py` now centralizes tolerant integer parsing for Crawler job payload limits.
+2. `max_tasks` now falls back to the existing defaults when payload values are malformed, and is clamped to the supported 1..32 planner range.
+3. `max_replans` now falls back safely, allows zero explicit replans, and is clamped to a bounded 0..10 range.
+4. FastAPI `/api/crawler/plan`, the standard-library web `/api/crawler/plan`, delegated Crawler jobs, and graph/runtime job preparation now share the same planner limit parsing.
+5. Added regression coverage for malformed, blank, negative, and oversized limit payloads plus FastAPI planner payload handling.
+
+Validation:
+
+1. `python tests\crawler_job_setup_service_scenarios.py`
+2. `python -m py_compile mcagent\crawler_job_setup_service.py mcagent\fastapi_app.py mcagent\web_server.py tests\crawler_job_setup_service_scenarios.py tests\fastapi_backend_scenarios.py`
+3. `python tests\fastapi_backend_scenarios.py`
+4. `python tests\crawler_planner_wait_service_scenarios.py`
+5. `python tests\crawler_task_preparation_service_scenarios.py`
+6. `python tests\crawler_task_materialization_service_scenarios.py`
+7. `python tests\agent_message_bus_scenarios.py`
+8. `python tests\rag_service_scenarios.py`
+9. `python tests\evidence_service_scenarios.py`
+10. `python tests\frontend_action_timeline_scenarios.py`
+
+Boundary:
+
+This change does not alter source selection, LLM planning prompts, tool execution, persistence, ingest, RAG retrieval, evidence selection, or final answers. It only keeps Crawler planning and job setup stable when API/UI/Agent payload limit fields are malformed or out of range.

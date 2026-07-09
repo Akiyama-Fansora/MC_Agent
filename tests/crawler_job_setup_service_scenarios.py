@@ -51,6 +51,27 @@ def test_limits_respect_payload_and_total_cap() -> None:
     assert_equal("explicit_budget_total", explicit["max_total_tasks"], 8)
 
 
+def test_limits_tolerate_malformed_payload_numbers() -> None:
+    service = CrawlerJobSetupService()
+    malformed = service.limits(payload={"max_replans": "n/a", "max_tasks": "unknown"}, tasks=[{}, {}, {}])
+    negative = service.limits(payload={"max_replans": "-5", "max_tasks": "-2"}, tasks=[{}])
+    assert_equal("malformed_replans_default", malformed["max_replans"], 2)
+    assert_equal("malformed_task_default", malformed["initial_task_limit"], 3)
+    assert_equal("malformed_total_uses_task_count", malformed["max_total_tasks"], 3)
+    assert_equal("negative_replans_clamped", negative["max_replans"], 0)
+    assert_equal("negative_task_minimum", negative["initial_task_limit"], 1)
+    assert_equal("negative_total_keeps_existing_task", negative["max_total_tasks"], 1)
+
+
+def test_planner_max_tasks_is_safe_for_api_payloads() -> None:
+    service = CrawlerJobSetupService()
+    assert_equal("blank_default", service.planner_max_tasks({"max_tasks": ""}), 16)
+    assert_equal("malformed_default", service.planner_max_tasks({"max_tasks": "many"}), 16)
+    assert_equal("minimum", service.planner_max_tasks({"max_tasks": 0}), 1)
+    assert_equal("cap", service.planner_max_tasks({"max_tasks": 999}), 32)
+    assert_equal("custom_default", service.planner_max_tasks({"max_tasks": "bad"}, default=6), 6)
+
+
 def test_stopped_updates_do_not_own_end_time() -> None:
     service = CrawlerJobSetupService()
     before = service.stopped_update(stage="before_plan")
@@ -67,6 +88,7 @@ if __name__ == "__main__":
     test_single_source_task_prefers_payload_query_then_question()
     test_fallback_plan_preserves_tasks_without_planning()
     test_limits_respect_payload_and_total_cap()
+    test_limits_tolerate_malformed_payload_numbers()
+    test_planner_max_tasks_is_safe_for_api_payloads()
     test_stopped_updates_do_not_own_end_time()
     print("crawler_job_setup_service_scenarios passed")
-

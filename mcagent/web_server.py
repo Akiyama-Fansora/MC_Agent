@@ -3169,7 +3169,7 @@ def _prepare_crawler_job_plan(
     plan: dict[str, Any] = {}
     if job_setup.is_planner_source(source):
         session_summary = payload.get("session_summary") if isinstance(payload.get("session_summary"), dict) else None
-        max_tasks = int(payload.get("max_tasks") or 16)
+        max_tasks = job_setup.planner_max_tasks(payload)
         if job.stop_requested:
             _update_job(job, ended_at=time.time(), **job_setup.stopped_update(stage="before_plan"))
             return {"stopped": True, "plan": plan, "tasks": [], "session_summary": session_summary}
@@ -7831,7 +7831,7 @@ def _start_crawler_job_from_crawler_tool(config: AppConfig, payload: dict[str, A
     crawler_payload["handoff_from"] = handoff["handoff_from"]
     crawler_payload["original_user_request"] = handoff["original_user_request"]
     crawler_payload["delivery_target"] = str(payload.get("delivery_target") or _infer_delivery_target(collection_question, session_summary))
-    crawler_payload["max_tasks"] = int(payload.get("max_tasks") or crawler_payload.get("max_tasks") or 6)
+    crawler_payload["max_tasks"] = CrawlerJobSetupService().planner_max_tasks(crawler_payload, default=6)
     requested_output_dir = CrawlerTaskPreparationService._extract_windows_path(
         "\n".join(
             str(item or "")
@@ -13939,7 +13939,7 @@ class MCagentHandler(BaseHTTPRequestHandler):
         if request_path == "/api/crawler/plan":
             question = str(payload.get("question") or payload.get("query") or "")
             include_completed = bool(payload.get("include_completed"))
-            max_tasks = int(payload.get("max_tasks") or 16)
+            max_tasks = CrawlerJobSetupService().planner_max_tasks(payload)
             session_summary = payload.get("session_summary") if isinstance(payload.get("session_summary"), dict) else None
             if include_completed:
                 plan = plan_crawler_tasks(question, config.paths.source_dir, max_tasks=max_tasks, include_completed=True)

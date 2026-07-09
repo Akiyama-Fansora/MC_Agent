@@ -11,6 +11,7 @@ from starlette.concurrency import run_in_threadpool
 from .agent_message import coerce_message_bool
 from .agent_runtime import collection_tools_for_crawler, tool_catalog_prompt, tools_for_agent
 from .config import AppConfig, load_config
+from .crawler_job_setup_service import CrawlerJobSetupService
 from .crawler_llm_planner import plan_crawler_tasks_resilient
 from .crawler_planner import plan_crawler_tasks, toolsets_payload
 from .event_stream import ThreadedEventStream
@@ -161,7 +162,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         payload = await request.json()
         question = str(payload.get("question") or payload.get("query") or "")
         include_completed = bool(payload.get("include_completed"))
-        max_tasks = int(payload.get("max_tasks") or 16)
+        max_tasks = CrawlerJobSetupService().planner_max_tasks(payload)
         session_summary = payload.get("session_summary") if isinstance(payload.get("session_summary"), dict) else None
         if include_completed:
             plan = await run_in_threadpool(plan_crawler_tasks, question, cfg().paths.source_dir, max_tasks=max_tasks, include_completed=True)

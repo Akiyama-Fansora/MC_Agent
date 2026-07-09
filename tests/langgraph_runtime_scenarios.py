@@ -840,16 +840,23 @@ def test_crawler_job_plan_preparation_is_objective_and_reusable() -> None:
         ended_at = None
 
     original_plan = web_server._plan_crawler_with_job_timeout
+    seen: dict[str, Any] = {}
     try:
-        web_server._plan_crawler_with_job_timeout = lambda *_args, **_kwargs: {  # type: ignore[assignment]
-            "topic": "unit topic",
-            "tasks": [{"source": "web_discovery", "query": "unit query"}],
-        }
+        def fake_plan(_job, question, _config, max_tasks, session_summary):  # noqa: ANN001, ANN202
+            seen["question"] = question
+            seen["max_tasks"] = max_tasks
+            seen["session_summary"] = session_summary
+            return {
+                "topic": "unit topic",
+                "tasks": [{"source": "web_discovery", "query": "unit query"}],
+            }
+
+        web_server._plan_crawler_with_job_timeout = fake_plan  # type: ignore[assignment]
         with tempfile.TemporaryDirectory() as tmp:
             job = FakeJob()
             prepared = web_server._prepare_crawler_job_plan(
                 job=job,
-                payload={"source": "planner", "session_summary": {"delivery_target": "human"}},
+                payload={"source": "planner", "session_summary": {"delivery_target": "human"}, "max_tasks": "many"},
                 config=make_temp_config(Path(tmp)),
                 source="planner",
                 question="unit question",
@@ -862,6 +869,7 @@ def test_crawler_job_plan_preparation_is_objective_and_reusable() -> None:
     assert_true("prepared_tasks", prepared.get("tasks") == [{"source": "web_discovery", "query": "unit query"}], str(prepared))
     assert_true("prepared_session_summary", prepared.get("session_summary") == {"delivery_target": "human"}, str(prepared))
     assert_true("job_planned_result_keeps_reuse", (job.result or {}).get("reuse_signature") == "reuse-1", str(job.result))
+    assert_true("malformed_max_tasks_defaulted", seen.get("max_tasks") == 16, str(seen))
 
     single = web_server._prepare_crawler_job_plan(
         job=FakeJob(),
