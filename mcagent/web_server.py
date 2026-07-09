@@ -8740,13 +8740,30 @@ def _prune_pending_mcagent_context_tasks_after_success(tasks: list[dict[str, Any
     return removed
 
 
+def _crawler_metadata_int(value: Any, *, default: int = 0) -> int:
+    try:
+        return int(value if value is not None and value != "" else default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _crawler_returncode_ok(value: Any) -> bool:
+    try:
+        return int(value if value is not None and value != "" else 0) == 0
+    except (TypeError, ValueError):
+        return False
+
+
 def _has_successful_mcagent_context(task_results: list[dict[str, Any]]) -> bool:
-    return any(
-        _source_alias(str(result.get("source") or "")) == "mcagent_context"
-        and int(result.get("returncode") or 0) == 0
-        and int(((result.get("manifest_stats") or {}).get("records") if isinstance(result.get("manifest_stats"), dict) else 0) or 0) > 0
-        for result in task_results
-    )
+    for result in task_results:
+        if not isinstance(result, dict):
+            continue
+        if _source_alias(str(result.get("source") or "")) != "mcagent_context":
+            continue
+        manifest = result.get("manifest_stats") if isinstance(result.get("manifest_stats"), dict) else {}
+        if _crawler_returncode_ok(result.get("returncode")) and _crawler_metadata_int(manifest.get("records")) > 0:
+            return True
+    return False
 
 
 def _drop_duplicate_mcagent_context_tasks(new_tasks: list[dict[str, Any]], task_results: list[dict[str, Any]]) -> list[dict[str, Any]]:

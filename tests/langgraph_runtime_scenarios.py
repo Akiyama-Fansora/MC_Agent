@@ -1378,6 +1378,32 @@ def test_crawler_after_task_review_prunes_duplicate_mcagent_context() -> None:
     assert_true("reflection_recorded", any(item.get("action") == "prune_pending_mcagent_context" for item in plan.get("agent_reflections") or []), str(plan))
 
 
+def test_crawler_context_prune_tolerates_malformed_metadata() -> None:
+    malformed_results = [
+        {"source": "mcagent_context", "returncode": "unknown", "manifest_stats": {"records": 1}},
+        {"source": "mcagent_context", "returncode": 0, "manifest_stats": {"records": "n/a"}},
+    ]
+    pending_tasks = [
+        {"source": "mcagent_context", "query": "duplicate context"},
+        {"source": "web_discovery", "query": "external followup"},
+    ]
+    kept = web_server._drop_duplicate_mcagent_context_tasks(list(pending_tasks), malformed_results)
+    assert_true("malformed_metadata_keeps_tasks", kept == pending_tasks, str(kept))
+
+    successful_results = [
+        *malformed_results,
+        {"source": "mcagent_context", "returncode": "0", "manifest_stats": {"records": "2"}},
+    ]
+    pruned = web_server._drop_duplicate_mcagent_context_tasks(list(pending_tasks), successful_results)
+    assert_true("string_counts_prune_context", pruned == [{"source": "web_discovery", "query": "external followup"}], str(pruned))
+
+    legacy_success_results = [
+        {"source": "mcagent_context", "manifest_stats": {"records": 1}},
+    ]
+    legacy_pruned = web_server._drop_duplicate_mcagent_context_tasks(list(pending_tasks), legacy_success_results)
+    assert_true("missing_returncode_keeps_legacy_success", legacy_pruned == [{"source": "web_discovery", "query": "external followup"}], str(legacy_pruned))
+
+
 def test_direct_answer_route_helper_does_not_execute_unselected_delegate() -> None:
     class FakeRun:
         original_question = "ask crawler to collect later"
@@ -1837,6 +1863,7 @@ def main() -> int:
     test_crawler_loop_does_not_finish_when_guide_coverage_unmet()
     test_crawler_reflection_helper_returns_objective_contract_feedback()
     test_crawler_after_task_review_prunes_duplicate_mcagent_context()
+    test_crawler_context_prune_tolerates_malformed_metadata()
     test_direct_answer_route_helper_does_not_execute_unselected_delegate()
     test_temporary_extract_route_does_not_upgrade_to_delegate_on_confirmation_suggestion()
     test_inventory_route_confirmation_cannot_upgrade_to_delegate()

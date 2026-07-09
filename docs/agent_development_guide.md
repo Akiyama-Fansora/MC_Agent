@@ -5574,3 +5574,37 @@ Validation:
 Boundary:
 
 This change does not alter CrawlerAgent source selection, tool execution, result classification, persistence, ingest, evidence review, or final answers. It only keeps loop-control routing stable when external tool metadata is malformed.
+
+## 2026-07-09 Stage 90: Tolerant MCagent Context Prune Metadata
+
+This maintenance pass focused on CrawlerAgent runtime routing and the frontend-visible action flow after local MCagent context tasks have produced useful records.
+
+Implemented changes:
+
+1. `mcagent/web_server.py` now parses `mcagent_context` duplicate-prune `returncode` and manifest `records` through small tolerant helpers.
+2. Non-numeric values such as `unknown` or `n/a` no longer raise while deciding whether later duplicate local-context tasks can be removed.
+3. Missing or empty `returncode` values keep the legacy success interpretation when records are present, so older result metadata remains compatible.
+4. Added LangGraph runtime regression coverage for malformed return codes, malformed record counters, string counters, and legacy missing-returncode results.
+
+Validation:
+
+1. `python tests\langgraph_runtime_scenarios.py`
+2. `python -m py_compile mcagent\web_server.py tests\langgraph_runtime_scenarios.py`
+3. `python tests\crawler_loop_control_service_scenarios.py`
+4. `python tests\crawler_runtime_step_service_scenarios.py`
+5. `python tests\crawler_task_materialization_service_scenarios.py`
+6. `python tests\crawler_task_preparation_service_scenarios.py`
+7. `python tests\agent_message_bus_scenarios.py`
+8. `python tests\rag_service_scenarios.py`
+9. `python tests\evidence_service_scenarios.py`
+10. `python tests\frontend_action_timeline_scenarios.py`
+11. `python tests\smoke_test.py`
+12. `python scripts\public_readiness_check.py`
+13. `node --check frontend\static\app.js`
+14. `node --check frontend\static\settings.js`
+15. `python scripts\check_text_encoding.py mcagent\web_server.py tests\langgraph_runtime_scenarios.py docs\agent_development_guide.md`
+16. `git diff --check`
+
+Boundary:
+
+This change does not alter source selection, tool execution, persistence, ingest, RAG retrieval, evidence selection, final answers, or the Crawler loop-control service. It only keeps duplicate local-context task pruning stable when already-recorded task metadata is malformed.
