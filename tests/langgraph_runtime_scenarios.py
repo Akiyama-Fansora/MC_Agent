@@ -832,6 +832,48 @@ def test_crawler_background_job_enters_langgraph_runtime() -> None:
     assert_true("job_graph_observed_counts", "observation_counts" in observations, str(observations))
 
 
+def test_crawler_job_graph_tolerates_malformed_observation_counts() -> None:
+    class FakeJob:
+        id = "job-graph-malformed-counts"
+        status = "completed"
+        result: dict[str, Any] | None = None
+
+    def agent_loop(job: FakeJob, payload: dict[str, Any], config: AppConfig) -> None:  # noqa: ARG001
+        job.result = {
+            "planned_tasks": [{"source": "web_discovery"}, {"source": "fetch_url"}],
+            "tasks": [
+                {"returncode": "unknown", "observation": {"status": "ok"}},
+                {"returncode": "n/a", "observation": {"status": "error"}},
+                {"returncode": 1, "observation": {"status": "blocked"}, "empty_result": True, "ingest_deferred": True},
+            ],
+            "success_count": "many",
+            "candidate_count": "2",
+            "failure_count": None,
+            "replan_count": "n/a",
+        }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        job = FakeJob()
+        run_crawler_job_graph(
+            make_temp_config(Path(tmp)),
+            job,
+            {"session_id": "crawler-job-graph-malformed", "source": "planner"},
+            agent_loop=agent_loop,
+        )
+    runtime = (job.result or {}).get("crawler_job_graph_runtime") or {}
+    observations = runtime.get("objective_observations") or {}
+    counts = observations.get("observation_counts") or {}
+    assert_true("malformed_job_graph_runtime", runtime.get("graph") == "CrawlerJobGraph", str(runtime))
+    assert_true("malformed_job_status", observations.get("job_status") == "completed", str(observations))
+    assert_true("malformed_success_count_default", observations.get("success_count") == 0, str(observations))
+    assert_true("string_candidate_count_parsed", observations.get("candidate_count") == 2, str(observations))
+    assert_true("malformed_replan_count_default", observations.get("replan_count") == 0, str(observations))
+    assert_true("malformed_task_count", counts.get("tasks_observed") == 3, str(counts))
+    assert_true("malformed_accepted_count", counts.get("accepted_or_reusable") == 2, str(counts))
+    assert_true("malformed_failed_count", counts.get("failed") == 2, str(counts))
+    assert_true("malformed_deferred_count", counts.get("deferred_for_ingest") == 1, str(counts))
+
+
 def test_crawler_job_plan_preparation_is_objective_and_reusable() -> None:
     class FakeJob:
         id = "prepare-plan"
@@ -1856,6 +1898,7 @@ def main() -> int:
     test_graph_direct_answer_node_executes_for_both_agents()
     test_graph_temporary_extract_node_executes_for_both_agents()
     test_crawler_background_job_enters_langgraph_runtime()
+    test_crawler_job_graph_tolerates_malformed_observation_counts()
     test_crawler_job_plan_preparation_is_objective_and_reusable()
     test_crawler_task_preparation_routes_archive_urls_objectively()
     test_crawler_task_result_metadata_is_recorded_objectively()

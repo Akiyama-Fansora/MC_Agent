@@ -38,6 +38,13 @@ def _safe_job_result(job: Any) -> dict[str, Any]:
     return dict(result) if isinstance(result, dict) else {}
 
 
+def _safe_observation_count(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _task_observation_counts(tasks: list[Any]) -> dict[str, int]:
     counts: dict[str, int] = {
         "tasks_observed": 0,
@@ -51,7 +58,7 @@ def _task_observation_counts(tasks: list[Any]) -> dict[str, int]:
         if not isinstance(item, dict):
             continue
         counts["tasks_observed"] += 1
-        returncode = int(item.get("returncode") or 0)
+        returncode = _safe_observation_count(item.get("returncode") or 0)
         observation = item.get("observation") if isinstance(item.get("observation"), dict) else {}
         status = str(observation.get("status") or "")
         topic_validation = item.get("topic_validation") if isinstance(item.get("topic_validation"), dict) else {}
@@ -82,10 +89,10 @@ def _objective_observations_from_job(job: Any) -> dict[str, Any]:
         "job_status": str(getattr(job, "status", "") or ""),
         "planned_task_count": len(planned),
         "executed_task_count": len(tasks),
-        "success_count": int(result.get("success_count") or 0),
-        "candidate_count": int(result.get("candidate_count") or 0),
-        "failure_count": int(result.get("failure_count") or 0),
-        "replan_count": int(result.get("replan_count") or 0),
+        "success_count": _safe_observation_count(result.get("success_count") or 0),
+        "candidate_count": _safe_observation_count(result.get("candidate_count") or 0),
+        "failure_count": _safe_observation_count(result.get("failure_count") or 0),
+        "replan_count": _safe_observation_count(result.get("replan_count") or 0),
         "needs_ingest": bool(result.get("ingest_background")),
         "ingest_completed": bool(ingest),
         "agent_finish_reason": str(plan.get("agent_finish_reason") or ""),

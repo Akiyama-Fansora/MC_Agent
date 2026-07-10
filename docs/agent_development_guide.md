@@ -5637,3 +5637,25 @@ Validation:
 Boundary:
 
 This change does not alter source selection, LLM planning prompts, tool execution, persistence, ingest, RAG retrieval, evidence selection, or final answers. It only keeps Crawler planning and job setup stable when API/UI/Agent payload limit fields are malformed or out of range.
+
+## 2026-07-10 Stage 92: Stable Crawler Job Graph Observations
+
+This maintenance pass focused on graph/runtime routing and CrawlerAgent frontend-visible observation facts after a background crawl finishes.
+
+Implemented changes:
+
+1. `mcagent/graphs/crawler_job.py` now parses Crawler job observation counters through a tolerant helper before recording `objective_observations`.
+2. Malformed job-level counts such as `many`, `n/a`, empty values, or `None` no longer interrupt CrawlerJobGraph finalization.
+3. Malformed task `returncode` metadata no longer prevents the graph from recording task observation counts; explicit `error` and `blocked` observation statuses still surface as failed observations.
+4. Added LangGraph runtime regression coverage for malformed job counts and task return codes.
+
+Validation:
+
+1. `python tests\langgraph_runtime_scenarios.py`
+2. `python -m py_compile mcagent\graphs\crawler_job.py tests\langgraph_runtime_scenarios.py`
+3. `python scripts\check_text_encoding.py mcagent\graphs\crawler_job.py tests\langgraph_runtime_scenarios.py docs\agent_development_guide.md`
+4. `git diff --check`
+
+Boundary:
+
+This change does not alter source selection, tool execution, persistence, ingest, RAG retrieval, evidence selection, final answers, or Crawler loop-control decisions. It only keeps graph-owned observation recording stable when already-produced Crawler job metadata is malformed.
