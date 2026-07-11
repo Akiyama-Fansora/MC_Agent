@@ -44,6 +44,46 @@ def test_memory_reader_hides_damaged_events_by_default() -> None:
     assert_true("summary_keeps_clean_memory", summary.get("events") == 1, str(summary))
 
 
+def test_memory_reader_tolerates_malformed_limits() -> None:
+    original_path = agent_memory.MEMORY_PATH
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            memory_path = Path(tmp) / "agent_memory.jsonl"
+            agent_memory.MEMORY_PATH = memory_path
+            for index in range(45):
+                agent_memory.append_memory_event("turn", {"index": index})
+            fallback = agent_memory.read_memory_events(limit="many")  # type: ignore[arg-type]
+            clamped_low = agent_memory.read_memory_events(limit="-5")  # type: ignore[arg-type]
+            summary = agent_memory.memory_summary(limit="unknown")  # type: ignore[arg-type]
+    finally:
+        agent_memory.MEMORY_PATH = original_path
+
+    assert_equal("fallback_default", len(fallback), 40)
+    assert_equal("fallback_first_index", fallback[0].get("index"), 5)
+    assert_equal("clamped_low", len(clamped_low), 1)
+    assert_equal("summary_default_recent", len(summary.get("recall_memory") or []), 12)
+
+
+def test_memory_reader_caps_large_limits() -> None:
+    original_path = agent_memory.MEMORY_PATH
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            memory_path = Path(tmp) / "agent_memory.jsonl"
+            agent_memory.MEMORY_PATH = memory_path
+            for index in range(agent_memory.MEMORY_MAX_EVENTS + 25):
+                agent_memory.append_memory_event("turn", {"index": index})
+            events = agent_memory.read_memory_events(limit=999999)
+            summary = agent_memory.memory_summary(limit=999999)
+    finally:
+        agent_memory.MEMORY_PATH = original_path
+
+    assert_equal("capped_events", len(events), agent_memory.MEMORY_MAX_EVENTS)
+    assert_equal("capped_first_index", events[0].get("index"), 25)
+    assert_equal("summary_cap", len(summary.get("recall_memory") or []), agent_memory.MEMORY_MAX_EVENTS)
+
+
 if __name__ == "__main__":
     test_memory_reader_hides_damaged_events_by_default()
+    test_memory_reader_tolerates_malformed_limits()
+    test_memory_reader_caps_large_limits()
     print("agent_memory_encoding_scenarios passed")

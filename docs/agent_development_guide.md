@@ -5659,3 +5659,42 @@ Validation:
 Boundary:
 
 This change does not alter source selection, tool execution, persistence, ingest, RAG retrieval, evidence selection, final answers, or Crawler loop-control decisions. It only keeps graph-owned observation recording stable when already-produced Crawler job metadata is malformed.
+
+## 2026-07-11 Stage 93: Bounded Agent Memory Limits
+
+This maintenance pass focused on MCagent local conversation memory, AgentMessage history recall, and the Crawler planner's learned-memory boundary.
+
+Implemented changes:
+
+1. `mcagent/agent_memory.py` now parses memory read limits through a shared tolerant helper.
+2. Malformed memory limits such as `many`, blank values, or non-numeric model/tool payloads now fall back to existing defaults instead of raising.
+3. Negative and oversized limits are clamped to a bounded 1..500 event window so local memory reads remain stable and predictable.
+4. `memory_summary()` now uses the same sanitized limit for the returned recent-memory window and scans enough raw events to satisfy capped large requests.
+5. Added regression coverage for malformed, negative, and oversized memory limits while preserving damaged-encoding filtering.
+
+Validation:
+
+1. `python tests\agent_memory_encoding_scenarios.py`
+2. `python -m py_compile mcagent\agent_memory.py tests\agent_memory_encoding_scenarios.py`
+3. `python tests\agent_message_bus_scenarios.py`
+4. `python tests\rag_service_scenarios.py`
+5. `python tests\crawler_delegation_service_scenarios.py`
+6. `python tests\crawler_runtime_step_service_scenarios.py`
+7. `python tests\evidence_service_scenarios.py`
+8. `python tests\frontend_action_timeline_scenarios.py`
+9. `python tests\smoke_test.py`
+10. `python tests\agent_runtime_scenarios.py`
+11. `python tests\fastapi_backend_scenarios.py`
+12. `python tests\crawler_job_setup_service_scenarios.py`
+13. `python tests\crawler_loop_control_service_scenarios.py`
+14. `python tests\crawler_result_accounting_service_scenarios.py`
+15. `python tests\chunking_scenarios.py`
+16. `python tests\artifact_reference_service_scenarios.py`
+17. `python tests\artifact_save_service_scenarios.py`
+18. `node --check frontend\static\app.js`
+19. `node --check frontend\static\settings.js`
+20. `python scripts\check_text_encoding.py mcagent\agent_memory.py tests\agent_memory_encoding_scenarios.py`
+
+Boundary:
+
+This change does not alter retrieval ranking, evidence selection, Crawler planning prompts, persistence, ingest, final answers, or graph routing. It only keeps local memory recall stable when an Agent/API/tool payload provides malformed or extreme recent-event limits.

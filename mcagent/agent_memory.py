@@ -12,6 +12,7 @@ from .crawler_planner import CONCEPTS
 
 MEMORY_PATH = PROJECT_ROOT / "data" / "agent_memory.jsonl"
 MEMORY_TAIL_BYTES = 2 * 1024 * 1024
+MEMORY_MAX_EVENTS = 500
 MOJIBAKE_MARKERS = ("\u00e5", "\u00e6", "\u00e7", "\u00e9", "\u00e8", "\u00e4", "\u00c3", "\u00c2", "\ufffd")
 
 
@@ -49,10 +50,18 @@ def memory_event_has_encoding_damage(event: Any) -> bool:
     return False
 
 
+def _safe_event_limit(value: Any, *, default: int) -> int:
+    try:
+        parsed = int(value if value is not None and value != "" else default)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(1, min(parsed, MEMORY_MAX_EVENTS))
+
+
 def read_memory_events(limit: int = 40, *, include_damaged: bool = False) -> list[dict[str, Any]]:
     if not MEMORY_PATH.exists():
         return []
-    safe_limit = max(1, int(limit or 1))
+    safe_limit = _safe_event_limit(limit, default=40)
     try:
         size = MEMORY_PATH.stat().st_size
         with MEMORY_PATH.open("rb") as handle:
@@ -76,11 +85,12 @@ def read_memory_events(limit: int = 40, *, include_damaged: bool = False) -> lis
 
 
 def memory_summary(limit: int = 12) -> dict[str, Any]:
-    raw_events = read_memory_events(limit=200, include_damaged=True)
+    safe_limit = _safe_event_limit(limit, default=12)
+    raw_events = read_memory_events(limit=max(200, safe_limit), include_damaged=True)
     damaged_count = sum(1 for event in raw_events if memory_event_has_encoding_damage(event))
     events = [event for event in raw_events if not memory_event_has_encoding_damage(event)]
     by_type: dict[str, int] = {}
-    recent = events[-limit:]
+    recent = events[-safe_limit:]
     for event in events:
         event_type = str(event.get("type") or "unknown")
         by_type[event_type] = by_type.get(event_type, 0) + 1
