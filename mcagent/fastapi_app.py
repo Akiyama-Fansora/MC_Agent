@@ -21,7 +21,6 @@ from .web_server import (
     AGENTS,
     STATIC_DIR,
     WEB_DIR,
-    _adaptive_preview_k,
     _available_models,
     _chat,
     _chat_impl,
@@ -154,8 +153,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     async def search(request: Request) -> dict[str, Any]:
         payload = await request.json()
         query = str(payload.get("query") or "")
-        top_k = int(payload.get("top_k") or _adaptive_preview_k(query))
-        return {"results": _search(cfg(), query, top_k)}
+        return {"results": _search(cfg(), query, payload.get("top_k"))}
 
     @app.post("/api/crawler/plan")
     async def crawler_plan(request: Request) -> dict[str, Any]:
@@ -174,9 +172,9 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     @app.post("/api/crawler/summary")
     async def crawler_summary_post(request: Request) -> dict[str, Any]:
         payload = await request.json()
-        limit = int(payload.get("limit") or 20)
+        limit = CrawlerJobSetupService().payload_int(payload, "limit", default=20, min_value=1, max_value=100)
         query = str(payload.get("query") or "")
-        return _recent_crawler_manifest_summary(cfg().paths.source_dir, limit=max(1, min(limit, 100)), query=query)
+        return _recent_crawler_manifest_summary(cfg().paths.source_dir, limit=limit, query=query)
 
     @app.post("/api/collaboration/start")
     async def collaboration_start(request: Request) -> dict[str, Any]:

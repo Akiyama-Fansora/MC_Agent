@@ -4217,8 +4217,23 @@ def _result_to_dict(result: SearchResult) -> dict[str, Any]:
     }
 
 
-def _search(config: AppConfig, query: str, top_k: int | None = None) -> list[dict[str, Any]]:
-    safe_top_k = max(1, min(int(top_k or _adaptive_preview_k(query)), MAX_ROUGH_TOP_K))
+def _bounded_int(value: Any, *, default: int, min_value: int | None = None, max_value: int | None = None) -> int:
+    try:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            parsed = default
+        else:
+            parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    if min_value is not None:
+        parsed = max(min_value, parsed)
+    if max_value is not None:
+        parsed = min(max_value, parsed)
+    return parsed
+
+
+def _search(config: AppConfig, query: str, top_k: Any | None = None) -> list[dict[str, Any]]:
+    safe_top_k = _bounded_int(top_k, default=_adaptive_preview_k(query), min_value=1, max_value=MAX_ROUGH_TOP_K)
     return [_result_to_dict(result) for result in Retriever(config).search(query, top_k=safe_top_k)]
 
 
@@ -13933,8 +13948,7 @@ class MCagentHandler(BaseHTTPRequestHandler):
             return
         if request_path == "/api/search":
             query = str(payload.get("query") or "")
-            top_k = int(payload.get("top_k") or _adaptive_preview_k(query))
-            _send_json(self, {"results": _search(config, query, top_k)})
+            _send_json(self, {"results": _search(config, query, payload.get("top_k"))})
             return
         if request_path == "/api/crawler/plan":
             question = str(payload.get("question") or payload.get("query") or "")
@@ -13949,9 +13963,9 @@ class MCagentHandler(BaseHTTPRequestHandler):
             _send_json(self, plan)
             return
         if request_path == "/api/crawler/summary":
-            limit = int(payload.get("limit") or 20)
+            limit = _bounded_int(payload.get("limit"), default=20, min_value=1, max_value=100)
             query = str(payload.get("query") or "")
-            _send_json(self, _recent_crawler_manifest_summary(config.paths.source_dir, limit=max(1, min(limit, 100)), query=query))
+            _send_json(self, _recent_crawler_manifest_summary(config.paths.source_dir, limit=limit, query=query))
             return
         if request_path == "/api/collaboration/start":
             _send_json(self, _chat(config, payload | {"agent": "mcagent_rag"}))

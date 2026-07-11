@@ -102,6 +102,46 @@ def test_fastapi_core_routes() -> None:
         assert_true("session_delete_ok", deleted.status_code == 200 and deleted.json().get("session_id") == "fastapi-test")
 
 
+def test_fastapi_preview_limits_tolerate_malformed_payload_values() -> None:
+    calls: list[int] = []
+    original_retriever = web_server.Retriever
+
+    class FakeRetriever:
+        def __init__(self, _config: AppConfig) -> None:
+            pass
+
+        def search(self, _query: str, *, top_k: int, session_summary: dict[str, object] | None = None):  # noqa: ANN201, ARG002
+            calls.append(top_k)
+            return []
+
+    web_server.Retriever = FakeRetriever  # type: ignore[assignment]
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            client = TestClient(create_app(make_temp_config(Path(tmp))))
+
+            malformed_search = client.post("/api/search", json={"query": "diamond tools", "top_k": "many"})
+            assert_true("malformed_search_ok", malformed_search.status_code == 200, malformed_search.text)
+            assert_true("malformed_search_clamped", isinstance(calls[-1], int) and 1 <= calls[-1] <= web_server.MAX_ROUGH_TOP_K, str(calls))
+
+            low_search = client.post("/api/search", json={"query": "diamond tools", "top_k": "-7"})
+            assert_true("low_search_ok", low_search.status_code == 200, low_search.text)
+            assert_true("low_search_clamped", calls[-1] == 1, str(calls))
+
+            high_search = client.post("/api/search", json={"query": "diamond tools", "top_k": "9999"})
+            assert_true("high_search_ok", high_search.status_code == 200, high_search.text)
+            assert_true("high_search_clamped", calls[-1] == web_server.MAX_ROUGH_TOP_K, str(calls))
+
+            malformed_summary = client.post("/api/crawler/summary", json={"limit": "many"})
+            assert_true("malformed_summary_ok", malformed_summary.status_code == 200, malformed_summary.text)
+            assert_true("malformed_summary_default", malformed_summary.json().get("limit") == 20, str(malformed_summary.json()))
+
+            low_summary = client.post("/api/crawler/summary", json={"limit": "-5"})
+            assert_true("low_summary_ok", low_summary.status_code == 200, low_summary.text)
+            assert_true("low_summary_clamped", low_summary.json().get("limit") == 1, str(low_summary.json()))
+    finally:
+        web_server.Retriever = original_retriever  # type: ignore[assignment]
+
+
 def test_fastapi_sse_chat_shape() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         client = TestClient(create_app(make_temp_config(Path(tmp))))
@@ -1933,6 +1973,7 @@ def test_mcagent_natural_language_inventory_plan_uses_inventory_node() -> None:
 
 def main() -> int:
     test_fastapi_core_routes()
+    test_fastapi_preview_limits_tolerate_malformed_payload_values()
     test_fastapi_sse_chat_shape()
     test_fastapi_agent_message_endpoint_dispatches()
     test_agent_selected_status_bypasses_legacy_delivery()
@@ -1964,4 +2005,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -5698,3 +5698,24 @@ Validation:
 Boundary:
 
 This change does not alter retrieval ranking, evidence selection, Crawler planning prompts, persistence, ingest, final answers, or graph routing. It only keeps local memory recall stable when an Agent/API/tool payload provides malformed or extreme recent-event limits.
+
+## 2026-07-12 Stage 94: Bounded Preview API Limits
+
+This maintenance pass focused on frontend-visible preview APIs for local RAG search and Crawler manifest inventory views.
+
+Implemented changes:
+
+1. `mcagent/web_server.py` now parses preview integer limits through a bounded helper before local RAG search.
+2. Malformed `/api/search` `top_k` payloads such as `many`, blank values, negative numbers, and oversized numbers no longer interrupt FastAPI or the standard-library backend.
+3. `/api/crawler/summary` now clamps malformed or out-of-range `limit` payloads to the existing 1..100 preview window on both backends.
+4. `mcagent/fastapi_app.py` delegates search limit parsing to the shared backend search helper and reuses existing tolerant payload parsing for summary limits.
+5. Added FastAPI regression coverage for malformed, negative, and oversized preview limits.
+
+Validation:
+
+1. `python tests\fastapi_backend_scenarios.py`
+2. `python -m py_compile mcagent\web_server.py mcagent\fastapi_app.py tests\fastapi_backend_scenarios.py`
+
+Boundary:
+
+This change does not alter retrieval ranking, evidence selection, Crawler planning prompts, persistence, ingest, final answers, or graph routing. It only keeps user-facing preview endpoints stable when UI/API/Agent payload limit fields are malformed or out of range.
