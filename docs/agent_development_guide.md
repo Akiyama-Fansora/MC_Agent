@@ -5719,3 +5719,24 @@ Validation:
 Boundary:
 
 This change does not alter retrieval ranking, evidence selection, Crawler planning prompts, persistence, ingest, final answers, or graph routing. It only keeps user-facing preview endpoints stable when UI/API/Agent payload limit fields are malformed or out of range.
+
+## 2026-07-12 Stage 95: Safe Config Load Bounds
+
+This maintenance pass focused on startup configuration parsing for local embedding, chunking, retrieval, and Ollama settings.
+
+Implemented changes:
+
+1. `mcagent/config.py` now parses numeric config fields through small tolerant helpers instead of raw `int(...)` / `float(...)`.
+2. Malformed embedding, chunking, retrieval, and Ollama numeric values now fall back to defaults instead of crashing startup.
+3. Boolean config values such as `lowercase` now accept common string forms like `false`, `0`, `yes`, and `on`.
+4. Safe lower bounds keep embedding dimension, chunk sizes, retrieval depth, and Ollama timeout in usable ranges.
+5. Added regression coverage for malformed config values and string booleans.
+
+Validation:
+
+1. `python tests\config_load_scenarios.py`
+2. `python -m py_compile mcagent\config.py tests\config_load_scenarios.py`
+
+Boundary:
+
+This change does not alter retrieval ranking, evidence selection, Crawler planning prompts, persistence, ingest, final answers, or graph routing. It only keeps configuration loading stable when local config files contain malformed numeric or boolean values.

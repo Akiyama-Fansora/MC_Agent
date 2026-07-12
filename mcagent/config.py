@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -77,6 +78,45 @@ def _get_section(data: dict[str, Any], name: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _safe_int(value: Any, default: int, *, min_value: int | None = None) -> int:
+    text = str(value).strip() if value is not None else ""
+    if not text:
+        return default
+    try:
+        parsed = int(text)
+    except (TypeError, ValueError):
+        return default
+    if min_value is not None and parsed < min_value:
+        return min_value
+    return parsed
+
+
+def _safe_float(value: Any, default: float) -> float:
+    text = str(value).strip() if value is not None else ""
+    if not text:
+        return default
+    try:
+        parsed = float(text)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(parsed):
+        return default
+    return parsed
+
+
+def _safe_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower() if value is not None else ""
+    if not text:
+        return default
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 def load_config(config_path: str | os.PathLike[str] | None = None) -> AppConfig:
     raw_path = config_path or os.environ.get("MCAGENT_CONFIG", "config.json")
     path = Path(raw_path)
@@ -111,20 +151,23 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> AppConfig:
         ),
         embedding=EmbeddingConfig(
             provider=str(embedding_data.get("provider", "hashing_char_ngram")),
-            dimension=int(embedding_data.get("dimension", 2048)),
-            ngram_min=int(embedding_data.get("ngram_min", 1)),
-            ngram_max=int(embedding_data.get("ngram_max", 4)),
-            lowercase=bool(embedding_data.get("lowercase", True)),
+            dimension=_safe_int(embedding_data.get("dimension", 2048), 2048, min_value=1),
+            ngram_min=_safe_int(embedding_data.get("ngram_min", 1), 1, min_value=1),
+            ngram_max=max(
+                _safe_int(embedding_data.get("ngram_max", 4), 4, min_value=1),
+                _safe_int(embedding_data.get("ngram_min", 1), 1, min_value=1),
+            ),
+            lowercase=_safe_bool(embedding_data.get("lowercase", True), True),
             ollama_embed_model=str(embedding_data.get("ollama_embed_model", "bge-m3")),
             ollama_embed_url=str(embedding_data.get("ollama_embed_url", "http://localhost:11434")),
         ),
         chunking=ChunkingConfig(
-            max_chars=int(chunking_data.get("max_chars", 1500)),
-            overlap_chars=int(chunking_data.get("overlap_chars", 400)),
+            max_chars=_safe_int(chunking_data.get("max_chars", 1500), 1500, min_value=200),
+            overlap_chars=_safe_int(chunking_data.get("overlap_chars", 400), 400, min_value=0),
         ),
         retrieval=RetrievalConfig(
-            top_k=int(retrieval_data.get("top_k", 6)),
-            min_score=float(retrieval_data.get("min_score", 0.0)),
+            top_k=_safe_int(retrieval_data.get("top_k", 6), 6, min_value=1),
+            min_score=_safe_float(retrieval_data.get("min_score", 0.0), 0.0),
         ),
         ollama=OllamaConfig(
             base_url=os.environ.get(
@@ -135,7 +178,7 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> AppConfig:
                 "MCAGENT_OLLAMA_MODEL",
                 str(ollama_data.get("model", "qwen3-4b-agent-16k:latest")),
             ),
-            temperature=float(ollama_data.get("temperature", 0.2)),
-            timeout_seconds=int(ollama_data.get("timeout_seconds", 120)),
+            temperature=_safe_float(ollama_data.get("temperature", 0.2), 0.2),
+            timeout_seconds=_safe_int(ollama_data.get("timeout_seconds", 120), 120, min_value=1),
         ),
     )
