@@ -585,6 +585,45 @@ def _result_count(result: dict[str, Any], key: str, *, default: int = 0) -> int:
         return default
 
 
+def _result_has_failure_signal(result: dict[str, Any], *, records: int, errors: int, text: str) -> bool:
+    if records > 0:
+        return False
+    if errors > 0:
+        return True
+    manifest = result.get("manifest_stats") if isinstance(result.get("manifest_stats"), dict) else {}
+    failure_fields = (
+        result.get("failure_reason"),
+        result.get("error"),
+        result.get("reason"),
+        manifest.get("failure_reason"),
+        manifest.get("error"),
+    )
+    if any(str(value or "").strip() for value in failure_fields):
+        return True
+    failure_markers = (
+        "failed",
+        "error",
+        "exception",
+        "traceback",
+        "timed out",
+        "timeout",
+        "captcha",
+        "login",
+        "sign in",
+        "401",
+        "403",
+        "429",
+        "quota",
+        "network",
+        "connection",
+        "dns",
+        "ssl",
+        "parse",
+        "invalid json",
+    )
+    return any(marker in text for marker in failure_markers)
+
+
 def _manifest_has_only_empty_records(result: dict[str, Any]) -> bool:
     manifest = result.get("manifest_stats") if isinstance(result.get("manifest_stats"), dict) else {}
     try:
@@ -654,7 +693,7 @@ def classify_crawler_tool_result(result: dict[str, Any]) -> ToolObservation:
             suggested_next="Ask CrawlerAgent to reject, rewrite, or retry with a source that produces non-empty evidence.",
         )
 
-    if returncode != 0:
+    if returncode != 0 or _result_has_failure_signal(result, records=records, errors=errors, text=text):
         if any(token in text for token in ("quota", "429", "rate limit", "insufficient credit", "billing", "credit")):
             return observation("quota_limited", "Provider quota or rate limit blocked this tool call.", retryable=False, suggested_next="Use browser extraction, local HTTP fetch, or another public source.")
         if any(token in text for token in ("captcha", "verify you are human", "verification")):

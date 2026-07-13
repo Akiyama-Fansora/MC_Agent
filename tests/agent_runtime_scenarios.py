@@ -57,6 +57,8 @@ def test_tool_observation_matrix() -> None:
         ("records_pending_review", {"source": "save_artifact", "returncode": 0, "manifest_stats": {"records": 1, "usable_records": 0, "empty_records": 1, "record_bytes": 0}, "topic_validation": {"matched": True}}),
         ("records_pending_review", {"source": "modrinth", "returncode": 0, "manifest_stats": {"records": 0, "skipped": 3}, "output": "Skipped unchanged: 3"}),
         ("records_pending_review", {"source": "fetch_url", "returncode": "unknown", "manifest_stats": {"records": 1}, "output": "partial tool metadata"}),
+        ("network_error", {"source": "fetch_url", "returncode": "unknown", "manifest_stats": {"records": 0}, "error": "failed to fetch: DNS connection error"}),
+        ("execution_error", {"source": "save_artifact", "returncode": None, "manifest_stats": {"records": 0, "errors": "2"}, "failure_reason": "write failed"}),
     ]
     for expected, result in cases:
         observation = classify_crawler_tool_result(result)

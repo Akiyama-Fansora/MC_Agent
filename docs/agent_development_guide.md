@@ -5740,3 +5740,23 @@ Validation:
 Boundary:
 
 This change does not alter retrieval ranking, evidence selection, Crawler planning prompts, persistence, ingest, final answers, or graph routing. It only keeps configuration loading stable when local config files contain malformed numeric or boolean values.
+
+## 2026-07-13 Stage 96: Crawler Observation Failure Signals
+
+This maintenance pass focused on CrawlerAgent tool-result observation, resource-fetch failure reporting, and frontend-visible action-flow status.
+
+Implemented changes:
+
+1. `mcagent/agent_runtime.py` now treats no-record results with explicit failure fields, manifest errors, or common failure markers as failed observations even when `returncode` is missing or malformed.
+2. Malformed returncode values such as `unknown` still allow record-producing results to reach CrawlerAgent review instead of being discarded.
+3. No-record network/auth/quota/captcha/parse failures now reuse the existing observation classifier so the runtime reports a specific blocker instead of a generic empty result.
+4. Added regression coverage for malformed-returncode network failures and missing-returncode save failures.
+
+Validation:
+
+1. `python tests\agent_runtime_scenarios.py`
+2. `python -m py_compile mcagent\agent_runtime.py tests\agent_runtime_scenarios.py`
+
+Boundary:
+
+This change does not alter Crawler planning, persistence, ingest, retrieval ranking, evidence selection, or final-answer generation. It only improves objective observation classification for already-produced crawler tool result payloads.
