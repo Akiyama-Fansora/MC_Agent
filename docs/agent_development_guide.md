@@ -5760,3 +5760,23 @@ Validation:
 Boundary:
 
 This change does not alter Crawler planning, persistence, ingest, retrieval ranking, evidence selection, or final-answer generation. It only improves objective observation classification for already-produced crawler tool result payloads.
+
+## 2026-07-14 Stage 97: Recover Optional Evidence Supplements
+
+This maintenance pass focused on MCagent local RAG evidence selection, resource integration, and frontend-visible trace continuity.
+
+Implemented changes:
+
+1. `mcagent/evidence_service.py` now treats post-selector evidence enrichment steps as recoverable supplements.
+2. If parent-topic preference, modpack manifest enrichment, keyword/raw-HTML supplements, modpack list context, or theme fallback raises, the workflow records `evidence_step_failed` plus `evidence_step_recovered` and continues with already selected objective evidence.
+3. Core selector execution still remains required; only optional enrichment failures are recovered.
+4. Added regression coverage proving a failed project-keyword supplement no longer prevents raw-HTML supplement, modpack context, final evidence reporting, or MCagent answer generation from continuing.
+
+Validation:
+
+1. `python tests\evidence_service_scenarios.py`
+2. `python -m py_compile mcagent\evidence_service.py tests\evidence_service_scenarios.py`
+
+Boundary:
+
+This change does not alter retrieval ranking, selector scoring, Crawler planning, persistence, ingest, or final-answer generation. It only keeps the RAG/evidence workflow usable when an optional local supplement source is temporarily unavailable.

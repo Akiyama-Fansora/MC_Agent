@@ -94,6 +94,7 @@ class EvidenceWorkflowService:
             add_trace,
             "prefer_parent_topic",
             lambda: self._prefer_parent_topic_results(evidence_question, selected, rough_results, final_k),
+            fallback=selected,
         )
         if budget_left() <= 0:
             skip_remaining("remaining_evidence_steps")
@@ -104,12 +105,14 @@ class EvidenceWorkflowService:
             add_trace,
             "modpack_manifest",
             lambda: self._modpack_manifest_results(evidence_question, rough_results, final_k),
+            fallback=[],
         )
         if not modpack_list_selected:
             modpack_list_selected = self._run_step(
                 add_trace,
                 "local_modpack_manifest",
                 lambda: self._supplement_local_modpack_manifest_results(config, evidence_question, final_k),
+                fallback=[],
             )
         if modpack_list_selected:
             selected = self._dedupe_results([*modpack_list_selected, *selected], final_k)
@@ -124,6 +127,7 @@ class EvidenceWorkflowService:
                 add_trace,
                 "project_keyword_supplement",
                 lambda: self._supplement_project_keyword_results(config, evidence_question, selected, final_k),
+                fallback=selected,
             )
             if budget_left() <= 0:
                 skip_remaining("raw_html_supplement")
@@ -132,6 +136,7 @@ class EvidenceWorkflowService:
                     add_trace,
                     "raw_html_supplement",
                     lambda: self._supplement_raw_html_results(config, evidence_question, selected, final_k),
+                    fallback=selected,
                 )
         else:
             add_trace(
@@ -152,6 +157,7 @@ class EvidenceWorkflowService:
                 add_trace,
                 "modpack_mod_list_context",
                 lambda: self._ensure_modpack_mod_list_context(config, evidence_question, selected, rough_results, final_k),
+                fallback=selected,
             )
 
         if budget_left() <= 0:
@@ -162,6 +168,7 @@ class EvidenceWorkflowService:
                 add_trace,
                 "theme_fallback",
                 lambda: self._fallback_theme_results(evidence_question, rough_results, final_k),
+                fallback=[],
             )
         if fallback_selected and len(selected) < min(4, final_k):
             selected = self._dedupe_results([*fallback_selected, *selected], final_k)
@@ -180,7 +187,14 @@ class EvidenceWorkflowService:
         high_confidence = float(report.confidence or 0.0) >= 0.75
         return not (enough_selected and high_confidence)
 
-    def _run_step(self, add_trace: TraceFn, name: str, fn: Callable[[], list[SearchResult]]) -> list[SearchResult]:
+    def _run_step(
+        self,
+        add_trace: TraceFn,
+        name: str,
+        fn: Callable[[], list[SearchResult]],
+        *,
+        fallback: list[SearchResult] | None = None,
+    ) -> list[SearchResult]:
         started = time.monotonic()
         add_trace("decide", "evidence_step_started", {"step": name})
         try:
@@ -195,7 +209,19 @@ class EvidenceWorkflowService:
                     "elapsed_ms": round((time.monotonic() - started) * 1000),
                 },
             )
-            raise
+            if fallback is None:
+                raise
+            add_trace(
+                "decide",
+                "evidence_step_recovered",
+                {
+                    "step": name,
+                    "reason": "Optional evidence supplement failed; MCagent will continue with the objective evidence already selected.",
+                    "fallback_results": len(fallback),
+                    "elapsed_ms": round((time.monotonic() - started) * 1000),
+                },
+            )
+            return list(fallback)
         add_trace(
             "decide",
             "evidence_step_done",

@@ -277,6 +277,44 @@ def test_evidence_service_stops_synchronous_supplements_after_budget() -> None:
     assert_true("budget_skip_recorded", "raw_html_supplement" in skipped_steps or "modpack_mod_list_context" in skipped_steps, str(skipped_steps))
 
 
+def test_optional_evidence_supplement_failure_keeps_selected_evidence() -> None:
+    selector_calls: list[dict[str, Any]] = []
+    call_log: list[str] = []
+    traces: list[dict[str, Any]] = []
+    initial = [make_result(1)]
+
+    def failing_project_keywords(_config, _question, _selected, _final_k):  # noqa: ANN001
+        call_log.append("project_keywords")
+        raise RuntimeError("keyword index unavailable")
+
+    service = EvidenceWorkflowService(
+        selector_factory=lambda final_k: FakeSelector(final_k, initial, base_report(verdict="insufficient"), selector_calls),
+        prefer_parent_topic_results=lambda question, selected, rough, final_k: call_log.append("prefer_parent") or selected,
+        modpack_manifest_results=lambda question, rough, final_k: call_log.append("modpack_manifest") or [],
+        supplement_local_modpack_manifest_results=lambda config, question, final_k: call_log.append("local_modpack_manifest") or [],
+        supplement_project_keyword_results=failing_project_keywords,
+        supplement_raw_html_results=lambda config, question, selected, final_k: call_log.append("raw_html") or [*selected, make_result(2)],
+        ensure_modpack_mod_list_context=lambda config, question, selected, rough, final_k: call_log.append("modpack_mod_list") or selected,
+        fallback_theme_results=lambda question, rough, final_k: call_log.append("fallback_theme") or [],
+        dedupe_results=lambda results, limit: list(results)[:limit],
+    )
+
+    result = service.select(
+        object(),
+        evidence_question="recoverable supplement",
+        rough_results=[make_result(1), make_result(2)],
+        retrieval_plan=None,
+        final_k=4,
+        add_trace=lambda stage, status, detail=None: traces.append({"stage": stage, "status": status, "detail": detail}) or traces[-1],
+    )
+
+    assert_equal("selected_after_recovery", [item.rank for item in result.selected], [1, 2])
+    assert_equal("report_selected_count", result.report.selected_count, 2)
+    assert_true("failed_trace", any(item["status"] == "evidence_step_failed" for item in traces), str(traces))
+    assert_true("recovered_trace", any(item["status"] == "evidence_step_recovered" for item in traces), str(traces))
+    assert_true("continued_after_failure", "raw_html" in call_log and "modpack_mod_list" in call_log, str(call_log))
+
+
 def test_create_accepted_project_pages_are_strong_sources() -> None:
     selector = EvidenceSelector(final_context_k=4)
     accepted_mcmod = SearchResult(
@@ -321,5 +359,6 @@ if __name__ == "__main__":
     test_fallback_theme_evidence_can_recover_sparse_selection()
     test_report_selected_count_tracks_supplemented_evidence_without_verdict_upgrade()
     test_evidence_service_stops_synchronous_supplements_after_budget()
+    test_optional_evidence_supplement_failure_keeps_selected_evidence()
     test_create_accepted_project_pages_are_strong_sources()
     print("evidence_service_scenarios: ok")
