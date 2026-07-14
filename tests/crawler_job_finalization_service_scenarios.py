@@ -71,6 +71,8 @@ def test_success_with_ingest_builds_running_ingest_loop() -> None:
     assert_equal("audit_rejected_reason", audit["rejected_sources"][0]["rejected_reason"], "noise")
     assert_true("audit_rejected_note", "Rejected by CrawlerAgent" in audit["rejected_sources"][0]["review_note"])
     assert_equal("audit_objective_records", audit["accepted_sources"][0]["objective_evidence"]["records"], 2)
+    assert_equal("audit_usable_records_defaults_to_records", audit["accepted_sources"][0]["usable_records"], 2)
+    assert_equal("audit_objective_usable_records_defaults_to_records", audit["accepted_sources"][0]["objective_evidence"]["usable_records"], 2)
     decisions = audit["source_decisions"]
     assert_true("audit_decisions_visible", any(item["decision"] == "accepted" for item in decisions) and any(item["decision"] == "rejected" for item in decisions))
     assert_true("audit_decision_reason_visible", all("decision" in item and "reason" in item and "entered_rag" in item for item in decisions))

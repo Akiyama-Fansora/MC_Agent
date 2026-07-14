@@ -83,13 +83,15 @@ class CrawlerSelfAuditService:
         cleanup_action = str(validation.get("cleanup_action") or duplicate_review.get("cleanup_action") or item.get("crawler_review_action") or "")
         next_action = str(validation.get("next_action") or duplicate_review.get("next_action") or item.get("crawler_review_next_action") or observation.get("suggested_next") or "")
         ingest_decision = "deferred" if item.get("ingest_deferred") else ("skipped" if item.get("ingest_skipped") else "")
+        records = _safe_count(manifest.get("records"))
+        usable_records = _safe_count(manifest.get("usable_records"), default=records) if manifest.get("usable_records") is not None else records
         return {
             "source": str(item.get("source") or ""),
             "query": str(item.get("query") or ""),
             "status": str(observation.get("status") or ""),
             "summary": str(observation.get("summary") or ""),
-            "records": _safe_count(manifest.get("records")),
-            "usable_records": _safe_count(manifest.get("usable_records")),
+            "records": records,
+            "usable_records": usable_records,
             "empty_records": _safe_count(manifest.get("empty_records")),
             "record_bytes": _safe_count(manifest.get("record_bytes")),
             "skipped": _safe_count(manifest.get("skipped")),
@@ -179,11 +181,13 @@ class CrawlerSelfAuditService:
             "returncode",
         )
         evidence = {key: item.get(key) for key in keys if item.get(key) not in (None, "")}
+        records = _safe_count(manifest.get("records"))
+        usable_records = _safe_count(manifest.get("usable_records"), default=records) if manifest.get("usable_records") is not None else records
         evidence.update(
             {
                 "observation_status": str(observation.get("status") or ""),
-                "records": _safe_count(manifest.get("records")),
-                "usable_records": _safe_count(manifest.get("usable_records")),
+                "records": records,
+                "usable_records": usable_records,
                 "record_bytes": _safe_count(manifest.get("record_bytes")),
             }
         )
