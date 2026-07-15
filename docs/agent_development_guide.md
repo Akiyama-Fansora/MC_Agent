@@ -5780,3 +5780,23 @@ Validation:
 Boundary:
 
 This change does not alter retrieval ranking, selector scoring, Crawler planning, persistence, ingest, or final-answer generation. It only keeps the RAG/evidence workflow usable when an optional local supplement source is temporarily unavailable.
+
+## 2026-07-15 Stage 98: Accumulated Save-Artifact Manifests
+
+This maintenance pass focused on CrawlerAgent resource persistence, local inventory, and artifact reference reuse.
+
+Implemented changes:
+
+1. `mcagent/artifact_save_service.py` now preserves existing `save_artifact` manifest records when saving additional artifacts into the same directory.
+2. Saving a different file appends a new manifest record instead of hiding earlier saved artifacts from later inventory or `artifact_ref` lookup.
+3. Overwriting the same path replaces that path's manifest record, so the manifest still reflects the current file digest and content.
+4. `tests/artifact_save_service_scenarios.py` now covers multi-artifact manifest accumulation and same-path overwrite replacement.
+
+Validation:
+
+1. `python tests\artifact_save_service_scenarios.py`
+2. `python -m py_compile mcagent\artifact_save_service.py tests\artifact_save_service_scenarios.py`
+
+Boundary:
+
+This change does not alter Crawler source selection, tool execution, ingest decisions, RAG retrieval ranking, evidence selection, or final answers. It only keeps save-artifact manifests complete across repeated local persistence actions in the same directory.

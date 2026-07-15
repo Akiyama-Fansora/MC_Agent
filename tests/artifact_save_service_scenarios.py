@@ -61,6 +61,32 @@ def test_save_json_and_avoid_overwrite_by_default() -> None:
     assert_equal("original_content", json.loads(Path(first.path).read_text(encoding="utf-8"))["a"], 1)
 
 
+def test_manifest_accumulates_multiple_saved_artifacts() -> None:
+    reset_tmp()
+    service = ArtifactSaveService()
+    first = service.save(content="# First", artifact_format="md", path=TMP, filename="first.md")
+    second = service.save(content={"name": "second"}, artifact_format="json", path=TMP, filename="second.json")
+    manifest = json.loads(Path(second.manifest_path).read_text(encoding="utf-8"))
+    paths = [record["path"] for record in manifest["records"]]
+    assert_equal("manifest_path_shared", first.manifest_path, second.manifest_path)
+    assert_equal("record_count", len(paths), 2)
+    assert_true("first_record_kept", first.path in paths)
+    assert_true("second_record_added", second.path in paths)
+
+
+def test_overwrite_replaces_manifest_record_for_same_path() -> None:
+    reset_tmp()
+    service = ArtifactSaveService()
+    first = service.save(content={"a": 1}, artifact_format="json", path=TMP / "data.json")
+    second = service.save(content={"a": 2}, artifact_format="json", path=TMP / "data.json", overwrite=True)
+    manifest = json.loads(Path(second.manifest_path).read_text(encoding="utf-8"))
+    paths = [record["path"] for record in manifest["records"]]
+    assert_equal("same_path", first.path, second.path)
+    assert_equal("record_count", len(paths), 1)
+    assert_equal("record_path", paths[0], second.path)
+    assert_equal("updated_content", json.loads(Path(second.path).read_text(encoding="utf-8"))["a"], 2)
+
+
 def test_csv_accepts_rows() -> None:
     reset_tmp()
     result = ArtifactSaveService().save(
@@ -87,6 +113,8 @@ def test_unknown_format_is_objective_error() -> None:
 def main() -> int:
     test_save_markdown_to_directory_writes_manifest()
     test_save_json_and_avoid_overwrite_by_default()
+    test_manifest_accumulates_multiple_saved_artifacts()
+    test_overwrite_replaces_manifest_record_for_same_path()
     test_csv_accepts_rows()
     test_unknown_format_is_objective_error()
     print("artifact_save_service_scenarios passed")

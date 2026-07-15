@@ -72,20 +72,21 @@ class ArtifactSaveService:
         final_path.write_bytes(data)
         digest = hashlib.sha256(data).hexdigest()
         manifest_path = final_path.parent / "manifest.json"
+        record = {
+            "path": str(final_path),
+            "format": normalized_format,
+            "bytes": len(data),
+            "sha256": digest,
+            "metadata": metadata or {},
+        }
+        records = [item for item in self._existing_save_artifact_records(manifest_path) if str(item.get("path") or "") != str(final_path)]
+        records.append(record)
         manifest = {
             "provider": "save_artifact",
             "status": "ok",
             "saved_to_local": True,
             "created_at": datetime.now().isoformat(timespec="seconds"),
-            "records": [
-                {
-                    "path": str(final_path),
-                    "format": normalized_format,
-                    "bytes": len(data),
-                    "sha256": digest,
-                    "metadata": metadata or {},
-                }
-            ],
+            "records": records,
             "skipped": [],
             "errors": [],
         }
@@ -121,6 +122,20 @@ class ArtifactSaveService:
         if base.suffix:
             return base.resolve()
         return (base / name).resolve()
+
+    def _existing_save_artifact_records(self, manifest_path: Path) -> list[dict[str, Any]]:
+        if not manifest_path.exists():
+            return []
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        if not isinstance(manifest, dict) or manifest.get("provider") != "save_artifact":
+            return []
+        records = manifest.get("records")
+        if not isinstance(records, list):
+            return []
+        return [dict(item) for item in records if isinstance(item, dict) and str(item.get("path") or "").strip()]
 
     def _safe_filename(self, filename: str) -> str:
         value = str(filename or "").strip()
