@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from mcagent.artifact_reference_service import ArtifactReferenceService  # noqa: E402
+from mcagent.artifact_save_service import ArtifactSaveService  # noqa: E402
 
 
 TMP = ROOT / "runtime" / "test_artifact_refs"
@@ -148,6 +149,29 @@ def test_relative_manifest_paths_cannot_escape_manifest_directory() -> None:
     assert_true("escape_outside_not_loaded", "outside the export directory" not in payload.get("content", ""))
 
 
+def test_save_artifact_manifest_format_drives_reference_lookup() -> None:
+    reset_tmp()
+    saved = ArtifactSaveService().save(
+        content="# Saved Markdown\n\nThis file was intentionally written to a .txt path.",
+        artifact_format="md",
+        path=TMP / "saved_as_text.txt",
+    )
+
+    service = ArtifactReferenceService()
+    refs = service.collect_from_result(
+        result={
+            "source": "save_artifact",
+            "query": "save markdown",
+            "manifest_stats": {"manifest_path": saved.manifest_path},
+        },
+        result_index=6,
+    )
+    payload = service.resolve_payload_refs({"content_ref": "latest:md"}, refs)
+
+    assert_equal("save_artifact_ref_format", refs[0]["format"], "md")
+    assert_true("save_artifact_content_loaded", "Saved Markdown" in payload["content"])
+
+
 def test_missing_ref_sets_objective_error() -> None:
     write_manifest()
     payload = ArtifactReferenceService().resolve_payload_refs({"artifact_ref": "r9.9"}, [])
@@ -160,6 +184,7 @@ def main() -> int:
     test_empty_content_uses_artifact_reference()
     test_relative_manifest_paths_resolve_from_manifest_directory()
     test_relative_manifest_paths_cannot_escape_manifest_directory()
+    test_save_artifact_manifest_format_drives_reference_lookup()
     test_missing_ref_sets_objective_error()
     print("artifact_reference_service_scenarios passed")
     return 0

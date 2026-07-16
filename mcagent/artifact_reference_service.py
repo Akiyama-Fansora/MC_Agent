@@ -6,6 +6,8 @@ from typing import Any
 
 
 TEXT_SUFFIXES = {".md", ".txt", ".json", ".jsonl", ".csv", ".html", ".htm", ".xml", ".log"}
+TEXT_FORMATS = {suffix.lstrip(".") for suffix in TEXT_SUFFIXES}
+TEXT_FORMATS.add("htm")
 PATH_FIELDS = ("path", "markdown_path", "raw_html_path", "raw_text_path", "file", "filepath")
 
 
@@ -38,6 +40,7 @@ class ArtifactReferenceService:
                     continue
                 if not path.exists() or not path.is_file():
                     continue
+                record_format = self._record_format(record, path)
                 ref = {
                     "id": f"r{result_index}.{len(refs) + 1}",
                     "source": result.get("source"),
@@ -46,11 +49,11 @@ class ArtifactReferenceService:
                     "url": record.get("url") or "",
                     "path": str(path),
                     "kind": field,
-                    "format": path.suffix.lower().lstrip("."),
+                    "format": record_format,
                     "bytes": self._size(path),
                     "record_index": record_index,
                     "manifest_path": str(manifest_path),
-                    "text_like": path.suffix.lower() in TEXT_SUFFIXES,
+                    "text_like": record_format in TEXT_FORMATS or path.suffix.lower() in TEXT_SUFFIXES,
                 }
                 refs.append(ref)
                 if len(refs) >= max_refs:
@@ -149,3 +152,10 @@ class ArtifactReferenceService:
         except ValueError:
             return None
         return resolved
+
+    @staticmethod
+    def _record_format(record: dict[str, Any], path: Path) -> str:
+        value = str(record.get("format") or record.get("artifact_format") or "").strip().lower().lstrip(".")
+        if value:
+            return value
+        return path.suffix.lower().lstrip(".")
