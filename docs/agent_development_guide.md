@@ -5800,3 +5800,24 @@ Validation:
 Boundary:
 
 This change does not alter Crawler source selection, tool execution, ingest decisions, RAG retrieval ranking, evidence selection, or final answers. It only keeps save-artifact manifests complete across repeated local persistence actions in the same directory.
+
+## 2026-07-17 Stage 99: Canonical Artifact Reference Format Aliases
+
+This maintenance pass focused on CrawlerAgent artifact reference reuse after local resource fetching and persistence.
+
+Implemented changes:
+
+1. `mcagent/artifact_reference_service.py` now canonicalizes common manifest format aliases before storing refs or matching `latest:<format>`.
+2. Manifest records that use `markdown`, `text`, `plain`, `htm`, `ndjson`, or `jsonlines` now resolve to the same canonical formats used by `save_artifact`.
+3. `latest:md` and `latest:markdown` can both select a legacy Markdown record even when the file extension is not `.md`.
+4. `tests/artifact_reference_service_scenarios.py` now covers alias-driven reference lookup for a long-form `markdown` manifest record saved to a `.txt` path.
+
+Validation:
+
+1. `python tests\artifact_reference_service_scenarios.py`
+2. `python -m py_compile mcagent\artifact_reference_service.py tests\artifact_reference_service_scenarios.py`
+3. `python tests\artifact_save_service_scenarios.py`
+
+Boundary:
+
+This change does not alter Crawler planning, tool execution, artifact writing, ingest decisions, RAG retrieval ranking, evidence selection, or final answers. It only makes artifact ref lookup tolerant of legacy or external manifest format names.

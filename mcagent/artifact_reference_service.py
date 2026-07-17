@@ -8,6 +8,15 @@ from typing import Any
 TEXT_SUFFIXES = {".md", ".txt", ".json", ".jsonl", ".csv", ".html", ".htm", ".xml", ".log"}
 TEXT_FORMATS = {suffix.lstrip(".") for suffix in TEXT_SUFFIXES}
 TEXT_FORMATS.add("htm")
+FORMAT_ALIASES = {
+    "markdown": "md",
+    "text": "txt",
+    "plain": "txt",
+    "html": "html",
+    "htm": "html",
+    "ndjson": "jsonl",
+    "jsonlines": "jsonl",
+}
 PATH_FIELDS = ("path", "markdown_path", "raw_html_path", "raw_text_path", "file", "filepath")
 
 
@@ -123,9 +132,9 @@ class ArtifactReferenceService:
         if normalized in {"latest", "last"}:
             return candidates[-1]
         if normalized.startswith("latest:"):
-            suffix = normalized.split(":", 1)[1].lstrip(".")
+            suffix = self._normalize_format(normalized.split(":", 1)[1])
             for ref in reversed(candidates):
-                if str(ref.get("format") or "").lower() == suffix:
+                if self._normalize_format(ref.get("format")) == suffix:
                     return ref
             return None
         for ref in candidates:
@@ -157,5 +166,10 @@ class ArtifactReferenceService:
     def _record_format(record: dict[str, Any], path: Path) -> str:
         value = str(record.get("format") or record.get("artifact_format") or "").strip().lower().lstrip(".")
         if value:
-            return value
-        return path.suffix.lower().lstrip(".")
+            return ArtifactReferenceService._normalize_format(value)
+        return ArtifactReferenceService._normalize_format(path.suffix)
+
+    @staticmethod
+    def _normalize_format(value: Any) -> str:
+        normalized = str(value or "").strip().lower().lstrip(".").replace("-", "").replace("_", "")
+        return FORMAT_ALIASES.get(normalized, normalized)

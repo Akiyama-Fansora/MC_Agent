@@ -172,6 +172,35 @@ def test_save_artifact_manifest_format_drives_reference_lookup() -> None:
     assert_true("save_artifact_content_loaded", "Saved Markdown" in payload["content"])
 
 
+def test_manifest_format_aliases_drive_latest_lookup() -> None:
+    reset_tmp()
+    doc = TMP / "legacy_markdown.txt"
+    doc.write_text("# Legacy Format\n\nManifest uses a long markdown format name.", encoding="utf-8")
+    manifest = {
+        "records": [
+            {
+                "title": "Legacy Markdown",
+                "path": str(doc),
+                "format": "markdown",
+            }
+        ]
+    }
+    (TMP / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    service = ArtifactReferenceService()
+    refs = service.collect_from_result(
+        result={"source": "fetch_url", "query": "legacy", "manifest_stats": {"manifest_path": str(TMP / "manifest.json")}},
+        result_index=7,
+    )
+    payload = service.resolve_payload_refs({"content_ref": "latest:md"}, refs)
+    alias_payload = service.resolve_payload_refs({"content_ref": "latest:markdown"}, refs)
+
+    assert_equal("legacy_format_canonical", refs[0]["format"], "md")
+    assert_equal("legacy_text_like", refs[0]["text_like"], True)
+    assert_true("legacy_md_lookup_loaded", "long markdown format" in payload["content"])
+    assert_true("legacy_markdown_lookup_loaded", "long markdown format" in alias_payload["content"])
+
+
 def test_missing_ref_sets_objective_error() -> None:
     write_manifest()
     payload = ArtifactReferenceService().resolve_payload_refs({"artifact_ref": "r9.9"}, [])
@@ -185,6 +214,7 @@ def main() -> int:
     test_relative_manifest_paths_resolve_from_manifest_directory()
     test_relative_manifest_paths_cannot_escape_manifest_directory()
     test_save_artifact_manifest_format_drives_reference_lookup()
+    test_manifest_format_aliases_drive_latest_lookup()
     test_missing_ref_sets_objective_error()
     print("artifact_reference_service_scenarios passed")
     return 0
