@@ -5821,3 +5821,23 @@ Validation:
 Boundary:
 
 This change does not alter Crawler planning, tool execution, artifact writing, ingest decisions, RAG retrieval ranking, evidence selection, or final answers. It only makes artifact ref lookup tolerant of legacy or external manifest format names.
+
+## 2026-07-19 Stage 100: Explicit Crawler Background Cancellation
+
+This maintenance pass focused on CrawlerAgent side-effect boundaries, AgentMessage handoff safety, and frontend-visible action-flow traces.
+
+Implemented changes:
+
+1. `mcagent/web_server.py` now detects explicit user requests that cancel or defer background Crawler collection, such as asking not to start collection or a background job in the current turn.
+2. If CrawlerAgent still selects `delegate_crawler`, the delegate preflight records `explicit_background_collection_cancelled`, switches the selected side effect to a direct reply path, and does not start a Crawler job.
+3. Existing temporary-extract and persistence routing remains unchanged; this guard only applies to explicit cancellation language around background collection side effects.
+4. `tests/web_server_side_effect_guard_scenarios.py` now asserts the cancellation trace detail in the delegate-confirmation scenario.
+
+Validation:
+
+1. Targeted `test_delegate_confirmation_can_cancel_background_job` via direct module import.
+2. `python -m py_compile mcagent\web_server.py tests\web_server_side_effect_guard_scenarios.py`
+
+Boundary:
+
+This change does not alter Crawler planning, resource fetching, local persistence, ingest, chunking, RAG retrieval, evidence selection, or answer synthesis. It only blocks a background Crawler side effect when the user explicitly asked not to start one.

@@ -8338,6 +8338,18 @@ def _request_wants_persistence(text: str) -> bool:
     return any(re.search(pattern, lowered, flags=re.I) for pattern in patterns)
 
 
+def _request_cancels_background_collection(text: str) -> bool:
+    value = str(text or "")
+    lowered = value.lower()
+    patterns = (
+        r"(?:先)?(?:别|不要|不用|无需|不需要)(?:再)?(?:启动|开始|进入|新建|创建|开启)?(?:后台)?(?:采集|收集|抓取|爬取|补库|入库|crawler|任务|job)",
+        r"(?:采集|收集|抓取|爬取|补库|入库|后台任务).{0,12}(?:先)?(?:别|不要|不用|无需|不需要)",
+        r"\b(?:do not|don't|dont|no need to|without)\b.{0,80}\b(?:collect|crawl|start|create|launch|background job|crawler job|persist|ingest)\b",
+        r"\b(?:collect|crawl|start|create|launch|background job|crawler job|persist|ingest)\b.{0,80}\b(?:do not|don't|dont|no need|without)\b",
+    )
+    return any(re.search(pattern, lowered, flags=re.I) for pattern in patterns)
+
+
 def _should_use_temporary_extract_without_persistence(agent: str, original_question: str, collection_target: str, delivery_target: str) -> bool:
     if agent != "crawler_agent":
         return False
@@ -11911,6 +11923,22 @@ def _handle_delegate_crawler_route(
             proposed_goal=f"把采集目标交给 CrawlerAgent：{collection_question}",
             context={"collection_target": collection_question, "delivery_target": tool_decision.get("delivery_target") or ""},
         )
+    if (
+        agent == "crawler_agent"
+        and bool(delegate_confirmation.get("proceed", True))
+        and _request_cancels_background_collection(f"{original_question}\n{question}")
+    ):
+        delegate_confirmation = {
+            **dict(delegate_confirmation or {}),
+            "proceed": False,
+            "tool": "delegate_crawler",
+            "suggested_tool": "direct_answer",
+            "concern": "explicit_background_collection_cancelled",
+            "reason": (
+                "The user explicitly asked not to start collection/background work in this turn. "
+                "Runtime cancels the Crawler side effect and stays in a direct reply route."
+            ),
+        }
     add_trace("delegate", "next_step_confirmed", delegate_confirmation)
     if not bool(delegate_confirmation.get("proceed", True)):
         suggested_tool = str(delegate_confirmation.get("suggested_tool") or delegate_confirmation.get("tool") or "").strip()

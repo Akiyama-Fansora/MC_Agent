@@ -690,6 +690,16 @@ def test_delegate_confirmation_can_cancel_background_job() -> None:
     assert_equal("no_background_job", calls, [])
     statuses = [(item.get("stage"), item.get("status")) for item in result.get("trace") or []]
     assert_true("delegate_confirmed_trace", ("delegate", "next_step_confirmed") in statuses, str(statuses))
+    delegate_steps = [
+        item.get("detail") or {}
+        for item in result.get("trace") or []
+        if item.get("stage") == "delegate" and item.get("status") == "next_step_confirmed"
+    ]
+    assert_true(
+        "explicit_cancel_recorded",
+        any((step or {}).get("concern") == "explicit_background_collection_cancelled" for step in delegate_steps),
+        str(delegate_steps),
+    )
     assert_true("no_job_response", not result.get("job"), str(result.get("job")))
 
 
