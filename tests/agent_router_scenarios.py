@@ -334,6 +334,29 @@ def test_llm_router_reviews_missed_cross_agent_message_route() -> None:
     assert_true("correction_trace", ("decide", "cross_agent_message_route_corrected") in statuses, str(statuses))
 
 
+def test_llm_router_normalizes_cross_agent_message_aliases() -> None:
+    tmp, run = make_run("Please ask CrawlerAgent whether it can inspect this request.")
+    fake = SequencedFakeClient(
+        [
+            '{"tool":"direct_answer","reason":"ordinary reply"}',
+            '{"should_send":true,"to_agent":"crawler","content":"Please tell CrawlerAgent to decide whether it should inspect this request.","intent":"agent_message","reason":"alias should still map to CrawlerAgent"}',
+        ]
+    )
+    try:
+        service = LlmAgentToolRouterService(
+            select_client=lambda _config, _model, _temperature: (fake, "fake-router"),
+            action_plan_has_tool=lambda _plan, _tool: False,
+        )
+        route = service.route(run, session_summary={})
+    finally:
+        tmp.cleanup()
+
+    assert_equal("normalized_alias_route", route.route_intent, "agent_message")
+    assert_equal("normalized_alias_to_agent", route.tool_decision["to_agent"], "CrawlerAgent")
+    assert_true("normalized_alias_content", "CrawlerAgent" in route.tool_decision["content"], str(route.tool_decision))
+    assert_equal("normalized_alias_review_call_count", len(fake.calls), 2)
+
+
 def test_llm_router_cross_agent_review_can_decline_ordinary_mentions() -> None:
     tmp, run = make_run("解释一下 crawler 这个英文单词是什么意思")
     fake = SequencedFakeClient(

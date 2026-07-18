@@ -5854,7 +5854,18 @@ def _choose_temporary_extract_url(
         max_tokens=500,
     )
     data = json_object_from_llm_text(raw)
-    return str(data.get("url") or "").strip()
+    selected = str(data.get("url") or "").strip()
+    if selected:
+        temporary_extract_service = CrawlerTemporaryExtractService()
+        normalized_selected = temporary_extract_service.normalize_url(selected)
+        candidate_urls = {
+            temporary_extract_service.normalize_url(str(item.get("url") or ""))
+            for item in compact_candidates
+            if str(item.get("url") or "").strip()
+        }
+        if normalized_selected in candidate_urls:
+            return normalized_selected
+    return str(compact_candidates[0].get("url") or "").strip() if compact_candidates else ""
 
 
 def _generate_grounded_answer_stream(

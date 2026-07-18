@@ -6,6 +6,7 @@ import re
 import time
 from typing import Any, Callable, Protocol
 
+from .agent_message import agent_id_for_name, normalize_agent_name
 from .config import AppConfig
 from .agent_runtime import normalize_agent_tool_decision, tool_catalog_prompt, tool_names_for_agent
 
@@ -245,8 +246,14 @@ class AgentToolRouterService:
         if not isinstance(raw_message, dict):
             return False
         metadata = raw_message.get("metadata") if isinstance(raw_message.get("metadata"), dict) else {}
+        target_agent_id = str(
+            raw_message.get("to_agent_id")
+            or agent_id_for_name(raw_message.get("to_agent") or raw_message.get("to") or "")
+            or run.payload.get("agent")
+            or ""
+        )
         return (
-            str(raw_message.get("to_agent_id") or run.payload.get("agent") or "") == "crawler_agent"
+            target_agent_id == "crawler_agent"
             and (
                 str(raw_message.get("intent") or "") == "collection_request"
                 or str(metadata.get("tool") or "") == "delegate_crawler"
@@ -385,7 +392,7 @@ class LlmAgentToolRouterService(AgentToolRouterService):
             return None
         if not bool(value.get("should_send")):
             return None
-        to_agent = str(value.get("to_agent") or "").strip()
+        to_agent = normalize_agent_name(value.get("to_agent"))
         if to_agent not in {"MCagent", "CrawlerAgent", "User"}:
             return None
         if (run.agent == "mcagent_rag" and to_agent == "MCagent") or (run.agent == "crawler_agent" and to_agent == "CrawlerAgent"):

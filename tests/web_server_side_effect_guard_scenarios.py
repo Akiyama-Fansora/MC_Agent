@@ -292,6 +292,31 @@ def test_direct_crawler_no_save_without_url_discovers_then_temporary_extracts() 
     assert_true("no_background_job", "job" not in result)
 
 
+def test_temporary_extract_url_selection_falls_back_to_first_candidate() -> None:
+    tmp = tempfile.TemporaryDirectory()
+    fake_client = SequencedClient(['{"reason":"model did not choose a URL"}'])
+    original_selector = web_server._selected_llm_client
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake_client, "fake")  # type: ignore[assignment]
+    try:
+        selected = web_server._choose_temporary_extract_url(
+            make_temp_config(Path(tmp.name)),
+            question="Read the official docs",
+            collection_target="Playwright Python Trace Viewer tracing official docs",
+            candidates=[
+                {"rank": 1, "title": "Trace viewer | Playwright Python", "url": "https://playwright.dev/python/docs/trace-viewer", "snippet": "official trace viewer"},
+                {"rank": 2, "title": "Trace viewer", "url": "https://playwright.dev/docs/trace-viewer", "snippet": "generic trace viewer"},
+            ],
+            model="fake-model",
+            temperature=0.0,
+        )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        tmp.cleanup()
+
+    assert_equal("fallback_selected_url", selected, "https://playwright.dev/python/docs/trace-viewer")
+    assert_equal("fallback_model_calls", len(fake_client.calls), 1)
+
+
 def test_structured_save_request_is_not_corrected_to_temporary_extract() -> None:
     tmp = tempfile.TemporaryDirectory()
     output_dir = Path(tmp.name) / "items"
@@ -4267,6 +4292,7 @@ if __name__ == "__main__":
     test_direct_user_handoff_brief_rejects_wrong_mcagent_identity()
     test_direct_crawler_delegate_choice_is_corrected_to_temporary_extract()
     test_direct_crawler_no_save_without_url_discovers_then_temporary_extracts()
+    test_temporary_extract_url_selection_falls_back_to_first_candidate()
     test_user_requested_output_dir_gets_final_delivery_files()
     test_mcagent_context_focus_expands_minecraft_utopia_aliases()
     test_mcagent_context_focus_keeps_gap_dimension_without_meta_instruction()
