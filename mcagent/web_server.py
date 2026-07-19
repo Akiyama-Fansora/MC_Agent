@@ -12837,7 +12837,7 @@ def _tool_route_completeness_review(
     route_confirmation: dict[str, Any],
     action_plan: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Ask the active Agent whether an early-return tool covered the whole user request."""
+    """Return the runtime boundary fact: only the active Agent-selected route may add side effects."""
 
     del config, agent, model, original_question, selected_tool, tool_answer, tool_decision, route_confirmation, action_plan
     return {
@@ -12852,56 +12852,6 @@ def _tool_route_completeness_review(
         "delivery_target": "",
         "planner": "runtime_boundary_fact",
     }
-
-    try:
-        client, label = _selected_llm_client(config, model, 0.0, agent=agent, timeout_seconds=RUNTIME_REVIEW_LLM_TIMEOUT_SECONDS)
-        prompt = (
-            "你是当前 Agent 的工具路线完整性审计器。不要回答用户问题，只判断本轮已执行工具是否覆盖了用户原始请求中的所有可执行动作。\n"
-            "协议：用户、MCagent、CrawlerAgent 的跨 Agent 沟通必须通过 AgentMessage(from_agent, content, to_agent) 真实发送。"
-            "如果用户请求包含多个动作，例如先盘点/检索，再交给另一个 Agent 采集/保存/入库，而 selected_tool 只完成了第一步，"
-            "你必须标记 missing_side_effect=true，并给出下一步真实工具。不要按关键词触发；按语义判断请求是否真的要求副作用。\n"
-            "如果用户只是询问状态、盘点本地资料、解释能力、或条件性建议，不要启动副作用。\n"
-            "只输出 JSON。\n"
-            f"active_agent: {agent}\n"
-            f"original_user_message: {original_question}\n"
-            f"selected_tool: {selected_tool}\n"
-            f"tool_decision: {json.dumps(tool_decision or {}, ensure_ascii=False)}\n"
-            f"route_confirmation: {json.dumps(route_confirmation or {}, ensure_ascii=False)}\n"
-            f"action_plan: {json.dumps(action_plan or [], ensure_ascii=False)}\n"
-            f"tool_answer_preview:\n{str(tool_answer or '')[:4000]}\n"
-            'JSON schema: {"missing_side_effect":true, "tool":"delegate_crawler|...", '
-            '"action":"execute_selected_tool|allow", "reason":"一句理由", '
-            '"collection_target":"如果要执行 delegate_crawler，写完整自然语言目标", '
-            '"delivery_target":"human|MCagent/RAG|CrawlerAgent"}'
-        )
-        raw = client.chat(
-            [
-                {"role": "system", "content": "只输出合法 JSON。"},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.0,
-            max_tokens=700,
-        )
-        value = json_object_from_llm_text(raw)
-        return {
-            "missing_side_effect": bool(value.get("missing_side_effect", False)),
-            "tool": str(value.get("tool") or "").strip(),
-            "action": str(value.get("action") or "allow").strip(),
-            "reason": str(value.get("reason") or "").strip()[:700],
-            "collection_target": str(value.get("collection_target") or "").strip(),
-            "delivery_target": str(value.get("delivery_target") or "").strip(),
-            "planner": label,
-        }
-    except Exception as exc:  # noqa: BLE001
-        return {
-            "missing_side_effect": False,
-            "tool": "",
-            "action": "allow",
-            "reason": f"Route completeness review failed open: {type(exc).__name__}: {exc}",
-            "collection_target": "",
-            "delivery_target": "",
-            "planner": "runtime_fallback",
-        }
 
 
 def _question_looks_transport_garbled(question: str) -> bool:

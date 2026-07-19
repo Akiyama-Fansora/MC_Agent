@@ -5841,3 +5841,23 @@ Validation:
 Boundary:
 
 This change does not alter Crawler planning, resource fetching, local persistence, ingest, chunking, RAG retrieval, evidence selection, or answer synthesis. It only blocks a background Crawler side effect when the user explicitly asked not to start one.
+
+## 2026-07-19 Stage 101: Runtime Route Review Boundary Cleanup
+
+This maintenance pass focused on MCagent/CrawlerAgent side-effect boundaries, AgentMessage routing safety, and frontend-visible action-flow regression coverage.
+
+Implemented changes:
+
+1. `mcagent/web_server.py` now removes the unreachable LLM route-completeness judge block that sat after the runtime-boundary return.
+2. `_tool_route_completeness_review()` is documented as a runtime boundary fact: only the active Agent-selected route, planned workflow, or protocol review may introduce side effects.
+3. `tests/web_server_side_effect_guard_scenarios.py` now directly verifies the route-completeness helper does not call the LLM and returns `planner=runtime_boundary_fact`.
+4. The side-effect guard scenarios now align with the runtime contract: stale route-completeness review responses no longer shift fake LLM answer streams, and unselected Crawler delegation remains blocked without synthetic gap traces.
+
+Validation:
+
+1. `python tests\web_server_side_effect_guard_scenarios.py`
+2. `python -m py_compile mcagent\web_server.py tests\web_server_side_effect_guard_scenarios.py`
+
+Boundary:
+
+This change does not alter Crawler planning, resource fetching, local persistence, ingest, chunking, RAG retrieval, evidence selection, final-answer protocol review, or answer synthesis. It only removes unreachable code and keeps side-effect-boundary tests consistent with the active Agent-selected routing contract.

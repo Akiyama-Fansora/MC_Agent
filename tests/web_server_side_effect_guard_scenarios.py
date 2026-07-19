@@ -1086,15 +1086,36 @@ def test_modrinth_explicit_modpack_manifest_task_can_parse_contents() -> None:
     assert_true("has_modpack_contents", "--include-modpack-contents" in command, str(command))
 
 
+def test_route_completeness_review_is_runtime_boundary_fact() -> None:
+    tmp = tempfile.TemporaryDirectory()
+    original_selector = web_server._selected_llm_client
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("route completeness review must not call LLM"))  # type: ignore[assignment]
+    try:
+        review = web_server._tool_route_completeness_review(
+            make_temp_config(Path(tmp.name)),
+            agent="mcagent_rag",
+            model="fake-model",
+            original_question="list local gaps then let Crawler collect",
+            selected_tool="local_corpus_inventory",
+            tool_answer="local gaps only",
+            tool_decision={"tool": "local_corpus_inventory"},
+            route_confirmation={"proceed": True},
+            action_plan=[],
+        )
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        tmp.cleanup()
+    assert_equal("missing_side_effect", review.get("missing_side_effect"), False)
+    assert_equal("planner", review.get("planner"), "runtime_boundary_fact")
+    assert_equal("action", review.get("action"), "allow")
+
 def test_direct_crawler_review_cannot_correct_direct_answer_to_unselected_delegation() -> None:
     tmp = tempfile.TemporaryDirectory()
     fake_client = SequencedClient(
         [
-            '{"tool":"direct_answer","reason":"CrawlerAgent cannot ask MCagent directly.","collection_target":"问下MCAgent乌托邦整合包还缺哪些东西 你去网上找补给他","delivery_target":"human"}',
-            '{"proceed":true,"tool":"direct_answer","reason":"mistaken direct answer"}',
-            '{"missing_side_effect":true,"tool":"delegate_crawler","action":"execute_selected_tool","reason":"用户要求先问 MCagent 再继续采集补给他，direct_answer 没有执行跨 Agent 沟通和后台采集。","collection_target":"问下MCAgent乌托邦整合包还缺哪些东西，然后去网上找补给他","delivery_target":"MCagent/RAG"}',
-            '{"proceed":true,"tool":"delegate_crawler","reason":"confirmed corrected delegation"}',
-            '{"handoff_brief":"CrawlerAgent 误选直接回答后，经完整性审查改为通过 AgentMessage 执行采集任务：先询问 MCagent 缺口，再补充乌托邦整合包资料。","reason":"handoff"}',
+            '{"tool":"direct_answer","reason":"CrawlerAgent cannot ask MCagent directly.","collection_target":"ask MCagent for local gaps, then collect online","delivery_target":"human"}',
+            '{"proceed":true,"tool":"direct_answer","reason":"confirmed direct answer"}',
+            "CrawlerAgent will answer directly because the selected route was not delegate_crawler.",
         ]
     )
     original_selector = web_server._selected_llm_client
@@ -1129,8 +1150,8 @@ def test_direct_crawler_review_cannot_correct_direct_answer_to_unselected_delega
 
     statuses = [(step["stage"], step["status"]) for step in result.get("trace", [])]
     assert_true("direct_answer_selected", ("decide", "tool_selected") in statuses, str(statuses))
-    assert_true("completeness_gap_found", ("plan", "route_completeness_gap") in statuses, str(statuses))
-    assert_true("not_executed_trace", ("decide", "direct_answer_missing_side_effect_not_executed") in statuses, str(statuses))
+    assert_true("no_route_completeness_gap", ("plan", "route_completeness_gap") not in statuses, str(statuses))
+    assert_true("no_runtime_corrected_delegate", ("decide", "direct_answer_missing_side_effect_not_executed") not in statuses, str(statuses))
     assert_true("no_unselected_delegate", not calls, str(calls))
     assert_equal("agent_identity", result.get("agent"), "crawler_agent")
     assert_true("no_job_returned", not result.get("job"), str(result.get("job")))
@@ -1837,7 +1858,6 @@ def test_pseudo_delegate_call_in_final_answer_is_removed_without_late_side_effec
 
     fake_client = SequencedClient(
         [
-            json.dumps({"missing_side_effect": False, "action": "allow", "reason": "local RAG route can answer first"}, ensure_ascii=False),
             "本地已有版本和下载线索；缺少玩法路线、任务线和毕业目标。\n\ndelegate_crawler(\"请补充乌托邦整合包玩法路线、任务线和毕业目标资料\")",
             json.dumps(
                 {
@@ -2003,19 +2023,7 @@ def test_local_rag_route_review_cannot_add_unselected_delegate_side_effect() -> 
 
     fake_client = SequencedClient(
         [
-            json.dumps(
-                {
-                    "missing_side_effect": True,
-                    "tool": "delegate_crawler",
-                    "action": "execute_selected_tool",
-                    "reason": "用户请求包含先列本地缺口再让 Crawler 补充，local_rag_search 只覆盖第一步。",
-                    "collection_target": "补充乌托邦整合包玩法路线、任务线和毕业目标资料",
-                    "delivery_target": "MCagent/RAG",
-                },
-                ensure_ascii=False,
-            ),
-            "本地已有版本和下载线索；缺少玩法路线、任务线和毕业目标。\n\n我现在就将以上缺口转达给 CrawlerAgent，并已通过计划工作流委托 CrawlerAgent 去补齐。",
-            json.dumps({"handoff_brief": "MCagent sends local gaps to CrawlerAgent through AgentMessage.", "reason": "handoff"}, ensure_ascii=False),
+            "Local evidence lists version and download clues but lacks gameplay, questline, and endgame details. The selected route did not choose delegate_crawler.",
         ]
     )
     calls: list[dict[str, Any]] = []
@@ -2055,7 +2063,8 @@ def test_local_rag_route_review_cannot_add_unselected_delegate_side_effect() -> 
     assert_true("no_unselected_delegate_message", not calls, str(calls))
     assert_true("no_job_returned", not result.get("job"), str(result.get("job")))
     statuses = [(item.get("stage"), item.get("status")) for item in result.get("trace") or []]
-    assert_true("completeness_not_executed_trace", ("plan", "route_completeness_gap_not_executed") in statuses, str(statuses))
+    assert_true("no_completeness_review_trace", ("plan", "route_completeness_gap_not_executed") not in statuses, str(statuses))
+    assert_true("answer_ready", ("done", "response_ready") in statuses, str(statuses))
 
 
 def test_conditional_delegate_suggestion_is_allowed_without_side_effect() -> None:
@@ -2738,8 +2747,10 @@ def test_inventory_route_review_cannot_add_unselected_delegate_side_effect() -> 
     assert_true("no_unselected_delegate_message", not calls, str(calls))
     assert_true("no_job_returned", not result.get("job"), str(result.get("job")))
     statuses = [(item.get("stage"), item.get("status")) for item in result.get("trace") or []]
-    assert_true("completeness_trace", ("plan", "route_completeness_gap") in statuses, str(statuses))
-    assert_true("not_executed_trace", ("plan", "inventory_missing_side_effect_not_executed") in statuses, str(statuses))
+    assert_true("no_completeness_gap", ("plan", "route_completeness_gap") not in statuses, str(statuses))
+    assert_true("no_inventory_side_effect_trace", ("plan", "inventory_missing_side_effect_not_executed") not in statuses, str(statuses))
+    assert_true("inventory_completed", ("retrieve", "inventory_done") in statuses, str(statuses))
+    assert_true("review_llm_unused", not fake_client.calls, str(fake_client.calls))
 
 
 def test_local_corpus_inventory_is_not_keyword_forced_before_agent_choice() -> None:
@@ -4328,6 +4339,8 @@ if __name__ == "__main__":
     test_known_modrinth_project_skips_are_reusable_existing_evidence()
     test_modrinth_slug_query_is_direct_project_candidate()
     test_modrinth_explicit_modpack_manifest_task_can_parse_contents()
+    test_route_completeness_review_is_runtime_boundary_fact()
+    test_direct_crawler_review_cannot_correct_direct_answer_to_unselected_delegation()
     test_crawler_job_can_execute_mcagent_context_tool()
     test_mcagent_context_request_does_not_recursively_delegate_crawler()
     test_mcagent_context_tool_timeout_returns_objective_blocker()
