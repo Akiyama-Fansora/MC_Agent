@@ -5861,3 +5861,23 @@ Validation:
 Boundary:
 
 This change does not alter Crawler planning, resource fetching, local persistence, ingest, chunking, RAG retrieval, evidence selection, final-answer protocol review, or answer synthesis. It only removes unreachable code and keeps side-effect-boundary tests consistent with the active Agent-selected routing contract.
+
+## 2026-07-20 Stage 102: Graph Inventory Agent Boundary Guard
+
+This maintenance pass focused on MCagent local inventory routing, graph-executed agent boundaries, and frontend-visible route safety.
+
+Implemented changes:
+
+1. `mcagent/web_server.py` now rejects `_execute_graph_local_corpus_inventory_route()` when the graph is invoked for `crawler_agent`, matching the existing MCagent-only contract for local corpus inventory.
+2. `tests/langgraph_runtime_scenarios.py` adds a regression that verifies a crawler-agent graph inventory call raises before any inventory lookup runs.
+3. The new guard keeps the graph executor aligned with the MCagent tool catalog and prevents accidental reuse of the MCagent inventory node from the Crawler side.
+
+Validation:
+
+1. `python -m py_compile mcagent\web_server.py tests\langgraph_runtime_scenarios.py`
+2. Targeted import run for `test_inventory_route_confirmation_cannot_upgrade_to_delegate()` and `test_graph_inventory_route_rejects_crawler_agent()`
+3. `python tests\fastapi_backend_scenarios.py`
+
+Boundary:
+
+This change does not alter inventory selection semantics, Crawler planning, resource fetching, persistence, ingest, chunking, RAG retrieval, evidence selection, or answer synthesis. It only enforces the existing MCagent-only boundary at the graph execution layer.

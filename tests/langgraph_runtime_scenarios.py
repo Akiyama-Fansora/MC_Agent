@@ -1625,6 +1625,37 @@ def test_inventory_route_confirmation_cannot_upgrade_to_delegate() -> None:
     assert_true("no_job", not result.get("job"), str(result))
 
 
+def test_graph_inventory_route_rejects_crawler_agent() -> None:
+    def fail_if_called(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("inventory lookup should not run for crawler_agent")
+
+    original_inventory = web_server._local_corpus_inventory_answer
+    try:
+        web_server._local_corpus_inventory_answer = fail_if_called  # type: ignore[assignment]
+        try:
+            web_server._execute_graph_local_corpus_inventory_route(
+                config=make_temp_config(Path(tempfile.gettempdir())),
+                payload={},
+                agent_id="crawler_agent",
+                graph_name="crawler",
+                node_name="crawler.graph_local_corpus_inventory_route",
+                runtime_request={"session_id": "graph-inventory-boundary"},
+                route_decision={
+                    "route_intent": "local_corpus_inventory",
+                    "route_confirmation": {"proceed": True, "tool": "local_corpus_inventory"},
+                    "question": "inspect local corpus coverage",
+                    "original_question": "inspect local corpus coverage",
+                    "tool_decision": {"tool": "local_corpus_inventory"},
+                },
+            )
+        except RuntimeError as exc:
+            assert_true("inventory_agent_guard", "requires MCagent" in str(exc), str(exc))
+        else:
+            raise AssertionError("crawler_agent must not execute MCagent local inventory")
+    finally:
+        web_server._local_corpus_inventory_answer = original_inventory  # type: ignore[assignment]
+
+
 def test_delegate_route_helper_respects_confirmation_cancel() -> None:
     class FakeRun:
         original_question = "collect public docs"
@@ -1918,6 +1949,7 @@ def main() -> int:
     test_direct_answer_route_helper_does_not_execute_unselected_delegate()
     test_temporary_extract_route_does_not_upgrade_to_delegate_on_confirmation_suggestion()
     test_inventory_route_confirmation_cannot_upgrade_to_delegate()
+    test_graph_inventory_route_rejects_crawler_agent()
     test_delegate_route_helper_respects_confirmation_cancel()
     test_crawler_action_plan_delegate_route_starts_selected_job()
     test_mcagent_inventory_planned_workflow_delegates_only_selected_step()

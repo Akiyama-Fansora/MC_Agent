@@ -10088,6 +10088,8 @@ def _execute_graph_local_corpus_inventory_route(
     runtime_request: dict[str, Any],  # noqa: ARG001 - recorded by graph adapter metadata.
     route_decision: dict[str, Any],
 ) -> dict[str, Any]:
+    if agent_id != "mcagent_rag":
+        raise RuntimeError("Graph local corpus inventory execution requires MCagent.")
     if str(route_decision.get("route_intent") or "") != "local_corpus_inventory":
         raise RuntimeError("Graph local corpus inventory execution requires an Agent-selected local_corpus_inventory route.")
     if _graph_route_decision_has_delegate_action(route_decision):
