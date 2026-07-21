@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pathlib import Path
 import json
@@ -264,7 +264,7 @@ def test_fastapi_stream_local_inventory_question_uses_inventory_observation_not_
 def test_fastapi_agent_message_endpoint_dispatches() -> None:
     fake = SequencedClient(
         [
-            '{"tool":"direct_answer","reason":"simple greeting","collection_target":"浣犲ソ","delivery_target":"human"}',
+            '{"tool":"direct_answer","reason":"simple greeting","collection_target":"你好","delivery_target":"human"}',
             "Hello, I am CrawlerAgent.",
         ]
     )
@@ -275,7 +275,7 @@ def test_fastapi_agent_message_endpoint_dispatches() -> None:
             client = TestClient(create_app(make_temp_config(Path(tmp))))
             response = client.post(
                 "/api/agent-message",
-                json={"from_agent": "User", "to_agent": "CrawlerAgent", "content": "浣犲ソ", "session_id": "fastapi-message"},
+                json={"from_agent": "User", "to_agent": "CrawlerAgent", "content": "你好", "session_id": "fastapi-message"},
             )
     finally:
         web_server._selected_llm_client = original_selector  # type: ignore[assignment]
@@ -927,7 +927,7 @@ def test_mcagent_agent_message_response_passes_through_crawler_job_without_task_
                 make_temp_config(Path(tmp)),
                 {"session_id": "fastapi-agent-message-job-passthrough"},
                 from_agent="User",
-                content="鍙玞rawler鍘昏幏鍙栦綘缂虹殑璧勬枡",
+                content="叫 CrawlerAgent 去获取你缺的资料",
                 to_agent="MCagent",
                 intent="user_chat",
                 conversation_id="fastapi-agent-message-job-passthrough",

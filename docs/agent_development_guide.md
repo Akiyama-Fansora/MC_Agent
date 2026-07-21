@@ -5881,3 +5881,24 @@ Validation:
 Boundary:
 
 This change does not alter inventory selection semantics, Crawler planning, resource fetching, persistence, ingest, chunking, RAG retrieval, evidence selection, or answer synthesis. It only enforces the existing MCagent-only boundary at the graph execution layer.
+
+## 2026-07-21 Stage 103: Restore Encoding Quality Gates
+
+This maintenance pass focused on repository-wide test reliability and readable AgentMessage boundary fixtures.
+
+Implemented changes:
+
+1. Removed UTF-8 BOMs from the AgentMessage bus and FastAPI backend scenario files so the repository encoding-hygiene scenario can inspect their contents.
+2. Recovered damaged Chinese fixtures used for message tuples, Crawler collection requests, and MCagent-to-CrawlerAgent handoff inputs.
+3. Kept the existing assertions and runtime behavior unchanged while restoring both encoding quality gates to a passing state.
+
+Validation:
+
+1. `python tests\encoding_hygiene_scenarios.py`
+2. `python scripts\check_text_encoding.py`
+3. `python tests\agent_message_bus_scenarios.py`
+4. `python tests\fastapi_backend_scenarios.py`
+
+Boundary:
+
+This change does not alter production routing, Crawler fetching or persistence, ingest, chunking, RAG retrieval, evidence selection, frontend behavior, or answer synthesis. It restores damaged test inputs and makes the existing encoding checks effective again.
