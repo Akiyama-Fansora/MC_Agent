@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 
 
@@ -100,6 +101,63 @@ def test_csv_accepts_rows() -> None:
     assert_true("csv_row", "A,1" in text)
 
 
+def test_dotted_output_directory_keeps_explicit_filename() -> None:
+    reset_tmp()
+    output_dir = TMP / "reports.v1"
+    result = ArtifactSaveService().save(
+        content="# Dotted directory",
+        artifact_format="md",
+        path=output_dir,
+        filename="summary.md",
+    )
+
+    assert_equal("dotted_directory_path", Path(result.path), (output_dir / "summary.md").resolve())
+    assert_equal("dotted_directory_export", Path(result.export_dir), output_dir.resolve())
+    assert_true("dotted_directory_file_exists", Path(result.path).is_file())
+
+
+def test_existing_dotted_output_directory_uses_default_filename() -> None:
+    reset_tmp()
+    output_dir = TMP / "existing.reports"
+    output_dir.mkdir()
+    result = ArtifactSaveService().save(
+        content={"status": "ok"},
+        artifact_format="json",
+        path=output_dir,
+    )
+
+    assert_equal("existing_dotted_directory_path", Path(result.path), (output_dir / "artifact.json").resolve())
+    assert_equal("existing_dotted_directory_export", Path(result.export_dir), output_dir.resolve())
+
+
+def test_save_artifact_cli_supports_dotted_output_directory() -> None:
+    reset_tmp()
+    output_dir = TMP / "cli.reports"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "save_artifact.py"),
+            "--content",
+            "CLI artifact",
+            "--format",
+            "txt",
+            "--path",
+            str(output_dir),
+            "--filename",
+            "result.txt",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+    assert_equal("cli_exit_code", completed.returncode, 0)
+    assert_true("cli_saved_file", (output_dir / "result.txt").is_file(), completed.stdout + completed.stderr)
+    assert_true("cli_export_dir", f"Exported to: {output_dir.resolve()}" in completed.stdout, completed.stdout)
+
+
 def test_unknown_format_is_objective_error() -> None:
     reset_tmp()
     try:
@@ -116,6 +174,9 @@ def main() -> int:
     test_manifest_accumulates_multiple_saved_artifacts()
     test_overwrite_replaces_manifest_record_for_same_path()
     test_csv_accepts_rows()
+    test_dotted_output_directory_keeps_explicit_filename()
+    test_existing_dotted_output_directory_uses_default_filename()
+    test_save_artifact_cli_supports_dotted_output_directory()
     test_unknown_format_is_objective_error()
     print("artifact_save_service_scenarios passed")
     return 0

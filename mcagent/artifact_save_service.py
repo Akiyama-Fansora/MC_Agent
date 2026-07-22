@@ -119,6 +119,8 @@ class ArtifactSaveService:
         name = self._safe_filename(filename or f"artifact{suffix}")
         if not Path(name).suffix:
             name = f"{name}{suffix}"
+        if str(filename or "").strip() or (base.exists() and base.is_dir()):
+            return (base / name).resolve()
         if base.suffix:
             return base.resolve()
         return (base / name).resolve()

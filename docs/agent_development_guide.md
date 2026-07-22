@@ -5902,3 +5902,22 @@ Validation:
 Boundary:
 
 This change does not alter production routing, Crawler fetching or persistence, ingest, chunking, RAG retrieval, evidence selection, frontend behavior, or answer synthesis. It restores damaged test inputs and makes the existing encoding checks effective again.
+
+## 2026-07-22 Stage 104: Dotted Artifact Output Directories
+
+This maintenance pass focused on CrawlerAgent local persistence to user-selected directories.
+
+Implemented changes:
+
+1. `mcagent/artifact_save_service.py` now treats `path` as a directory when the caller supplies an explicit `filename`, even when the directory name contains a suffix-like dot such as `reports.v1`.
+2. Existing directories are also recognized as directories regardless of their suffix; an ambiguous non-existent path without `filename` keeps the prior file-path behavior.
+3. `tests/artifact_save_service_scenarios.py` covers both the service and `scripts/save_artifact.py` CLI path so a user-selected dotted directory cannot silently replace the requested filename.
+
+Validation:
+
+1. `python tests\artifact_save_service_scenarios.py`
+2. `python -m py_compile mcagent\artifact_save_service.py scripts\save_artifact.py tests\artifact_save_service_scenarios.py`
+
+Boundary:
+
+This change does not alter Crawler planning, fetching, content serialization, overwrite policy, manifest accumulation, ingest, RAG retrieval, evidence selection, or final answers. It only removes an ambiguous path heuristic when directory intent is explicit or objectively observable.
