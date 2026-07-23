@@ -3684,6 +3684,40 @@ def test_public_discovery_tools_have_bounded_task_budget() -> None:
     assert_equal("playwright_snapshot_depth", playwright_command[playwright_command.index("--snapshot-depth") + 1], "3")
 
 
+def test_crawler_tool_commands_tolerate_malformed_numeric_limits() -> None:
+    web_command = web_server._round_command(
+        "web_discovery",
+        {
+            "query": "example topic",
+            "search_limit": "many",
+            "max_urls": -20,
+            "max_variants": "",
+            "request_timeout": "unknown",
+            "budget_seconds": 999,
+        },
+    )
+    assert_equal("web_default_results", web_command[web_command.index("--max-results") + 1], "4")
+    assert_equal("web_clamped_pages", web_command[web_command.index("--max-pages") + 1], "1")
+    assert_equal("web_default_variants", web_command[web_command.index("--max-variants") + 1], "3")
+    assert_equal("web_default_timeout", web_command[web_command.index("--request-timeout") + 1], "8")
+    assert_equal("web_clamped_budget", web_command[web_command.index("--budget-seconds") + 1], "90")
+
+    browser_command = web_server._round_command("browser_collect", {"query": "example products", "max_items": "many"})
+    assert_equal("browser_default_items", browser_command[browser_command.index("--max-items") + 1], "50")
+
+    modrinth_command = web_server._round_command(
+        "modrinth",
+        {"query": "example mod", "mods": "many", "modpacks": -2, "resourcepacks": "", "shaders": 0},
+    )
+    assert_equal("modrinth_default_mods", modrinth_command[modrinth_command.index("--mods") + 1], "60")
+    assert_equal("modrinth_clamped_modpacks", modrinth_command[modrinth_command.index("--modpacks") + 1], "1")
+    assert_equal("modrinth_default_resourcepacks", modrinth_command[modrinth_command.index("--resourcepacks") + 1], "10")
+    assert_equal("modrinth_clamped_shaders", modrinth_command[modrinth_command.index("--shaders") + 1], "1")
+
+    mediawiki_command = web_server._round_command("mediawiki", {"query": "example wiki", "search_limit": "many"})
+    assert_equal("mediawiki_default_limit", mediawiki_command[mediawiki_command.index("--search-limit") + 1], "12")
+
+
 def test_crawler_reflection_timeout_continues_with_pending_task() -> None:
     original_reflect = web_server.reflect_crawler_progress
 
@@ -4391,6 +4425,7 @@ if __name__ == "__main__":
     test_modpack_download_has_bounded_probe_timeout()
     test_mcmod_search_has_bounded_task_budget()
     test_public_discovery_tools_have_bounded_task_budget()
+    test_crawler_tool_commands_tolerate_malformed_numeric_limits()
     test_crawler_reflection_timeout_continues_with_pending_task()
     test_crawler_reflection_timeout_continues_low_yield_when_pending_exists()
     test_modpack_download_defaults_to_probe_only_command()

@@ -5921,3 +5921,23 @@ Validation:
 Boundary:
 
 This change does not alter Crawler planning, fetching, content serialization, overwrite policy, manifest accumulation, ingest, RAG retrieval, evidence selection, or final answers. It only removes an ambiguous path heuristic when directory intent is explicit or objectively observable.
+
+## 2026-07-23 Stage 105: Tolerant Crawler Tool Limits
+
+This maintenance pass focused on CrawlerAgent resource acquisition and frontend-visible tool execution continuity.
+
+Implemented changes:
+
+1. `mcagent/web_server.py` now parses numeric Crawler tool payload fields through the existing bounded integer helper before constructing subprocess commands.
+2. Malformed values from Agent/model payloads fall back to each tool's existing default instead of raising before the tool starts.
+3. Negative values are clamped to a usable minimum, while the existing Web discovery, Playwright, and MC百科 upper bounds remain unchanged.
+4. `tests/web_server_side_effect_guard_scenarios.py` covers malformed and out-of-range limits for public Web discovery, browser collection, Modrinth, and the default MediaWiki path.
+
+Validation:
+
+1. `python tests\web_server_side_effect_guard_scenarios.py`
+2. `python -m py_compile mcagent\web_server.py tests\web_server_side_effect_guard_scenarios.py`
+
+Boundary:
+
+This change does not alter Agent tool selection, Crawler planning, network implementations, persistence, ingest, chunking, RAG retrieval, evidence selection, graph routing, or final answers. It only keeps already-selected Crawler tools executable when optional numeric payload fields are malformed or out of range.

@@ -1416,11 +1416,11 @@ def _round_command(source: str, payload: dict[str, Any]) -> list[str]:
     source = _source_alias(source)
     query = str(payload.get("query") or payload.get("question") or "").strip()
     if source == "ftbwiki":
-        return [sys.executable, str(PROJECT_ROOT / "scripts" / "fetch_ftbwiki_seed.py"), "--query", query, "--search-limit", str(int(payload.get("search_limit") or 12))]
+        return [sys.executable, str(PROJECT_ROOT / "scripts" / "fetch_ftbwiki_seed.py"), "--query", query, "--search-limit", str(_bounded_int(payload.get("search_limit"), default=12, min_value=1))]
     if source == "createwiki":
-        return [sys.executable, str(PROJECT_ROOT / "scripts" / "fetch_createwiki_seed.py"), "--query", query, "--search-limit", str(int(payload.get("search_limit") or 12))]
+        return [sys.executable, str(PROJECT_ROOT / "scripts" / "fetch_createwiki_seed.py"), "--query", query, "--search-limit", str(_bounded_int(payload.get("search_limit"), default=12, min_value=1))]
     if source == "followup":
-        command = [sys.executable, str(PROJECT_ROOT / "scripts" / "fetch_followup_seed.py"), "--max-urls", str(int(payload.get("max_urls") or 60))]
+        command = [sys.executable, str(PROJECT_ROOT / "scripts" / "fetch_followup_seed.py"), "--max-urls", str(_bounded_int(payload.get("max_urls"), default=60, min_value=1))]
         if query:
             command.extend(["--query", query])
         return command
@@ -1431,15 +1431,15 @@ def _round_command(source: str, payload: dict[str, Any]) -> list[str]:
             "--query",
             query,
             "--max-results",
-            str(min(max(1, int(payload.get("search_limit") or 4)), 4)),
+            str(_bounded_int(payload.get("search_limit"), default=4, min_value=1, max_value=4)),
             "--max-pages",
-            str(min(max(1, int(payload.get("max_urls") or 3)), 3)),
+            str(_bounded_int(payload.get("max_urls"), default=3, min_value=1, max_value=3)),
             "--max-variants",
-            str(min(max(1, int(payload.get("max_variants") or 3)), 3)),
+            str(_bounded_int(payload.get("max_variants"), default=3, min_value=1, max_value=3)),
             "--request-timeout",
-            str(min(max(1, int(payload.get("request_timeout") or 8)), 10)),
+            str(_bounded_int(payload.get("request_timeout"), default=8, min_value=1, max_value=10)),
             "--budget-seconds",
-            str(min(max(10, int(payload.get("budget_seconds") or 60)), 90)),
+            str(_bounded_int(payload.get("budget_seconds"), default=60, min_value=10, max_value=90)),
         ]
     if source == "fetch_url":
         command = [
@@ -1466,11 +1466,11 @@ def _round_command(source: str, payload: dict[str, Any]) -> list[str]:
             "--query",
             query,
             "--max-results",
-            str(min(max(1, int(payload.get("search_limit") or 3)), 3)),
+            str(_bounded_int(payload.get("search_limit"), default=3, min_value=1, max_value=3)),
             "--max-pages",
-            str(min(max(1, int(payload.get("max_urls") or 2)), 2)),
+            str(_bounded_int(payload.get("max_urls"), default=2, min_value=1, max_value=2)),
             "--snapshot-depth",
-            str(min(max(1, int(payload.get("snapshot_depth") or 3)), 5)),
+            str(_bounded_int(payload.get("snapshot_depth"), default=3, min_value=1, max_value=5)),
         ]
     if source == "browser_collect":
         source_context = " ".join(
@@ -1487,7 +1487,7 @@ def _round_command(source: str, payload: dict[str, Any]) -> list[str]:
             "--query",
             collect_query,
             "--max-items",
-            str(int(payload.get("max_items") or 50)),
+            str(_bounded_int(payload.get("max_items"), default=50, min_value=1)),
         ]
         output_dir = str(payload.get("output_dir") or "").strip()
         start_url = str(payload.get("start_url") or "").strip()
@@ -1560,9 +1560,9 @@ def _round_command(source: str, payload: dict[str, Any]) -> list[str]:
             "--query",
             query,
             "--max-files",
-            str(int(payload.get("max_files") or 120)),
+            str(_bounded_int(payload.get("max_files"), default=120, min_value=1)),
             "--max-queries",
-            str(int(payload.get("max_queries") or 40)),
+            str(_bounded_int(payload.get("max_queries"), default=40, min_value=1)),
         ]
     if source == "modpack_download":
         command = [
@@ -1571,7 +1571,7 @@ def _round_command(source: str, payload: dict[str, Any]) -> list[str]:
             "--query",
             query,
             "--limit",
-            str(int(payload.get("search_limit") or payload.get("max_urls") or 8)),
+            str(_bounded_int(payload.get("search_limit") or payload.get("max_urls"), default=8, min_value=1)),
         ]
         wants_download = payload.get("download") is True or str(payload.get("download") or "").strip().lower() in {"1", "true", "yes", "on", "full"}
         if payload.get("no_download") is True or payload.get("probe_only") is True:
@@ -1612,7 +1612,7 @@ def _round_command(source: str, payload: dict[str, Any]) -> list[str]:
             "--query",
             query,
             "--limit",
-            str(min(max(1, int(payload.get("search_limit") or 4)), 6)),
+            str(_bounded_int(payload.get("search_limit"), default=4, min_value=1, max_value=6)),
         ]
     if source == "modrinth":
         include_flag = payload.get("include_modpack_contents")
@@ -1629,18 +1629,18 @@ def _round_command(source: str, payload: dict[str, Any]) -> list[str]:
             "--query",
             query,
             "--mods",
-            str(int(payload.get("mods") or 60)),
+            str(_bounded_int(payload.get("mods"), default=60, min_value=1)),
             "--modpacks",
-            str(int(payload.get("modpacks") or 20)),
+            str(_bounded_int(payload.get("modpacks"), default=20, min_value=1)),
             "--resourcepacks",
-            str(int(payload.get("resourcepacks") or 10)),
+            str(_bounded_int(payload.get("resourcepacks"), default=10, min_value=1)),
             "--shaders",
-            str(int(payload.get("shaders") or 8)),
+            str(_bounded_int(payload.get("shaders"), default=8, min_value=1)),
         ]
         if include_modpack_contents:
             command.append("--include-modpack-contents")
         return command
-    return [sys.executable, str(PROJECT_ROOT / "scripts" / "fetch_mediawiki_seed.py"), "--query", query, "--search-limit", str(int(payload.get("search_limit") or 12))]
+    return [sys.executable, str(PROJECT_ROOT / "scripts" / "fetch_mediawiki_seed.py"), "--query", query, "--search-limit", str(_bounded_int(payload.get("search_limit"), default=12, min_value=1))]
 
 
 def _command_timeout(source: str) -> int:
