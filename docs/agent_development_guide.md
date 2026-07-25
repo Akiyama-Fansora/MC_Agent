@@ -5941,3 +5941,23 @@ Validation:
 Boundary:
 
 This change does not alter Agent tool selection, Crawler planning, network implementations, persistence, ingest, chunking, RAG retrieval, evidence selection, graph routing, or final answers. It only keeps already-selected Crawler tools executable when optional numeric payload fields are malformed or out of range.
+
+## 2026-07-26 Stage 106: Tolerant Agent Temperature Overrides
+
+This maintenance pass focused on Agent request parsing and runtime continuity.
+
+Implemented changes:
+
+1. `mcagent/agent_execution.py` now converts request temperature overrides through a finite-value guard.
+2. Malformed, empty, `NaN`, and infinite values fall back to the configured temperature instead of aborting before model execution.
+3. Existing finite overrides retain their previous value and are passed through unchanged.
+4. `tests/agent_execution_scenarios.py` covers malformed, non-finite, and valid override values.
+
+Validation:
+
+1. `python tests\\agent_execution_scenarios.py`
+2. `python -m py_compile mcagent\\agent_execution.py tests\\agent_execution_scenarios.py`
+
+Boundary:
+
+This change does not alter model selection, Agent routing, Crawler planning, tool execution, persistence, ingest, RAG retrieval, evidence selection, or final answer generation. It only prevents malformed temperature fields from aborting an otherwise valid Agent request.

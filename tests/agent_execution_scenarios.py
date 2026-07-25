@@ -72,6 +72,25 @@ def test_execution_context_resolves_request_and_model() -> None:
     assert_equal("observe_trace", context.trace.steps[0]["stage"], "observe")
 
 
+def test_temperature_override_tolerates_malformed_and_non_finite_values() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config = make_temp_config(Path(tmp))
+        for value in ("not-a-number", "", "NaN", "Infinity"):
+            context = build_agent_execution_context(
+                config,
+                {"question": "temperature", "temperature": value},
+                token_resolver=lambda _payload, _question: None,
+            )
+            assert_equal(f"fallback_temperature_{value!r}", context.temperature, config.ollama.temperature)
+
+        context = build_agent_execution_context(
+            config,
+            {"question": "temperature", "temperature": "0.7"},
+            token_resolver=lambda _payload, _question: None,
+        )
+        assert_equal("finite_temperature_override", context.temperature, 0.7)
+
+
 def test_model_resolution_precedence() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         config = make_temp_config(Path(tmp))
@@ -126,6 +145,7 @@ def test_raw_model_name_resolves_to_matching_profile() -> None:
 def main() -> int:
     test_trace_recorder_keeps_legacy_shape_and_emits()
     test_execution_context_resolves_request_and_model()
+    test_temperature_override_tolerates_malformed_and_non_finite_values()
     test_model_resolution_precedence()
     test_raw_model_name_resolves_to_matching_profile()
     print("AGENT EXECUTION SCENARIOS PASSED")

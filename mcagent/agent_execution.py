@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 import time
 from typing import Any, Callable
 
@@ -11,6 +12,15 @@ from .llm_profiles import profiles_payload, resolve_profile_from_model
 
 EmitFn = Callable[[str, Any], None]
 TokenResolver = Callable[[dict[str, Any], str], int | None]
+
+
+def _coerce_temperature(value: Any, *, default: float) -> float:
+    """Keep malformed request overrides from aborting an agent run."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if math.isfinite(parsed) else default
 
 
 @dataclass(slots=True)
@@ -98,7 +108,10 @@ def build_agent_execution_context(
     original_question = str(payload.get("question") or payload.get("query") or "").strip()
     agent = str(payload.get("agent") or "mcagent_rag")
     model = resolve_agent_model(config, payload, agent)
-    temperature = float(payload.get("temperature") if payload.get("temperature") is not None else config.ollama.temperature)
+    temperature = _coerce_temperature(
+        payload.get("temperature") if payload.get("temperature") is not None else config.ollama.temperature,
+        default=config.ollama.temperature,
+    )
     max_tokens = token_resolver(payload, original_question)
     trace = AgentTraceRecorder(emit=emit)
     context = AgentExecutionContext(
