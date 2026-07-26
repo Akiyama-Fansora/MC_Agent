@@ -3718,6 +3718,58 @@ def test_crawler_tool_commands_tolerate_malformed_numeric_limits() -> None:
     assert_equal("mediawiki_default_limit", mediawiki_command[mediawiki_command.index("--search-limit") + 1], "12")
 
 
+def test_crawler_result_counts_tolerate_malformed_numeric_values() -> None:
+    original_manifest_stats = web_server._crawler_manifest_stats
+    try:
+        web_server._crawler_manifest_stats = lambda _export_dir: {  # type: ignore[assignment]
+            "records": "n/a",
+            "skipped": "many",
+            "errors": "unknown",
+        }
+        result: dict[str, Any] = {"returncode": 0, "export_dir": str(ROOT)}
+        records_loaded = web_server._record_crawler_task_result_metadata(
+            result=result,
+            task={"reason": "malformed manifest fixture"},
+            task_source="web_discovery",
+            task_payload={"query": "example"},
+            question="example",
+            plan={},
+            result_index=1,
+            artifact_refs=web_server.ArtifactReferenceService(),
+        )
+    finally:
+        web_server._crawler_manifest_stats = original_manifest_stats  # type: ignore[assignment]
+    assert_equal("malformed_records_default", records_loaded, 0)
+
+
+def test_crawler_accounting_deltas_tolerate_malformed_values() -> None:
+    class MalformedAccounting:
+        def apply(self, **_kwargs: Any) -> dict[str, Any]:
+            return {
+                "success_delta": "many",
+                "candidate_delta": -4,
+                "failure_delta": "n/a",
+                "needs_ingest": False,
+                "followup_task": None,
+            }
+
+    update = web_server._apply_crawler_task_accounting(
+        result={"source": "web_discovery"},
+        task_source="web_discovery",
+        task_payload={"query": "example"},
+        question="example",
+        payload={},
+        plan={},
+        tasks=[],
+        index=0,
+        max_total_tasks=1,
+        result_accounting=MalformedAccounting(),
+    )
+    assert_equal("malformed_success_delta_default", update["success_delta"], 0)
+    assert_equal("negative_candidate_delta_clamped", update["candidate_delta"], 0)
+    assert_equal("malformed_failure_delta_default", update["failure_delta"], 0)
+
+
 def test_crawler_reflection_timeout_continues_with_pending_task() -> None:
     original_reflect = web_server.reflect_crawler_progress
 
@@ -4426,6 +4478,8 @@ if __name__ == "__main__":
     test_mcmod_search_has_bounded_task_budget()
     test_public_discovery_tools_have_bounded_task_budget()
     test_crawler_tool_commands_tolerate_malformed_numeric_limits()
+    test_crawler_result_counts_tolerate_malformed_numeric_values()
+    test_crawler_accounting_deltas_tolerate_malformed_values()
     test_crawler_reflection_timeout_continues_with_pending_task()
     test_crawler_reflection_timeout_continues_low_yield_when_pending_exists()
     test_modpack_download_defaults_to_probe_only_command()

@@ -5961,3 +5961,25 @@ Validation:
 Boundary:
 
 This change does not alter model selection, Agent routing, Crawler planning, tool execution, persistence, ingest, RAG retrieval, evidence selection, or final answer generation. It only prevents malformed temperature fields from aborting an otherwise valid Agent request.
+
+## 2026-07-26 Stage 107: Tolerant Crawler Result Counters
+
+This maintenance pass focused on CrawlerAgent result accounting and collection-loop continuity.
+
+Implemented changes:
+
+1. `mcagent/web_server.py` now parses manifest record and skipped counters through the existing bounded integer helper.
+2. Per-task success, candidate, failure, bad-streak, and replan counters use the same non-negative parsing boundary before they update the job totals.
+3. Malformed values fall back to zero and negative deltas are clamped to zero instead of aborting or reducing an accumulated job count.
+4. `tests/web_server_side_effect_guard_scenarios.py` covers malformed manifest counts and malformed accounting-service deltas at the web-server orchestration boundary.
+
+Validation:
+
+1. `python tests\web_server_side_effect_guard_scenarios.py`
+2. `python tests\crawler_result_accounting_service_scenarios.py`
+3. `python tests\langgraph_runtime_scenarios.py`
+4. `python -m py_compile mcagent\web_server.py tests\web_server_side_effect_guard_scenarios.py`
+
+Boundary:
+
+This change does not reinterpret process return codes, accept unreviewed records, alter Agent or graph routing, choose Crawler tools, persist new artifacts, trigger ingest, change chunking or RAG retrieval, select evidence, or synthesize final answers. It only prevents malformed numeric result metadata from terminating an already-running Crawler job.

@@ -3272,7 +3272,7 @@ def _record_crawler_task_result_metadata(
         plan.setdefault("artifact_refs", [])
         plan["artifact_refs"].extend(compact_refs)
         plan["artifact_refs"] = plan["artifact_refs"][-60:]
-    records_loaded = int(result["manifest_stats"].get("records") or 0)
+    records_loaded = _bounded_int(result["manifest_stats"].get("records"), default=0, min_value=0)
     existing_evidence = (
         _crawler_reusable_duplicate_evidence(
             str(result.get("export_dir") or ""),
@@ -3280,7 +3280,9 @@ def _record_crawler_task_result_metadata(
             str(task_payload.get("query") or ""),
             plan,
         )
-        if result["returncode"] == 0 and records_loaded == 0 and int(result["manifest_stats"].get("skipped") or 0) > 0
+        if result["returncode"] == 0
+        and records_loaded == 0
+        and _bounded_int(result["manifest_stats"].get("skipped"), default=0, min_value=0) > 0
         else {"matched": False, "records": []}
     )
     if existing_evidence.get("matched"):
@@ -3341,9 +3343,9 @@ def _apply_crawler_task_accounting(
             }
         )
     return {
-        "success_delta": int(accounting.get("success_delta") or 0),
-        "candidate_delta": int(accounting.get("candidate_delta") or 0),
-        "failure_delta": int(accounting.get("failure_delta") or 0),
+        "success_delta": _bounded_int(accounting.get("success_delta"), default=0, min_value=0),
+        "candidate_delta": _bounded_int(accounting.get("candidate_delta"), default=0, min_value=0),
+        "failure_delta": _bounded_int(accounting.get("failure_delta"), default=0, min_value=0),
         "needs_ingest": bool(accounting.get("needs_ingest")),
         "accepted_export_dirs": accepted_export_dirs,
         "accepted_ingest_roots": accepted_ingest_roots,
@@ -3471,9 +3473,9 @@ def _execute_crawler_task_step(
         "task_payload": task_payload,
         "result": result,
         "records_loaded": records_loaded,
-        "success_delta": int(accounting_update.get("success_delta") or 0),
-        "candidate_delta": int(accounting_update.get("candidate_delta") or 0),
-        "failure_delta": int(accounting_update.get("failure_delta") or 0),
+        "success_delta": _bounded_int(accounting_update.get("success_delta"), default=0, min_value=0),
+        "candidate_delta": _bounded_int(accounting_update.get("candidate_delta"), default=0, min_value=0),
+        "failure_delta": _bounded_int(accounting_update.get("failure_delta"), default=0, min_value=0),
         "needs_ingest": bool(accounting_update.get("needs_ingest")),
         "accepted_export_dirs": list(accounting_update.get("accepted_export_dirs") or []),
         "accepted_ingest_roots": list(accounting_update.get("accepted_ingest_roots") or []),
@@ -4061,11 +4063,11 @@ def _run_crawler_job_agent_loop(job: Job, payload: dict[str, Any], config: AppCo
             )
             task_source = str(step.get("task_source") or "")
             result = step.get("result") if isinstance(step.get("result"), dict) else {}
-            records_loaded = int(step.get("records_loaded") or 0)
-            success_count += int(step.get("success_delta") or 0)
-            candidate_count += int(step.get("candidate_delta") or 0)
-            failure_count += int(step.get("failure_delta") or 0)
-            bad_streak += int(step.get("bad_streak_delta") or 0)
+            records_loaded = _bounded_int(step.get("records_loaded"), default=0, min_value=0)
+            success_count += _bounded_int(step.get("success_delta"), default=0, min_value=0)
+            candidate_count += _bounded_int(step.get("candidate_delta"), default=0, min_value=0)
+            failure_count += _bounded_int(step.get("failure_delta"), default=0, min_value=0)
+            bad_streak += _bounded_int(step.get("bad_streak_delta"), default=0, min_value=0)
             needs_ingest = needs_ingest or bool(step.get("needs_ingest"))
             accepted_export_dirs.extend(list(step.get("accepted_export_dirs") or []))
             accepted_ingest_roots.extend(list(step.get("accepted_ingest_roots") or []))
@@ -4105,8 +4107,16 @@ def _run_crawler_job_agent_loop(job: Job, payload: dict[str, Any], config: AppCo
                 loop_control=loop_control,
                 job_progress=job_progress,
             )
-            bad_streak = int(loop_update.get("bad_streak") if loop_update.get("bad_streak") is not None else bad_streak)
-            replan_count = int(loop_update.get("replan_count") if loop_update.get("replan_count") is not None else replan_count)
+            bad_streak = _bounded_int(
+                loop_update.get("bad_streak") if loop_update.get("bad_streak") is not None else bad_streak,
+                default=bad_streak,
+                min_value=0,
+            )
+            replan_count = _bounded_int(
+                loop_update.get("replan_count") if loop_update.get("replan_count") is not None else replan_count,
+                default=replan_count,
+                min_value=0,
+            )
             if loop_update.get("action") == "finish":
                 break
         collection_summary = _crawler_result_summary(task_results, plan)
