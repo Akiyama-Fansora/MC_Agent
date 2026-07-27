@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -106,10 +107,17 @@ class InMemorySessionStore:
             self._summaries.pop(session_id, None)
             self._events.pop(session_id, None)
             self._loaded.discard(session_id)
+            removed_file = False
             path = self._path_for_session(session_id)
-            if path and path.exists():
+            if path is not None and path.exists():
                 path.unlink()
-        return {"session_id": session_id, "deleted": had_history or had_summary or had_events}
+                removed_file = True
+            legacy_path = self._legacy_path_for_session(session_id)
+            if legacy_path is not None and legacy_path != path and legacy_path.exists():
+                if self._read_session_file(legacy_path, session_id) is not None:
+                    legacy_path.unlink()
+                    removed_file = True
+        return {"session_id": session_id, "deleted": had_history or had_summary or had_events or removed_file}
 
     def context(self, session_id: str, *, agent: str, summary: dict[str, Any] | None = None) -> SessionContext:
         return SessionContext(
@@ -123,19 +131,48 @@ class InMemorySessionStore:
     def _path_for_session(self, session_id: str) -> Path | None:
         if self._storage_dir is None:
             return None
+        normalized = normalize_session_id(session_id)
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", normalized)[:80].strip(".") or "session"
+        digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:32]
+        return self._storage_dir / f"{safe}-{digest}.json"
+
+    def _legacy_path_for_session(self, session_id: str) -> Path | None:
+        if self._storage_dir is None:
+            return None
         safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", normalize_session_id(session_id))[:120] or "default"
         return self._storage_dir / f"{safe}.json"
+
+    def _candidate_paths_for_session(self, session_id: str) -> list[Path]:
+        paths: list[Path] = []
+        for path in (self._path_for_session(session_id), self._legacy_path_for_session(session_id)):
+            if path is not None and path not in paths:
+                paths.append(path)
+        return paths
+
+    def _read_session_file(self, path: Path, session_id: str) -> dict[str, Any] | None:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        if "session_id" not in data:
+            return None
+        if normalize_session_id(data.get("session_id")) != session_id:
+            return None
+        return data
 
     def _ensure_loaded_locked(self, session_id: str) -> None:
         if session_id in self._loaded:
             return
         self._loaded.add(session_id)
-        path = self._path_for_session(session_id)
-        if path is None or not path.exists():
-            return
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
+        data = None
+        for path in self._candidate_paths_for_session(session_id):
+            if path.exists():
+                data = self._read_session_file(path, session_id)
+            if data is not None:
+                break
+        if data is None:
             return
         if isinstance(data.get("history"), list):
             self._history[session_id] = [dict(item) for item in data.get("history") if isinstance(item, dict)]

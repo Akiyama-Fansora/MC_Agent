@@ -5983,3 +5983,25 @@ Validation:
 Boundary:
 
 This change does not reinterpret process return codes, accept unreviewed records, alter Agent or graph routing, choose Crawler tools, persist new artifacts, trigger ingest, change chunking or RAG retrieval, select evidence, or synthesize final answers. It only prevents malformed numeric result metadata from terminating an already-running Crawler job.
+
+## 2026-07-27 Stage 108: Collision-Resistant Session Persistence
+
+This maintenance pass focused on shared MCagent/CrawlerAgent session-memory isolation across process restarts.
+
+Implemented changes:
+
+1. `mcagent/session_state.py` now stores session JSON with a readable sanitized prefix plus a stable SHA-256 digest of the full session ID.
+2. Session IDs that previously collapsed to the same sanitized filename, including `agent/session` and `agent?session`, now persist independently.
+3. Existing legacy session files remain readable only when their embedded `session_id` matches the requested session, preventing a colliding ID from loading or deleting another conversation.
+4. `tests/backend_services_scenarios.py` covers restart-time isolation, legacy loading, and collision-safe deletion.
+
+Validation:
+
+1. `python tests\backend_services_scenarios.py`
+2. `python tests\agent_runtime_scenarios.py`
+3. `python tests\agent_message_bus_scenarios.py`
+4. `python -m py_compile mcagent\session_state.py tests\backend_services_scenarios.py`
+
+Boundary:
+
+This change does not alter AgentMessage routing, model decisions, Crawler fetching or persistence, ingest, chunking, RAG ranking, evidence selection, graph routing, frontend actions, or final answers. It only makes durable session-memory file identity collision-resistant while retaining validated legacy reads.

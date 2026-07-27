@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import json
 import sys
+import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,6 +64,47 @@ def test_session_store_context_roundtrip() -> None:
     assert_equal("history_deleted", store.history("ctx-test"), [])
 
 
+def test_persisted_session_ids_remain_isolated_after_filename_sanitizing() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        storage_dir = Path(tmp)
+        first_id = "agent/session"
+        second_id = "agent?session"
+        store = InMemorySessionStore(storage_dir)
+        store.append_turn(first_id, {"question": "first", "answer": "one"})
+        store.append_turn(second_id, {"question": "second", "answer": "two"})
+
+        files = sorted(path.name for path in storage_dir.glob("*.json"))
+        reloaded = InMemorySessionStore(storage_dir)
+
+        assert_equal("separate_session_files", len(files), 2)
+        assert_true("hashed_session_filenames", all("-" in name for name in files), str(files))
+        assert_equal("first_session_history", reloaded.history(first_id)[0]["question"], "first")
+        assert_equal("second_session_history", reloaded.history(second_id)[0]["question"], "second")
+
+
+def test_legacy_session_file_requires_matching_embedded_session_id() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        storage_dir = Path(tmp)
+        legacy_path = storage_dir / "legacy_session.json"
+        legacy_path.write_text(
+            json.dumps(
+                {
+                    "session_id": "legacy/session",
+                    "history": [{"question": "legacy", "answer": "kept"}],
+                    "summary": {},
+                    "events": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        store = InMemorySessionStore(storage_dir)
+
+        assert_equal("matching_legacy_history", store.history("legacy/session")[0]["question"], "legacy")
+        assert_equal("colliding_legacy_history_blocked", store.history("legacy?session"), [])
+        store.delete("legacy?session")
+        assert_true("colliding_delete_preserves_legacy_file", legacy_path.exists())
+
+
 def test_payload_history_and_merge_helpers() -> None:
     payload = {
         "history": [
@@ -110,6 +152,8 @@ def test_threaded_event_stream_emits_runtime_response_before_error() -> None:
 
 def main() -> int:
     test_session_store_context_roundtrip()
+    test_persisted_session_ids_remain_isolated_after_filename_sanitizing()
+    test_legacy_session_file_requires_matching_embedded_session_id()
     test_payload_history_and_merge_helpers()
     test_threaded_event_stream_sse_shape()
     test_threaded_event_stream_emits_runtime_response_before_error()
