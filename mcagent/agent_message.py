@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import json
 from typing import Any
+import uuid
 
 
 AGENT_ALIASES = {
@@ -84,12 +85,14 @@ class AgentMessage:
     def __post_init__(self) -> None:
         object.__setattr__(self, "from_agent", normalize_agent_name(self.from_agent))
         object.__setattr__(self, "to_agent", normalize_agent_name(self.to_agent))
-        if not self.message_id:
-            seed = f"{self.created_at}:{self.from_agent}:{self.to_agent}:{self.content[:80]}"
-            import hashlib
-
-            digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:12]
-            object.__setattr__(self, "message_id", f"msg_{digest}")
+        created_at = str(self.created_at or "").strip()
+        if not created_at:
+            created_at = datetime.now().isoformat(timespec="microseconds")
+            object.__setattr__(self, "created_at", created_at)
+        message_id = str(self.message_id or "").strip()
+        if not message_id:
+            message_id = f"msg_{uuid.uuid4().hex}"
+        object.__setattr__(self, "message_id", message_id)
 
     @property
     def from_agent_id(self) -> str:
@@ -133,6 +136,8 @@ def make_agent_message(
     reply_to: str = "",
     requires_reply: bool = True,
     metadata: dict[str, Any] | None = None,
+    message_id: str = "",
+    created_at: str = "",
 ) -> AgentMessage:
     return AgentMessage(
         from_agent=from_agent,
@@ -143,6 +148,8 @@ def make_agent_message(
         reply_to=reply_to,
         requires_reply=requires_reply,
         metadata=dict(metadata or {}),
+        message_id=str(message_id or ""),
+        created_at=str(created_at or ""),
     )
 
 
@@ -160,6 +167,8 @@ def message_from_payload(payload: dict[str, Any], *, default_to_agent: str, defa
             reply_to=str(raw.get("reply_to") or ""),
             requires_reply=coerce_message_bool(raw.get("requires_reply"), default=True),
             metadata=raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {},
+            message_id=str(raw.get("message_id") or ""),
+            created_at=str(raw.get("created_at") or ""),
         )
     return make_agent_message(
         str(payload.get("message_from") or "User"),

@@ -6005,3 +6005,27 @@ Validation:
 Boundary:
 
 This change does not alter AgentMessage routing, model decisions, Crawler fetching or persistence, ingest, chunking, RAG ranking, evidence selection, graph routing, frontend actions, or final answers. It only makes durable session-memory file identity collision-resistant while retaining validated legacy reads.
+
+## 2026-07-28 Stage 109: Stable AgentMessage Identity
+
+This maintenance pass focused on message identity across the MCagent/CrawlerAgent transport boundary.
+
+Implemented changes:
+
+1. `AgentMessage` now generates UUID-based IDs, so identical messages created in the same second cannot collide.
+2. `message_from_payload()` preserves caller-supplied `message_id` and `created_at` fields.
+3. The web message bus and LangGraph conversation receive node carry the same identity fields instead of generating a second message ID during delivery.
+4. Adding a selected tool to message metadata no longer changes the message identity.
+5. Both `/api/agent-message` backends accept and forward explicit identity fields.
+6. `tests/agent_message_bus_scenarios.py` covers payload preservation, generated-ID uniqueness, graph delivery, reply linkage, and session-event identity.
+
+Validation:
+
+1. `python tests\agent_message_bus_scenarios.py`
+2. `python tests\langgraph_runtime_scenarios.py`
+3. `python tests\fastapi_backend_scenarios.py`
+4. `python -m py_compile mcagent\agent_message.py mcagent\graphs\runtime.py mcagent\web_server.py mcagent\fastapi_app.py tests\agent_message_bus_scenarios.py`
+
+Boundary:
+
+This change does not alter message targets, Agent decisions, Crawler fetching or persistence, ingest, chunking, RAG retrieval, evidence selection, graph routes, frontend actions, or final answer content. It only keeps one stable request identity across normalization and delivery.

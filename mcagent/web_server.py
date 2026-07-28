@@ -549,6 +549,7 @@ def _job_from_agent_response(response: dict[str, Any]) -> Job | None:
 
 
 def _user_message_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    raw_message = payload.get("agent_message") if isinstance(payload.get("agent_message"), dict) else {}
     return {
         "from_agent": "User",
         "content": str(payload.get("content") or payload.get("message") or payload.get("question") or ""),
@@ -556,6 +557,8 @@ def _user_message_fields(payload: dict[str, Any]) -> dict[str, Any]:
         "intent": str(payload.get("intent") or "user_chat"),
         "conversation_id": str(payload.get("session_id") or payload.get("conversation_id") or ""),
         "metadata": payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+        "message_id": str(raw_message.get("message_id") or payload.get("message_id") or ""),
+        "created_at": str(raw_message.get("created_at") or payload.get("created_at") or ""),
     }
 
 
@@ -9089,6 +9092,7 @@ def _session_summary_with_events(session_id: str, summary: dict[str, Any]) -> di
             key: copy.deepcopy(event.get(key))
             for key in (
                 "kind",
+                "message_id",
                 "from_agent",
                 "to_agent",
                 "content",
@@ -9099,6 +9103,7 @@ def _session_summary_with_events(session_id: str, summary: dict[str, Any]) -> di
                 "job_id",
                 "job_status",
                 "answer",
+                "created_at",
                 "time",
             )
             if event.get(key) not in (None, "", [])
@@ -9248,6 +9253,7 @@ def _record_agent_message_event(message: AgentMessage, *, kind: str = "agent_mes
             "task": str(metadata.get("collection_target") or metadata.get("task_goal") or ""),
             "requested_by": str(metadata.get("requested_by") or ""),
             "delivery_target": str(metadata.get("delivery_target") or ""),
+            "created_at": message.created_at,
             "time": time.time(),
         },
     )
@@ -9699,6 +9705,8 @@ def _payload_with_agent_message_tool(payload: dict[str, Any], *, tool: str, inte
         reply_to=message.reply_to,
         requires_reply=message.requires_reply,
         metadata=metadata,
+        message_id=message.message_id,
+        created_at=message.created_at,
     )
     next_payload["agent_message"] = updated.to_dict()
     next_payload["message_from"] = updated.from_agent
@@ -11049,6 +11057,8 @@ def _send_agent_message(
     reply_to: str = "",
     requires_reply: bool = True,
     metadata: dict[str, Any] | None = None,
+    message_id: str = "",
+    created_at: str = "",
 ) -> dict[str, Any]:
     """Deliver one From-Content-To message through the normal Agent runtime."""
 
@@ -11061,6 +11071,8 @@ def _send_agent_message(
         reply_to=reply_to,
         requires_reply=requires_reply,
         metadata=metadata,
+        message_id=message_id,
+        created_at=created_at,
     )
     _record_agent_message_event(message)
     result = dispatch_agent_message_graph(
@@ -11075,6 +11087,8 @@ def _send_agent_message(
         reply_to=message.reply_to,
         requires_reply=message.requires_reply,
         metadata=message.metadata,
+        message_id=message.message_id,
+        created_at=message.created_at,
         agent_delivery=_deliver_agent_message,
         route_decider=_route_agent_decision_for_graph,
         status_executor=_execute_graph_status_route,
@@ -13929,6 +13943,8 @@ class MCagentHandler(BaseHTTPRequestHandler):
                 reply_to=str(payload.get("reply_to") or ""),
                 requires_reply=coerce_message_bool(payload.get("requires_reply"), default=True),
                 metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+                message_id=str(payload.get("message_id") or ""),
+                created_at=str(payload.get("created_at") or ""),
             ))
             return
         if request_path == "/api/chat/stream":

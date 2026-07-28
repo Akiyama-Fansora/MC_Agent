@@ -69,6 +69,81 @@ def test_agent_message_tuple_and_payload_normalization() -> None:
     assert_equal("parsed_tuple", parsed.to_tuple(), ("CrawlerAgent", "本地还缺什么？", "MCagent"))
 
 
+def test_agent_message_identity_survives_transport() -> None:
+    request_id = "msg_external_request"
+    created_at = "2026-07-28T08:45:00+08:00"
+    parsed = message_from_payload(
+        {
+            "agent_message": {
+                "from_agent": "CrawlerAgent",
+                "to_agent": "MCagent",
+                "content": "local context request",
+                "message_id": request_id,
+                "created_at": created_at,
+            }
+        },
+        default_to_agent="MCagent",
+        default_content="fallback",
+    )
+    assert_equal("parsed_message_id", parsed.message_id, request_id)
+    assert_equal("parsed_created_at", parsed.created_at, created_at)
+
+    tool_payload = web_server._payload_with_agent_message_tool(
+        {"agent": "mcagent_rag", "agent_message": parsed.to_dict()},
+        tool="direct_answer",
+    )
+    tool_message = message_from_payload(tool_payload, default_to_agent="MCagent", default_content="fallback")
+    assert_equal("tool_metadata_message_id", tool_message.message_id, request_id)
+    assert_equal("tool_metadata_created_at", tool_message.created_at, created_at)
+    assert_equal("tool_metadata_selected_tool", tool_message.metadata.get("tool"), "direct_answer")
+
+    first = make_agent_message("User", "same content", "MCagent", created_at=created_at)
+    second = make_agent_message("User", "same content", "MCagent", created_at=created_at)
+    assert_true("generated_message_ids_are_unique", first.message_id != second.message_id)
+
+    tmp = tempfile.TemporaryDirectory()
+    session_id = "message-identity-transport"
+    fake = SequencedClient(
+        [
+            '{"tool":"direct_answer","reason":"identity test","collection_target":"hello","delivery_target":"human"}',
+            "Identity preserved.",
+        ]
+    )
+    original_selector = web_server._selected_llm_client
+    web_server._selected_llm_client = lambda *_args, **_kwargs: (fake, "fake")  # type: ignore[assignment]
+    try:
+        web_server._delete_session(session_id)
+        result = web_server._send_agent_message(
+            make_temp_config(Path(tmp.name)),
+            {"session_id": session_id, "model": "fake-model"},
+            from_agent="User",
+            content="hello",
+            to_agent="MCagent",
+            conversation_id=session_id,
+            message_id=request_id,
+            created_at=created_at,
+        )
+        summary = web_server._session_summary({"session_id": session_id})
+    finally:
+        web_server._selected_llm_client = original_selector  # type: ignore[assignment]
+        web_server._delete_session(session_id)
+        tmp.cleanup()
+
+    message_steps = [step for step in result.get("trace", []) if step.get("stage") == "message" and step.get("status") == "received"]
+    assert_true("identity_message_trace", bool(message_steps), str(result.get("trace")))
+    assert_equal("graph_message_id", message_steps[0]["detail"].get("message_id"), request_id)
+    assert_equal("graph_created_at", message_steps[0]["detail"].get("created_at"), created_at)
+    reply = result.get("agent_message") or {}
+    assert_equal("reply_links_original_request", reply.get("reply_to"), request_id)
+    matching_events = [
+        item
+        for item in summary.get("recent_agent_events") or []
+        if isinstance(item, dict) and item.get("message_id") == request_id
+    ]
+    assert_equal("recorded_message_identity", len(matching_events), 1)
+    assert_equal("recorded_message_created_at", matching_events[0].get("created_at"), created_at)
+
+
 def test_chat_records_user_to_agent_message() -> None:
     tmp = tempfile.TemporaryDirectory()
     fake = SequencedClient(
@@ -474,6 +549,7 @@ def test_crawler_selected_delegate_marks_existing_message_before_job_start() -> 
 
 def main() -> int:
     test_agent_message_tuple_and_payload_normalization()
+    test_agent_message_identity_survives_transport()
     test_chat_records_user_to_agent_message()
     test_send_agent_message_dispatches_to_target_agent()
     test_message_bus_events_are_shared_session_memory()
@@ -491,4 +567,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

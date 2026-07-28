@@ -125,6 +125,8 @@ def build_conversation_graph(
             reply_to=str(incoming.get("reply_to") or ""),
             requires_reply=coerce_message_bool(incoming.get("requires_reply"), default=True),
             metadata=incoming.get("metadata") if isinstance(incoming.get("metadata"), dict) else {},
+            message_id=str(incoming.get("message_id") or ""),
+            created_at=str(incoming.get("created_at") or ""),
         )
         payload = _payload_with_message(state.get("payload", {}), message)
         return {
@@ -284,6 +286,8 @@ def dispatch_agent_message_graph(
     reply_to: str = "",
     requires_reply: bool = True,
     metadata: dict[str, Any] | None = None,
+    message_id: str = "",
+    created_at: str = "",
     route_decider: AgentRouteDeciderFn | None = None,
     status_executor: StatusExecutorFn | None = None,
     crawler_audit_executor: CrawlerAuditExecutorFn | None = None,
@@ -380,6 +384,8 @@ def dispatch_agent_message_graph(
             "reply_to": reply_to,
             "requires_reply": requires_reply,
             "metadata": metadata if isinstance(metadata, dict) else {},
+            "message_id": message_id,
+            "created_at": created_at,
         },
         "active_agent": "",
         "payload": dict(payload),

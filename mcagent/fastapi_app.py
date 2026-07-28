@@ -138,6 +138,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             reply_to=str(payload.get("reply_to") or ""),
             requires_reply=coerce_message_bool(payload.get("requires_reply"), default=True),
             metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+            message_id=str(payload.get("message_id") or ""),
+            created_at=str(payload.get("created_at") or ""),
         )
 
     @app.post("/api/chat/stream")
