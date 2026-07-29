@@ -6029,3 +6029,25 @@ Validation:
 Boundary:
 
 This change does not alter message targets, Agent decisions, Crawler fetching or persistence, ingest, chunking, RAG retrieval, evidence selection, graph routes, frontend actions, or final answer content. It only keeps one stable request identity across normalization and delivery.
+
+## 2026-07-29 Stage 110: Accurate Overlapping Chunk Offsets
+
+This maintenance pass focused on chunk provenance used by ingest and RAG evidence inspection.
+
+Implemented changes:
+
+1. `mcagent/chunking.py` now records the expected source lookback only for raw chunks that intentionally reuse text from the previous chunk.
+2. Long-paragraph and cross-paragraph overlap chunks locate their source range from that lookback instead of searching only after the previous chunk ended.
+3. Non-overlapping chunks retain forward-only source lookup, so repeated text in a later paragraph is not attributed to an earlier occurrence.
+4. `tests/chunking_scenarios.py` verifies that long-text and paragraph-tail overlap ranges slice back to the exact chunk text.
+
+Validation:
+
+1. `python tests\chunking_scenarios.py`
+2. `python tests\rag_service_scenarios.py`
+3. `python tests\evidence_service_scenarios.py`
+4. `python -m py_compile mcagent\chunking.py tests\chunking_scenarios.py`
+
+Boundary:
+
+This change does not alter chunk content, chunk size, overlap size, embedding generation, RAG ranking, evidence selection, Agent decisions, Crawler fetching or persistence, graph routing, frontend actions, or final answers. It only corrects `start_char` and `end_char` provenance for chunks that intentionally overlap earlier source text.
