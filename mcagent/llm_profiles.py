@@ -29,6 +29,16 @@ def _normalize_base_url(value: str) -> str:
     return text.rstrip("/") if text else ""
 
 
+def _timeout_seconds(value: Any, *, default: Any = 180) -> int:
+    for candidate in (value, default, 180):
+        try:
+            parsed = int(candidate)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        return max(15, min(parsed, 900))
+    return 180
+
+
 def _default_profiles(config: AppConfig) -> dict[str, Any]:
     profiles: list[dict[str, Any]] = [
         {
@@ -98,8 +108,8 @@ def _sanitize_profile(raw: dict[str, Any], existing: dict[str, Any] | None = Non
         api_key = str(existing.get("api_key") or "")
     model = str(raw.get("model") or "").strip()
     base_url = _normalize_base_url(str(raw.get("base_url") or ""))
-    timeout = int(raw.get("timeout_seconds") or (existing or {}).get("timeout_seconds") or 180)
-    timeout = max(15, min(timeout, 900))
+    existing_timeout = (existing or {}).get("timeout_seconds") or 180
+    timeout = _timeout_seconds(raw.get("timeout_seconds") or existing_timeout, default=existing_timeout)
     return {
         "id": profile_id,
         "name": str(raw.get("name") or model or profile_id).strip()[:120],

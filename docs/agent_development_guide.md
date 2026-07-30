@@ -6073,3 +6073,26 @@ Validation:
 Boundary:
 
 This change does not alter retrieval ranking, evidence scoring thresholds, supplement selection, Agent routing, Crawler fetching or persistence, ingest, chunking, graph routes, or answer generation. It only prevents a final empty evidence set from being reported as sufficient.
+
+## 2026-07-31 Stage 112: Tolerant LLM Profile Timeouts
+
+This maintenance pass focused on the model-profile boundary shared by MCagent and CrawlerAgent.
+
+Implemented changes:
+
+1. `mcagent/llm_profiles.py` now normalizes profile timeout values through one bounded parser.
+2. Malformed or non-finite values fall back to the existing profile timeout when available, then to 180 seconds, instead of breaking profile loading or saving.
+3. Valid values retain the existing 15-900 second bounds.
+4. `tests/llm_profiles_scenarios.py` covers direct normalization, malformed persisted profiles, and malformed API save payloads.
+
+Validation:
+
+1. `python tests\llm_profiles_scenarios.py`
+2. `python tests\agent_execution_scenarios.py`
+3. `python tests\llm_diagnostics_scenarios.py`
+4. `python tests\fastapi_backend_scenarios.py`
+5. `python -m py_compile mcagent\llm_profiles.py tests\llm_profiles_scenarios.py`
+
+Boundary:
+
+This change does not alter profile selection, credentials, model routing, Agent decisions, Crawler fetching or persistence, ingest, chunking, RAG retrieval, evidence selection, graph routes, frontend actions, or final answers. It only keeps invalid timeout metadata from aborting the shared model-profile settings path.
