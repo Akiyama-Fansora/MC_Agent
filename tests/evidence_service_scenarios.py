@@ -315,6 +315,44 @@ def test_optional_evidence_supplement_failure_keeps_selected_evidence() -> None:
     assert_true("continued_after_failure", "raw_html" in call_log and "modpack_mod_list" in call_log, str(call_log))
 
 
+def test_empty_final_selection_cannot_keep_ok_verdict() -> None:
+    for max_sync_seconds in (0.0, 8.0):
+        traces: list[dict[str, Any]] = []
+        service = EvidenceWorkflowService(
+            selector_factory=lambda final_k: FakeSelector(
+                final_k,
+                [make_result(1), make_result(2), make_result(3), make_result(4)],
+                base_report(verdict="ok", confidence=0.95, selected_count=4),
+                [],
+            ),
+            prefer_parent_topic_results=lambda question, selected, rough, final_k: [],
+            modpack_manifest_results=lambda question, rough, final_k: [],
+            supplement_local_modpack_manifest_results=lambda config, question, final_k: [],
+            supplement_project_keyword_results=lambda config, question, selected, final_k: selected,
+            supplement_raw_html_results=lambda config, question, selected, final_k: selected,
+            ensure_modpack_mod_list_context=lambda config, question, selected, rough, final_k: selected,
+            fallback_theme_results=lambda question, rough, final_k: [],
+            dedupe_results=lambda results, limit: list(results)[:limit],
+        )
+
+        result = service.select(
+            object(),
+            evidence_question="filtered topic",
+            rough_results=[make_result(1), make_result(2), make_result(3), make_result(4)],
+            retrieval_plan=None,
+            final_k=4,
+            add_trace=lambda stage, status, detail=None: traces.append({"stage": stage, "status": status, "detail": detail}) or traces[-1],
+            max_sync_seconds=max_sync_seconds,
+        )
+
+        assert_equal(f"selected_{max_sync_seconds}", result.selected, [])
+        assert_equal(f"verdict_{max_sync_seconds}", result.report.verdict, "insufficient")
+        assert_equal(f"selected_count_{max_sync_seconds}", result.report.selected_count, 0)
+        assert_true(f"reason_{max_sync_seconds}", bool(result.report.reasons), str(result.report.to_dict()))
+        assert_equal(f"trace_verdict_{max_sync_seconds}", traces[-1]["detail"]["verdict"], "insufficient")
+        assert_equal(f"trace_selected_count_{max_sync_seconds}", traces[-1]["detail"]["selected_count"], 0)
+
+
 def test_create_accepted_project_pages_are_strong_sources() -> None:
     selector = EvidenceSelector(final_context_k=4)
     accepted_mcmod = SearchResult(
@@ -360,5 +398,6 @@ if __name__ == "__main__":
     test_report_selected_count_tracks_supplemented_evidence_without_verdict_upgrade()
     test_evidence_service_stops_synchronous_supplements_after_budget()
     test_optional_evidence_supplement_failure_keeps_selected_evidence()
+    test_empty_final_selection_cannot_keep_ok_verdict()
     test_create_accepted_project_pages_are_strong_sources()
     print("evidence_service_scenarios: ok")

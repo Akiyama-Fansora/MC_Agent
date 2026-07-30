@@ -6051,3 +6051,25 @@ Validation:
 Boundary:
 
 This change does not alter chunk content, chunk size, overlap size, embedding generation, RAG ranking, evidence selection, Agent decisions, Crawler fetching or persistence, graph routing, frontend actions, or final answers. It only corrects `start_char` and `end_char` provenance for chunks that intentionally overlap earlier source text.
+
+## 2026-07-30 Stage 111: Consistent Final Evidence Verdicts
+
+This maintenance pass focused on the evidence-selection report consumed by MCagent routing and frontend traces.
+
+Implemented changes:
+
+1. `mcagent/evidence_service.py` now synchronizes the report with the final selected evidence at both normal completion and the synchronous-budget exit.
+2. When a later evidence step filters an initially sufficient selection down to zero items, the report is downgraded to `insufficient` instead of retaining `ok` with no usable evidence.
+3. The emitted `evidence_selected` trace now carries the same verdict and selected count returned by the service.
+4. `tests/evidence_service_scenarios.py` covers empty final selections through both completion paths.
+
+Validation:
+
+1. `python tests\evidence_service_scenarios.py`
+2. `python tests\rag_service_scenarios.py`
+3. `python tests\web_server_side_effect_guard_scenarios.py`
+4. `python -m py_compile mcagent\evidence_service.py tests\evidence_service_scenarios.py`
+
+Boundary:
+
+This change does not alter retrieval ranking, evidence scoring thresholds, supplement selection, Agent routing, Crawler fetching or persistence, ingest, chunking, graph routes, or answer generation. It only prevents a final empty evidence set from being reported as sufficient.

@@ -98,6 +98,7 @@ class EvidenceWorkflowService:
         )
         if budget_left() <= 0:
             skip_remaining("remaining_evidence_steps")
+            self._synchronize_report(report, selected)
             add_trace("decide", "evidence_selected", report.to_dict())
             return EvidenceWorkflowResult(selected=selected, report=report)
 
@@ -176,9 +177,18 @@ class EvidenceWorkflowService:
                 report.verdict = "ok"
                 report.reasons = []
 
-        report.selected_count = len(selected)
+        self._synchronize_report(report, selected)
         add_trace("decide", "evidence_selected", report.to_dict())
         return EvidenceWorkflowResult(selected=selected, report=report)
+
+    def _synchronize_report(self, report: EvidenceReport, selected: list[SearchResult]) -> None:
+        report.selected_count = len(selected)
+        if selected or report.verdict != "ok":
+            return
+        report.verdict = "insufficient"
+        reason = "\u8bc1\u636e\u5de5\u4f5c\u6d41\u7b5b\u9009\u540e\u6ca1\u6709\u4fdd\u7559\u53ef\u7528\u8bc1\u636e\u3002"
+        if reason not in report.reasons:
+            report.reasons.append(reason)
 
     def _needs_expensive_supplement(self, selected: list[SearchResult], report: EvidenceReport, final_k: int) -> bool:
         if report.verdict != "ok":
