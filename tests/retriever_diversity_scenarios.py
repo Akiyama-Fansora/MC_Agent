@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 from types import SimpleNamespace
 import sys
@@ -8,7 +9,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from mcagent.retriever import _select_diverse_ranked_items  # noqa: E402
+from mcagent.retriever import _fts_query, _select_diverse_ranked_items  # noqa: E402
 
 
 def assert_equal(name: str, actual: object, expected: object) -> None:
@@ -110,8 +111,23 @@ def test_project_diversity_does_not_fill_with_off_topic_pack_internals() -> None
     assert_true("off_topic_pack_internal_excluded", 4 not in selected_ids, str(selected_ids))
 
 
+def test_manifest_fact_retriever_has_one_definition() -> None:
+    source = (ROOT / "mcagent" / "retriever.py").read_text(encoding="utf-8")
+    module = ast.parse(source)
+    definitions = [
+        node
+        for node in module.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "_modpack_manifest_fact_chunk_ids"
+    ]
+
+    assert_equal("manifest_fact_definition_count", len(definitions), 1)
+    assert_true("fts_query_still_callable", bool(_fts_query(["minecraft version"])))
+
+
 if __name__ == "__main__":
     test_project_retrieval_keeps_source_diversity_after_high_score_long_document()
     test_non_project_retrieval_preserves_plain_score_order()
     test_project_diversity_does_not_fill_with_off_topic_pack_internals()
+    test_manifest_fact_retriever_has_one_definition()
     print("retriever_diversity_scenarios: ok")

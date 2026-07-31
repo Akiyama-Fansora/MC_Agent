@@ -6096,3 +6096,25 @@ Validation:
 Boundary:
 
 This change does not alter profile selection, credentials, model routing, Agent decisions, Crawler fetching or persistence, ingest, chunking, RAG retrieval, evidence selection, graph routes, frontend actions, or final answers. It only keeps invalid timeout metadata from aborting the shared model-profile settings path.
+
+## 2026-07-31 Stage 113: Single Manifest Fact Retriever
+
+This maintenance pass focused on simplifying the local RAG retrieval implementation without changing its runtime behavior.
+
+Implemented changes:
+
+1. `mcagent/retriever.py` no longer contains an earlier shadowed definition of `_modpack_manifest_fact_chunk_ids()`.
+2. The removed implementation was unreachable because Python replaced it with the later definition before any retrieval call could run.
+3. Removing the duplicate also drops stale SQL and scoring branches that could mislead future retrieval maintenance.
+4. `tests/retriever_diversity_scenarios.py` uses Python's AST to keep this retrieval helper limited to one top-level definition.
+
+Validation:
+
+1. `python tests\retriever_diversity_scenarios.py`
+2. `python tests\rag_service_scenarios.py`
+3. `python tests\evidence_service_scenarios.py`
+4. `python -m py_compile mcagent\retriever.py tests\retriever_diversity_scenarios.py`
+
+Boundary:
+
+This change does not alter retrieval queries, ranking, evidence selection, Agent routing, Crawler fetching or persistence, ingest, chunking, graph routes, frontend actions, or final answers. It removes only a function body that Python already replaced at module import time.
