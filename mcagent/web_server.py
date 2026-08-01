@@ -999,23 +999,32 @@ def _crawler_progress_payload(source_dir: Path) -> dict[str, Any]:
     progress["processes"] = processes
     progress["batch_processes"] = grow_processes
     progress["other_processes"] = [item for item in processes if item not in grow_processes]
-    current_bytes = int(progress.get("current_bytes") or 0)
+    current_bytes = _bounded_int(progress.get("current_bytes"), default=0, min_value=0)
     if current_bytes <= 0:
         try:
             sources = _source_status_payload(source_dir)
-            current_bytes = int(sources.get("total_bytes") or 0)
+            current_bytes = _bounded_int(sources.get("total_bytes"), default=0, min_value=0)
         except OSError:
             current_bytes = 0
-    progress.setdefault("current_bytes", current_bytes)
-    progress["current_mb"] = round(float(progress.get("current_bytes") or current_bytes) / 1024 / 1024, 2)
-    target_bytes = float(progress.get("target_bytes") or 0)
+    progress["current_bytes"] = current_bytes
+    progress["current_mb"] = round(current_bytes / 1024 / 1024, 2)
+    target_bytes = _bounded_int(progress.get("target_bytes"), default=0, min_value=0)
+    progress["target_bytes"] = target_bytes
     progress["target_mb"] = round(target_bytes / 1024 / 1024, 2) if target_bytes else 0
     if target_bytes:
-        progress["target_percent"] = max(0, min(100, round(float(progress.get("current_bytes") or current_bytes) / target_bytes * 100, 1)))
-    cycle = int(progress.get("cycle") or 0)
-    cycles_total = int(progress.get("cycles_total") or 0)
-    command_total = int(progress.get("commands_total") or 0)
-    command_done = int(progress.get("commands_completed") or 0)
+        progress["target_percent"] = max(0, min(100, round(current_bytes / target_bytes * 100, 1)))
+    cycle = _bounded_int(progress.get("cycle"), default=0, min_value=0)
+    cycles_total = _bounded_int(progress.get("cycles_total"), default=0, min_value=0)
+    command_total = _bounded_int(progress.get("commands_total"), default=0, min_value=0)
+    command_done = _bounded_int(progress.get("commands_completed"), default=0, min_value=0)
+    progress.update(
+        {
+            "cycle": cycle,
+            "cycles_total": cycles_total,
+            "commands_total": command_total,
+            "commands_completed": command_done,
+        }
+    )
     if cycles_total and command_total:
         progress["cycle_percent"] = max(0, min(100, round(((max(0, cycle - 1) + min(1, command_done / max(1, command_total))) / cycles_total) * 100, 1)))
     elif cycles_total:
@@ -1023,9 +1032,9 @@ def _crawler_progress_payload(source_dir: Path) -> dict[str, Any]:
     else:
         progress["cycle_percent"] = 0
     finished_by_progress = progress_finished or (
-        int(progress.get("cycles_total") or 0) > 0
-        and int(progress.get("commands_total") or 0) > 0
-        and float(progress.get("cycle_percent") or 0) >= 100
+        cycles_total > 0
+        and command_total > 0
+        and progress["cycle_percent"] >= 100
     )
     progress["active"] = bool(grow_processes) or (not finished_by_progress and str(progress.get("status") or "").lower() in {"running", "queued"})
     if finished_by_progress and not grow_processes:

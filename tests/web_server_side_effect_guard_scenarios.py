@@ -3784,6 +3784,38 @@ def test_crawler_accounting_deltas_tolerate_malformed_values() -> None:
     assert_equal("malformed_failure_delta_default", update["failure_delta"], 0)
 
 
+def test_crawler_progress_tolerates_malformed_numeric_metadata() -> None:
+    original_read_json = web_server._read_json_file
+    original_processes = web_server._external_crawler_processes
+    original_source_status = web_server._source_status_payload
+    try:
+        web_server._read_json_file = lambda _path: {  # type: ignore[assignment]
+            "status": "running",
+            "current_bytes": "partial",
+            "target_bytes": "NaN",
+            "cycle": {"unexpected": True},
+            "cycles_total": "unknown",
+            "commands_total": [],
+            "commands_completed": -3,
+        }
+        web_server._external_crawler_processes = lambda: []  # type: ignore[assignment]
+        web_server._source_status_payload = lambda _source_dir: {"total_bytes": 4096}  # type: ignore[assignment]
+        progress = web_server._crawler_progress_payload(ROOT / "data" / "crawler_exports")
+    finally:
+        web_server._read_json_file = original_read_json  # type: ignore[assignment]
+        web_server._external_crawler_processes = original_processes  # type: ignore[assignment]
+        web_server._source_status_payload = original_source_status  # type: ignore[assignment]
+
+    assert_equal("malformed_current_bytes_uses_inventory", progress["current_bytes"], 4096)
+    assert_equal("malformed_target_bytes_default", progress["target_bytes"], 0)
+    assert_equal("malformed_cycle_default", progress["cycle"], 0)
+    assert_equal("malformed_cycles_total_default", progress["cycles_total"], 0)
+    assert_equal("malformed_commands_total_default", progress["commands_total"], 0)
+    assert_equal("negative_commands_completed_clamped", progress["commands_completed"], 0)
+    assert_equal("malformed_cycle_percent_default", progress["cycle_percent"], 0)
+    assert_equal("running_progress_stays_active", progress["active"], True)
+
+
 def test_crawler_reflection_timeout_continues_with_pending_task() -> None:
     original_reflect = web_server.reflect_crawler_progress
 
@@ -4495,6 +4527,7 @@ if __name__ == "__main__":
     test_crawler_tool_commands_tolerate_malformed_numeric_limits()
     test_crawler_result_counts_tolerate_malformed_numeric_values()
     test_crawler_accounting_deltas_tolerate_malformed_values()
+    test_crawler_progress_tolerates_malformed_numeric_metadata()
     test_crawler_reflection_timeout_continues_with_pending_task()
     test_crawler_reflection_timeout_continues_low_yield_when_pending_exists()
     test_modpack_download_defaults_to_probe_only_command()

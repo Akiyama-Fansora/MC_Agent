@@ -6139,3 +6139,24 @@ Validation:
 Boundary:
 
 This change does not alter Crawler tool selection, task queries, network fetching, artifact formats, ingest, chunking, RAG retrieval, evidence selection, graph routing, frontend actions, or final answers. It only prevents stale session metadata from redirecting an explicitly requested Crawler output directory.
+
+## 2026-08-02 Stage 115: Tolerant Knowledge Growth Progress
+
+This maintenance pass focused on local corpus inventory visibility and the frontend Crawler progress surface.
+
+Implemented changes:
+
+1. `mcagent/web_server.py` now parses knowledge-growth byte, cycle, and command counters through the existing bounded integer helper.
+2. Malformed or partially written progress metadata falls back to zero instead of aborting the complete status response.
+3. Invalid current byte counts fall back to the live local source inventory, and all returned counter fields are normalized to non-negative integers for the frontend.
+4. `tests/web_server_side_effect_guard_scenarios.py` covers malformed strings, objects, arrays, and negative progress counters.
+
+Validation:
+
+1. `python tests\web_server_side_effect_guard_scenarios.py`
+2. `python tests\frontend_action_timeline_scenarios.py`
+3. `python -m py_compile mcagent\web_server.py tests\web_server_side_effect_guard_scenarios.py`
+
+Boundary:
+
+This change does not start or stop collection processes, alter Crawler planning or fetching, persist artifacts, trigger ingest, change chunking or RAG retrieval, select evidence, route Agent messages, or synthesize answers. It only keeps the existing inventory and progress status response available when runtime progress metadata is malformed.
