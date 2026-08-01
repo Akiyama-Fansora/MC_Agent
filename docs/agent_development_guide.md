@@ -6118,3 +6118,24 @@ Validation:
 Boundary:
 
 This change does not alter retrieval queries, ranking, evidence selection, Agent routing, Crawler fetching or persistence, ingest, chunking, graph routes, frontend actions, or final answers. It removes only a function body that Python already replaced at module import time.
+
+## 2026-08-01 Stage 114: Current Output Directory Precedence
+
+This maintenance pass focused on preserving explicit Crawler delivery paths across session context and task preparation.
+
+Implemented changes:
+
+1. `mcagent/crawler_task_preparation_service.py` now checks context fields in priority order instead of treating all fields as one path stream.
+2. A path in the current task or user request wins over a stale path carried by an older session summary; multiple corrections inside one field still use the last path.
+3. `mcagent/web_server.py` uses the same precedence helper when deriving a requested output directory before planning or starting a Crawler job.
+4. `tests/crawler_task_preparation_service_scenarios.py` and `tests/web_server_side_effect_guard_scenarios.py` cover stale-session path isolation.
+
+Validation:
+
+1. `python tests\crawler_task_preparation_service_scenarios.py`
+2. `python tests\web_server_side_effect_guard_scenarios.py`
+3. `python -m py_compile mcagent\crawler_task_preparation_service.py mcagent\web_server.py tests\crawler_task_preparation_service_scenarios.py tests\web_server_side_effect_guard_scenarios.py`
+
+Boundary:
+
+This change does not alter Crawler tool selection, task queries, network fetching, artifact formats, ingest, chunking, RAG retrieval, evidence selection, graph routing, frontend actions, or final answers. It only prevents stale session metadata from redirecting an explicitly requested Crawler output directory.

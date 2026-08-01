@@ -1745,18 +1745,15 @@ def _crawler_requested_output_dir(payload: dict[str, Any], plan: dict[str, Any])
         if str(value or "").strip():
             return str(value or "").strip()
     summary = payload.get("session_summary") if isinstance(payload.get("session_summary"), dict) else {}
-    return CrawlerTaskPreparationService._extract_windows_path(
-        "\n".join(
-            str(item or "")
-            for item in (
-                payload.get("original_user_request"),
-                payload.get("source_question"),
-                payload.get("question"),
-                payload.get("query"),
-                summary.get("original_user_message"),
-                summary.get("collection_target"),
-                summary.get("task_goal"),
-            )
+    return CrawlerTaskPreparationService._extract_windows_path_from_values(
+        (
+            payload.get("original_user_request"),
+            payload.get("source_question"),
+            payload.get("question"),
+            payload.get("query"),
+            summary.get("original_user_message"),
+            summary.get("collection_target"),
+            summary.get("task_goal"),
         )
     )
 
@@ -7871,17 +7868,14 @@ def _start_crawler_job_from_crawler_tool(config: AppConfig, payload: dict[str, A
     crawler_payload["original_user_request"] = handoff["original_user_request"]
     crawler_payload["delivery_target"] = str(payload.get("delivery_target") or _infer_delivery_target(collection_question, session_summary))
     crawler_payload["max_tasks"] = CrawlerJobSetupService().planner_max_tasks(crawler_payload, default=6)
-    requested_output_dir = CrawlerTaskPreparationService._extract_windows_path(
-        "\n".join(
-            str(item or "")
-            for item in (
-                collection_question,
-                question,
-                payload.get("original_user_request"),
-                handoff["original_user_request"],
-                session_summary.get("collection_target") if isinstance(session_summary, dict) else "",
-                session_summary.get("task_goal") if isinstance(session_summary, dict) else "",
-            )
+    requested_output_dir = CrawlerTaskPreparationService._extract_windows_path_from_values(
+        (
+            collection_question,
+            question,
+            payload.get("original_user_request"),
+            handoff["original_user_request"],
+            session_summary.get("collection_target") if isinstance(session_summary, dict) else "",
+            session_summary.get("task_goal") if isinstance(session_summary, dict) else "",
         )
     )
     if requested_output_dir:

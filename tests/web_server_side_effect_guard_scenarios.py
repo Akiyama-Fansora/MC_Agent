@@ -85,6 +85,20 @@ def test_search_local_files_command_has_no_project_root_default() -> None:
     assert_true("empty_path_exposes_bad_payload", command[command.index("--path") + 1] == "", command)
 
 
+def test_current_output_dir_wins_over_stale_session_summary() -> None:
+    current = r"Collect current docs and save to D:\current\export."
+    payload = {
+        "original_user_request": current,
+        "question": current,
+        "session_summary": {"task_goal": r"Previous task saved to D:\stale\export."},
+    }
+    assert_equal(
+        "current_output_dir",
+        web_server._crawler_requested_output_dir(payload, {}),
+        r"D:\current\export",
+    )
+
+
 class FakeClient:
     def chat(self, messages: list[dict[str, Any]], *, temperature: float, max_tokens: int) -> str:  # noqa: ARG002
         return '{"handoff_brief":"调用关系：MCagent 将用户请求转交给 CrawlerAgent。","reason":"fake"}'
@@ -4393,6 +4407,7 @@ def test_guide_question_prefers_mechanics_chunk_over_listing_chunk() -> None:
 
 if __name__ == "__main__":
     test_direct_crawler_no_save_url_uses_temporary_extract_boundary()
+    test_current_output_dir_wins_over_stale_session_summary()
     test_grounded_answer_does_not_fallback_to_ollama_after_profile_error()
     test_auto_max_tokens_uses_bounded_adaptive_limit()
     test_version_fact_answer_requires_subject_in_title_or_source()

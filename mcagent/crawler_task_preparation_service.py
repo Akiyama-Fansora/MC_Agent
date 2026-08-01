@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from typing import Any
 
 from .agent_runtime import classify_crawler_tool_result
@@ -114,27 +115,25 @@ class CrawlerTaskPreparationService:
         question: str,
     ) -> None:
         session_summary = base_payload.get("session_summary") if isinstance(base_payload.get("session_summary"), dict) else {}
-        combined = "\n".join(
-            str(item or "")
-            for item in (
-                task_query,
-                question,
-                base_payload.get("original_user_request"),
-                base_payload.get("query"),
-                base_payload.get("source_question"),
-                session_summary.get("original_user_message"),
-                session_summary.get("original_question"),
-                session_summary.get("source_question"),
-                session_summary.get("collection_target"),
-                session_summary.get("task_goal"),
-            )
+        context_values = (
+            task_query,
+            question,
+            base_payload.get("original_user_request"),
+            base_payload.get("query"),
+            base_payload.get("source_question"),
+            session_summary.get("original_user_message"),
+            session_summary.get("original_question"),
+            session_summary.get("source_question"),
+            session_summary.get("collection_target"),
+            session_summary.get("task_goal"),
         )
+        combined = "\n".join(str(item or "") for item in context_values)
         if not str(task_payload.get("start_url") or "").strip():
             url = self._extract_first_url(combined)
             if url:
                 task_payload["start_url"] = url
         if not str(task_payload.get("output_dir") or "").strip():
-            path = self._extract_windows_path(combined)
+            path = self._extract_windows_path_from_values(context_values)
             if path:
                 task_payload["output_dir"] = path
         if not task_payload.get("max_items"):
@@ -185,22 +184,19 @@ class CrawlerTaskPreparationService:
         if str(task_payload.get("output_dir") or task_payload.get("path") or "").strip():
             return
         session_summary = base_payload.get("session_summary") if isinstance(base_payload.get("session_summary"), dict) else {}
-        combined = "\n".join(
-            str(item or "")
-            for item in (
-                task_query,
-                question,
-                base_payload.get("original_user_request"),
-                base_payload.get("query"),
-                base_payload.get("source_question"),
-                session_summary.get("original_user_message"),
-                session_summary.get("original_question"),
-                session_summary.get("source_question"),
-                session_summary.get("collection_target"),
-                session_summary.get("task_goal"),
-            )
+        context_values = (
+            task_query,
+            question,
+            base_payload.get("original_user_request"),
+            base_payload.get("query"),
+            base_payload.get("source_question"),
+            session_summary.get("original_user_message"),
+            session_summary.get("original_question"),
+            session_summary.get("source_question"),
+            session_summary.get("collection_target"),
+            session_summary.get("task_goal"),
         )
-        path = self._extract_windows_path(combined)
+        path = self._extract_windows_path_from_values(context_values)
         if path:
             task_payload["output_dir"] = path
 
@@ -249,6 +245,21 @@ class CrawlerTaskPreparationService:
         value = value.rstrip(".,;")
         value = re.sub(r"\s+(?:xlsx|csv|json|md|markdown|report|folder|directory).*$", "", value, flags=re.I)
         return value.strip()
+
+    @staticmethod
+    def _extract_windows_path_from_values(values: Iterable[Any]) -> str:
+        """Prefer the first context field that contains a path.
+
+        Path corrections within one field still use the last match, while an
+        older session summary cannot override the current task or user request.
+        """
+        if isinstance(values, str):
+            values = (values,)
+        for value in values:
+            path = CrawlerTaskPreparationService._extract_windows_path(str(value or ""))
+            if path:
+                return path
+        return ""
 
     @staticmethod
     def _extract_max_items(text: str) -> int | None:

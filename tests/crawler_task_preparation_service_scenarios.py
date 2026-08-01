@@ -139,6 +139,19 @@ def test_generic_web_task_preserves_output_dir_from_original_question() -> None:
     assert_equal("output_dir", built["output_dir"], r"D:\magic\MC_Agent\runtime\d5_packaging_export_test")
 
 
+def test_current_request_output_dir_wins_over_stale_session_summary() -> None:
+    question = r"Collect current docs and save to D:\current\export."
+    built = CrawlerTaskPreparationService().build_payload(
+        base_payload={
+            "session_summary": {"task_goal": r"Previous task saved to D:\stale\export."},
+        },
+        task={"query": "Collect current docs"},
+        question=question,
+        task_source="web_discovery",
+    )
+    assert_equal("current_output_dir", built["output_dir"], r"D:\current\export")
+
+
 def test_output_dir_stops_before_following_english_instruction() -> None:
     question = (
         r"Save the final user delivery to this directory: D:\magic\MC_Agent\runtime\d5_packaging_export_test. "
@@ -199,6 +212,7 @@ if __name__ == "__main__":
     test_browser_collect_recovers_chinese_punctuation_and_count_words()
     test_fetch_url_recovers_url_from_original_question_when_query_is_summary()
     test_generic_web_task_preserves_output_dir_from_original_question()
+    test_current_request_output_dir_wins_over_stale_session_summary()
     test_output_dir_stops_before_following_english_instruction()
     test_empty_query_result_is_objective_failure_observation()
     test_blocked_preflight_result_is_returned_to_crawler_for_reflection()
