@@ -6160,3 +6160,25 @@ Validation:
 Boundary:
 
 This change does not start or stop collection processes, alter Crawler planning or fetching, persist artifacts, trigger ingest, change chunking or RAG retrieval, select evidence, route Agent messages, or synthesize answers. It only keeps the existing inventory and progress status response available when runtime progress metadata is malformed.
+
+## 2026-08-02 Stage 116: Collision-Safe Accepted Artifact Mirroring
+
+This maintenance pass focused on the CrawlerAgent persistence boundary immediately before accepted evidence is ingested into local RAG.
+
+Implemented changes:
+
+1. `mcagent/web_server.py` now tracks the source behind each filename mirrored into `accepted_by_crawler`.
+2. The first accepted artifact keeps its original filename, while a different source with the same filename receives a deterministic record/field suffix instead of overwriting the first artifact.
+3. Repeated references to the same source continue to reuse the same mirrored path.
+4. `tests/web_server_side_effect_guard_scenarios.py` covers two accepted artifacts from different directories that both use `page.md`, including their copied content and manifest paths.
+
+Validation:
+
+1. `python tests\web_server_side_effect_guard_scenarios.py`
+2. `python tests\rag_service_scenarios.py`
+3. `python tests\evidence_service_scenarios.py`
+4. `python -m py_compile mcagent\web_server.py tests\web_server_side_effect_guard_scenarios.py`
+
+Boundary:
+
+This change does not alter Crawler planning, network fetching, acceptance decisions, artifact formats, chunking, retrieval ranking, evidence selection, AgentMessage routing, graph routes, frontend actions, or answer generation. It only prevents distinct accepted files with the same basename from being collapsed into one local ingest artifact.

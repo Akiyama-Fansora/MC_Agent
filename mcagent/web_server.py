@@ -1172,6 +1172,36 @@ def _crawler_record_has_content(record: dict[str, Any]) -> bool:
     return False
 
 
+def _accepted_artifact_target(
+    accepted_dir: Path,
+    source_path: Path,
+    used_targets: dict[str, str],
+    *,
+    record_index: int,
+    field_name: str,
+) -> Path:
+    source_key = str(source_path.resolve()).casefold()
+    target_path = accepted_dir / source_path.name
+    target_key = str(target_path.resolve()).casefold()
+    if target_key not in used_targets or used_targets[target_key] == source_key:
+        used_targets[target_key] = source_key
+        return target_path
+
+    suffix = source_path.suffix
+    stem = source_path.name[: -len(suffix)] if suffix else source_path.name
+    counter = 1
+    while True:
+        marker = f"__{record_index + 1}_{field_name}"
+        if counter > 1:
+            marker += f"_{counter}"
+        target_path = accepted_dir / f"{stem}{marker}{suffix}"
+        target_key = str(target_path.resolve()).casefold()
+        if target_key not in used_targets or used_targets[target_key] == source_key:
+            used_targets[target_key] = source_key
+            return target_path
+        counter += 1
+
+
 def _crawler_accepted_ingest_roots(result: dict[str, Any]) -> list[str]:
     export_dir = Path(str(result.get("export_dir") or ""))
     validation = result.get("topic_validation") if isinstance(result.get("topic_validation"), dict) else {}
@@ -1198,13 +1228,20 @@ def _crawler_accepted_ingest_roots(result: dict[str, Any]) -> list[str]:
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "records": [],
     }
+    used_targets: dict[str, str] = {}
     for record_index, record in enumerate(accepted_records):
         copied_record = dict(record)
         for field_name in ("path", "raw_html_path"):
             source_path = Path(str(record.get(field_name) or ""))
             if not source_path.exists() or not source_path.is_file():
                 continue
-            target_path = accepted_dir / source_path.name
+            target_path = _accepted_artifact_target(
+                accepted_dir,
+                source_path,
+                used_targets,
+                record_index=record_index,
+                field_name=field_name,
+            )
             if source_path.resolve() != target_path.resolve():
                 target_path.write_bytes(source_path.read_bytes())
             copied_record[field_name] = str(target_path)

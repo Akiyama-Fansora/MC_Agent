@@ -3212,6 +3212,54 @@ def test_crawler_summary_uses_only_llm_matched_record_indexes() -> None:
         assert_true("rejected_bad", not (accepted_root / "bad.md").exists())
 
 
+def test_accepted_ingest_keeps_same_named_artifacts_distinct() -> None:
+    with tempfile.TemporaryDirectory(prefix="mcagent-accepted-collision-") as tmp:
+        export_dir = Path(tmp)
+        first_dir = export_dir / "first"
+        second_dir = export_dir / "second"
+        first_dir.mkdir()
+        second_dir.mkdir()
+        first = first_dir / "page.md"
+        second = second_dir / "page.md"
+        first.write_text("# First source\n\nAlpha evidence.", encoding="utf-8")
+        second.write_text("# Second source\n\nBeta evidence.", encoding="utf-8")
+        (export_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "records": [
+                        {"title": "First", "path": str(first), "chars": 20},
+                        {"title": "Second", "path": str(second), "chars": 20},
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        result = {
+            "source": "fetch_url",
+            "query": "two accepted pages",
+            "returncode": 0,
+            "export_dir": str(export_dir),
+            "topic_validation": {
+                "matched": True,
+                "matched_indexes": [0, 1],
+                "reason": "both sources are relevant",
+            },
+        }
+
+        roots = web_server._crawler_accepted_ingest_roots(result)
+
+        assert_equal("one_collision_root", len(roots), 1)
+        accepted_root = Path(roots[0])
+        manifest = json.loads((accepted_root / "manifest.json").read_text(encoding="utf-8"))
+        accepted_paths = [Path(item["path"]) for item in manifest["records"]]
+        assert_equal("distinct_accepted_paths", len(set(accepted_paths)), 2)
+        assert_equal("first_accepted_content", accepted_paths[0].read_text(encoding="utf-8"), first.read_text(encoding="utf-8"))
+        assert_equal("second_accepted_content", accepted_paths[1].read_text(encoding="utf-8"), second.read_text(encoding="utf-8"))
+        assert_true("first_name_preserved", accepted_paths[0].name == "page.md", accepted_paths[0].name)
+        assert_true("collision_name_disambiguated", accepted_paths[1].name != "page.md", accepted_paths[1].name)
+
+
 def test_zero_byte_artifact_is_visible_but_not_accepted_for_ingest() -> None:
     with tempfile.TemporaryDirectory(prefix="mcagent-empty-artifact-") as tmp:
         export_dir = Path(tmp)
@@ -4505,6 +4553,7 @@ if __name__ == "__main__":
     test_delegate_handoff_brief_uses_bounded_llm_timeout()
     test_crawler_topic_match_decision_comes_from_crawler_llm()
     test_crawler_summary_uses_only_llm_matched_record_indexes()
+    test_accepted_ingest_keeps_same_named_artifacts_distinct()
     test_zero_byte_artifact_is_visible_but_not_accepted_for_ingest()
     test_structured_manifest_records_count_as_usable_objective_content()
     test_manifest_preview_filters_encoding_damaged_fields()
