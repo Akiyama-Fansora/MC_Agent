@@ -6182,3 +6182,26 @@ Validation:
 Boundary:
 
 This change does not alter Crawler planning, network fetching, acceptance decisions, artifact formats, chunking, retrieval ranking, evidence selection, AgentMessage routing, graph routes, frontend actions, or answer generation. It only prevents distinct accepted files with the same basename from being collapsed into one local ingest artifact.
+
+## 2026-08-04 Stage 117: Strict Crawler Record Index Boundaries
+
+This maintenance pass focused on the CrawlerAgent evidence-selection boundary between LLM record review, artifact reuse, and accepted RAG ingest.
+
+Implemented changes:
+
+1. `mcagent/web_server.py` now normalizes Crawler record indexes through one bounded helper.
+2. Negative indexes, booleans, fractional values, malformed strings, out-of-range values, and duplicates are rejected before records are reused or mirrored into `accepted_by_crawler`.
+3. Numeric strings remain supported for compatibility with persisted or externally produced task metadata.
+4. `tests/web_server_side_effect_guard_scenarios.py` covers the regression where `matched_indexes=[-1]` previously selected the last manifest record and could ingest an off-topic artifact.
+
+Validation:
+
+1. `python tests\web_server_side_effect_guard_scenarios.py`
+2. `python tests\crawler_result_accounting_service_scenarios.py`
+3. `python tests\rag_service_scenarios.py`
+4. `python tests\evidence_service_scenarios.py`
+5. `python -m py_compile mcagent\web_server.py tests\web_server_side_effect_guard_scenarios.py`
+
+Boundary:
+
+This change does not alter the Crawler LLM's relevance decision, network fetching, artifact contents, ingest implementation, chunking, retrieval ranking, final evidence selection, AgentMessage routing, graph routes, frontend actions, or answer generation. It only validates record references before an existing decision is applied to local evidence.

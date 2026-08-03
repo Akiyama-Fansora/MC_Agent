@@ -1172,6 +1172,29 @@ def _crawler_record_has_content(record: dict[str, Any]) -> bool:
     return False
 
 
+def _normalized_record_indexes(values: Any, record_count: int, *, limit: int = 8) -> list[int]:
+    if not isinstance(values, list) or record_count <= 0 or limit <= 0:
+        return []
+    indexes: list[int] = []
+    seen: set[int] = set()
+    for value in values:
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            index = value
+        elif isinstance(value, str) and value.strip().isdigit():
+            index = int(value.strip())
+        else:
+            continue
+        if index < 0 or index >= record_count or index in seen:
+            continue
+        seen.add(index)
+        indexes.append(index)
+        if len(indexes) >= limit:
+            break
+    return indexes
+
+
 def _accepted_artifact_target(
     accepted_dir: Path,
     source_path: Path,
@@ -1211,11 +1234,8 @@ def _crawler_accepted_ingest_roots(result: dict[str, Any]) -> list[str]:
     manifest = _read_json_file(export_dir / "manifest.json")
     records = manifest.get("records") if isinstance(manifest.get("records"), list) else []
     accepted_records: list[dict[str, Any]] = []
-    for index in matched_indexes:
-        try:
-            record = records[int(index)]
-        except (TypeError, ValueError, IndexError):
-            continue
+    for index in _normalized_record_indexes(matched_indexes, len(records)):
+        record = records[index]
         if isinstance(record, dict) and _crawler_record_has_content(record):
             accepted_records.append(record)
     if not accepted_records:
@@ -2302,17 +2322,15 @@ def _crawler_reusable_duplicate_evidence(export_dir: str, question: str, task_qu
     except Exception as exc:  # noqa: BLE001
         judgement = {"matched": False, "reason": "llm_duplicate_reuse_error", "notes": f"{type(exc).__name__}: {exc}"}
     matched_indexes = judgement.get("matched_indexes") if isinstance(judgement, dict) else []
+    has_explicit_indexes = isinstance(matched_indexes, list) and bool(matched_indexes)
     matched_records: list[dict[str, Any]] = []
-    if isinstance(matched_indexes, list):
-        for index in matched_indexes:
-            try:
-                matched_records.append(records[int(index)])
-            except (TypeError, ValueError, IndexError):
-                continue
-    if not matched_records and judgement.get("matched"):
+    for index in _normalized_record_indexes(matched_indexes, len(records)):
+        matched_records.append(records[index])
+    if not matched_records and judgement.get("matched") and not has_explicit_indexes:
         matched_records = records[:3]
+    effective_matched = bool(judgement.get("matched")) and bool(matched_records)
     return {
-        "matched": bool(judgement.get("matched")) if isinstance(judgement, dict) else False,
+        "matched": effective_matched if isinstance(judgement, dict) else False,
         "reason": str(judgement.get("reason") or "") if isinstance(judgement, dict) else "",
         "notes": str(judgement.get("notes") or "") if isinstance(judgement, dict) else "",
         "cleanup_action": str(judgement.get("cleanup_action") or "") if isinstance(judgement, dict) else "",
@@ -2785,8 +2803,8 @@ def _crawler_llm_record_relevance(
     return {
         "matched": bool(value.get("matched")),
         "reason": str(value.get("reason") or "llm_judged"),
-        "matched_indexes": [int(item) for item in matched_indexes if str(item).isdigit()][:8],
-        "rejected_indexes": [int(item) for item in rejected_indexes if str(item).isdigit()][:8],
+        "matched_indexes": _normalized_record_indexes(matched_indexes, len(records)),
+        "rejected_indexes": _normalized_record_indexes(rejected_indexes, len(records)),
         "cleanup_action": str(value.get("cleanup_action") or "").strip()[:80],
         "next_action": str(value.get("next_action") or "").strip()[:300],
         "notes": str(value.get("notes") or "")[:500],

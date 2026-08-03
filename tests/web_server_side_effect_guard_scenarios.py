@@ -3212,6 +3212,47 @@ def test_crawler_summary_uses_only_llm_matched_record_indexes() -> None:
         assert_true("rejected_bad", not (accepted_root / "bad.md").exists())
 
 
+def test_accepted_ingest_rejects_invalid_and_duplicate_record_indexes() -> None:
+    with tempfile.TemporaryDirectory(prefix="mcagent-accepted-indexes-") as tmp:
+        export_dir = Path(tmp)
+        good = export_dir / "good.md"
+        bad = export_dir / "bad.md"
+        good.write_text("# Relevant evidence\n\nAccepted record.", encoding="utf-8")
+        bad.write_text("# Off-topic evidence\n\nRejected record.", encoding="utf-8")
+        (export_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "records": [
+                        {"title": "Relevant", "path": str(good), "chars": 35},
+                        {"title": "Off topic", "path": str(bad), "chars": 36},
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        result = {
+            "source": "fetch_url",
+            "query": "relevant evidence",
+            "returncode": 0,
+            "export_dir": str(export_dir),
+            "topic_validation": {
+                "matched": True,
+                "matched_indexes": [-1, True, 1.5, "0", "0", 99],
+                "reason": "only record zero is relevant",
+            },
+        }
+
+        roots = web_server._crawler_accepted_ingest_roots(result)
+
+        assert_equal("one_valid_root", len(roots), 1)
+        accepted_root = Path(roots[0])
+        manifest = json.loads((accepted_root / "manifest.json").read_text(encoding="utf-8"))
+        assert_equal("one_valid_record", [item.get("title") for item in manifest["records"]], ["Relevant"])
+        assert_true("valid_record_copied", (accepted_root / "good.md").exists())
+        assert_true("negative_index_not_copied", not (accepted_root / "bad.md").exists())
+
+
 def test_accepted_ingest_keeps_same_named_artifacts_distinct() -> None:
     with tempfile.TemporaryDirectory(prefix="mcagent-accepted-collision-") as tmp:
         export_dir = Path(tmp)
@@ -3479,6 +3520,48 @@ def test_duplicate_reuse_requires_crawler_llm_acceptance() -> None:
         assert_equal("reason", result["reason"], "not_found")
         assert_equal("cleanup_action", result["cleanup_action"], "retry_other_source")
         assert_equal("records", result["records"], [])
+
+
+def test_duplicate_reuse_rejects_explicit_invalid_record_indexes() -> None:
+    with tempfile.TemporaryDirectory(prefix="mcagent-dup-invalid-index-") as tmp:
+        root = Path(tmp)
+        previous = root / "previous.md"
+        previous.write_text("# Relevant cached page\n\nReusable evidence.", encoding="utf-8")
+        export_dir = root / "export"
+        export_dir.mkdir()
+        (export_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "records": [],
+                    "skipped": [
+                        {
+                            "title": "Relevant cached page",
+                            "url": "https://example.test/relevant",
+                            "previous_path": str(previous),
+                            "reason": "url_or_content_duplicate",
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        original = web_server._crawler_llm_record_relevance
+        try:
+            web_server._crawler_llm_record_relevance = lambda *args, **kwargs: {  # type: ignore[assignment]
+                "matched": True,
+                "reason": "direct",
+                "matched_indexes": [-1],
+                "rejected_indexes": [],
+                "cleanup_action": "keep",
+                "next_action": "Reuse the accepted record.",
+                "judge": "Crawler LLM",
+            }
+            result = web_server._crawler_reusable_duplicate_evidence(str(export_dir), "Relevant", "Relevant", {})
+        finally:
+            web_server._crawler_llm_record_relevance = original  # type: ignore[assignment]
+        assert_equal("invalid_index_not_matched", result["matched"], False)
+        assert_equal("invalid_index_no_records", result["records"], [])
 
 
 def test_modpack_internal_missing_archive_reports_objective_blocker() -> None:
@@ -4553,6 +4636,7 @@ if __name__ == "__main__":
     test_delegate_handoff_brief_uses_bounded_llm_timeout()
     test_crawler_topic_match_decision_comes_from_crawler_llm()
     test_crawler_summary_uses_only_llm_matched_record_indexes()
+    test_accepted_ingest_rejects_invalid_and_duplicate_record_indexes()
     test_accepted_ingest_keeps_same_named_artifacts_distinct()
     test_zero_byte_artifact_is_visible_but_not_accepted_for_ingest()
     test_structured_manifest_records_count_as_usable_objective_content()
@@ -4560,6 +4644,7 @@ if __name__ == "__main__":
     test_job_readable_refreshes_legacy_manifest_stats()
     test_light_job_plan_preserves_model_prior_boundary()
     test_duplicate_reuse_requires_crawler_llm_acceptance()
+    test_duplicate_reuse_rejects_explicit_invalid_record_indexes()
     test_modpack_internal_missing_archive_reports_objective_blocker()
     test_modpack_download_accepts_direct_archive_url_as_candidate()
     test_archive_url_helper_and_fetch_url_boundary()
