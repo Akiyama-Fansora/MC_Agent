@@ -67,6 +67,19 @@ def test_collect_refs_from_manifest() -> None:
     assert_equal("text_like", refs[0]["text_like"], True)
 
 
+def test_non_positive_reference_limits_disable_collection_and_compaction() -> None:
+    write_manifest()
+    service = ArtifactReferenceService()
+    result = {"source": "fetch_url", "query": "example", "export_dir": str(TMP)}
+
+    assert_equal("zero_collect_limit", service.collect_from_result(result=result, result_index=8, max_refs=0), [])
+    assert_equal("negative_collect_limit", service.collect_from_result(result=result, result_index=8, max_refs=-1), [])
+
+    refs = service.collect_from_result(result=result, result_index=8)
+    assert_equal("zero_compact_limit", service.compact_refs(refs, limit=0), [])
+    assert_equal("negative_compact_limit", service.compact_refs(refs, limit=-1), [])
+
+
 def test_resolve_latest_ref_into_payload_content() -> None:
     write_manifest()
     service = ArtifactReferenceService()
@@ -209,6 +222,7 @@ def test_missing_ref_sets_objective_error() -> None:
 
 def main() -> int:
     test_collect_refs_from_manifest()
+    test_non_positive_reference_limits_disable_collection_and_compaction()
     test_resolve_latest_ref_into_payload_content()
     test_empty_content_uses_artifact_reference()
     test_relative_manifest_paths_resolve_from_manifest_directory()

@@ -24,6 +24,8 @@ class ArtifactReferenceService:
     """Build and resolve lightweight references to objective tool outputs."""
 
     def collect_from_result(self, *, result: dict[str, Any], result_index: int, max_refs: int = 12) -> list[dict[str, Any]]:
+        if max_refs <= 0:
+            return []
         manifest = result.get("manifest_stats") if isinstance(result.get("manifest_stats"), dict) else {}
         manifest_path = Path(str(manifest.get("manifest_path") or "")) if manifest.get("manifest_path") else Path("")
         if not manifest_path.is_file():
@@ -70,6 +72,8 @@ class ArtifactReferenceService:
         return refs
 
     def compact_refs(self, refs: list[dict[str, Any]], *, limit: int = 12) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
         compact: list[dict[str, Any]] = []
         for ref in refs[-limit:]:
             if not isinstance(ref, dict):

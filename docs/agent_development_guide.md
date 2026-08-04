@@ -6205,3 +6205,25 @@ Validation:
 Boundary:
 
 This change does not alter the Crawler LLM's relevance decision, network fetching, artifact contents, ingest implementation, chunking, retrieval ranking, final evidence selection, AgentMessage routing, graph routes, frontend actions, or answer generation. It only validates record references before an existing decision is applied to local evidence.
+
+## 2026-08-04 Stage 118: Honor Non-Positive Artifact Reference Limits
+
+This maintenance pass focused on the artifact-reference boundary used by Crawler persistence and AgentMessage content reuse.
+
+Implemented changes:
+
+1. `mcagent/artifact_reference_service.py` now treats `max_refs <= 0` as an explicit request for no collected references.
+2. `compact_refs()` now returns an empty list for `limit <= 0`; this avoids Python's `refs[-0:]` behavior returning the entire reference set.
+3. `tests/artifact_reference_service_scenarios.py` covers zero and negative collection/compaction limits.
+
+Validation:
+
+1. `python tests\\artifact_reference_service_scenarios.py`
+2. `python tests\\artifact_save_service_scenarios.py`
+3. `python tests\\rag_service_scenarios.py`
+4. `python tests\\evidence_service_scenarios.py`
+5. `python -m py_compile mcagent\\artifact_reference_service.py tests\\artifact_reference_service_scenarios.py`
+
+Boundary:
+
+This change does not alter manifest parsing, artifact formats, content loading, Crawler fetching or persistence, ingest, chunking, retrieval ranking, evidence selection, AgentMessage routing, graph routes, frontend actions, or final answer content. It only makes non-positive caller limits consistently disable reference exposure.
