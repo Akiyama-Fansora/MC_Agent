@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from mcagent.config import load_config  # noqa: E402
-from mcagent.crawler_llm_planner import _collection_target_hint, _sanitize_plan, _session_target_hint, plan_crawler_tasks_rule_fallback, reflect_crawler_progress  # noqa: E402
+from mcagent.crawler_llm_planner import _collection_target_hint, _normalize_task, _sanitize_plan, _session_target_hint, plan_crawler_tasks_rule_fallback, reflect_crawler_progress  # noqa: E402
 import mcagent.crawler_llm_planner as crawler_llm_planner  # noqa: E402
 from mcagent.web_server import Job, _plan_crawler_with_job_timeout  # noqa: E402
 import mcagent.web_server as web_server  # noqa: E402
@@ -1950,6 +1950,37 @@ def test_sanitize_plan_accepts_llm_priority_labels() -> None:
     assert_true("priority_numeric", all(isinstance(task.get("priority"), int) for task in plan["tasks"]))
 
 
+def test_normalize_task_sanitizes_malformed_limits() -> None:
+    web = _normalize_task(
+        {
+            "source": "web_discovery",
+            "query": "涔屾墭閭︽帰闄╀箣鏃?鐜╂硶",
+            "search_limit": "many",
+            "max_urls": -20,
+            "timeout_ms": 1.5,
+            "reason": "malformed limits",
+        },
+        "test",
+        80,
+    )
+    browser = _normalize_task(
+        {
+            "source": "browser_collect",
+            "query": "涔屾墭閭︽帰闄╀箣鏃?鐗╁搧",
+            "max_items": True,
+            "reason": "boolean limit",
+        },
+        "test",
+        80,
+    )
+    assert_true("web_task_present", isinstance(web, dict))
+    assert_true("browser_task_present", isinstance(browser, dict))
+    assert_equal("search_limit_default", web.get("search_limit"), 8)
+    assert_equal("max_urls_clamped", web.get("max_urls"), 1)
+    assert_true("fractional_timeout_omitted", "timeout_ms" not in web)
+    assert_equal("boolean_max_items_default", browser.get("max_items"), 50)
+
+
 def test_sanitize_plan_normalizes_llm_action_aliases() -> None:
     plan = _sanitize_plan(
         {
@@ -2255,6 +2286,7 @@ if __name__ == "__main__":
     test_planner_json_chat_requests_json_object_mode()
     test_quick_recovery_plan_repairs_invalid_json_with_crawler_llm()
     test_sanitize_plan_accepts_llm_priority_labels()
+    test_normalize_task_sanitizes_malformed_limits()
     test_sanitize_plan_normalizes_llm_action_aliases()
     test_gap_question_text_still_keeps_mcagent_context_first()
     test_fallback_confirmation_finish_is_overridden_for_target_bound_pending_task()

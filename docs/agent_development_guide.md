@@ -6227,3 +6227,26 @@ Validation:
 Boundary:
 
 This change does not alter manifest parsing, artifact formats, content loading, Crawler fetching or persistence, ingest, chunking, retrieval ranking, evidence selection, AgentMessage routing, graph routes, frontend actions, or final answer content. It only makes non-positive caller limits consistently disable reference exposure.
+
+## 2026-08-05 Stage 119: Normalize Planner Task Limits
+
+This maintenance pass focused on the CrawlerAgent planning boundary before task limits reach tool commands and the frontend job view.
+
+Implemented changes:
+
+1. `mcagent/crawler_llm_planner.py` now normalizes task integer limits at the LLM-plan boundary.
+2. Malformed strings, booleans, fractional values, and missing values use the registered source default when one exists; non-positive values are clamped to one.
+3. Invalid optional limits such as `timeout_ms` are omitted so the downstream script keeps its own default instead of receiving a non-numeric argument.
+4. `tests/crawler_planner_timeout_scenarios.py` covers malformed, negative, fractional, and boolean task limits.
+
+Validation:
+
+1. `python tests\\crawler_planner_timeout_scenarios.py`
+2. `python tests\\web_server_side_effect_guard_scenarios.py`
+3. `python tests\\crawler_full_stack_matrix_scenarios.py`
+4. `python tests\\crawler_task_preparation_service_scenarios.py`
+5. `python -m py_compile mcagent\\crawler_llm_planner.py tests\\crawler_planner_timeout_scenarios.py`
+
+Boundary:
+
+This change does not alter source selection, query binding, network fetching, artifact persistence, ingest, chunking, RAG retrieval, evidence selection, AgentMessage routing, graph routes, frontend actions, or answer synthesis. It only ensures the existing tool defaults and clamps are applied before a planned task is displayed or executed.

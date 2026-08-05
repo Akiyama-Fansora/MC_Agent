@@ -3333,6 +3333,34 @@ def _priority_value(value: Any, fallback: int = 50) -> int:
     return fallback
 
 
+_TASK_INTEGER_LIMITS = {
+    "search_limit",
+    "max_urls",
+    "mods",
+    "modpacks",
+    "resourcepacks",
+    "shaders",
+    "search_depth",
+    "max_items",
+    "timeout_ms",
+}
+
+
+def _task_integer_limit(value: Any, default: Any = None) -> int | None:
+    """Keep planner task limits executable before they reach a tool command."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        value = default
+    if value is None or isinstance(value, bool):
+        return None if default is None else _task_integer_limit(default)
+    if isinstance(value, float) and not value.is_integer():
+        return None if default is None else _task_integer_limit(default)
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None if default is None else _task_integer_limit(default)
+    return max(1, parsed)
+
+
 def _normalize_task(raw: dict[str, Any], reason: str, fallback_priority: int) -> dict[str, Any] | None:
     source = str(raw.get("source") or raw.get("tool") or raw.get("action") or "").strip()
     source_aliases = {
@@ -3388,6 +3416,10 @@ def _normalize_task(raw: dict[str, Any], reason: str, fallback_priority: int) ->
     ):
         value = raw.get(key, defaults.get(key))
         if value is not None:
+            if key in _TASK_INTEGER_LIMITS:
+                value = _task_integer_limit(value, defaults.get(key))
+                if value is None:
+                    continue
             item[key] = value
     return item
 
