@@ -2438,9 +2438,9 @@ def _crawler_result_summary(task_results: list[dict[str, Any]], plan: dict[str, 
         entry["tasks"] += 1
         entry["status_counts"][observation.status] = entry["status_counts"].get(observation.status, 0) + 1
         stats = result.get("manifest_stats") if isinstance(result.get("manifest_stats"), dict) else {}
-        records = int(stats.get("records") or 0)
-        skipped = int(stats.get("skipped") or 0)
-        errors = int(stats.get("errors") or 0)
+        records = _bounded_int(stats.get("records"), default=0, min_value=0)
+        skipped = _bounded_int(stats.get("skipped"), default=0, min_value=0)
+        errors = _bounded_int(stats.get("errors"), default=0, min_value=0)
         entry["records"] += records
         entry["skipped"] += skipped
         entry["errors"] += errors
@@ -2465,12 +2465,13 @@ def _crawler_result_summary(task_results: list[dict[str, Any]], plan: dict[str, 
         if result.get("empty_result"):
             entry["empty"] += 1
             empty_tasks.append(task_brief)
+        topic_validation = result.get("topic_validation") if isinstance(result.get("topic_validation"), dict) else {}
         if result.get("off_topic_result"):
             entry["off_topic"] += 1
-            off_topic_tasks.append(task_brief | {"topic_validation": result.get("topic_validation")})
+            off_topic_tasks.append(task_brief | {"topic_validation": topic_validation})
         if result.get("uncertain_result"):
             entry["uncertain"] += 1
-            uncertain_tasks.append(task_brief | {"topic_validation": result.get("topic_validation")})
+            uncertain_tasks.append(task_brief | {"topic_validation": topic_validation})
         if result.get("records_pending_review"):
             entry["uncertain"] += 1
             uncertain_tasks.append(task_brief | {"pending_review": True})
@@ -2478,7 +2479,7 @@ def _crawler_result_summary(task_results: list[dict[str, Any]], plan: dict[str, 
         if isinstance(duplicate_review, dict) and duplicate_review:
             entry["off_topic"] += 1
             off_topic_tasks.append(task_brief | {"duplicate_review": duplicate_review})
-        if int(result.get("returncode") or 0) != 0:
+        if _bounded_int(result.get("returncode"), default=0) != 0:
             entry["failed"] += 1
             failed_tasks.append(task_brief | {"output_tail": _tail_text(str(result.get("output") or ""), 500)})
         manifest_path = stats.get("manifest_path")
@@ -2490,9 +2491,10 @@ def _crawler_result_summary(task_results: list[dict[str, Any]], plan: dict[str, 
                     duplicate_count += int(count)
                 if "relevance" in lowered or "low" in lowered:
                     low_relevance_count += int(count)
-            if bool(result.get("topic_validation", {}).get("matched")):
-                matched_indexes = result.get("topic_validation", {}).get("matched_indexes")
-                matched_set = {int(item) for item in matched_indexes or [] if str(item).isdigit()}
+            if bool(topic_validation.get("matched")):
+                matched_indexes = topic_validation.get("matched_indexes")
+                matched_values = matched_indexes if isinstance(matched_indexes, list) else []
+                matched_set = {int(item) for item in matched_values if str(item).isdigit()}
                 for sample in brief.get("record_samples", []):
                     sample_index = sample.get("index")
                     if matched_set and (not str(sample_index).isdigit() or int(sample_index) not in matched_set):
@@ -2541,7 +2543,11 @@ def _crawler_result_summary(task_results: list[dict[str, Any]], plan: dict[str, 
     if off_topic_tasks:
         next_actions.append("Some results were off-topic; CrawlerAgent should inspect examples and adjust source/query/URL strategy.")
         review_actions = [
-            str(item.get("duplicate_review", {}).get("next_action") or item.get("topic_validation", {}).get("next_action") or "").strip()
+            str(
+                (item.get("duplicate_review") if isinstance(item.get("duplicate_review"), dict) else {}).get("next_action")
+                or (item.get("topic_validation") if isinstance(item.get("topic_validation"), dict) else {}).get("next_action")
+                or ""
+            ).strip()
             for item in off_topic_tasks
             if isinstance(item, dict)
         ]

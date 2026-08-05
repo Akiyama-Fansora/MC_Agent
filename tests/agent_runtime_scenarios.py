@@ -43,6 +43,7 @@ def test_tool_observation_matrix() -> None:
         ("off_topic", {"source": "web_discovery", "returncode": 0, "off_topic_result": True, "manifest_stats": {"records": 1}}),
         ("uncertain", {"source": "fetch_url", "returncode": 0, "uncertain_result": True, "manifest_stats": {"records": 1}}),
         ("duplicate_reused", {"source": "mcmod", "returncode": 0, "existing_evidence_reused": {"matched": True}, "manifest_stats": {"records": 0, "skipped": 3}}),
+        ("records_pending_review", {"source": "mcmod", "returncode": 0, "existing_evidence_reused": "malformed", "manifest_stats": {"records": 1}}),
         ("blocked", {"source": "planner", "returncode": 2, "empty_query_result": True}),
         ("stopped", {"source": "browser_collect", "returncode": 130}),
         ("timeout", {"source": "web_discovery", "returncode": 124, "timed_out": True}),

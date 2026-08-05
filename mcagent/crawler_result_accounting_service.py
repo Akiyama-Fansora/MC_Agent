@@ -104,7 +104,8 @@ class CrawlerResultAccountingService:
                 result["ingest_skipped"] = "CrawlerAgent accepted structured browser records for the human-facing task; RAG ingest was not requested."
             return accounting
 
-        if returncode == 0 and bool(result.get("existing_evidence_reused", {}).get("matched")):
+        reused_evidence = result.get("existing_evidence_reused") if isinstance(result.get("existing_evidence_reused"), dict) else {}
+        if returncode == 0 and bool(reused_evidence.get("matched")):
             accounting["success_delta"] = 1
             result["ingest_skipped"] = "Crawler reused relevant duplicate-skipped evidence that already exists in the local knowledge base."
             return accounting

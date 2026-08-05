@@ -1954,7 +1954,7 @@ def test_normalize_task_sanitizes_malformed_limits() -> None:
     web = _normalize_task(
         {
             "source": "web_discovery",
-            "query": "涔屾墭閭︽帰闄╀箣鏃?鐜╂硶",
+            "query": "乌托邦探险之旅玩法",
             "search_limit": "many",
             "max_urls": -20,
             "timeout_ms": 1.5,
@@ -1966,7 +1966,7 @@ def test_normalize_task_sanitizes_malformed_limits() -> None:
     browser = _normalize_task(
         {
             "source": "browser_collect",
-            "query": "涔屾墭閭︽帰闄╀箣鏃?鐗╁搧",
+            "query": "乌托邦探险之旅物品",
             "max_items": True,
             "reason": "boolean limit",
         },

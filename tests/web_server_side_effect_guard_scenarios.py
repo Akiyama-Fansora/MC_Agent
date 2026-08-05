@@ -3886,6 +3886,20 @@ def test_crawler_result_counts_tolerate_malformed_numeric_values() -> None:
         web_server._crawler_manifest_stats = original_manifest_stats  # type: ignore[assignment]
     assert_equal("malformed_records_default", records_loaded, 0)
 
+    summary_result = {
+        "source": "web_discovery",
+        "returncode": "unknown",
+        "manifest_stats": {"records": "n/a", "skipped": -4, "errors": "unknown"},
+        "topic_validation": "malformed",
+        "existing_evidence_reused": ["malformed"],
+        "off_topic_result": True,
+    }
+    summary = web_server._crawler_result_summary([summary_result], {"topic": "example"})
+    assert_equal("summary_records_default", summary["totals"]["records"], 0)
+    assert_equal("summary_negative_skipped_clamped", summary["totals"]["skipped"], 0)
+    assert_equal("summary_errors_default", summary["totals"]["errors"], 0)
+    assert_equal("summary_off_topic", summary["totals"]["off_topic_tasks"], 1)
+
 
 def test_crawler_accounting_deltas_tolerate_malformed_values() -> None:
     class MalformedAccounting:

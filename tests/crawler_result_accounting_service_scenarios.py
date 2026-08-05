@@ -182,6 +182,18 @@ def test_non_numeric_manifest_counts_do_not_break_accounting() -> None:
     assert_equal("archive_not_downloaded", result["archive_not_downloaded"], True)
 
 
+def test_malformed_reused_evidence_waits_for_review() -> None:
+    result = {
+        "returncode": 0,
+        "manifest_stats": {"records": 1},
+        "existing_evidence_reused": "malformed",
+    }
+    accounting = apply(result)
+    assert_equal("success", accounting["success_delta"], 0)
+    assert_equal("failure", accounting["failure_delta"], 1)
+    assert_equal("pending_review", result["records_pending_review"], True)
+
+
 if __name__ == "__main__":
     test_matched_records_wait_for_crawler_review()
     test_crawler_accepted_records_are_success_and_need_ingest()
@@ -197,4 +209,5 @@ if __name__ == "__main__":
     test_mcagent_context_is_diagnostic_and_adds_external_followup()
     test_fetch_url_archive_redirect_adds_modpack_download_followup()
     test_non_numeric_manifest_counts_do_not_break_accounting()
+    test_malformed_reused_evidence_waits_for_review()
     print("crawler_result_accounting_service_scenarios passed")

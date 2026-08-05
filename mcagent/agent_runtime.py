@@ -677,7 +677,8 @@ def classify_crawler_tool_result(result: dict[str, Any]) -> ToolObservation:
         return observation("blocked", "Tool refused to run because the query or target was empty.", retryable=True, suggested_next="Reflect on the goal and choose a concrete query, URL, or file target.")
     if result.get("timed_out") or returncode == 124 or "timed out" in text or "timeout" in text:
         return observation("timeout", "Tool timed out before returning usable data.", retryable=True, suggested_next="Retry with a narrower target, browser path, or lower page/file limit.")
-    if bool(result.get("existing_evidence_reused", {}).get("matched")):
+    reused_evidence = result.get("existing_evidence_reused") if isinstance(result.get("existing_evidence_reused"), dict) else {}
+    if bool(reused_evidence.get("matched")):
         return observation("duplicate_reused", "New fetch produced no new file, but CrawlerAgent accepted matching existing evidence for reuse.")
     if result.get("off_topic_result"):
         return observation("off_topic", "Tool returned content, but CrawlerAgent/evidence validation judged it off-topic.", retryable=True, suggested_next="Change source, query, URL, or validation context before retrying.")

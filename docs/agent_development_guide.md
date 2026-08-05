@@ -6250,3 +6250,30 @@ Validation:
 Boundary:
 
 This change does not alter source selection, query binding, network fetching, artifact persistence, ingest, chunking, RAG retrieval, evidence selection, AgentMessage routing, graph routes, frontend actions, or answer synthesis. It only ensures the existing tool defaults and clamps are applied before a planned task is displayed or executed.
+
+## 2026-08-06 Stage 120: Tolerate Malformed Crawler Result Metadata
+
+This maintenance pass focused on the CrawlerAgent tool-result boundary shared by result classification, accounting, and the frontend-readable collection summary.
+
+Implemented changes:
+
+1. `mcagent/agent_runtime.py` now treats a non-object `existing_evidence_reused` value as absent instead of chaining `.get()` through malformed tool output.
+2. `mcagent/crawler_result_accounting_service.py` applies the same boundary before deciding that duplicate evidence is a successful reusable result.
+3. `mcagent/web_server.py` normalizes malformed and negative manifest counts, return codes, topic-validation payloads, and matched-index lists while building the collection summary.
+4. Scenario coverage verifies that malformed reuse metadata waits for Crawler review and that malformed summary counters remain non-negative without breaking the job view.
+5. The pending Stage 119 planner-limit regression fixture now uses valid UTF-8 Chinese queries so the repository encoding gate can validate and publish that earlier commit.
+
+Validation:
+
+1. `python tests\agent_runtime_scenarios.py`
+2. `python tests\crawler_result_accounting_service_scenarios.py`
+3. `python tests\web_server_side_effect_guard_scenarios.py`
+4. `python tests\job_view_service_scenarios.py`
+5. `python tests\crawler_full_stack_matrix_scenarios.py`
+6. `python tests\crawler_planner_timeout_scenarios.py`
+7. `python scripts\check_text_encoding.py`
+8. Full `*_scenarios.py`, smoke, compileall, public-readiness, architecture-audit, and frontend syntax regression.
+
+Boundary:
+
+This change does not reinterpret valid Crawler decisions, alter fetching or persistence, change ingest policy, modify chunking/RAG/evidence ranking, reroute AgentMessage traffic, or change answer synthesis. It only prevents malformed objective tool metadata from aborting Crawler accounting and frontend summary generation.
