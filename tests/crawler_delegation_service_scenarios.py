@@ -162,10 +162,33 @@ def test_prepare_reuses_handoff_brief_from_agent_message() -> None:
     assert_true("brief_builder_not_called", not any(call.get("fn") == "brief" for call in calls), str(calls))
 
 
+def test_prepare_ignores_malformed_summary_collections() -> None:
+    calls: list[dict[str, Any]] = []
+    service = build_service(calls, requested_by="mcagent")
+
+    plan = service.prepare(
+        object(),
+        {"agent": "crawler_agent"},
+        model="model-a",
+        original_question="collect missing data",
+        current_question="collect missing data",
+        collection_target="collect missing data",
+        session_summary={"topics": 7, "gaps": {"missing": True}},
+        delivery_target="MCagent/RAG",
+    )
+
+    assert_true("prepare_completed", bool(plan.handoff_brief))
+    assert_true("no_malformed_current_topic", "current_topic" not in plan.planner_summary)
+    assert_true("no_malformed_missing_evidence", "missing_evidence" not in plan.planner_summary)
+    assert_true("brief_omits_malformed_topics", "Known topics:" not in plan.handoff_brief)
+    assert_true("brief_omits_malformed_gaps", "Known gaps:" not in plan.handoff_brief)
+
+
 if __name__ == "__main__":
     test_prepare_preserves_mcagent_to_crawler_relationship()
     test_prepare_uses_inferred_delivery_for_direct_user_request()
     test_prepare_corrects_model_human_delivery_for_mcagent_gap_fill()
     test_prepare_normalizes_mixed_human_rag_delivery_for_mcagent_gap_fill()
     test_prepare_reuses_handoff_brief_from_agent_message()
+    test_prepare_ignores_malformed_summary_collections()
     print("crawler_delegation_service_scenarios: ok")

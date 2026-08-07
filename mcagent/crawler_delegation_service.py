@@ -110,10 +110,12 @@ class CrawlerDelegationService:
             brief_reason = "Built deterministic handoff contract from MCagent's already-selected delegation context."
         planner_summary["handoff_brief"] = handoff_brief
         planner_summary["handoff_brief_reason"] = brief_reason
-        if not planner_summary.get("current_topic") and (planner_summary.get("topics") or []):
-            planner_summary["current_topic"] = str((planner_summary.get("topics") or [""])[0])
-        if not planner_summary.get("missing_evidence") and (planner_summary.get("gaps") or []):
-            planner_summary["missing_evidence"] = "；".join(str(item) for item in (planner_summary.get("gaps") or [])[:8])
+        topics = _summary_items(planner_summary.get("topics"), limit=6)
+        gaps = _summary_items(planner_summary.get("gaps"), limit=8)
+        if not planner_summary.get("current_topic") and topics:
+            planner_summary["current_topic"] = str(topics[0])
+        if not planner_summary.get("missing_evidence") and gaps:
+            planner_summary["missing_evidence"] = "；".join(str(item) for item in gaps)
 
         delegate_payload = payload | {
             "requested_by": requested_by,
@@ -158,8 +160,8 @@ class CrawlerDelegationService:
             f"Task goal: {collection_question or original_question}",
             f"Delivery target: {resolved_delivery_target or 'CrawlerAgent decides from task goal'}",
         ]
-        topics = [str(item) for item in (session_summary.get("topics") or [])[:6] if str(item).strip()]
-        gaps = [str(item) for item in (session_summary.get("gaps") or [])[:8] if str(item).strip()]
+        topics = [str(item) for item in _summary_items(session_summary.get("topics"), limit=6) if str(item).strip()]
+        gaps = [str(item) for item in _summary_items(session_summary.get("gaps"), limit=8) if str(item).strip()]
         if topics:
             parts.append("Known topics: " + " / ".join(topics))
         if gaps:
@@ -200,3 +202,10 @@ def _looks_like_mcagent_rag_fill_goal(*parts: Any) -> bool:
         r"ingest",
     )
     return any(re.search(pattern, lowered, flags=re.I) for pattern in patterns)
+
+
+def _summary_items(value: Any, *, limit: int) -> list[Any]:
+    """Keep handoff summaries list-shaped when upstream metadata is malformed."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    return list(value[:limit])
