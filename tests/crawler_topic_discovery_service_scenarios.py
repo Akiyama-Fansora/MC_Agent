@@ -18,8 +18,21 @@ def assert_equal(name: str, actual, expected) -> None:
 def test_should_review_only_successful_topic_discovery() -> None:
     service = CrawlerTopicDiscoveryReviewService()
     assert_equal("topic_discovery_ok", service.should_review(task_source="topic_discovery", result={"returncode": 0}), True)
+    assert_equal("topic_discovery_string_ok", service.should_review(task_source="topic_discovery", result={"returncode": "0"}), True)
     assert_equal("topic_discovery_failed", service.should_review(task_source="topic_discovery", result={"returncode": 1}), False)
     assert_equal("other_source", service.should_review(task_source="mcmod", result={"returncode": 0}), False)
+
+
+def test_should_review_ignores_malformed_returncodes() -> None:
+    service = CrawlerTopicDiscoveryReviewService()
+    for name, value in (
+        ("bool", False),
+        ("non_integral_float", 0.5),
+        ("text", "success"),
+        ("object", {"code": 0}),
+    ):
+        assert_equal(f"malformed_{name}", service.should_review(task_source="topic_discovery", result={"returncode": value}), False)
+    assert_equal("missing_returncode_keeps_legacy_default", service.should_review(task_source="topic_discovery", result={}), True)
 
 
 def test_remaining_slots_never_negative() -> None:
@@ -57,6 +70,7 @@ def test_record_review_keeps_error_when_no_tasks() -> None:
 
 if __name__ == "__main__":
     test_should_review_only_successful_topic_discovery()
+    test_should_review_ignores_malformed_returncodes()
     test_remaining_slots_never_negative()
     test_record_review_adds_expansion_entry()
     test_record_review_keeps_error_when_no_tasks()
