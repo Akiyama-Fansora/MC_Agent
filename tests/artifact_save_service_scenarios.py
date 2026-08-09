@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 import shutil
@@ -88,6 +89,35 @@ def test_overwrite_replaces_manifest_record_for_same_path() -> None:
     assert_equal("updated_content", json.loads(Path(second.path).read_text(encoding="utf-8"))["a"], 2)
 
 
+def test_concurrent_saves_keep_unique_files_and_complete_manifest() -> None:
+    reset_tmp()
+    target_dir = TMP / "parallel"
+
+    def save_artifact(index: int):
+        return ArtifactSaveService().save(
+            content=f"payload-{index}",
+            artifact_format="md",
+            path=target_dir,
+            filename="shared.md",
+        )
+
+    with ThreadPoolExecutor(max_workers=12) as executor:
+        results = list(executor.map(save_artifact, range(24)))
+
+    result_paths = [Path(item.path) for item in results]
+    manifest = json.loads((target_dir / "manifest.json").read_text(encoding="utf-8"))
+    manifest_paths = [Path(item["path"]) for item in manifest["records"]]
+
+    assert_equal("concurrent_unique_result_paths", len(set(result_paths)), 24)
+    assert_equal("concurrent_manifest_records", len(manifest_paths), 24)
+    assert_equal("concurrent_manifest_paths", set(manifest_paths), set(result_paths))
+    assert_equal(
+        "concurrent_payloads",
+        {path.read_text(encoding="utf-8") for path in result_paths},
+        {f"payload-{index}" for index in range(24)},
+    )
+
+
 def test_csv_accepts_rows() -> None:
     reset_tmp()
     result = ArtifactSaveService().save(
@@ -158,6 +188,41 @@ def test_save_artifact_cli_supports_dotted_output_directory() -> None:
     assert_true("cli_export_dir", f"Exported to: {output_dir.resolve()}" in completed.stdout, completed.stdout)
 
 
+def test_concurrent_cli_saves_keep_complete_manifest() -> None:
+    reset_tmp()
+    output_dir = TMP / "parallel_cli"
+    processes = [
+        subprocess.Popen(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "save_artifact.py"),
+                "--content",
+                f"process-{index}",
+                "--format",
+                "md",
+                "--path",
+                str(output_dir),
+                "--filename",
+                "shared.md",
+            ],
+            cwd=ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+        )
+        for index in range(8)
+    ]
+    completed = [process.communicate(timeout=30) + (process.returncode,) for process in processes]
+
+    assert_true("concurrent_cli_exit_codes", all(returncode == 0 for _, _, returncode in completed), str(completed))
+    manifest = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
+    saved_files = list(output_dir.glob("shared*.md"))
+    assert_equal("concurrent_cli_manifest_records", len(manifest["records"]), 8)
+    assert_equal("concurrent_cli_saved_files", len(saved_files), 8)
+    assert_equal("concurrent_cli_payloads", {path.read_text(encoding="utf-8") for path in saved_files}, {f"process-{index}" for index in range(8)})
+
+
 def test_unknown_format_is_objective_error() -> None:
     reset_tmp()
     try:
@@ -173,10 +238,12 @@ def main() -> int:
     test_save_json_and_avoid_overwrite_by_default()
     test_manifest_accumulates_multiple_saved_artifacts()
     test_overwrite_replaces_manifest_record_for_same_path()
+    test_concurrent_saves_keep_unique_files_and_complete_manifest()
     test_csv_accepts_rows()
     test_dotted_output_directory_keeps_explicit_filename()
     test_existing_dotted_output_directory_uses_default_filename()
     test_save_artifact_cli_supports_dotted_output_directory()
+    test_concurrent_cli_saves_keep_complete_manifest()
     test_unknown_format_is_objective_error()
     print("artifact_save_service_scenarios passed")
     return 0

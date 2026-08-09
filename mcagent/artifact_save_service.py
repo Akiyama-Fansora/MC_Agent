@@ -1,19 +1,27 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 import csv
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import re
+import tempfile
+import threading
+import time
 from typing import Any
+import uuid
 
 from .config import PROJECT_ROOT
 
 
 SUPPORTED_ARTIFACT_FORMATS = {"txt", "md", "json", "jsonl", "csv", "html"}
+_DIRECTORY_LOCKS: dict[str, threading.RLock] = {}
+_DIRECTORY_LOCKS_GUARD = threading.Lock()
 
 
 class ArtifactSaveError(ValueError):
@@ -66,31 +74,32 @@ class ArtifactSaveService:
         normalized_format = self._normalize_format(artifact_format)
         target_path = self._resolve_target_path(path=path, filename=filename, artifact_format=normalized_format)
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        target_existed = target_path.exists()
-        final_path = target_path if overwrite else self._unique_path(target_path)
         data = self._serialize(content, normalized_format)
-        final_path.write_bytes(data)
         digest = hashlib.sha256(data).hexdigest()
-        manifest_path = final_path.parent / "manifest.json"
-        record = {
-            "path": str(final_path),
-            "format": normalized_format,
-            "bytes": len(data),
-            "sha256": digest,
-            "metadata": metadata or {},
-        }
-        records = [item for item in self._existing_save_artifact_records(manifest_path) if str(item.get("path") or "") != str(final_path)]
-        records.append(record)
-        manifest = {
-            "provider": "save_artifact",
-            "status": "ok",
-            "saved_to_local": True,
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-            "records": records,
-            "skipped": [],
-            "errors": [],
-        }
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        with self._directory_lock(target_path.parent):
+            target_existed = target_path.exists()
+            final_path = target_path if overwrite else self._unique_path(target_path)
+            self._atomic_write(final_path, data)
+            manifest_path = final_path.parent / "manifest.json"
+            record = {
+                "path": str(final_path),
+                "format": normalized_format,
+                "bytes": len(data),
+                "sha256": digest,
+                "metadata": metadata or {},
+            }
+            records = [item for item in self._existing_save_artifact_records(manifest_path) if str(item.get("path") or "") != str(final_path)]
+            records.append(record)
+            manifest = {
+                "provider": "save_artifact",
+                "status": "ok",
+                "saved_to_local": True,
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+                "records": records,
+                "skipped": [],
+                "errors": [],
+            }
+            self._atomic_write(manifest_path, json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"))
         return ArtifactSaveResult(
             ok=True,
             path=str(final_path),
@@ -102,6 +111,56 @@ class ArtifactSaveService:
             created=not target_existed or final_path != target_path,
             overwritten=overwrite and target_existed and final_path == target_path,
         )
+
+    @contextmanager
+    def _directory_lock(self, directory: Path):
+        directory_name = os.path.normcase(str(self._canonical_path(directory)))
+        with _DIRECTORY_LOCKS_GUARD:
+            thread_lock = _DIRECTORY_LOCKS.setdefault(directory_name, threading.RLock())
+        lock_root = Path(tempfile.gettempdir()) / "mcagent-artifact-locks"
+        lock_root.mkdir(parents=True, exist_ok=True)
+        directory_key = directory_name.encode("utf-8")
+        lock_path = lock_root / f"{hashlib.sha256(directory_key).hexdigest()}.lock"
+        with thread_lock:
+            with lock_path.open("a+b") as handle:
+                handle.seek(0, os.SEEK_END)
+                if handle.tell() == 0:
+                    handle.write(b"\0")
+                    handle.flush()
+                handle.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                    try:
+                        yield
+                    finally:
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                    try:
+                        yield
+                    finally:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    def _atomic_write(self, path: Path, data: bytes) -> None:
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+        try:
+            temporary.write_bytes(data)
+            for attempt in range(20):
+                try:
+                    temporary.replace(path)
+                    break
+                except PermissionError:
+                    if os.name != "nt" or attempt == 19:
+                        raise
+                    time.sleep(min(0.01 * (attempt + 1), 0.1))
+        finally:
+            if temporary.exists():
+                temporary.unlink()
 
     def _normalize_format(self, artifact_format: str) -> str:
         value = str(artifact_format or "").strip().lower().lstrip(".")
@@ -120,10 +179,18 @@ class ArtifactSaveService:
         if not Path(name).suffix:
             name = f"{name}{suffix}"
         if str(filename or "").strip() or (base.exists() and base.is_dir()):
-            return (base / name).resolve()
+            return self._canonical_path(base / name)
         if base.suffix:
-            return base.resolve()
-        return (base / name).resolve()
+            return self._canonical_path(base)
+        return self._canonical_path(base / name)
+
+    def _canonical_path(self, path: Path) -> Path:
+        value = str(path.resolve())
+        if os.name == "nt" and value.startswith("\\\\?\\UNC\\"):
+            value = f"\\\\{value[8:]}"
+        elif os.name == "nt" and value.startswith("\\\\?\\"):
+            value = value[4:]
+        return Path(value)
 
     def _existing_save_artifact_records(self, manifest_path: Path) -> list[dict[str, Any]]:
         if not manifest_path.exists():
