@@ -18,6 +18,12 @@ def _safe_count(value: Any, *, default: int = 0) -> int:
         return default
 
 
+def _text_items(value: Any, *, limit: int) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [str(item) for item in value[:limit] if str(item).strip()]
+
+
 @dataclass(slots=True)
 class JobReadableViewService:
     """Build a human-readable job view for API/UI payloads."""
@@ -65,7 +71,7 @@ class JobReadableViewService:
         empty = sum(1 for item in tasks if isinstance(item, dict) and item.get("empty_result"))
         status = str(job.get("status") or "")
         target = self._display_target(plan, str(job.get("title") or ""))
-        goals = [str(item) for item in (plan.get("coverage_goals") or []) if str(item).strip()]
+        goals = _text_items(plan.get("coverage_goals"), limit=5)
         model_prior = plan.get("model_prior") if isinstance(plan.get("model_prior"), dict) else {}
         current_query = str(current_task.get("query") or "") if current_task else ""
         current_source = self.source_label(str(current_task.get("source") or "")) if current_task else ""
@@ -102,7 +108,7 @@ class JobReadableViewService:
             "status_label": self._status_label(status),
             "target": target,
             "delivery_target": str(plan.get("delivery_target") or ""),
-            "coverage_goals": goals[:5],
+            "coverage_goals": goals,
             "model_prior": self._model_prior_summary(model_prior),
             "current_index": current_index,
             "total_tasks": len(planned),
@@ -157,10 +163,10 @@ class JobReadableViewService:
             return {}
         return {
             "target": str(prior.get("target") or ""),
-            "aliases": [str(item) for item in list(prior.get("aliases") or [])[:6] if str(item).strip()],
-            "likely_source_graph": [str(item) for item in list(prior.get("likely_source_graph") or [])[:8] if str(item).strip()],
-            "search_leads": [str(item) for item in list(prior.get("search_leads") or [])[:8] if str(item).strip()],
-            "verification_questions": [str(item) for item in list(prior.get("verification_questions") or [])[:6] if str(item).strip()],
+            "aliases": _text_items(prior.get("aliases"), limit=6),
+            "likely_source_graph": _text_items(prior.get("likely_source_graph"), limit=8),
+            "search_leads": _text_items(prior.get("search_leads"), limit=8),
+            "verification_questions": _text_items(prior.get("verification_questions"), limit=6),
             "evidence_status": str(prior.get("evidence_status") or "hypothesis_only"),
             "allowed_use": str(prior.get("allowed_use") or "planning_only"),
             "forbidden_use": str(prior.get("forbidden_use") or ""),

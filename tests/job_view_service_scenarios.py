@@ -243,6 +243,35 @@ def test_non_numeric_returncode_without_observation_does_not_break_job_view() ->
     assert_equal("useful_outputs", view["useful_outputs"], [])
 
 
+def test_malformed_plan_collections_do_not_break_job_view() -> None:
+    view = JobReadableViewService(source_label=label).build(
+        {
+            "title": "Crawler collection",
+            "status": "running",
+            "result": {
+                "plan": {
+                    "topic": "Utopian Journey",
+                    "coverage_goals": 7,
+                    "model_prior": {
+                        "target": "Utopian Journey",
+                        "aliases": 9,
+                        "likely_source_graph": {"source": "unexpected-object"},
+                        "search_leads": "unexpected-string",
+                        "verification_questions": None,
+                    },
+                }
+            },
+        }
+    )
+
+    assert_equal("coverage_goals", view["coverage_goals"], [])
+    assert_equal("model_prior_target", view["model_prior"]["target"], "Utopian Journey")
+    assert_equal("model_prior_aliases", view["model_prior"]["aliases"], [])
+    assert_equal("model_prior_source_graph", view["model_prior"]["likely_source_graph"], [])
+    assert_equal("model_prior_search_leads", view["model_prior"]["search_leads"], [])
+    assert_equal("model_prior_verification", view["model_prior"]["verification_questions"], [])
+
+
 if __name__ == "__main__":
     test_running_job_view_explains_current_action_and_counts()
     test_waiting_job_view_is_plain_language()
@@ -252,4 +281,5 @@ if __name__ == "__main__":
     test_non_numeric_manifest_stats_do_not_break_job_view()
     test_duplicate_reused_result_is_still_visible_without_new_records()
     test_non_numeric_returncode_without_observation_does_not_break_job_view()
+    test_malformed_plan_collections_do_not_break_job_view()
     print("job_view_service_scenarios: ok")
