@@ -345,9 +345,9 @@ class JobReadableViewService:
 
     def _self_audit_summary(self, audit: dict[str, Any]) -> str:
         counts = audit.get("counts") if isinstance(audit.get("counts"), dict) else {}
-        accepted = int(counts.get("accepted") or 0)
-        rejected = int(counts.get("rejected") or 0)
-        pending = int(counts.get("pending_review") or 0)
+        accepted = _safe_count(counts.get("accepted"))
+        rejected = _safe_count(counts.get("rejected"))
+        pending = _safe_count(counts.get("pending_review"))
         ingest_status = str(audit.get("ingest_status") or "skipped")
         ingest_label = {
             "running": "入库中",

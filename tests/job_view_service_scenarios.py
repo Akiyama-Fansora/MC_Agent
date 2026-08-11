@@ -272,6 +272,23 @@ def test_malformed_plan_collections_do_not_break_job_view() -> None:
     assert_equal("model_prior_verification", view["model_prior"]["verification_questions"], [])
 
 
+def test_malformed_self_audit_counts_do_not_break_summary() -> None:
+    service = JobReadableViewService(source_label=label)
+
+    summary = service._self_audit_summary(
+        {
+            "counts": {
+                "accepted": "unknown",
+                "rejected": {"count": 2},
+                "pending_review": None,
+            },
+            "ingest_status": "running",
+        }
+    )
+
+    assert_true("malformed_summary_kept", "接受 0 个来源" in summary and "入库中" in summary, summary)
+
+
 if __name__ == "__main__":
     test_running_job_view_explains_current_action_and_counts()
     test_waiting_job_view_is_plain_language()
@@ -282,4 +299,5 @@ if __name__ == "__main__":
     test_duplicate_reused_result_is_still_visible_without_new_records()
     test_non_numeric_returncode_without_observation_does_not_break_job_view()
     test_malformed_plan_collections_do_not_break_job_view()
+    test_malformed_self_audit_counts_do_not_break_summary()
     print("job_view_service_scenarios: ok")
