@@ -66,6 +66,13 @@ def _append(state: AgentGraphState, node: str, status: str, detail: dict[str, An
     }
 
 
+def _summary_items(summary: dict[str, Any], key: str, *, limit: int = 12) -> list[str]:
+    value = summary.get(key)
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value[:limit]]
+
+
 def build_mcagent_graph(
     config: AppConfig,
     agent_delivery: AgentDeliveryFn,
@@ -236,10 +243,13 @@ def build_mcagent_graph(
         history = memory.get("history") if isinstance(memory.get("history"), list) else []
         summary = memory.get("summary") if isinstance(memory.get("summary"), dict) else {}
         recent_questions = [str(item.get("question") or "") for item in history[-5:] if isinstance(item, dict) and item.get("question")]
+        summary_topics = _summary_items(summary, "topics")
+        summary_names = _summary_items(summary, "names")
+        summary_entities = _summary_items(summary, "entities")
         context_terms = [
-            *[str(item) for item in (summary.get("topics") or [])[:12]],
-            *[str(item) for item in (summary.get("names") or [])[:12]],
-            *[str(item) for item in (summary.get("entities") or [])[:12]],
+            *summary_topics,
+            *summary_names,
+            *summary_entities,
         ]
         contract = {
             "contract_id": f"{thread_id}:mcagent_rag:contextual_question",
@@ -252,9 +262,9 @@ def build_mcagent_graph(
             "contextual_question_hint": question,
             "history_turn_count": len(history),
             "recent_questions": recent_questions,
-            "summary_topics": [str(item) for item in (summary.get("topics") or [])[:12]],
-            "summary_names": [str(item) for item in (summary.get("names") or [])[:12]],
-            "summary_entities": [str(item) for item in (summary.get("entities") or [])[:12]],
+            "summary_topics": summary_topics,
+            "summary_names": summary_names,
+            "summary_entities": summary_entities,
             "candidate_context_terms": [item for item in context_terms if item][:24],
             "context_inputs_available": bool(history or summary),
             "rewrite_executed": False,

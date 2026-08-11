@@ -66,6 +66,13 @@ def _append(state: AgentGraphState, node: str, status: str, detail: dict[str, An
     }
 
 
+def _summary_items(summary: dict[str, Any], key: str, *, limit: int = 12) -> list[str]:
+    value = summary.get(key)
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value[:limit]]
+
+
 def build_crawler_graph(
     config: AppConfig,
     agent_delivery: AgentDeliveryFn,
@@ -233,8 +240,8 @@ def build_crawler_graph(
             },
             "session_context": {
                 "turn_count": memory.get("turn_count") or 0,
-                "summary_topics": [str(item) for item in (summary.get("topics") or [])[:12]],
-                "summary_entities": [str(item) for item in (summary.get("entities") or [])[:12]],
+                "summary_topics": _summary_items(summary, "topics"),
+                "summary_entities": _summary_items(summary, "entities"),
             },
             "mission_contract": mission,
             "decision_owner": "CrawlerAgent LLM",

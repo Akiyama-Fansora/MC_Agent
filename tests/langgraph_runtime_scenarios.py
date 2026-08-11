@@ -461,6 +461,55 @@ def test_agent_subgraphs_load_session_memory_context() -> None:
     DEFAULT_SESSION_STORE.delete(session_id)
 
 
+def test_agent_subgraphs_tolerate_malformed_summary_collections() -> None:
+    session_id = "graph-malformed-summary"
+    DEFAULT_SESSION_STORE.delete(session_id)
+    DEFAULT_SESSION_STORE.update_summary(
+        session_id,
+        lambda _current: {
+            "topics": 7,
+            "names": "unexpected text",
+            "entities": {"name": "unexpected object"},
+        },
+    )
+
+    def legacy(config: AppConfig, payload: dict[str, Any], emit: Any | None = None) -> dict[str, Any]:  # noqa: ARG001
+        return {"answer": "ok", "agent": payload.get("agent"), "sources": [], "context": ""}
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = make_temp_config(Path(tmp))
+            mc_result = dispatch_agent_message_graph(
+                config,
+                {"session_id": session_id},
+                from_agent="User",
+                content="use malformed memory",
+                to_agent="MCagent",
+                conversation_id=session_id,
+                agent_delivery=legacy,
+            )
+            crawler_result = dispatch_agent_message_graph(
+                config,
+                {"session_id": session_id},
+                from_agent="User",
+                content="use malformed memory too",
+                to_agent="CrawlerAgent",
+                conversation_id=session_id,
+                agent_delivery=legacy,
+            )
+    finally:
+        DEFAULT_SESSION_STORE.delete(session_id)
+
+    mc_context = (mc_result.get("agent_graph_runtime") or {}).get("contextual_question_contract") or {}
+    crawler_context = ((crawler_result.get("agent_graph_runtime") or {}).get("source_planning_contract") or {}).get("session_context") or {}
+    assert_true("malformed_mc_topics", mc_context.get("summary_topics") == [], str(mc_context))
+    assert_true("malformed_mc_names", mc_context.get("summary_names") == [], str(mc_context))
+    assert_true("malformed_mc_entities", mc_context.get("summary_entities") == [], str(mc_context))
+    assert_true("malformed_mc_context_terms", mc_context.get("candidate_context_terms") == [], str(mc_context))
+    assert_true("malformed_crawler_topics", crawler_context.get("summary_topics") == [], str(crawler_context))
+    assert_true("malformed_crawler_entities", crawler_context.get("summary_entities") == [], str(crawler_context))
+
+
 def test_graph_router_error_route_executes_for_both_agents() -> None:
     deliveries: list[str] = []
     executions: list[dict[str, str]] = []
@@ -1925,6 +1974,7 @@ def main() -> int:
     test_conversation_graph_can_dispatch_to_crawler_node()
     test_non_streaming_graph_reuses_checkpointed_runtime_without_reusing_emit()
     test_agent_subgraphs_load_session_memory_context()
+    test_agent_subgraphs_tolerate_malformed_summary_collections()
     test_graph_router_error_route_executes_for_both_agents()
     test_graph_direct_answer_node_executes_for_both_agents()
     test_graph_temporary_extract_node_executes_for_both_agents()
