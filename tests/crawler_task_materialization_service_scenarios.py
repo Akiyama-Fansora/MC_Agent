@@ -97,6 +97,22 @@ def test_materialize_replan_tasks_blocks_modpack_internal_without_archive_input(
     assert_equal("source", tasks[0]["source"], "modpack_download")
 
 
+def test_materializers_ignore_malformed_task_collections() -> None:
+    service = CrawlerTaskMaterializationService()
+    common = {
+        "existing_tasks": [],
+        "identity_fn": identity,
+        "source_alias_fn": source_alias,
+        "max_new_tasks": 3,
+    }
+
+    replan_tasks = service.materialize_replan_tasks(new_plan={"tasks": 7}, **common)
+    review_tasks = service.materialize_topic_review_tasks(review_plan={"tasks": {"source": "fetch_url"}}, **common)
+
+    assert_equal("malformed_replan_tasks", replan_tasks, [])
+    assert_equal("malformed_review_tasks", review_tasks, [])
+
+
 def test_reflection_task_filter_allows_modpack_internal_with_archive_path() -> None:
     service = CrawlerTaskMaterializationService()
     executable, blocked = service.filter_executable_reflection_tasks(
@@ -142,6 +158,22 @@ def test_record_replan_appends_observable_history() -> None:
     )
     assert_equal("history_count", len(plan["replans"]), 1)
     assert_equal("planner", plan["replans"][0]["planner"], "deepseek")
+
+
+def test_record_replan_ignores_malformed_raw_plan_metadata() -> None:
+    service = CrawlerTaskMaterializationService()
+    plan: dict[str, Any] = {}
+
+    service.record_replan(
+        plan=plan,
+        task_results_count=1,
+        failure_summary=[],
+        new_tasks=[],
+        new_plan={"raw_plan": "unexpected text"},
+    )
+
+    assert_equal("malformed_raw_plan_history_count", len(plan["replans"]), 1)
+    assert_equal("malformed_raw_plan_planner", plan["replans"][0]["planner"], None)
 
 
 def test_topic_review_materialization_filters_discovery_and_duplicates() -> None:
@@ -199,9 +231,11 @@ if __name__ == "__main__":
     test_materialize_replan_tasks_normalizes_and_deduplicates()
     test_materialize_replan_tasks_deduplicates_after_source_aliasing()
     test_materialize_replan_tasks_blocks_modpack_internal_without_archive_input()
+    test_materializers_ignore_malformed_task_collections()
     test_reflection_task_filter_allows_modpack_internal_with_archive_path()
     test_displayable_planned_tasks_split_blocks_modpack_internal_without_archive_input()
     test_record_replan_appends_observable_history()
+    test_record_replan_ignores_malformed_raw_plan_metadata()
     test_topic_review_materialization_filters_discovery_and_duplicates()
     test_fallback_topic_tasks_use_general_sources_for_non_minecraft_context()
     test_fallback_topic_tasks_use_minecraft_sources_for_minecraft_context()

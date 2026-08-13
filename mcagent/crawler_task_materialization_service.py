@@ -63,9 +63,7 @@ class CrawlerTaskMaterializationService:
     ) -> list[dict[str, Any]]:
         seen = set(self.task_identities(existing_tasks, identity_fn=identity_fn))
         new_tasks: list[dict[str, Any]] = []
-        for task in list(new_plan.get("tasks") or []):
-            if not isinstance(task, dict):
-                continue
+        for task in self._task_items(new_plan.get("tasks")):
             cloned = dict(task)
             cloned["source"] = source_alias_fn(str(cloned.get("source") or "web_discovery"))
             identity = identity_fn(cloned)
@@ -96,7 +94,11 @@ class CrawlerTaskMaterializationService:
                     "at_result_count": task_results_count,
                     "failure_summary": failure_summary,
                     "new_tasks": new_tasks,
-                    "planner": new_plan.get("strategy") or new_plan.get("planner_model") or new_plan.get("raw_plan", {}).get("_planner_model"),
+                    "planner": (
+                        new_plan.get("strategy")
+                        or new_plan.get("planner_model")
+                        or self._planner_from_raw_plan(new_plan.get("raw_plan"))
+                    ),
                 }
             )
 
@@ -111,9 +113,7 @@ class CrawlerTaskMaterializationService:
     ) -> list[dict[str, Any]]:
         seen = set(self.task_identities(existing_tasks, identity_fn=identity_fn))
         new_tasks: list[dict[str, Any]] = []
-        for task in list(review_plan.get("tasks") or []):
-            if not isinstance(task, dict):
-                continue
+        for task in self._task_items(review_plan.get("tasks")):
             source = source_alias_fn(str(task.get("source") or ""))
             query = str(task.get("query") or "").strip()
             if source == "topic_discovery" or not query:
@@ -189,6 +189,16 @@ class CrawlerTaskMaterializationService:
             if str(task.get(key) or "").strip():
                 return False
         return True
+
+    @staticmethod
+    def _task_items(value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        return [item for item in value if isinstance(item, dict)]
+
+    @staticmethod
+    def _planner_from_raw_plan(value: Any) -> Any:
+        return value.get("_planner_model") if isinstance(value, dict) else None
 
     def fallback_topic_tasks(
         self,
