@@ -234,18 +234,47 @@ def analyze_query(question: str, concepts: list[dict[str, Any]] | None = None) -
 
 def _match_concept(lowered: str, concepts: list[dict[str, Any]]) -> dict[str, Any] | None:
     for concept in concepts:
-        aliases = concept.get("aliases") or []
-        if any(str(alias).lower() in lowered for alias in aliases):
-            return concept
+        normalized = _normalize_concept(concept)
+        if not normalized:
+            continue
+        aliases = normalized["aliases"]
+        if any(alias.lower() in lowered for alias in aliases):
+            return normalized
     return None
 
 
 def _concept_sources(concept: dict[str, Any]) -> list[str]:
     sources = [str(concept.get("primary_source") or "")]
     for task in concept.get("tasks", []):
-        if len(task) >= 1:
-            sources.append(str(task[0]))
+        sources.append(task[0])
     return _dedupe([source for source in sources if source])
+
+
+def _normalize_concept(value: Any) -> dict[str, Any] | None:
+    """Keep planner-facing concept metadata executable when cache data is malformed."""
+    if not isinstance(value, dict):
+        return None
+    aliases = value.get("aliases")
+    aliases = [str(item).strip() for item in aliases if str(item).strip()] if isinstance(aliases, (list, tuple)) else []
+    raw_tasks = value.get("tasks")
+    tasks: list[tuple[str, str, str, int | float]] = []
+    if isinstance(raw_tasks, (list, tuple)):
+        for raw_task in raw_tasks:
+            if not isinstance(raw_task, (list, tuple)) or len(raw_task) != 4:
+                continue
+            source, query, reason, priority = raw_task
+            if isinstance(priority, bool):
+                priority = 0
+            elif not isinstance(priority, (int, float)):
+                try:
+                    priority = float(str(priority).strip())
+                except (TypeError, ValueError):
+                    priority = 0
+            tasks.append((str(source or "").strip(), str(query or "").strip(), str(reason or "").strip(), priority))
+    normalized = dict(value)
+    normalized["aliases"] = aliases
+    normalized["tasks"] = tasks
+    return normalized
 
 
 def _question_type(question: str) -> str:

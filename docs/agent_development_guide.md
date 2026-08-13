@@ -6277,3 +6277,24 @@ Validation:
 Boundary:
 
 This change does not reinterpret valid Crawler decisions, alter fetching or persistence, change ingest policy, modify chunking/RAG/evidence ranking, reroute AgentMessage traffic, or change answer synthesis. It only prevents malformed objective tool metadata from aborting Crawler accounting and frontend summary generation.
+
+## 2026-08-14 Stage 122: Normalize Query Concept Metadata Before Planning
+
+This maintenance pass focused on the query-intent boundary shared by MCagent local RAG and CrawlerAgent task planning.
+
+Implemented changes:
+
+1. `mcagent/query_intent.py` now normalizes concept aliases and task metadata before matching a known project.
+2. Non-mapping concepts, non-list aliases/tasks, malformed task entries, and non-numeric priorities are ignored or normalized instead of interrupting intent analysis and planner execution.
+3. Scenario coverage verifies malformed concept caches do not break known-mod routing while valid task tuples remain available to downstream Crawler planning.
+
+Validation:
+
+1. `python tests\query_intent_scenarios.py`
+2. `python tests\crawler_task_preparation_service_scenarios.py`
+3. `python tests\rag_service_scenarios.py`
+4. Full `*_scenarios.py`, smoke, compileall, public-readiness, architecture-audit, encoding, and frontend syntax regression.
+
+Boundary:
+
+This change does not alter source priorities for valid concepts, fetching or persistence behavior, chunking, retrieval ranking, evidence selection, AgentMessage routing, graph routes, frontend actions, or answer synthesis. It only makes planner-facing concept metadata resilient to malformed cached or external values.
