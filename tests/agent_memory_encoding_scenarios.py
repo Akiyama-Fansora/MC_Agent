@@ -82,8 +82,29 @@ def test_memory_reader_caps_large_limits() -> None:
     assert_equal("summary_cap", len(summary.get("recall_memory") or []), agent_memory.MEMORY_MAX_EVENTS)
 
 
+def test_memory_reader_ignores_non_object_json_records() -> None:
+    original_path = agent_memory.MEMORY_PATH
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            memory_path = Path(tmp) / "agent_memory.jsonl"
+            agent_memory.MEMORY_PATH = memory_path
+            memory_path.write_text(
+                '\n'.join(['7', '["unexpected"]', '"text"', '{"type":"turn","index":1}']) + '\n',
+                encoding="utf-8",
+            )
+            events = agent_memory.read_memory_events(limit=10, include_damaged=True)
+            summary = agent_memory.memory_summary(limit=10)
+    finally:
+        agent_memory.MEMORY_PATH = original_path
+
+    assert_equal("object_events", events, [{"type": "turn", "index": 1}])
+    assert_equal("summary_event_count", summary.get("events"), 1)
+    assert_equal("summary_type_count", summary.get("by_type"), {"turn": 1})
+
+
 if __name__ == "__main__":
     test_memory_reader_hides_damaged_events_by_default()
     test_memory_reader_tolerates_malformed_limits()
     test_memory_reader_caps_large_limits()
+    test_memory_reader_ignores_non_object_json_records()
     print("agent_memory_encoding_scenarios passed")

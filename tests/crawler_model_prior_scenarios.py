@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from mcagent.crawler_model_prior_service import CrawlerModelPriorService  # noqa: E402
+import mcagent.crawler_llm_planner as crawler_llm_planner  # noqa: E402
 from mcagent.crawler_llm_planner import plan_crawler_tasks_rule_fallback, _sanitize_plan  # noqa: E402
 from mcagent.crawler_self_audit_service import CrawlerSelfAuditService  # noqa: E402
 from mcagent.job_view_service import JobReadableViewService  # noqa: E402
@@ -164,6 +165,25 @@ def test_sanitize_plan_drops_placeholder_queries_and_uses_prior_leads() -> None:
     assert_equal("prior_boundary", plan["model_prior"]["allowed_use"], "planning_only")
 
 
+def test_memory_digest_ignores_malformed_collection_fields() -> None:
+    original_reader = crawler_llm_planner.read_memory_events
+    try:
+        crawler_llm_planner.read_memory_events = lambda **_kwargs: [
+            {"type": "crawler_lesson", "title": "bad lesson", "success_pattern": 7},
+            {"type": "crawler_lesson", "title": "valid lesson", "success_pattern": ["discover", "verify"]},
+            {"type": "crawler_plan_completed", "summary": {"next_actions": {"action": "retry"}}},
+            {"type": "crawler_plan_completed", "summary": {"next_actions": ["inspect source", "persist evidence"]}},
+        ]
+        digest = crawler_llm_planner._crawler_memory_digest(limit=8)
+    finally:
+        crawler_llm_planner.read_memory_events = original_reader
+
+    assert_equal("malformed_success_pattern", digest["lessons"][0]["success_pattern"], [])
+    assert_equal("valid_success_pattern", digest["lessons"][1]["success_pattern"], ["discover", "verify"])
+    assert_equal("malformed_next_actions", digest["recent_events"][0]["next_actions"], [])
+    assert_equal("valid_next_actions", digest["recent_events"][1]["next_actions"], ["inspect source", "persist evidence"])
+
+
 if __name__ == "__main__":
     test_rule_prior_is_hypothesis_only_and_suggests_verification_leads()
     test_prior_leads_spread_aliases_before_source_variants()
@@ -171,4 +191,5 @@ if __name__ == "__main__":
     test_sanitize_plan_preserves_llm_prior_and_readable_exposes_it_separately()
     test_llm_prior_merges_rule_source_specific_leads()
     test_sanitize_plan_drops_placeholder_queries_and_uses_prior_leads()
+    test_memory_digest_ignores_malformed_collection_fields()
     print("crawler_model_prior_scenarios passed")

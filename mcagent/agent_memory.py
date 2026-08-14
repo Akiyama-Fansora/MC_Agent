@@ -78,6 +78,8 @@ def read_memory_events(limit: int = 40, *, include_damaged: bool = False) -> lis
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if not isinstance(event, dict):
+            continue
         if not include_damaged and memory_event_has_encoding_damage(event):
             continue
         events.append(event)

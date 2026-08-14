@@ -1331,7 +1331,7 @@ def _crawler_memory_digest(limit: int = 8) -> dict[str, Any]:
                     "topic": str(event.get("topic") or "")[:80],
                     "lesson": str(event.get("lesson") or "")[:900],
                     "playbook_path": str(event.get("playbook_path") or "")[:240],
-                    "success_pattern": [str(item)[:160] for item in list(event.get("success_pattern") or [])[:6]],
+                    "success_pattern": _memory_text_items(event.get("success_pattern"), limit=6, item_limit=160),
                 }
             )
         elif event_type in {"crawler_plan_completed", "crawler_gap_delegated", "crawler_background_ingest_completed"}:
@@ -1344,13 +1344,19 @@ def _crawler_memory_digest(limit: int = 8) -> dict[str, Any]:
                     "success_count": event.get("success_count"),
                     "failure_count": event.get("failure_count"),
                     "totals": {key: totals.get(key) for key in ("records", "empty_tasks", "off_topic_tasks", "duplicate_skipped")},
-                    "next_actions": [str(item)[:180] for item in list(summary.get("next_actions") or [])[:4]],
+                    "next_actions": _memory_text_items(summary.get("next_actions"), limit=4, item_limit=180),
                 }
             )
     return {
         "lessons": lessons[-4:],
         "recent_events": recent[-limit:],
     }
+
+
+def _memory_text_items(value: Any, *, limit: int, item_limit: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item)[:item_limit] for item in value[:limit]]
 
 
 def _crawler_model_prior(
