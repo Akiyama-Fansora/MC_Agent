@@ -6298,3 +6298,22 @@ Validation:
 Boundary:
 
 This change does not alter source priorities for valid concepts, fetching or persistence behavior, chunking, retrieval ranking, evidence selection, AgentMessage routing, graph routes, frontend actions, or answer synthesis. It only makes planner-facing concept metadata resilient to malformed cached or external values.
+
+## 2026-08-16 Stage 123: Tolerate Malformed Session Summary Collections
+
+This maintenance pass focused on the persisted session-summary boundary shared by MCagent context, CrawlerAgent delegation, AgentMessage handoff, and the frontend-visible conversation state.
+
+Implemented changes:
+
+1. `mcagent/web_server.py` now normalizes `topics`, `entities`, `names`, and `gaps` to bounded string lists before merging history, events, or caller-provided context.
+2. Scalar, mapping, null, and other malformed collection values are treated as empty collections instead of reaching `merge_limited()` and raising `TypeError`.
+3. `tests/modpack_manifest_and_session_scenarios.py` covers both reading a malformed persisted summary and appending a new turn afterward.
+
+Validation:
+
+1. `python tests\modpack_manifest_and_session_scenarios.py`
+2. `python -m py_compile mcagent\web_server.py tests\modpack_manifest_and_session_scenarios.py`
+
+Boundary:
+
+This change does not alter valid session topics, retrieval ranking, Crawler source selection, artifact persistence, ingest, AgentMessage routing decisions, graph routes, frontend action semantics, or answer generation. It only keeps malformed session-summary collections from interrupting context construction and subsequent summary updates.

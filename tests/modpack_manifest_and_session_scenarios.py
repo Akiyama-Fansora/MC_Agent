@@ -214,11 +214,63 @@ def test_session_memory_is_scoped_by_session_id_and_supports_followups() -> None
         web_server.SESSION_STORE = original_store
 
 
+def test_malformed_persisted_summary_collections_do_not_break_session_context() -> None:
+    original_store = web_server.SESSION_STORE
+    store = InMemorySessionStore()
+    session_id = "malformed-summary"
+    store.update_summary(
+        session_id,
+        lambda _summary: {
+            "topics": 17,
+            "entities": {"unexpected": True},
+            "names": "not-a-list",
+            "gaps": None,
+            "turn_count": 1,
+        },
+    )
+    store.append_turn(session_id, {"question": "old question", "answer": "old answer", "sources": []})
+    web_server.SESSION_STORE = store
+    try:
+        summary = web_server._session_summary({"session_id": session_id})
+        for key in ("topics", "entities", "names", "gaps"):
+            assert_true(f"{key}_normalized", isinstance(summary.get(key), list), str(summary))
+        explicit = web_server._session_summary(
+            {
+                "session_id": session_id,
+                "session_summary": {
+                    "topics": 99,
+                    "entities": {"unexpected": True},
+                    "names": ["provided name"],
+                    "gaps": "not-a-list",
+                },
+            }
+        )
+        assert_true("explicit_topics_normalized", isinstance(explicit.get("topics"), list), str(explicit))
+        assert_true("explicit_names_preserved", "provided name" in explicit.get("names", []), str(explicit))
+        assert_true("explicit_gaps_normalized", isinstance(explicit.get("gaps"), list), str(explicit))
+
+        web_server._append_session(
+            {"session_id": session_id},
+            "new question",
+            "new answer",
+            [],
+        )
+        updated = web_server._session_summary({"session_id": session_id})
+        assert_true(
+            "append_keeps_summary_context",
+            all(isinstance(updated.get(key), list) for key in ("topics", "entities", "names", "gaps")),
+            str(updated),
+        )
+    finally:
+        web_server.SESSION_STORE = original_store
+
+
 def main() -> int:
     test_modpack_manifest_facts_are_preferred_over_release_filename()
     test_malformed_modloader_metadata_does_not_abort_manifest_cleaning()
     test_crawler_accepted_sources_are_preferred_for_project_questions()
     test_session_memory_is_scoped_by_session_id_and_supports_followups()
+    test_malformed_persisted_summary_collections_do_not_break_session_context()
     print("MODPACK MANIFEST AND SESSION TESTS PASSED")
     return 0
 

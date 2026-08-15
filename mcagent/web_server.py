@@ -9104,7 +9104,7 @@ def _session_summary(payload: dict[str, Any]) -> dict[str, Any]:
     explicit = payload.get("session_summary") if isinstance(payload.get("session_summary"), dict) else {}
     session_id = normalize_session_id(payload.get("session_id"))
     recent_history = _session_history(payload, limit=12)
-    summary = SESSION_STORE.summary(session_id)
+    summary = _normalize_session_summary_collections(SESSION_STORE.summary(session_id))
     if not summary:
         summary = _summary_from_history(recent_history)
     elif recent_history:
@@ -9130,8 +9130,12 @@ def _session_summary(payload: dict[str, Any]) -> dict[str, Any]:
         summary["last_assistant_answer"] = compact_turns[-1].get("answer", "")
     summary = _session_summary_with_events(session_id, summary)
     if explicit:
-        merged = dict(summary)
+        merged = _normalize_session_summary_collections(summary)
         for key, value in explicit.items():
+            if key in _SESSION_SUMMARY_COLLECTION_KEYS:
+                if isinstance(value, (list, tuple)):
+                    merged[key] = merge_limited(list(merged.get(key) or []), [str(item) for item in value], limit=80)
+                continue
             if isinstance(value, list) and isinstance(merged.get(key), list):
                 merged[key] = merge_limited(list(merged.get(key) or []), [str(item) for item in value], limit=80)
             elif value not in (None, "", []):
@@ -9141,7 +9145,7 @@ def _session_summary(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _session_summary_with_events(session_id: str, summary: dict[str, Any]) -> dict[str, Any]:
-    value = dict(summary or {})
+    value = _normalize_session_summary_collections(summary)
     events = SESSION_STORE.events(session_id, limit=30)
     if not events:
         return value
@@ -9236,12 +9240,30 @@ def _summary_from_history(history: list[dict[str, Any]]) -> dict[str, Any]:
     return summary
 
 
+_SESSION_SUMMARY_COLLECTION_KEYS = ("topics", "entities", "names", "gaps")
+
+
+def _normalize_session_summary_collections(summary: dict[str, Any] | None) -> dict[str, Any]:
+    """Keep persisted/session-provided summary collections iterable and bounded."""
+    value = dict(summary or {})
+    for key in _SESSION_SUMMARY_COLLECTION_KEYS:
+        if key not in value:
+            continue
+        raw = value.get(key)
+        if isinstance(raw, (list, tuple)):
+            value[key] = [str(item).strip() for item in raw if str(item).strip()][:80]
+        else:
+            value[key] = []
+    return value
+
+
 def _delete_session(session_id: str) -> dict[str, Any]:
     return SESSION_STORE.delete(session_id)
 
 
 def _update_session_summary(session_id: str, turn: dict[str, Any]) -> None:
     def updater(summary: dict[str, Any]) -> dict[str, Any]:
+        summary = _normalize_session_summary_collections(summary)
         if not summary:
             summary = {"topics": [], "entities": [], "names": [], "gaps": [], "turn_count": 0}
         summary["turn_count"] = int(summary.get("turn_count") or 0) + 1
