@@ -363,6 +363,8 @@ def _extract_modpack_manifest_records(value: Any) -> list[dict[str, Any]]:
         modloaders = minecraft.get("modLoaders") or parsed.get("modloaders") or parsed.get("modLoaders") or []
         if isinstance(modloaders, dict):
             modloaders = [modloaders]
+        elif not isinstance(modloaders, list):
+            modloaders = []
         loader_ids = [
             str(item.get("id") or item.get("loader") or item.get("name") or "").strip()
             for item in modloaders

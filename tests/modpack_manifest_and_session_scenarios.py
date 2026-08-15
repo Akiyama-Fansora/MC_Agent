@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from mcagent.config import AppConfig, ChunkingConfig, EmbeddingConfig, OllamaConfig, PathsConfig, RetrievalConfig  # noqa: E402
+from mcagent.cleaners import load_documents_from_path  # noqa: E402
 from mcagent.ingest import ingest_exports  # noqa: E402
 from mcagent.retriever import Retriever  # noqa: E402
 from mcagent.session_state import InMemorySessionStore  # noqa: E402
@@ -98,6 +99,31 @@ def test_modpack_manifest_facts_are_preferred_over_release_filename() -> None:
         assert_true("manifest_fact_present", "Minecraft 版本: 1.20.1" in combined, combined)
         assert_true("loader_fact_present", "forge-47.3.22" in combined, combined)
         assert_true("release_warning_present", "不要从压缩包文件名" in combined, combined)
+
+
+def test_malformed_modloader_metadata_does_not_abort_manifest_cleaning() -> None:
+    with tempfile.TemporaryDirectory(prefix="mcagent-malformed-manifest-") as tmp:
+        root = Path(tmp)
+        path = root / "modpack_manifests_malformed.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "parsed": {
+                        "name": "Malformed Loader Fixture",
+                        "minecraft": {"version": "1.20.1", "modLoaders": 47},
+                        "manifestType": "minecraftModpack",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        documents = load_documents_from_path(path, root)
+        fact_documents = [item for item in documents if item.metadata.get("source_kind") == "modpack_manifest_facts"]
+
+        assert_true("fact_document_preserved", len(fact_documents) == 1, str(documents))
+        assert_true("minecraft_version_preserved", "1.20.1" in fact_documents[0].text, fact_documents[0].text)
+        assert_true("malformed_loader_ignored", "minecraft.modLoaders.id" not in fact_documents[0].text, fact_documents[0].text)
 
 
 def test_crawler_accepted_sources_are_preferred_for_project_questions() -> None:
@@ -190,6 +216,7 @@ def test_session_memory_is_scoped_by_session_id_and_supports_followups() -> None
 
 def main() -> int:
     test_modpack_manifest_facts_are_preferred_over_release_filename()
+    test_malformed_modloader_metadata_does_not_abort_manifest_cleaning()
     test_crawler_accepted_sources_are_preferred_for_project_questions()
     test_session_memory_is_scoped_by_session_id_and_supports_followups()
     print("MODPACK MANIFEST AND SESSION TESTS PASSED")
