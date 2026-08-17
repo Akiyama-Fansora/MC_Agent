@@ -291,6 +291,12 @@ def _job_light_snapshot(job: Job) -> dict[str, Any]:
     }
 
 
+def _dict_items(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
 def _light_job_result(result: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(result, dict):
         return result
@@ -645,8 +651,8 @@ def _refresh_job_ingest_state(job: Job) -> None:
         return
     export_dirs = [
         str(result.get("export_dir") or "")
-        for result in job.result.get("tasks") or []
-        if isinstance(result, dict) and result.get("ingest_deferred") and result.get("export_dir")
+        for result in _dict_items(job.result.get("tasks"))
+        if result.get("ingest_deferred") and result.get("export_dir")
     ]
     if not export_dirs:
         return
@@ -7884,7 +7890,7 @@ def _collaboration_dialog_for(question: str, job: Job, created: bool, *, request
     if isinstance(job.result, dict):
         maybe_plan = job.result.get("plan")
         crawler_plan = maybe_plan if isinstance(maybe_plan, dict) else {}
-        tasks = list(job.result.get("planned_tasks") or [])
+        tasks = _dict_items(job.result.get("planned_tasks"))
     target_label = delivery_target or "\u7531\u4efb\u52a1\u76ee\u6807\u5224\u65ad"
     if requested_by == "user":
         dialog = [
@@ -7904,7 +7910,7 @@ def _collaboration_dialog_for(question: str, job: Job, created: bool, *, request
         ]
     if tasks:
         topic = crawler_plan.get("topic") or question
-        goals = crawler_plan.get("coverage_goals") or []
+        goals = crawler_plan.get("coverage_goals") if isinstance(crawler_plan.get("coverage_goals"), list) else []
         goal_text = "\uff1b\u8986\u76d6\u76ee\u6807\uff1a" + "\u3001".join(str(item) for item in goals[:6]) if goals else ""
         task_text = "\uff1b".join(f"{_source_label(str(item.get('source')))}={item.get('query')}" for item in tasks[:10])
         dialog.append({"speaker": "Crawler", "state": "\u89c4\u5212", "text": f"Crawler LLM \u5df2\u89c4\u5212\u4e3b\u9898\uff1a{topic}{goal_text}\u3002\u4efb\u52a1\uff1a{task_text}"})
@@ -13105,9 +13111,7 @@ def _crawler_job_identity_haystack(job: dict[str, Any]) -> str:
         str(plan.get("question") or ""),
         str(plan.get("collection_target") or ""),
     ]
-    for task in result.get("planned_tasks") or []:
-        if not isinstance(task, dict):
-            continue
+    for task in _dict_items(result.get("planned_tasks")):
         parts.append(str(task.get("query") or ""))
         parts.append(str(task.get("reason") or ""))
     return "\n".join(item for item in parts if item).lower()
