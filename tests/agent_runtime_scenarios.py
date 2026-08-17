@@ -70,6 +70,39 @@ def test_tool_observation_matrix() -> None:
             assert_true("pending_review_not_ok", observation.bad)
 
 
+def test_malformed_manifest_counts_do_not_create_runtime_evidence() -> None:
+    malformed_cases = [
+        ("boolean_records", {"records": True}),
+        ("fractional_records", {"records": 1.5}),
+        ("negative_records", {"records": -3}),
+        ("boolean_skipped", {"records": 0, "skipped": True}),
+        ("boolean_errors", {"records": 0, "errors": True}),
+    ]
+    for name, manifest in malformed_cases:
+        observation = classify_crawler_tool_result(
+            {
+                "source": "fetch_url",
+                "returncode": 0,
+                "manifest_stats": manifest,
+                "topic_validation": {"matched": True, "crawler_review_action": "accept"},
+            }
+        )
+        assert_equal(f"{name}_status", observation.status, "empty")
+        assert_equal(f"{name}_records", observation.detail["records"], 0)
+
+    valid = classify_crawler_tool_result(
+        {
+            "source": "fetch_url",
+            "returncode": 0,
+            "manifest_stats": {"records": 2.0, "skipped": "3"},
+            "topic_validation": {"matched": True, "crawler_review_action": "accept"},
+        }
+    )
+    assert_equal("integral_float_records_kept", valid.detail["records"], 2)
+    assert_equal("integer_string_skipped_kept", valid.detail["skipped"], 3)
+    assert_equal("valid_counts_still_accepted", valid.status, "ok")
+
+
 def test_agent_loop_event_keeps_trace_shape() -> None:
     event = make_agent_loop_event("observe", "received", {"question": "你好"})
     trace = event.to_trace_dict()
@@ -443,6 +476,7 @@ def test_crawler_handoff_target_overrides_old_session_topic() -> None:
 
 def main() -> int:
     test_tool_observation_matrix()
+    test_malformed_manifest_counts_do_not_create_runtime_evidence()
     test_agent_loop_event_keeps_trace_shape()
     test_agent_tool_decision_normalization()
     test_handoff_contract_preserves_context()

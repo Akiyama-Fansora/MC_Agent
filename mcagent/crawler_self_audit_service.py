@@ -3,23 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .agent_runtime import classify_crawler_tool_result
-
-
-def _safe_count(value: Any, *, default: int = 0) -> int:
-    fallback = max(0, default) if isinstance(default, int) and not isinstance(default, bool) else 0
-    if isinstance(value, bool):
-        return fallback
-    if isinstance(value, float) and not value.is_integer():
-        return fallback
-    if isinstance(value, str):
-        text = value.strip()
-        if not text or not text.lstrip("+-").isdigit():
-            return fallback
-    try:
-        return max(0, int(value))
-    except (TypeError, ValueError):
-        return fallback
+from .agent_runtime import classify_crawler_tool_result, normalize_nonnegative_count as _safe_count
 
 
 @dataclass(slots=True)

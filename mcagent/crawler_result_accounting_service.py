@@ -2,8 +2,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from .agent_runtime import normalize_nonnegative_count
+
 
 def _manifest_count(value: Any, *, default: int = 0) -> int:
+    return normalize_nonnegative_count(value, default=default)
+
+
+def _result_code(value: Any, *, default: int = 0) -> int:
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -25,7 +31,7 @@ class CrawlerResultAccountingService:
         records_loaded = _manifest_count(manifest.get("records"))
         usable_records = _manifest_count(manifest.get("usable_records"), default=records_loaded) if manifest.get("usable_records") is not None else records_loaded
         empty_records = _manifest_count(manifest.get("empty_records"))
-        returncode = _manifest_count(result.get("returncode"))
+        returncode = _result_code(result.get("returncode"))
         accounting = {
             "success_delta": 0,
             "candidate_delta": 0,

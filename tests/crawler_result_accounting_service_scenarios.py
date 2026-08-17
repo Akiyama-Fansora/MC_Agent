@@ -182,6 +182,28 @@ def test_non_numeric_manifest_counts_do_not_break_accounting() -> None:
     assert_equal("archive_not_downloaded", result["archive_not_downloaded"], True)
 
 
+def test_malformed_manifest_counts_do_not_trigger_success_or_ingest() -> None:
+    accepted_result = {
+        "returncode": 0,
+        "manifest_stats": {"records": True, "usable_records": 2.5, "empty_records": -4},
+        "topic_validation": {"matched": True, "crawler_review_action": "accept"},
+    }
+    accepted_accounting = apply(accepted_result)
+    assert_equal("malformed_records_not_success", accepted_accounting["success_delta"], 0)
+    assert_equal("malformed_records_not_ingested", accepted_accounting["needs_ingest"], False)
+    assert_equal("malformed_records_are_empty", accepted_result["empty_result"], True)
+
+    download_result = {
+        "returncode": 0,
+        "manifest_stats": {"records": 2.0, "downloads": True, "candidates": 1.5, "blockers": -2},
+    }
+    download_accounting = apply(download_result, source="modpack_download")
+    assert_equal("malformed_download_not_success", download_accounting["success_delta"], 0)
+    assert_equal("malformed_candidate_not_counted", download_accounting["candidate_delta"], 0)
+    assert_equal("malformed_download_not_ingested", download_accounting["needs_ingest"], False)
+    assert_equal("malformed_download_reported_missing", download_result["archive_not_found"], True)
+
+
 def test_malformed_reused_evidence_waits_for_review() -> None:
     result = {
         "returncode": 0,
@@ -209,5 +231,6 @@ if __name__ == "__main__":
     test_mcagent_context_is_diagnostic_and_adds_external_followup()
     test_fetch_url_archive_redirect_adds_modpack_download_followup()
     test_non_numeric_manifest_counts_do_not_break_accounting()
+    test_malformed_manifest_counts_do_not_trigger_success_or_ingest()
     test_malformed_reused_evidence_waits_for_review()
     print("crawler_result_accounting_service_scenarios passed")

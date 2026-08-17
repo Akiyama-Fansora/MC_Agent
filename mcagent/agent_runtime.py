@@ -570,12 +570,27 @@ def _result_text_for_classification(result: dict[str, Any]) -> str:
     return " ".join(str(item) for item in parts if item).lower()
 
 
+def normalize_nonnegative_count(value: Any, *, default: int = 0) -> int:
+    """Normalize objective tool counters without turning malformed values into evidence."""
+
+    fallback = max(0, default) if isinstance(default, int) and not isinstance(default, bool) else 0
+    if isinstance(value, bool):
+        return fallback
+    if isinstance(value, float) and not value.is_integer():
+        return fallback
+    if isinstance(value, str):
+        text = value.strip()
+        if not text or not text.lstrip("+-").isdigit():
+            return fallback
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return fallback
+
+
 def _manifest_count(result: dict[str, Any], key: str) -> int:
     manifest = result.get("manifest_stats") if isinstance(result.get("manifest_stats"), dict) else {}
-    try:
-        return int(manifest.get(key) or 0)
-    except (TypeError, ValueError):
-        return 0
+    return normalize_nonnegative_count(manifest.get(key))
 
 
 def _result_count(result: dict[str, Any], key: str, *, default: int = 0) -> int:
@@ -625,13 +640,9 @@ def _result_has_failure_signal(result: dict[str, Any], *, records: int, errors: 
 
 
 def _manifest_has_only_empty_records(result: dict[str, Any]) -> bool:
-    manifest = result.get("manifest_stats") if isinstance(result.get("manifest_stats"), dict) else {}
-    try:
-        records = int(manifest.get("records") or 0)
-        usable_records = int(manifest.get("usable_records") or 0)
-        empty_records = int(manifest.get("empty_records") or 0)
-    except (TypeError, ValueError):
-        return False
+    records = _manifest_count(result, "records")
+    usable_records = _manifest_count(result, "usable_records")
+    empty_records = _manifest_count(result, "empty_records")
     return records > 0 and usable_records <= 0 and empty_records >= records
 
 
