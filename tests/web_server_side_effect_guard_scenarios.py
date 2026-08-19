@@ -3478,6 +3478,26 @@ def test_light_job_plan_preserves_model_prior_boundary() -> None:
     assert_true("prior_leads_visible", "Farmer's Delight guide" in light["model_prior"]["search_leads"])
 
 
+def test_light_job_plan_ignores_malformed_model_prior_collections() -> None:
+    light = web_server._light_job_plan(
+        {
+            "model_prior": {
+                "target": "Farmer's Delight",
+                "aliases": 7,
+                "likely_source_graph": {"wiki": True},
+                "search_leads": "Farmer's Delight guide",
+                "verification_questions": None,
+            },
+        }
+    )
+
+    prior = light["model_prior"]
+    assert_equal("malformed_prior_aliases", prior["aliases"], [])
+    assert_equal("malformed_prior_source_graph", prior["likely_source_graph"], [])
+    assert_equal("malformed_prior_search_leads", prior["search_leads"], [])
+    assert_equal("malformed_prior_questions", prior["verification_questions"], [])
+
+
 def test_duplicate_reuse_requires_crawler_llm_acceptance() -> None:
     with tempfile.TemporaryDirectory(prefix="mcagent-dup-review-") as tmp:
         root = Path(tmp)
@@ -4657,6 +4677,7 @@ if __name__ == "__main__":
     test_manifest_preview_filters_encoding_damaged_fields()
     test_job_readable_refreshes_legacy_manifest_stats()
     test_light_job_plan_preserves_model_prior_boundary()
+    test_light_job_plan_ignores_malformed_model_prior_collections()
     test_duplicate_reuse_requires_crawler_llm_acceptance()
     test_duplicate_reuse_rejects_explicit_invalid_record_indexes()
     test_modpack_internal_missing_archive_reports_objective_blocker()

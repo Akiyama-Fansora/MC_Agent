@@ -297,6 +297,12 @@ def _dict_items(value: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)]
 
 
+def _light_text_items(value: Any, *, limit: int, max_chars: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item)[:max_chars] for item in value[:limit] if str(item).strip()]
+
+
 def _light_job_result(result: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(result, dict):
         return result
@@ -364,10 +370,10 @@ def _light_job_plan(plan: dict[str, Any]) -> dict[str, Any]:
     if model_prior:
         light["model_prior"] = {
             "target": _tail_text(str(model_prior.get("target") or ""), 160),
-            "aliases": [str(item)[:100] for item in list(model_prior.get("aliases") or [])[:6] if str(item).strip()],
-            "likely_source_graph": [str(item)[:140] for item in list(model_prior.get("likely_source_graph") or [])[:8] if str(item).strip()],
-            "search_leads": [str(item)[:120] for item in list(model_prior.get("search_leads") or [])[:8] if str(item).strip()],
-            "verification_questions": [str(item)[:160] for item in list(model_prior.get("verification_questions") or [])[:6] if str(item).strip()],
+            "aliases": _light_text_items(model_prior.get("aliases"), limit=6, max_chars=100),
+            "likely_source_graph": _light_text_items(model_prior.get("likely_source_graph"), limit=8, max_chars=140),
+            "search_leads": _light_text_items(model_prior.get("search_leads"), limit=8, max_chars=120),
+            "verification_questions": _light_text_items(model_prior.get("verification_questions"), limit=6, max_chars=160),
             "evidence_status": str(model_prior.get("evidence_status") or "hypothesis_only"),
             "allowed_use": str(model_prior.get("allowed_use") or "planning_only"),
             "forbidden_use": _tail_text(str(model_prior.get("forbidden_use") or ""), 240),
