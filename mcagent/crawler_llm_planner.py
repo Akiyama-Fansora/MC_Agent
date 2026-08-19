@@ -4573,6 +4573,13 @@ def _fallback_confirmation_should_continue(raw: dict[str, Any], pending_tasks: l
     return False
 
 
+def _compact_collection(value: Any, *, limit: int) -> list[Any]:
+    """Keep reflection snapshots collection-shaped when metadata is malformed."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    return list(value)[:limit]
+
+
 def _compact_plan_for_reflection(plan: dict[str, Any]) -> dict[str, Any]:
     return {
         "topic": plan.get("topic"),
@@ -4580,9 +4587,9 @@ def _compact_plan_for_reflection(plan: dict[str, Any]) -> dict[str, Any]:
         "delivery_target": plan.get("delivery_target"),
         "requested_by": plan.get("requested_by"),
         "handoff_from": plan.get("handoff_from"),
-        "coverage_goals": list(plan.get("coverage_goals") or [])[:8],
-        "success_criteria": list(plan.get("success_criteria") or [])[:6],
-        "sources": list(plan.get("sources") or [])[:12],
+        "coverage_goals": _compact_collection(plan.get("coverage_goals"), limit=8),
+        "success_criteria": _compact_collection(plan.get("success_criteria"), limit=6),
+        "sources": _compact_collection(plan.get("sources"), limit=12),
     }
 
 
@@ -4607,10 +4614,10 @@ def _compact_result_for_reflection(result: dict[str, Any]) -> dict[str, Any]:
         "validation_reason": validation.get("reason"),
         "crawler_review_action": result.get("crawler_review_action") or validation.get("cleanup_action"),
         "crawler_review_next_action": result.get("crawler_review_next_action") or validation.get("next_action"),
-        "rejected_examples": list(validation.get("rejected_examples") or [])[:3],
+        "rejected_examples": _compact_collection(validation.get("rejected_examples"), limit=3),
         "local_gap_summary": result.get("mcagent_gap_summary") if result.get("source") == "mcagent_context" else None,
         "local_source_count": result.get("mcagent_source_count") if result.get("source") == "mcagent_context" else None,
-        "local_source_paths": list(result.get("mcagent_source_paths") or [])[:8] if result.get("source") == "mcagent_context" else [],
+        "local_source_paths": _compact_collection(result.get("mcagent_source_paths"), limit=8) if result.get("source") == "mcagent_context" else [],
         "reused_existing": reusable.get("matched"),
         "duplicate_review_reason": duplicate_review.get("reason"),
         "duplicate_review_action": duplicate_review.get("cleanup_action"),
