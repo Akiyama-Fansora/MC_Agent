@@ -4,12 +4,22 @@ import ast
 from pathlib import Path
 from types import SimpleNamespace
 import sys
+import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from mcagent.retriever import _fts_query, _select_diverse_ranked_items  # noqa: E402
+from mcagent.config import (  # noqa: E402
+    AppConfig,
+    ChunkingConfig,
+    EmbeddingConfig,
+    OllamaConfig,
+    PathsConfig,
+    RetrievalConfig,
+)
+from mcagent.ingest import ingest_exports  # noqa: E402
+from mcagent.retriever import Retriever, _fts_query, _select_diverse_ranked_items  # noqa: E402
 
 
 def assert_equal(name: str, actual: object, expected: object) -> None:
@@ -125,9 +135,35 @@ def test_manifest_fact_retriever_has_one_definition() -> None:
     assert_true("fts_query_still_callable", bool(_fts_query(["minecraft version"])))
 
 
+def test_explicit_zero_top_k_disables_retrieval() -> None:
+    with tempfile.TemporaryDirectory(prefix="mcagent-retriever-boundary-") as tmp:
+        root = Path(tmp)
+        source = root / "crawler_exports"
+        source.mkdir()
+        (source / "sample.md").write_text("# Redstone\n\nRedstone dust powers a circuit.", encoding="utf-8")
+        config = AppConfig(
+            paths=PathsConfig(
+                project_root=root,
+                source_dir=source,
+                db_path=root / "mcagent.sqlite",
+                index_path=root / "vector_index.npz",
+            ),
+            embedding=EmbeddingConfig(dimension=128, ngram_min=1, ngram_max=3),
+            chunking=ChunkingConfig(max_chars=500, overlap_chars=80),
+            retrieval=RetrievalConfig(top_k=3, min_score=0.0),
+            ollama=OllamaConfig(),
+        )
+        ingest_exports(config)
+        retriever = Retriever(config)
+
+        assert_equal("explicit_zero", retriever.search("redstone", top_k=0), [])
+        assert_true("positive_limit_still_searches", bool(retriever.search("redstone", top_k=1)))
+
+
 if __name__ == "__main__":
     test_project_retrieval_keeps_source_diversity_after_high_score_long_document()
     test_non_project_retrieval_preserves_plain_score_order()
     test_project_diversity_does_not_fill_with_off_topic_pack_internals()
     test_manifest_fact_retriever_has_one_definition()
+    test_explicit_zero_top_k_disables_retrieval()
     print("retriever_diversity_scenarios: ok")

@@ -817,7 +817,8 @@ class Retriever:
         use_planner: bool = False,
         session_summary: dict[str, Any] | None = None,
     ) -> list[SearchResult]:
-        top_k = top_k or self.config.retrieval.top_k
+        # Preserve an explicit zero so callers can intentionally disable retrieval.
+        top_k = self.config.retrieval.top_k if top_k is None else top_k
         if top_k <= 0:
             return []
 

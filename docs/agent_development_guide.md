@@ -6317,3 +6317,23 @@ Validation:
 Boundary:
 
 This change does not alter valid session topics, retrieval ranking, Crawler source selection, artifact persistence, ingest, AgentMessage routing decisions, graph routes, frontend action semantics, or answer generation. It only keeps malformed session-summary collections from interrupting context construction and subsequent summary updates.
+
+## 2026-08-21 Stage 124: Preserve Explicit Zero Retrieval Limits
+
+This maintenance pass focused on the local RAG retrieval boundary used by MCagent inventory and answer workflows.
+
+Implemented changes:
+
+1. `mcagent/retriever.py` now distinguishes an omitted `top_k` from an explicit zero.
+2. `Retriever.search(..., top_k=0)` returns no evidence without loading or scanning the local index; positive limits and the configured default keep their existing behavior.
+3. `tests/retriever_diversity_scenarios.py` adds a temporary SQLite/vector-index regression covering both the zero limit and a positive search.
+
+Validation:
+
+1. `python tests\retriever_diversity_scenarios.py`
+2. `python tests\rag_service_scenarios.py`
+3. Full `*_scenarios.py`, smoke, compileall, public-readiness, architecture-audit, encoding, and frontend syntax regression.
+
+Boundary:
+
+This change does not alter valid retrieval ranking, source diversity, chunking, evidence selection, Crawler fetching or persistence, AgentMessage routing, graph routes, frontend actions, or answer synthesis. It only preserves the caller's explicit non-positive retrieval limit instead of silently replacing zero with the configured default.
