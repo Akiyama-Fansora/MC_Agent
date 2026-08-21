@@ -68,10 +68,24 @@ def test_record_review_keeps_error_when_no_tasks() -> None:
     assert_equal("new_tasks", entry["new_tasks"], [])
 
 
+def test_record_review_replaces_malformed_expansion_collection() -> None:
+    service = CrawlerTopicDiscoveryReviewService()
+    for name, malformed in (("text", "unexpected"), ("object", {"at_result_count": 1}), ("tuple", (1, 2))):
+        plan = {"discovery_expansions": malformed}
+        entry = service.record_review(
+            plan=plan,
+            result={"query": "topic"},
+            task_results_count=4,
+            discovered_tasks=[],
+        )
+        assert_equal(f"{name}_collection", plan["discovery_expansions"], [entry])
+
+
 if __name__ == "__main__":
     test_should_review_only_successful_topic_discovery()
     test_should_review_ignores_malformed_returncodes()
     test_remaining_slots_never_negative()
     test_record_review_adds_expansion_entry()
     test_record_review_keeps_error_when_no_tasks()
+    test_record_review_replaces_malformed_expansion_collection()
     print("crawler_topic_discovery_service_scenarios passed")

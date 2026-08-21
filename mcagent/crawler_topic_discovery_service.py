@@ -47,5 +47,9 @@ class CrawlerTopicDiscoveryReviewService:
         }
         if not discovered_tasks and result.get("topic_discovery_review_error"):
             entry["error"] = result.get("topic_discovery_review_error")
-        plan.setdefault("discovery_expansions", []).append(entry)
+        expansions = plan.get("discovery_expansions")
+        if not isinstance(expansions, list):
+            expansions = []
+            plan["discovery_expansions"] = expansions
+        expansions.append(entry)
         return entry
